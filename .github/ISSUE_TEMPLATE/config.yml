@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability Report
+    url: https://github.com/Ankit-Cherian/steno/security/advisories/new
+    about: Report security issues privately. Do not disclose vulnerabilities in public issues.
+  - name: Usage and Support
+    url: https://github.com/Ankit-Cherian/steno/discussions
+    about: Ask questions and get help from maintainers/community.
