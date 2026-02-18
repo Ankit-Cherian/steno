@@ -1,0 +1,27 @@
+name: Steno
+options:
+  deploymentTarget:
+    macOS: "13.0"
+packages:
+  StenoKit:
+    path: ./StenoKit
+targets:
+  Steno:
+    type: application
+    platform: macOS
+    sources:
+      - path: Steno
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.stenoapp.steno
+        # Contributor-first signing defaults:
+        # - no fixed team ID in tracked source
+        # - each contributor chooses their own team in local Xcode settings
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: Apple Development
+        SWIFT_VERSION: 6.0
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Steno needs microphone access for dictation.
+    dependencies:
+      - package: StenoKit
+        product: StenoKit

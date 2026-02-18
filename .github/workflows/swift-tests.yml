@@ -1,0 +1,41 @@
+# Full app build requires whisper.cpp vendor directory and is verified manually.
+# This workflow runs the StenoKit test suite only.
+
+name: Swift Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swift-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode (Swift 6.2+)
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Run StenoKit tests
+        env:
+          CLANG_MODULE_CACHE_PATH: /tmp/steno-clang-cache
+          SWIFT_MODULECACHE_PATH: /tmp/steno-swift-cache
+        run: |
+          cd StenoKit
+          swift test
