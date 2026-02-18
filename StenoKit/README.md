@@ -1,9 +1,9 @@
 # StenoKit Core (macOS-first)
 
-This package implements the core architecture for a Wispr-style dictation workflow with:
+This package implements the core architecture for a local-first dictation workflow with:
 
 - Session orchestration (`SessionCoordinator` actor)
-- macOS hotkey monitor (`MacHotkeyMonitor`) for `Option` hold and `Command+P` toggle
+- macOS hotkey monitor (`MacHotkeyMonitor`) for `Option` hold and configurable function-key toggle
 - macOS recording overlay presenter (`MacOverlayPresenter`)
 - macOS audio capture service (`MacAudioCaptureService`)
 - local `whisper.cpp` transcription adapter (`WhisperCLITranscriptionEngine`)
@@ -48,11 +48,11 @@ SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
 swift test
 ```
 
-## What Still Needs App-Layer Implementation
+## If You Integrate StenoKit Into Another App
 
-The following are intentionally left to the host macOS app layer:
+The following are intentionally left to the host app layer:
 
-- Global hotkey handling (`Option` hold, `Cmd+P` toggle)
+- Global hotkey handling (`Option` hold, function-key toggle)
 - On-screen recording status overlay
 - Real audio capture implementation using `AVAudioEngine`
 - Optionally switch `MacAudioCaptureService` to a custom capture backend if needed

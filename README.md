@@ -45,7 +45,7 @@ Key patterns: protocol-first dependency injection, actor isolation, no singleton
    ```bash
    git clone https://github.com/ggerganov/whisper.cpp vendor/whisper.cpp
    cd vendor/whisper.cpp
-   git checkout <pinned-tag-or-commit>
+   git checkout v1.8.3
    cmake -B build && cmake --build build --config Release
    ```
 
@@ -96,6 +96,13 @@ CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
 SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
 swift test --filter budgetGuardDegradedMode
 ```
+
+## Known Limitations
+
+- macOS only (no Windows/Linux desktop target yet)
+- Setup currently expects local whisper.cpp build and model download
+- Full end-to-end behavior depends on user-granted macOS permissions (Microphone, Accessibility, Input Monitoring)
+- Cloud cleanup is optional and requires user-provided API key configuration
 
 ## Contributing
 

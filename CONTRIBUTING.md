@@ -23,7 +23,7 @@ Before you begin, ensure you have:
    ```bash
    git clone https://github.com/ggerganov/whisper.cpp vendor/whisper.cpp
    cd vendor/whisper.cpp
-   git checkout <pinned-tag-or-commit>
+   git checkout v1.8.3
    cmake -B build && cmake --build build --config Release
    cd ../..
    ```
