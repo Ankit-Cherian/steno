@@ -20,7 +20,7 @@ jobs:
   test:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Select Xcode (Swift 6.2+)
         uses: maxim-lobanov/setup-xcode@v1
