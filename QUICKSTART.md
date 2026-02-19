@@ -1,8 +1,8 @@
 # Steno Quickstart
 
-Fast path to run Steno locally on macOS.
+Fastest path to run Steno locally on macOS.
 
-## 1) Clone and build dependencies
+## 1) Clone and build local transcription dependencies
 
 ```bash
 git clone https://github.com/Ankit-Cherian/steno.git
@@ -15,11 +15,15 @@ cmake -B build && cmake --build build --config Release
 cd ../..
 ```
 
-## 2) Generate project
+Expected result: `whisper.cpp` and the `small.en` model are ready under `vendor/whisper.cpp`.
+
+## 2) Generate the Xcode project
 
 ```bash
 xcodegen generate
 ```
+
+Expected result: `Steno.xcodeproj` is up to date.
 
 ## 3) Run in Xcode
 
@@ -27,17 +31,23 @@ xcodegen generate
 2. Set your Apple Developer Team in Signing & Capabilities.
 3. Run scheme `Steno` (`Cmd+R`).
 4. Grant permissions when prompted:
-   - Microphone
-   - Accessibility
-   - Input Monitoring
+   - Microphone: record your voice
+   - Accessibility: let Steno type or paste into your active app
+   - Input Monitoring: let Steno detect global hotkeys
 
-## Optional: Cloud cleanup
+## Optional: Cloud text cleanup
 
-Set `OPENAI_API_KEY` in your scheme environment if you want cloud transcript cleanup.
-Without it, transcription/cleanup stays local-first.
+Set `OPENAI_API_KEY` in your scheme environment to enable OpenAI text cleanup.
+Without it, Steno stays fully local for transcription and local cleanup.
 
 ## Verify setup quickly
 
 - Press and hold `Option` to record, release to transcribe.
 - Toggle hands-free mode using the configured function key (default `F18`).
-- Confirm insertion works in both a text editor and a terminal target.
+- Confirm text output works in both a text editor and a terminal.
+
+## If something fails
+
+- `xcodegen: command not found`: run `brew install xcodegen`.
+- `cmake: command not found`: run `brew install cmake`.
+- Hotkeys not responding: check Accessibility + Input Monitoring permissions in macOS Settings and relaunch Steno.

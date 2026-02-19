@@ -1,39 +1,37 @@
 # Steno
 
-Local-first macOS dictation — whisper.cpp transcription with intelligent target-aware insertion
+Private macOS dictation that types where your cursor is.
+
+Steno transcribes locally with `whisper.cpp`, so audio stays on your Mac. You can optionally enable cloud text cleanup for polished output.
 
 [![Swift Tests](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml)
 [![Security Audit](https://github.com/Ankit-Cherian/steno/actions/workflows/security-audit.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/security-audit.yml)
 
-## Features
+## Choose Your Path
 
-- Local audio transcription via whisper.cpp (audio never leaves your Mac)
-- Target-aware text insertion (detects terminals vs editors, adjusts strategy)
-- Optional cloud-powered transcript cleanup (OpenAI, budget-guarded)
-- Global hotkeys: Option hold-to-talk + configurable hands-free toggle
+- **I want to use Steno**: follow [QUICKSTART.md](QUICKSTART.md) or the quick setup below.
+- **I want to contribute**: start with [CONTRIBUTING.md](CONTRIBUTING.md) and the architecture notes below.
+
+## What Steno Does
+
+- Local audio transcription with `whisper.cpp` (audio never leaves your Mac)
+- Smart app-aware paste (target-aware insertion): terminals prefer paste, editors use direct typing or accessibility insertion
+- Optional cloud text cleanup with OpenAI (text-only, budget-guarded)
+- Global hotkeys: Option hold-to-talk and configurable hands-free toggle
 - Menu bar app with status overlay
 - 30-day transcript history with search
-- Personal lexicon, style profiles, and text snippets
-- Full VoiceOver accessibility support
-- Swift 6 strict concurrency throughout
-
-## Architecture
-
-Steno uses a two-layer design:
-
-- **`StenoKit/`** — Pure Swift package with all business logic, protocols, models, services. No UI code.
-- **`Steno/`** — SwiftUI app target with views, `DictationController` orchestrator, settings persistence
-
-Key patterns: protocol-first dependency injection, actor isolation, no singletons, Sendable value types
+- Personal lexicon, style profiles, and snippets
+- VoiceOver accessibility support
 
 ## Requirements
 
 - macOS 13.0+
 - Xcode 26+ (Swift 6.2+)
 - XcodeGen (`brew install xcodegen`)
-- whisper.cpp (built locally)
+- whisper.cpp built locally
+- CMake (`brew install cmake`)
 
-## Getting Started
+## Quick Setup
 
 1. Clone the repository:
    ```bash
@@ -47,12 +45,14 @@ Key patterns: protocol-first dependency injection, actor isolation, no singleton
    cd vendor/whisper.cpp
    git checkout v1.8.3
    cmake -B build && cmake --build build --config Release
+   cd ../..
    ```
 
 3. Download a transcription model:
    ```bash
    cd vendor/whisper.cpp
    ./models/download-ggml-model.sh small.en
+   cd ../..
    ```
 
 4. Generate the Xcode project:
@@ -60,29 +60,44 @@ Key patterns: protocol-first dependency injection, actor isolation, no singleton
    xcodegen generate
    ```
 
-5. Open `Steno.xcodeproj` in Xcode and set your own Apple Developer Team in Signing & Capabilities (the repo intentionally does not hardcode a team ID).
+5. Open `Steno.xcodeproj` in Xcode and set your Apple Developer Team in Signing & Capabilities.
 
 6. Build and run (Cmd+R).
 
 7. Grant required permissions when prompted:
-   - Microphone (for audio recording)
-   - Accessibility (for global hotkeys and direct text insertion)
-   - Input Monitoring (for hotkey interception)
+   - Microphone: record your voice
+   - Accessibility: let Steno type or paste into the active app
+   - Input Monitoring: let Steno detect global hotkeys
 
 ## Usage
 
-- **Option Hold-to-Talk**: Hold Option key to record, release to transcribe and insert
-- **Hands-Free Toggle**: Press configured function key (default F18) to start/stop recording
+- **Option Hold-to-Talk**: hold Option to record, release to transcribe and insert
+- **Hands-Free Toggle**: press the configured function key (default `F18`) to start/stop recording
 - **Menu Bar**: Click icon to show app window, right-click for quick actions
 - **Recording Modes**: Press-to-talk (immediate recording) or hands-free (toggle on/off)
-- **Insertion Strategies**: Target-aware routing — terminals get clipboard+paste, editors get direct typing or accessibility API
+- **Text Output**: app-aware routing picks the safest insertion method for your current app
 
-## Testing
+## Verify Setup
+
+- Hold `Option` to record and release to transcribe.
+- Use the hands-free toggle key (default `F18`).
+- Confirm insertion works in both a text editor and a terminal.
+
+## Architecture (Contributor View)
+
+Steno uses a two-layer design:
+
+- **`StenoKit/`**: pure Swift package with business logic, protocols, models, and services (no UI)
+- **`Steno/`**: SwiftUI app target with views, `DictationController` orchestration, and settings persistence
+
+Key patterns: protocol-first dependency injection, actor isolation, no singletons, `Sendable` value types.
+
+## Testing (Contributor View)
 
 Run the core package tests from the repository root:
 
 ```bash
-cd StenoKit && \
+cd StenoKit
 CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
 SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
 swift test
@@ -91,7 +106,7 @@ swift test
 Run a single test by function name:
 
 ```bash
-cd StenoKit && \
+cd StenoKit
 CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
 SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
 swift test --filter budgetGuardDegradedMode
@@ -101,8 +116,8 @@ swift test --filter budgetGuardDegradedMode
 
 - macOS only (no Windows/Linux desktop target yet)
 - Setup currently expects local whisper.cpp build and model download
-- Full end-to-end behavior depends on user-granted macOS permissions (Microphone, Accessibility, Input Monitoring)
-- Cloud cleanup is optional and requires user-provided API key configuration
+- Full end-to-end behavior depends on user-granted macOS permissions
+- Cloud cleanup is optional and requires your own API key
 
 ## Contributing
 
