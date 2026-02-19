@@ -10,21 +10,34 @@ let package = Package(
         .iOS(.v16),
     ],
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
             name: "StenoKit",
             targets: ["StenoKit"]
         ),
+        .executable(
+            name: "StenoBenchmarkCLI",
+            targets: ["StenoBenchmarkCLI"]
+        ),
     ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
         .target(
             name: "StenoKit"
+        ),
+        .target(
+            name: "StenoBenchmarkCore",
+            dependencies: ["StenoKit"]
+        ),
+        .executableTarget(
+            name: "StenoBenchmarkCLI",
+            dependencies: ["StenoBenchmarkCore"]
         ),
         .testTarget(
             name: "StenoKitTests",
             dependencies: ["StenoKit"]
+        ),
+        .testTarget(
+            name: "StenoBenchmarkCoreTests",
+            dependencies: ["StenoBenchmarkCore"]
         ),
     ]
 )
