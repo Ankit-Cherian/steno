@@ -105,15 +105,15 @@ struct OnboardingView: View {
                     .foregroundStyle(StenoDesign.textPrimary)
                     .accessibilityAddTraits(.isHeader)
 
-                Text("Privacy-first dictation for macOS")
+                Text("Private dictation that types into your active app")
                     .font(StenoDesign.subheadline())
                     .foregroundStyle(StenoDesign.textSecondary)
             }
 
             VStack(alignment: .leading, spacing: StenoDesign.md) {
-                featureRow(icon: "lock.shield", title: "Local-first", detail: "Audio stays on your Mac. Only text optionally goes to the cloud.")
+                featureRow(icon: "lock.shield", title: "Private by default", detail: "Audio stays on your Mac. Only transcript text can go to cloud cleanup if you opt in.")
                 featureRow(icon: "bolt", title: "Fast", detail: "Whisper.cpp transcribes locally in seconds.")
-                featureRow(icon: "text.cursor", title: "Universal", detail: "Inserts text directly into any app.")
+                featureRow(icon: "text.cursor", title: "Works across apps", detail: "Types or pastes into editors, terminals, and most text fields.")
             }
             .cardStyle()
 
@@ -168,7 +168,7 @@ struct OnboardingView: View {
 
                 PermissionStatusCard(
                     title: "Accessibility",
-                    description: "Enables direct text insertion into apps.",
+                    description: "Lets Steno type or paste into the app you're using.",
                     status: controller.accessibilityPermissionStatus,
                     onRequest: { controller.requestAccessibilityPermission() },
                     onOpenSettings: { controller.openAccessibilitySettings() }
@@ -176,7 +176,7 @@ struct OnboardingView: View {
 
                 PermissionStatusCard(
                     title: "Input Monitoring",
-                    description: "Allows global hotkey for hands-free dictation.",
+                    description: "Lets Steno detect global hotkeys while other apps are focused.",
                     status: controller.inputMonitoringPermissionStatus,
                     onRequest: { controller.requestInputMonitoringPermission() },
                     onOpenSettings: { controller.openInputMonitoringSettings() }
@@ -203,12 +203,12 @@ struct OnboardingView: View {
             Spacer()
 
             VStack(spacing: StenoDesign.sm) {
-                Text("Whisper Setup")
+                Text("Local Transcription Setup")
                     .font(StenoDesign.heading1())
                     .foregroundStyle(StenoDesign.textPrimary)
                     .accessibilityAddTraits(.isHeader)
 
-                Text("Verify the paths to your local whisper-cli and model file.")
+                Text("Confirm the paths to your local whisper-cli binary and model file.")
                     .font(StenoDesign.subheadline())
                     .foregroundStyle(StenoDesign.textSecondary)
             }
@@ -218,7 +218,7 @@ struct OnboardingView: View {
                     Text("whisper-cli path")
                         .font(StenoDesign.bodyEmphasis())
                         .foregroundStyle(StenoDesign.textPrimary)
-                    TextField("Path to whisper-cli", text: $whisperCLIPath)
+                    TextField("Path to whisper-cli binary", text: $whisperCLIPath)
                         .textFieldStyle(.roundedBorder)
                     pathValidationLabel(valid: whisperCLIPathValid)
                 }
@@ -269,7 +269,7 @@ struct OnboardingView: View {
                     .foregroundStyle(StenoDesign.textPrimary)
                     .accessibilityAddTraits(.isHeader)
 
-                Text("Cloud cleanup is optional. Steno works great without it using local-only processing.")
+                Text("Cloud text cleanup is optional. Steno works fully in local-only mode without it.")
                     .font(StenoDesign.subheadline())
                     .foregroundStyle(StenoDesign.textSecondary)
                     .multilineTextAlignment(.center)
@@ -284,7 +284,7 @@ struct OnboardingView: View {
                         .textFieldStyle(.roundedBorder)
                 }
 
-                Text("If provided, transcript text (not audio) is sent to OpenAI for cleanup. You can always change this in Settings.")
+                Text("If provided, Steno sends transcript text (never audio) to OpenAI for cleanup. You can change this later in Settings.")
                     .font(StenoDesign.caption())
                     .foregroundStyle(StenoDesign.textSecondary)
             }
