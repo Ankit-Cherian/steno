@@ -40,15 +40,15 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             return (text, [], [])
         }
 
-        let mediumFillers = ["um", "uh", "like", "you know"]
-        let aggressiveFillers = mediumFillers + ["i mean", "basically", "sort of", "kind of"]
-        let fillers = policy == .balanced ? mediumFillers : aggressiveFillers
+        let balancedFillers = ["um", "uh", "you know"]
+        let aggressiveFillers = balancedFillers + ["i mean", "basically", "sort of", "kind of"]
+        let directFillers = policy == .balanced ? balancedFillers : aggressiveFillers
 
         var updated = text
         var removed: [String] = []
         var edits: [TranscriptEdit] = []
 
-        for filler in fillers {
+        for filler in directFillers {
             let escaped = NSRegularExpression.escapedPattern(for: filler)
             let pattern = "(?i)(?:\\s|^)\(escaped)(?=\\s|[,.!?]|$)"
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
@@ -62,8 +62,39 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             }
         }
 
+        let likeRemovals = removeInterjectionalLike(from: updated)
+        updated = likeRemovals.text
+        if likeRemovals.count > 0 {
+            removed.append(contentsOf: Array(repeating: "like", count: likeRemovals.count))
+            edits.append(TranscriptEdit(kind: .fillerRemoval, from: "like", to: ""))
+        }
+
         updated = collapseWhitespace(updated)
         return (updated, removed, edits)
+    }
+
+    private func removeInterjectionalLike(from text: String) -> (text: String, count: Int) {
+        var updated = text
+        var removedCount = 0
+
+        let patterns: [(pattern: String, replacement: String)] = [
+            // Sentence-initial discourse marker: "Like, ..."
+            ("(?i)(^|[.!?]\\s+)like,\\s+", "$1"),
+            // Parenthetical discourse marker: ", like, ..."
+            ("(?i),\\s*like,\\s*", ", ")
+        ]
+
+        for item in patterns {
+            guard let regex = try? NSRegularExpression(pattern: item.pattern) else { continue }
+            let range = NSRange(updated.startIndex..., in: updated)
+            let count = regex.numberOfMatches(in: updated, range: range)
+            if count > 0 {
+                updated = regex.stringByReplacingMatches(in: updated, range: range, withTemplate: item.replacement)
+                removedCount += count
+            }
+        }
+
+        return (updated, removedCount)
     }
 
     private func applyLexicon(text: String, lexicon: PersonalLexicon) -> (text: String, edits: [TranscriptEdit]) {
