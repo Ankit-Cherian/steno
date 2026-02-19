@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to Steno. This guide will help you get started with development.
 
+If you only want to run the app as a user, use [QUICKSTART.md](QUICKSTART.md) first. This document is contributor-focused.
+
 ## Prerequisites
 
 Before you begin, ensure you have:

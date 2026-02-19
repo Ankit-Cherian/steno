@@ -5,8 +5,8 @@ struct InsertionSettingsSection: View {
     @EnvironmentObject private var controller: DictationController
 
     var body: some View {
-        settingsCard("Insertion") {
-            Text("Order (drag to reorder). Clipboard fallback is always kept.")
+        settingsCard("Text Output (Insertion)") {
+            Text("Choose how Steno inserts text. Drag to set priority. Backup paste via clipboard is always kept.")
                 .font(StenoDesign.caption())
                 .foregroundStyle(StenoDesign.textSecondary)
 
@@ -27,21 +27,21 @@ struct InsertionSettingsSection: View {
 
             HStack {
                 Toggle(
-                    "Direct typing",
+                    "Type directly",
                     isOn: Binding(
                         get: { controller.preferences.insertion.orderedMethods.contains(.direct) },
                         set: { setInsertionMethod(.direct, enabled: $0) }
                     )
                 )
                 Toggle(
-                    "Accessibility",
+                    "Accessibility insert",
                     isOn: Binding(
                         get: { controller.preferences.insertion.orderedMethods.contains(.accessibility) },
                         set: { setInsertionMethod(.accessibility, enabled: $0) }
                     )
                 )
                 Toggle(
-                    "Clipboard fallback",
+                    "Backup paste via clipboard",
                     isOn: Binding(
                         get: { controller.preferences.insertion.orderedMethods.contains(.clipboardPaste) },
                         set: { setInsertionMethod(.clipboardPaste, enabled: $0) }
@@ -71,9 +71,9 @@ struct InsertionSettingsSection: View {
 
     private func label(for method: InsertionMethod) -> String {
         switch method {
-        case .direct: return "Direct typing"
-        case .accessibility: return "Accessibility"
-        case .clipboardPaste: return "Clipboard fallback"
+        case .direct: return "Type directly"
+        case .accessibility: return "Accessibility insert"
+        case .clipboardPaste: return "Backup paste via clipboard"
         case .none: return "None"
         }
     }
