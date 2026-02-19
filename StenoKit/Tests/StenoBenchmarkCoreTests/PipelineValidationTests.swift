@@ -90,6 +90,46 @@ func pipelineValidationFailsOnRegressedSamples() {
     }
 }
 
+@Test("Pipeline validation fails when required deltas are missing")
+func pipelineValidationFailsOnMissingDeltas() {
+    let pipeline = makePipelineOutput(
+        werDelta: nil,
+        cerDelta: nil,
+        regressed: 0
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0
+    )
+
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected missing metric validation failure.")
+    } catch PipelineValidationError.missingMetric(let name) {
+        #expect(name == "werDelta")
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+}
+
+@Test("Pipeline validation honors epsilon boundary")
+func pipelineValidationHonorsEpsilon() throws {
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0000000001,
+        cerDelta: 0.0000000001,
+        regressed: 0
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        epsilon: 0.000000001
+    )
+
+    try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+}
+
 private func makePipelineOutput(
     werDelta: Double?,
     cerDelta: Double?,
