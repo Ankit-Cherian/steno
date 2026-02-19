@@ -9,6 +9,34 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         lexicon: PersonalLexicon,
         tier: CloudModelTier
     ) async throws -> CleanTranscript {
+        let generator = RuleBasedCleanupCandidateGenerator()
+        let candidates = try await generator.generateCandidates(
+            raw: raw,
+            profile: profile,
+            lexicon: lexicon
+        )
+        let ranker = LocalCleanupRanker()
+        let best = ranker.bestCandidate(
+            rawText: raw.text,
+            candidates: candidates,
+            profile: profile
+        )
+
+        return CleanTranscript(
+            text: best.text,
+            edits: best.appliedEdits,
+            removedFillers: best.removedFillers,
+            uncertaintyFlags: [],
+            modelTier: tier
+        )
+    }
+
+    func buildCandidate(
+        raw: RawTranscript,
+        profile: StyleProfile,
+        lexicon: PersonalLexicon,
+        rulePathID: String
+    ) -> CleanupCandidate {
         var text = raw.text
         var edits: [TranscriptEdit] = []
         var removedFillers: [String] = []
@@ -26,12 +54,11 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         text = structureResult.text
         edits.append(contentsOf: structureResult.edits)
 
-        return CleanTranscript(
+        return CleanupCandidate(
             text: text,
-            edits: edits,
+            appliedEdits: edits,
             removedFillers: removedFillers,
-            uncertaintyFlags: [],
-            modelTier: tier
+            rulePathID: rulePathID
         )
     }
 
