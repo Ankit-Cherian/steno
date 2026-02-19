@@ -1,8 +1,8 @@
 # Steno
 
-Private macOS dictation that types where your cursor is.
+Fast macOS voice-to-text with smart app-aware insertion and optional text cleanup.
 
-Steno transcribes locally with `whisper.cpp`, so audio stays on your Mac. You can optionally enable cloud text cleanup for polished output.
+Steno is built for a premium dictation workflow without subscription lock-in: high-accuracy local transcription with `whisper.cpp`, fast hotkeys, and reliable text output across apps.
 
 [![Swift Tests](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml)
 [![Security Audit](https://github.com/Ankit-Cherian/steno/actions/workflows/security-audit.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/security-audit.yml)
@@ -14,7 +14,7 @@ Steno transcribes locally with `whisper.cpp`, so audio stays on your Mac. You ca
 
 ## What Steno Does
 
-- Local audio transcription with `whisper.cpp` (audio never leaves your Mac)
+- High-accuracy local transcription with `whisper.cpp` (audio never leaves your Mac)
 - Smart app-aware paste (target-aware insertion): terminals prefer paste, editors use direct typing or accessibility insertion
 - Optional cloud text cleanup with OpenAI (text-only, budget-guarded)
 - Global hotkeys: Option hold-to-talk and configurable hands-free toggle
