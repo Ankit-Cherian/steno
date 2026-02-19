@@ -46,7 +46,7 @@ struct SettingsView: View {
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("This will remove your saved OpenAI API key. Cloud cleanup will fall back to local mode.")
+                        Text("This removes your saved OpenAI API key. Steno will return to local-only cleanup.")
                     }
 
                     Spacer()

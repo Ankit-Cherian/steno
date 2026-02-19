@@ -15,7 +15,7 @@ struct PermissionsSettingsSection: View {
 
             PermissionStatusCard(
                 title: "Accessibility",
-                description: "Enables direct text insertion into apps.",
+                description: "Lets Steno type or paste into the app you're using.",
                 status: controller.accessibilityPermissionStatus,
                 onRequest: { controller.requestAccessibilityPermission() },
                 onOpenSettings: { controller.openAccessibilitySettings() }
@@ -23,7 +23,7 @@ struct PermissionsSettingsSection: View {
 
             PermissionStatusCard(
                 title: "Input Monitoring",
-                description: "Allows global hotkey for hands-free dictation.",
+                description: "Lets Steno detect global hotkeys while other apps are focused.",
                 status: controller.inputMonitoringPermissionStatus,
                 onRequest: { controller.requestInputMonitoringPermission() },
                 onOpenSettings: { controller.openInputMonitoringSettings() }
