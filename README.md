@@ -5,7 +5,6 @@ Fast macOS voice-to-text with smart app-aware insertion and optional text cleanu
 Steno is built for a premium dictation workflow without subscription lock-in: high-accuracy local transcription with `whisper.cpp`, fast hotkeys, and reliable text output across apps.
 
 [![Swift Tests](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml)
-[![Security Audit](https://github.com/Ankit-Cherian/steno/actions/workflows/security-audit.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/security-audit.yml)
 
 ## Choose Your Path
 
@@ -25,11 +24,16 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
 
 ## Screenshots
 
-Screenshots will be added before public launch:
-
-- Menu bar status and recording overlay
-- Main dictation and settings views
-- Transcript history and search workflow
+<table>
+  <tr>
+    <td><img src="assets/record.png" alt="Record tab — hands-free recording with live transcript" width="400"></td>
+    <td><img src="assets/history.png" alt="History tab — searchable transcript history" width="400"></td>
+  </tr>
+  <tr>
+    <td><img src="assets/settings-top.png" alt="Settings — permissions, recording, and engine setup" width="400"></td>
+    <td><img src="assets/settings-bottom.png" alt="Settings — cleanup style and text shortcuts" width="400"></td>
+  </tr>
+</table>
 
 ## Requirements
 
