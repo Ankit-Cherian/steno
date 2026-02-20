@@ -25,11 +25,16 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
 
 ## Screenshots
 
-Screenshots will be added before public launch:
-
-- Menu bar status and recording overlay
-- Main dictation and settings views
-- Transcript history and search workflow
+<table>
+  <tr>
+    <td><img src="assets/record.png" alt="Record tab — hands-free recording with live transcript" width="400"></td>
+    <td><img src="assets/history.png" alt="History tab — searchable transcript history" width="400"></td>
+  </tr>
+  <tr>
+    <td><img src="assets/settings-top.png" alt="Settings — permissions, recording, and engine setup" width="400"></td>
+    <td><img src="assets/settings-bottom.png" alt="Settings — cleanup style and text shortcuts" width="400"></td>
+  </tr>
+</table>
 
 ## Requirements
 
