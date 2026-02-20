@@ -140,10 +140,10 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
             result = .playing
         } else if hasStrongPositive && hasStrongNegative {
             result = .unknown
-        } else if hasWeakPositive {
-            result = .likelyPlaying
         } else if hasStrongNegative {
             result = .notPlaying
+        } else if hasWeakPositive {
+            result = .likelyPlaying
         } else {
             result = .unknown
         }
