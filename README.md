@@ -23,6 +23,14 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
 - Personal lexicon, style profiles, and snippets
 - VoiceOver accessibility support
 
+## Screenshots
+
+Screenshots will be added before public launch:
+
+- Menu bar status and recording overlay
+- Main dictation and settings views
+- Transcript history and search workflow
+
 ## Requirements
 
 - macOS 13.0+
