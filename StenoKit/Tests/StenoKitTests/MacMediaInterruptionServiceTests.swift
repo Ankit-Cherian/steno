@@ -214,8 +214,8 @@ func detectorReturnsLikelyPlayingForWeakPositives() async {
 }
 
 @MainActor
-@Test("Detector prefers weak positive over ambiguous strong-negative probes")
-func detectorPrefersWeakPositiveOverAmbiguousStrongNegativeProbes() async {
+@Test("Detector prefers strong-negative evidence over weak positives")
+func detectorPrefersStrongNegativeOverWeakPositiveProbes() async {
     let bridge = FakeMediaRemoteBridge()
     bridge.nowPlayingApplicationIsPlayingValue = true
     bridge.nowPlayingPlaybackRateValue = 0
@@ -223,7 +223,23 @@ func detectorPrefersWeakPositiveOverAmbiguousStrongNegativeProbes() async {
     let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
     let result = await detector.detect()
 
-    #expect(result == .likelyPlaying)
+    #expect(result == .notPlaying)
+}
+
+@MainActor
+@Test("Detector returns not playing for any=true with advancing=false and no strong positive")
+func detectorReturnsNotPlayingForAnyTrueAndAdvancingFalseWithoutStrongPositive() async {
+    let bridge = FakeMediaRemoteBridge()
+    bridge.anyApplicationIsPlayingValue = true
+    bridge.nowPlayingApplicationIsPlayingValue = false
+    bridge.nowPlayingPlaybackStateValue = 2
+    bridge.playbackStateIsAdvancingValue = false
+    bridge.nowPlayingPlaybackRateValue = nil
+
+    let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
+    let result = await detector.detect()
+
+    #expect(result == .notPlaying)
 }
 
 @MainActor
