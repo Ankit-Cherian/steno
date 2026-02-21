@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-02-21
+
 ### Added
 - Security and OSS governance docs (`SECURITY.md`, `SUPPORT.md`)
 - Security automation workflows (policy checks, secret scanning, dependency review on eligible public PRs, and Scorecard for public repos)
