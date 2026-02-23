@@ -23,7 +23,7 @@ Expected result: `whisper.cpp` and the `small.en` model are ready under `vendor/
 xcodegen generate
 ```
 
-Expected result: `Steno.xcodeproj` is up to date.
+Expected result: local `Steno.xcodeproj` is up to date (it is generated from `project.yml` and intentionally not tracked in git).
 
 ## 3) Run in Xcode
 
