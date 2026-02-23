@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+- First-pass macOS app icon set in `Steno/Assets.xcassets/AppIcon.appiconset` with a stenography-inspired glyph
+
+### Removed
+- Tracked generated Xcode project files (`Steno.xcodeproj/*`) from source control
+
 ## [0.1.1] - 2026-02-21
 
 ### Added

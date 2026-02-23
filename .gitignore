@@ -13,6 +13,7 @@ vendor/
 .swiftpm/
 DerivedData/
 build/
+Steno.xcodeproj/
 **/xcuserdata/
 **/*.xcworkspace/xcuserdata/
 .idea/

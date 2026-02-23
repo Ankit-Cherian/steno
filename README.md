@@ -67,12 +67,12 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
    cd ../..
    ```
 
-4. Generate the Xcode project:
+4. Generate the local Xcode project (generated from `project.yml`, not tracked in git):
    ```bash
    xcodegen generate
    ```
 
-5. Open `Steno.xcodeproj` in Xcode and set your Apple Developer Team in Signing & Capabilities.
+5. Open your local `Steno.xcodeproj` in Xcode and set your Apple Developer Team in Signing & Capabilities.
 
 6. Build and run (Cmd+R).
 

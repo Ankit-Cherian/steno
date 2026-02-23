@@ -37,12 +37,12 @@ Before you begin, ensure you have:
    cd ../..
    ```
 
-4. Generate the Xcode project:
+4. Generate the local Xcode project:
    ```bash
    xcodegen generate
    ```
 
-5. Open `Steno.xcodeproj` in Xcode.
+5. Open your local `Steno.xcodeproj` in Xcode.
 
 6. In Xcode, set your own Apple Developer Team in Signing & Capabilities.
 
@@ -135,7 +135,7 @@ When adding new features:
 
 ## XcodeGen Workflow
 
-The Xcode project is generated from `project.yml`. Do not edit `Steno.xcodeproj/project.pbxproj` directly.
+The Xcode project is generated from `project.yml`. `Steno.xcodeproj` is intentionally untracked in git and should be generated locally when needed.
 
 After modifying `project.yml` or adding/removing Swift files in `Steno/`:
 
@@ -172,7 +172,8 @@ Before submitting a PR:
 - [ ] Accessibility labels added to all interactive elements
 - [ ] Animations respect `accessibilityReduceMotion`
 - [ ] No force unwraps, no singletons, no `print()` statements
-- [ ] XcodeGen project regenerated if `project.yml` modified
+- [ ] `xcodegen generate` run locally after `project.yml` or app source layout changes
+- [ ] No generated `Steno.xcodeproj` files staged in the PR
 - [ ] Code follows Swift 6 strict concurrency rules
 - [ ] Commit messages are clear and concise
 
