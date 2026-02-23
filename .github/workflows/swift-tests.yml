@@ -21,6 +21,15 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
+      - name: Verify generated Xcode project is not tracked
+        run: |
+          tracked_project_files="$(git ls-files 'Steno.xcodeproj/*')"
+          if [ -n "$tracked_project_files" ]; then
+            echo "Steno.xcodeproj must remain generated-only and untracked."
+            echo "$tracked_project_files"
+            exit 1
+          fi
+
       - name: Select Xcode (Swift 6.2+)
         uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd
         with:
@@ -30,6 +39,16 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
+
+      - name: Ensure XcodeGen is available
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
 
       - name: Run StenoKit tests
         env:
