@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-02-27
+
+### Fixed
+- Media interruption detection now treats `playbackState=0` with missing playback rate as an untrusted MediaRemote fallback state when no now-playing client is available, instead of forcing a false `notPlaying` result.
+- Weak-positive playback signals now require a short confirmation pass before sending play/pause, which reduces phantom media launches when no audio is active.
+- Press-to-talk now attempts media interruption before starting audio capture, reducing early background-audio bleed into transcripts.
+
+### Notes
+- The `v0.1.1`/`v0.1.2` phantom-start guard fixed one class of stale-signal issues, but it could still miss real playback pause events in no-client MediaRemote scenarios (for example browser media). This patch closes that gap while keeping unknown-state safety no-op behavior.
+
 ## [0.1.2] - 2026-02-23
 
 ### Added
