@@ -188,7 +188,7 @@ Key architectural concepts:
 - Insertion chain (target-aware routing)
 - Budget system (cloud spend tracking)
 - Media interruption (token-based pause/resume)
-  - Playback-state trust rule: treat `playbackState=0` with missing playback-rate data as untrusted when no now-playing client is available, and confirm weak-positive signals before pausing media.
+  - Playback-state trust rule: only trust playback-state evidence when now-playing metadata corroborates it (`playbackRate` present or `nowPlaying == true`), and confirm weak-positive signals before pausing media.
 - Concurrency model (actors vs @MainActor)
 
 ## Getting Help
