@@ -333,15 +333,12 @@ final class DictationController: ObservableObject {
 
         activeStartTask = Task {
             do {
-                // Start recorder first — no latency for speech capture.
-                // beginInterruption() runs after because its 4 sequential probes
-                // (up to 250ms each) would clip the start of speech if we waited.
-                currentSessionID = try await coordinator.startPressToTalk(appContext: capturedContext)
-                await coordinator.setHandsFreeEnabled(mode == .handsFree)
-
                 if shouldPauseMedia {
                     activeMediaToken = await mediaInterruption.beginInterruption()
                 }
+
+                currentSessionID = try await coordinator.startPressToTalk(appContext: capturedContext)
+                await coordinator.setHandsFreeEnabled(mode == .handsFree)
             } catch {
                 if let token = activeMediaToken {
                     mediaInterruption.endInterruption(token: token)
