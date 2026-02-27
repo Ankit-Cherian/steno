@@ -261,10 +261,16 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
         guard let playbackState else {
             return (false, "missing-state")
         }
-        if playbackState == 0, playbackRate == nil, nowPlaying != true {
+        if playbackRate != nil {
+            return (true, "trusted-with-rate")
+        }
+        if nowPlaying == true {
+            return (true, "trusted-with-now-playing")
+        }
+        if playbackState == 0 {
             return (false, "error-default-state")
         }
-        return (true, "trusted")
+        return (false, "uncorroborated-state")
     }
 
     private struct ProbeSnapshot {
