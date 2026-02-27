@@ -41,6 +41,11 @@ private final class FakeMediaRemoteBridge: MediaRemoteBridging {
     var nowPlayingPlaybackStateValue: Int?
     var nowPlayingPlaybackRateValue: Double?
     var playbackStateIsAdvancingValue: Bool?
+    var anyApplicationIsPlayingSequence: [Bool?] = []
+    var nowPlayingApplicationIsPlayingSequence: [Bool?] = []
+    var nowPlayingPlaybackStateSequence: [Int?] = []
+    var nowPlayingPlaybackRateSequence: [Double?] = []
+    var playbackStateIsAdvancingSequence: [Bool?] = []
 
     func activate() {
         activateCalls += 1
@@ -51,23 +56,30 @@ private final class FakeMediaRemoteBridge: MediaRemoteBridging {
     }
 
     func anyApplicationIsPlaying() async -> Bool? {
-        anyApplicationIsPlayingValue
+        pullNext(from: &anyApplicationIsPlayingSequence, fallback: anyApplicationIsPlayingValue)
     }
 
     func nowPlayingApplicationIsPlaying() async -> Bool? {
-        nowPlayingApplicationIsPlayingValue
+        pullNext(from: &nowPlayingApplicationIsPlayingSequence, fallback: nowPlayingApplicationIsPlayingValue)
     }
 
     func nowPlayingPlaybackState() async -> Int? {
-        nowPlayingPlaybackStateValue
+        pullNext(from: &nowPlayingPlaybackStateSequence, fallback: nowPlayingPlaybackStateValue)
     }
 
     func nowPlayingPlaybackRate() async -> Double? {
-        nowPlayingPlaybackRateValue
+        pullNext(from: &nowPlayingPlaybackRateSequence, fallback: nowPlayingPlaybackRateValue)
     }
 
     func isPlaybackStateAdvancing(_ playbackState: Int) -> Bool? {
-        playbackStateIsAdvancingValue
+        pullNext(from: &playbackStateIsAdvancingSequence, fallback: playbackStateIsAdvancingValue)
+    }
+
+    private func pullNext<Value>(from sequence: inout [Value?], fallback: Value?) -> Value? {
+        if !sequence.isEmpty {
+            return sequence.removeFirst()
+        }
+        return fallback
     }
 }
 
@@ -227,14 +239,59 @@ func detectorPrefersStrongNegativeOverWeakPositiveProbes() async {
 }
 
 @MainActor
-@Test("Detector returns not playing for any=true with advancing=false and no strong positive")
-func detectorReturnsNotPlayingForAnyTrueAndAdvancingFalseWithoutStrongPositive() async {
+@Test("Detector returns not playing for trusted strong-negative state signal")
+func detectorReturnsNotPlayingForTrustedStrongNegativeStateSignal() async {
     let bridge = FakeMediaRemoteBridge()
     bridge.anyApplicationIsPlayingValue = true
-    bridge.nowPlayingApplicationIsPlayingValue = false
+    bridge.nowPlayingApplicationIsPlayingValue = true
     bridge.nowPlayingPlaybackStateValue = 2
     bridge.playbackStateIsAdvancingValue = false
     bridge.nowPlayingPlaybackRateValue = nil
+
+    let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
+    let result = await detector.detect()
+
+    #expect(result == .notPlaying)
+}
+
+@MainActor
+@Test("Detector treats error-default state=0 + rate=nil as weak-positive candidate")
+func detectorTreatsErrorDefaultStateAsWeakPositiveCandidate() async {
+    let bridge = FakeMediaRemoteBridge()
+    bridge.anyApplicationIsPlayingValue = true
+    bridge.nowPlayingApplicationIsPlayingValue = false
+    bridge.nowPlayingPlaybackStateValue = 0
+    bridge.playbackStateIsAdvancingValue = false
+    bridge.nowPlayingPlaybackRateValue = nil
+
+    let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
+    let result = await detector.detect()
+
+    #expect(result == .likelyPlaying)
+}
+
+@MainActor
+@Test("Detector returns unknown for transient weak-positive signal")
+func detectorReturnsUnknownForTransientWeakPositiveSignal() async {
+    let bridge = FakeMediaRemoteBridge()
+    bridge.anyApplicationIsPlayingSequence = [true, false]
+    bridge.nowPlayingApplicationIsPlayingSequence = [false, false]
+    bridge.nowPlayingPlaybackStateSequence = [0, 0]
+    bridge.nowPlayingPlaybackRateSequence = [nil, nil]
+    bridge.playbackStateIsAdvancingSequence = [false, false]
+
+    let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
+    let result = await detector.detect()
+
+    #expect(result == .unknown)
+}
+
+@MainActor
+@Test("Detector keeps not playing when rate=0 even if any=true")
+func detectorKeepsNotPlayingWhenRateIsZeroAndAnyIsTrue() async {
+    let bridge = FakeMediaRemoteBridge()
+    bridge.anyApplicationIsPlayingValue = true
+    bridge.nowPlayingPlaybackRateValue = 0
 
     let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
     let result = await detector.detect()
