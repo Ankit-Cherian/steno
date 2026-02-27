@@ -9,6 +9,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [0.1.3] - 2026-02-27
 
+### Added
+- Refreshed macOS app icon artwork in `Steno/Assets.xcassets/AppIcon.appiconset`.
+
 ### Fixed
 - Media interruption detection now requires corroborating now-playing data before trusting playback-state-only signals. This prevents false `notPlaying` decisions when MediaRemote returns fallback state values with missing playback rate (including browser `Operation not permitted` probe paths).
 - Weak-positive playback signals now require a short confirmation pass before sending play/pause, which reduces phantom media launches when no audio is active.
