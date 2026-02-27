@@ -104,6 +104,7 @@ protocol MediaRemoteBridging: Sendable {
 
 final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
     private static let logger = StenoKitDiagnostics.logger
+    private static let weakPositiveConfirmationDelayNanoseconds: UInt64 = 80_000_000
     private let bridge: any MediaRemoteBridging
 
     init(bridge: any MediaRemoteBridging = MediaRemoteBridge()) {
@@ -114,6 +115,65 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
         bridge.activate()
         defer { bridge.deactivate() }
 
+        let firstSnapshot = await captureSnapshot()
+        let firstDecision = classify(firstSnapshot)
+        logSnapshot(pass: 1, snapshot: firstSnapshot, decision: firstDecision)
+
+        let secondDecision: DetectionDecision?
+        let result: PlaybackDetectionResult
+
+        switch firstDecision {
+        case .playing:
+            secondDecision = nil
+            result = .playing
+        case .notPlaying:
+            secondDecision = nil
+            result = .notPlaying
+        case .unknown:
+            secondDecision = nil
+            result = .unknown
+        case .weakPositivePending:
+            if Task.isCancelled {
+                secondDecision = nil
+                result = .unknown
+                break
+            }
+
+            try? await Task.sleep(nanoseconds: Self.weakPositiveConfirmationDelayNanoseconds)
+            if Task.isCancelled {
+                secondDecision = nil
+                result = .unknown
+                break
+            }
+
+            let secondSnapshot = await captureSnapshot()
+            let confirmedDecision = classify(secondSnapshot)
+            secondDecision = confirmedDecision
+            logSnapshot(pass: 2, snapshot: secondSnapshot, decision: confirmedDecision)
+
+            switch confirmedDecision {
+            case .playing:
+                result = .playing
+            case .weakPositivePending:
+                result = .likelyPlaying
+            case .notPlaying:
+                result = .notPlaying
+            case .unknown:
+                result = .unknown
+            }
+        }
+
+        Self.logger.debug(
+            """
+            Media detection final result=\(result.logValue, privacy: .public) \
+            pass1=\(firstDecision.logValue, privacy: .public) \
+            pass2=\(secondDecision?.logValue ?? "none", privacy: .public)
+            """
+        )
+        return result
+    }
+
+    private func captureSnapshot() async -> ProbeSnapshot {
         async let anyApplicationIsPlaying = bridge.anyApplicationIsPlaying()
         async let nowPlayingApplicationIsPlaying = bridge.nowPlayingApplicationIsPlaying()
         async let nowPlayingPlaybackState = bridge.nowPlayingPlaybackState()
@@ -123,7 +183,19 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
         let nowPlaying = await nowPlayingApplicationIsPlaying
         let playbackState = await nowPlayingPlaybackState
         let playbackRate = await nowPlayingPlaybackRate
-        let playbackStateIsAdvancing = playbackState.flatMap { bridge.isPlaybackStateAdvancing($0) }
+
+        let trust = Self.playbackStateTrust(
+            playbackState: playbackState,
+            playbackRate: playbackRate,
+            nowPlaying: nowPlaying
+        )
+
+        let playbackStateIsAdvancing: Bool?
+        if trust.trusted, let playbackState {
+            playbackStateIsAdvancing = bridge.isPlaybackStateAdvancing(playbackState)
+        } else {
+            playbackStateIsAdvancing = nil
+        }
 
         let hasStrongPositive =
             (playbackRate.map { $0 > 0 } ?? false)
@@ -135,30 +207,97 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
 
         let hasWeakPositive = (anyPlaying == true) || (nowPlaying == true)
 
-        let result: PlaybackDetectionResult
-        if hasStrongPositive && !hasStrongNegative {
-            result = .playing
-        } else if hasStrongPositive && hasStrongNegative {
-            result = .unknown
-        } else if hasStrongNegative {
-            result = .notPlaying
-        } else if hasWeakPositive {
-            result = .likelyPlaying
-        } else {
-            result = .unknown
-        }
+        return ProbeSnapshot(
+            anyPlaying: anyPlaying,
+            nowPlaying: nowPlaying,
+            playbackState: playbackState,
+            playbackRate: playbackRate,
+            playbackStateIsAdvancing: playbackStateIsAdvancing,
+            stateSignalTrusted: trust.trusted,
+            stateTrustReason: trust.reason,
+            hasStrongPositive: hasStrongPositive,
+            hasStrongNegative: hasStrongNegative,
+            hasWeakPositive: hasWeakPositive
+        )
+    }
 
+    private func classify(_ snapshot: ProbeSnapshot) -> DetectionDecision {
+        if snapshot.hasStrongPositive && !snapshot.hasStrongNegative {
+            return .playing
+        }
+        if snapshot.hasStrongPositive && snapshot.hasStrongNegative {
+            return .unknown
+        }
+        if snapshot.hasStrongNegative {
+            return .notPlaying
+        }
+        if snapshot.hasWeakPositive {
+            return .weakPositivePending
+        }
+        return .unknown
+    }
+
+    private func logSnapshot(pass: Int, snapshot: ProbeSnapshot, decision: DetectionDecision) {
         Self.logger.debug(
             """
-            Media detection probes any=\(Self.describe(anyPlaying), privacy: .public) \
-            nowPlaying=\(Self.describe(nowPlaying), privacy: .public) \
-            state=\(Self.describe(playbackState), privacy: .public) \
-            stateAdvancing=\(Self.describe(playbackStateIsAdvancing), privacy: .public) \
-            rate=\(Self.describe(playbackRate), privacy: .public) \
-            result=\(result.logValue, privacy: .public)
+            Media detection pass=\(pass, privacy: .public) \
+            any=\(Self.describe(snapshot.anyPlaying), privacy: .public) \
+            nowPlaying=\(Self.describe(snapshot.nowPlaying), privacy: .public) \
+            state=\(Self.describe(snapshot.playbackState), privacy: .public) \
+            stateAdvancing=\(Self.describe(snapshot.playbackStateIsAdvancing), privacy: .public) \
+            rate=\(Self.describe(snapshot.playbackRate), privacy: .public) \
+            stateTrusted=\(snapshot.stateSignalTrusted, privacy: .public) \
+            trustReason=\(snapshot.stateTrustReason, privacy: .public) \
+            decision=\(decision.logValue, privacy: .public)
             """
         )
-        return result
+    }
+
+    private static func playbackStateTrust(
+        playbackState: Int?,
+        playbackRate: Double?,
+        nowPlaying: Bool?
+    ) -> (trusted: Bool, reason: String) {
+        guard let playbackState else {
+            return (false, "missing-state")
+        }
+        if playbackState == 0, playbackRate == nil, nowPlaying != true {
+            return (false, "error-default-state")
+        }
+        return (true, "trusted")
+    }
+
+    private struct ProbeSnapshot {
+        let anyPlaying: Bool?
+        let nowPlaying: Bool?
+        let playbackState: Int?
+        let playbackRate: Double?
+        let playbackStateIsAdvancing: Bool?
+        let stateSignalTrusted: Bool
+        let stateTrustReason: String
+        let hasStrongPositive: Bool
+        let hasStrongNegative: Bool
+        let hasWeakPositive: Bool
+    }
+
+    private enum DetectionDecision {
+        case playing
+        case weakPositivePending
+        case notPlaying
+        case unknown
+
+        var logValue: String {
+            switch self {
+            case .playing:
+                "playing"
+            case .weakPositivePending:
+                "weakPositivePending"
+            case .notPlaying:
+                "notPlaying"
+            case .unknown:
+                "unknown"
+            }
+        }
     }
 
     private static func describe(_ value: Bool?) -> String {
