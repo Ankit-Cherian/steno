@@ -271,6 +271,38 @@ func detectorTreatsErrorDefaultStateAsWeakPositiveCandidate() async {
 }
 
 @MainActor
+@Test("Detector treats uncorroborated nonzero state + weak-positive as likely playing")
+func detectorTreatsUncorroboratedNonzeroStateAsWeakPositiveCandidate() async {
+    let bridge = FakeMediaRemoteBridge()
+    bridge.anyApplicationIsPlayingValue = true
+    bridge.nowPlayingApplicationIsPlayingValue = false
+    bridge.nowPlayingPlaybackStateValue = 2
+    bridge.playbackStateIsAdvancingValue = false
+    bridge.nowPlayingPlaybackRateValue = nil
+
+    let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
+    let result = await detector.detect()
+
+    #expect(result == .likelyPlaying)
+}
+
+@MainActor
+@Test("Detector returns unknown for uncorroborated nonzero state without weak positives")
+func detectorReturnsUnknownForUncorroboratedNonzeroStateWithoutWeakPositiveSignals() async {
+    let bridge = FakeMediaRemoteBridge()
+    bridge.anyApplicationIsPlayingValue = false
+    bridge.nowPlayingApplicationIsPlayingValue = false
+    bridge.nowPlayingPlaybackStateValue = 2
+    bridge.playbackStateIsAdvancingValue = false
+    bridge.nowPlayingPlaybackRateValue = nil
+
+    let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
+    let result = await detector.detect()
+
+    #expect(result == .unknown)
+}
+
+@MainActor
 @Test("Detector returns unknown for transient weak-positive signal")
 func detectorReturnsUnknownForTransientWeakPositiveSignal() async {
     let bridge = FakeMediaRemoteBridge()
