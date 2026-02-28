@@ -35,10 +35,9 @@ Expected result: local `Steno.xcodeproj` is up to date (it is generated from `pr
    - Accessibility: let Steno type or paste into your active app
    - Input Monitoring: let Steno detect global hotkeys
 
-## Optional: Cloud text cleanup
+## Cleanup behavior
 
-Set `OPENAI_API_KEY` in your scheme environment to enable OpenAI text cleanup.
-Without it, Steno stays fully local for transcription and local cleanup.
+Steno runs transcription and cleanup fully locally with no cloud text cleanup step.
 
 ## Verify setup quickly
 

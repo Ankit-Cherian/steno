@@ -124,7 +124,7 @@ Run a single test by function name:
 cd StenoKit
 CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
 SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
-swift test --filter budgetGuardDegradedMode
+swift test --filter sessionCoordinatorLocalFallbackOnPrimaryFailure
 ```
 
 When adding new features:
@@ -186,7 +186,7 @@ Key architectural concepts:
 - Session lifecycle and recording state machine
 - Hotkey mechanism (CGEventTap for function keys, NSEvent for Option key)
 - Insertion chain (target-aware routing)
-- Budget system (cloud spend tracking)
+- Local cleanup pipeline with fallback behavior
 - Media interruption (token-based pause/resume)
   - Playback-state trust rule: only trust playback-state evidence when now-playing metadata corroborates it (`playbackRate` present or `nowPlaying == true`), and confirm weak-positive signals before pausing media.
 - Concurrency model (actors vs @MainActor)

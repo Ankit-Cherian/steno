@@ -15,7 +15,7 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
 
 - High-accuracy local transcription with `whisper.cpp` (audio never leaves your Mac)
 - Smart app-aware paste (target-aware insertion): terminals prefer paste, editors use direct typing or accessibility insertion
-- Optional cloud text cleanup with OpenAI (text-only, budget-guarded)
+- Local transcript cleanup (no cloud dependency)
 - Global hotkeys: Option hold-to-talk and configurable hands-free toggle
 - Menu bar app with status overlay
 - 30-day transcript history with search
@@ -121,7 +121,7 @@ Run a single test by function name:
 cd StenoKit
 CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
 SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
-swift test --filter budgetGuardDegradedMode
+swift test --filter sessionCoordinatorLocalFallbackOnPrimaryFailure
 ```
 
 ## Known Limitations
@@ -129,7 +129,7 @@ swift test --filter budgetGuardDegradedMode
 - macOS only (no Windows/Linux desktop target yet)
 - Setup currently expects local whisper.cpp build and model download
 - Full end-to-end behavior depends on user-granted macOS permissions
-- Cloud cleanup is optional and requires your own API key
+- Cleanup runs locally only
 
 ## Contributing
 

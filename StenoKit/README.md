@@ -7,14 +7,12 @@ This package implements the core architecture for a local-first dictation workfl
 - macOS recording overlay presenter (`MacOverlayPresenter`)
 - macOS audio capture service (`MacAudioCaptureService`)
 - local `whisper.cpp` transcription adapter (`WhisperCLITranscriptionEngine`)
-- direct OpenAI cleanup adapter (`OpenAICleanupEngine`) for text-only cloud cleanup
-- Local-first transcript processing with cloud cleanup fallback
+- rule-based local transcript cleanup (`RuleBasedCleanupEngine`)
 - Transcript history + recovery (`HistoryStore`)
 - `pasteLast()` recovery flow for wrong-text-box insertion issues
 - Personal lexicon correction (e.g., `stenoh` -> `Steno`)
 - Style profiles and app-specific behavior
 - Snippet expansion
-- Budget enforcement (`BudgetGuard`) with degrade and hard-stop thresholds
 - Fallback insertion chain (`InsertionService`)
 
 ## Implemented Public Interfaces
@@ -28,17 +26,14 @@ This package implements the core architecture for a local-first dictation workfl
 - `PersonalLexiconService`
 - `StyleProfileService`
 - `SnippetService`
-- `BudgetGuard`
 
 ## Test Coverage
 
 `swift test` covers:
 
-- Budget degrade and hard-stop behavior
 - Lexicon correction with global + app scope
 - Transcript history append/search/recovery + paste-last clipboard flow
-- Session fallback behavior when cloud cleanup fails
-- Session behavior when budget cap disables cloud cleanup
+- Session fallback behavior when the primary cleanup engine fails
 
 ## Run Tests
 
@@ -57,5 +52,4 @@ The following are intentionally left to the host app layer:
 - Real audio capture implementation using `AVAudioEngine`
 - Optionally switch `MacAudioCaptureService` to a custom capture backend if needed
 - Concrete insertion transports for accessibility and key event paste simulation
-- Optional remote cleanup endpoint wiring (`RemoteCleanupEngine`)
 - Settings UI and transcript history UI
