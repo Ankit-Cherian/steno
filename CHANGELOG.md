@@ -7,36 +7,33 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [0.1.5] - 2026-02-27
+## [0.1.5] - 2026-02-28
+
+### Added
+- Refreshed macOS app icon artwork in `Steno/Assets.xcassets/AppIcon.appiconset`.
 
 ### Changed
 - Pivoted cleanup to local-only. Steno now runs transcription and cleanup fully on-device with no cloud cleanup mode.
 - Removed API key onboarding/settings flow and cloud-mode status messaging to simplify setup and avoid mixed local/cloud behavior.
+- Settings now use a draft-and-apply flow to avoid mutating preferences during view updates.
+- Press-to-talk now attempts media interruption before starting audio capture.
+
+### Fixed
+- Media interruption detection now requires corroborating now-playing data before trusting playback-state-only signals. This prevents false `notPlaying` decisions when MediaRemote returns fallback state values with missing playback rate (including browser `Operation not permitted` probe paths).
+- Weak-positive playback signals now require a short confirmation pass before sending play/pause, reducing phantom media launches when no audio is active.
+- Preserved unknown-state safety behavior so playback control is skipped when media state is not trustworthy.
 
 ### Removed
 - OpenAI cleanup integration (`OpenAICleanupEngine`) and remote cleanup wiring (`RemoteCleanupEngine`).
 - Cloud budget and model-tier plumbing (`BudgetGuard`, cloud cleanup decision types, and cloud-only tests).
 
-### Fixed
-- Preserved the media interruption fixes from the prior hotfix work while removing cloud cleanup paths, so active media still pauses/resumes correctly for press-to-talk and hands-free flows.
-
-## [0.1.4] - 2026-02-27
-
-### Added
-- Refreshed macOS app icon artwork in `Steno/Assets.xcassets/AppIcon.appiconset`.
-- Cleanup health status in Settings so cloud success/fallback outcomes are visible after each transcription.
-
-### Fixed
-- Media interruption detection now requires corroborating now-playing data before trusting playback-state-only signals. This prevents false `notPlaying` decisions when MediaRemote returns fallback state values with missing playback rate (including browser `Operation not permitted` probe paths).
-- Weak-positive playback signals now require a short confirmation pass before sending play/pause, which reduces phantom media launches when no audio is active.
-- Press-to-talk now attempts media interruption before starting audio capture, reducing early background-audio bleed into transcripts.
-- OpenAI cleanup now uses a dedicated bounded URL session with transient retry handling, which prevents long hangs and improves resilience to intermittent network drops.
-- Cloud cleanup fallback now reports explicit warnings and outcomes instead of silently appearing as local cleanup, including clearer 429 quota/billing guidance.
-- Settings now edit a local draft before save, preventing SwiftUI “Publishing changes from within view updates” warnings when switching cleanup mode and other preferences.
-- Save & Apply now persists both preferences and API key together, so cleanup mode/key changes are applied in one step.
+### Breaking for StenoKit Consumers
+- `CleanupEngine.cleanup` removed the `tier` parameter.
+- `CleanTranscript` removed `modelTier`.
+- Cloud cleanup engines and budget types were removed from the package surface.
 
 ### Notes
-- The `v0.1.1`/`v0.1.2` phantom-start guard fixed one class of stale-signal issues, but it could still miss real playback pause events when MediaRemote exposed uncorroborated state values without now-playing metadata (for example browser media). This patch closes that gap while keeping unknown-state safety no-op behavior.
+- This release consolidates the media interruption hotfix work and local-only cleanup pivot into one tagged release (`v0.1.5`).
 
 ## [0.1.2] - 2026-02-23
 
