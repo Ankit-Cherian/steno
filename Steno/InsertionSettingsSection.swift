@@ -2,7 +2,7 @@ import SwiftUI
 import StenoKit
 
 struct InsertionSettingsSection: View {
-    @EnvironmentObject private var controller: DictationController
+    @Binding var preferences: AppPreferences
 
     var body: some View {
         settingsCard("Text Output (Insertion)") {
@@ -11,7 +11,7 @@ struct InsertionSettingsSection: View {
                 .foregroundStyle(StenoDesign.textSecondary)
 
             List {
-                ForEach(controller.preferences.insertion.orderedMethods, id: \.rawValue) { method in
+                ForEach(preferences.insertion.orderedMethods, id: \.rawValue) { method in
                     HStack {
                         Image(systemName: icon(for: method))
                             .foregroundStyle(StenoDesign.accent)
@@ -29,21 +29,21 @@ struct InsertionSettingsSection: View {
                 Toggle(
                     "Type directly",
                     isOn: Binding(
-                        get: { controller.preferences.insertion.orderedMethods.contains(.direct) },
+                        get: { preferences.insertion.orderedMethods.contains(.direct) },
                         set: { setInsertionMethod(.direct, enabled: $0) }
                     )
                 )
                 Toggle(
                     "Accessibility insert",
                     isOn: Binding(
-                        get: { controller.preferences.insertion.orderedMethods.contains(.accessibility) },
+                        get: { preferences.insertion.orderedMethods.contains(.accessibility) },
                         set: { setInsertionMethod(.accessibility, enabled: $0) }
                     )
                 )
                 Toggle(
                     "Backup paste via clipboard",
                     isOn: Binding(
-                        get: { controller.preferences.insertion.orderedMethods.contains(.clipboardPaste) },
+                        get: { preferences.insertion.orderedMethods.contains(.clipboardPaste) },
                         set: { setInsertionMethod(.clipboardPaste, enabled: $0) }
                     )
                 )
@@ -52,20 +52,20 @@ struct InsertionSettingsSection: View {
     }
 
     private func moveInsertionMethod(from source: IndexSet, to destination: Int) {
-        controller.preferences.insertion.orderedMethods.move(fromOffsets: source, toOffset: destination)
-        if !controller.preferences.insertion.orderedMethods.contains(.clipboardPaste) {
-            controller.preferences.insertion.orderedMethods.append(.clipboardPaste)
+        preferences.insertion.orderedMethods.move(fromOffsets: source, toOffset: destination)
+        if !preferences.insertion.orderedMethods.contains(.clipboardPaste) {
+            preferences.insertion.orderedMethods.append(.clipboardPaste)
         }
     }
 
     private func setInsertionMethod(_ method: InsertionMethod, enabled: Bool) {
         if enabled {
-            if !controller.preferences.insertion.orderedMethods.contains(method) {
-                controller.preferences.insertion.orderedMethods.append(method)
+            if !preferences.insertion.orderedMethods.contains(method) {
+                preferences.insertion.orderedMethods.append(method)
             }
         } else {
             if method == .clipboardPaste { return }
-            controller.preferences.insertion.orderedMethods.removeAll { $0 == method }
+            preferences.insertion.orderedMethods.removeAll { $0 == method }
         }
     }
 

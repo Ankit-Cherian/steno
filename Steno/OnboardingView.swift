@@ -7,7 +7,6 @@ struct OnboardingView: View {
     @State private var currentStep: OnboardingStep = .welcome
     @State private var whisperCLIPath = ""
     @State private var modelPath = ""
-    @State private var apiKey = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,8 +24,6 @@ struct OnboardingView: View {
                     permissionsStep
                 case .whisperSetup:
                     whisperSetupStep
-                case .apiKey:
-                    apiKeyStep
                 case .featureTour:
                     featureTourStep
                 }
@@ -55,7 +52,6 @@ struct OnboardingView: View {
         .onAppear {
             whisperCLIPath = controller.preferences.dictation.whisperCLIPath
             modelPath = controller.preferences.dictation.modelPath
-            apiKey = controller.openAIAPIKey
         }
     }
 
@@ -111,7 +107,7 @@ struct OnboardingView: View {
             }
 
             VStack(alignment: .leading, spacing: StenoDesign.md) {
-                featureRow(icon: "lock.shield", title: "Private by default", detail: "Audio stays on your Mac. Only transcript text can go to cloud cleanup if you opt in.")
+                featureRow(icon: "lock.shield", title: "Private by default", detail: "Audio and transcript cleanup stay on your Mac.")
                 featureRow(icon: "bolt", title: "Fast", detail: "Whisper.cpp transcribes locally in seconds.")
                 featureRow(icon: "text.cursor", title: "Works across apps", detail: "Types or pastes into editors, terminals, and most text fields.")
             }
@@ -257,44 +253,7 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Step 4: API Key
-
-    private var apiKeyStep: some View {
-        VStack(spacing: StenoDesign.lg) {
-            Spacer()
-
-            VStack(spacing: StenoDesign.sm) {
-                Text("OpenAI API Key")
-                    .font(StenoDesign.heading1())
-                    .foregroundStyle(StenoDesign.textPrimary)
-                    .accessibilityAddTraits(.isHeader)
-
-                Text("Cloud text cleanup is optional. Steno works fully in local-only mode without it.")
-                    .font(StenoDesign.subheadline())
-                    .foregroundStyle(StenoDesign.textSecondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            VStack(alignment: .leading, spacing: StenoDesign.md) {
-                VStack(alignment: .leading, spacing: StenoDesign.xs) {
-                    Text("API Key (optional)")
-                        .font(StenoDesign.bodyEmphasis())
-                        .foregroundStyle(StenoDesign.textPrimary)
-                    SecureField("sk-...", text: $apiKey)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                Text("If provided, Steno sends transcript text (never audio) to OpenAI for cleanup. You can change this later in Settings.")
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.textSecondary)
-            }
-            .cardStyle()
-
-            Spacer()
-        }
-    }
-
-    // MARK: - Step 5: Feature Tour
+    // MARK: - Step 4: Feature Tour
 
     private var featureTourStep: some View {
         VStack(spacing: StenoDesign.xl) {
@@ -395,8 +354,6 @@ struct OnboardingView: View {
             return controller.microphonePermissionStatus == .granted
         case .whisperSetup:
             return whisperCLIPathValid && modelPathValid
-        case .apiKey:
-            return true
         case .featureTour:
             return true
         }
@@ -406,7 +363,7 @@ struct OnboardingView: View {
         switch currentStep {
         case .welcome, .featureTour:
             return false
-        case .permissions, .whisperSetup, .apiKey:
+        case .permissions, .whisperSetup:
             return true
         }
     }
@@ -430,13 +387,6 @@ struct OnboardingView: View {
             controller.preferences.dictation.modelPath = modelPath
         }
 
-        // Save API key if provided
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedKey.isEmpty && trimmedKey != controller.openAIAPIKey {
-            controller.openAIAPIKey = trimmedKey
-            controller.saveAPIKey()
-        }
-
         controller.completeOnboarding()
     }
 }
@@ -447,6 +397,5 @@ private enum OnboardingStep: Int, CaseIterable {
     case welcome = 0
     case permissions = 1
     case whisperSetup = 2
-    case apiKey = 3
-    case featureTour = 4
+    case featureTour = 3
 }

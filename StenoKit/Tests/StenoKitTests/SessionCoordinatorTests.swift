@@ -14,8 +14,57 @@ private actor InsertRecorder {
     }
 }
 
-@Test("SessionCoordinator falls back to local cleanup when cloud cleanup fails")
-func sessionCoordinatorFallbackOnCloudFailure() async throws {
+@Test("SessionCoordinator marks localSuccess when primary cleanup succeeds")
+func sessionCoordinatorLocalSuccessOutcome() async throws {
+    let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
+    try Data().write(to: audioURL)
+
+    let capture = StubAudioCaptureService(queuedAudioURLs: [audioURL])
+    let transcription = StaticTranscriptionEngine { _, _ in
+        RawTranscript(text: "local success test")
+    }
+
+    let cleanupCounter = CleanupCounter()
+    let cleanupEngine = CountingCleanupEngine(counter: cleanupCounter)
+
+    let recorder = InsertRecorder()
+    let insertionService = InsertionService(
+        transports: [
+            ClosureInsertionTransport(method: .direct) { text, _ in
+                await recorder.record(text)
+            }
+        ]
+    )
+
+    let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("history-tests", isDirectory: true)
+        .appendingPathComponent("history-\(UUID().uuidString).json")
+    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+
+    let coordinator = SessionCoordinator(
+        captureService: capture,
+        transcriptionEngine: transcription,
+        cleanupEngine: cleanupEngine,
+        insertionService: insertionService,
+        historyStore: history,
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+    let result = try await coordinator.stopPressToTalk(sessionID: sessionID)
+
+    #expect(result.status == .inserted)
+    #expect(result.cleanupOutcome?.source == .localSuccess)
+    #expect(result.cleanupOutcome?.warning == nil)
+    #expect(await cleanupCounter.value() == 1)
+
+    let inserted = await recorder.latest() ?? ""
+    #expect(inserted == "local success test cleaned")
+}
+
+@Test("SessionCoordinator falls back locally when primary cleanup fails")
+func sessionCoordinatorLocalFallbackOnPrimaryFailure() async throws {
     let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
     try Data().write(to: audioURL)
 
@@ -33,11 +82,10 @@ func sessionCoordinatorFallbackOnCloudFailure() async throws {
         ]
     )
 
-    let clipboard = MemoryClipboardService()
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: clipboard)
+    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
 
     let lexicon = PersonalLexiconService()
     await lexicon.upsert(term: "stenoh", preferred: "Steno", scope: .global)
@@ -60,7 +108,6 @@ func sessionCoordinatorFallbackOnCloudFailure() async throws {
         historyStore: history,
         lexiconService: lexicon,
         styleProfileService: styles,
-        budgetGuard: BudgetGuard(startingSpendUSD: 0),
         fallbackCleanupEngine: RuleBasedCleanupEngine()
     )
 
@@ -68,6 +115,8 @@ func sessionCoordinatorFallbackOnCloudFailure() async throws {
     let result = try await coordinator.stopPressToTalk(sessionID: sessionID)
 
     #expect(result.status == .inserted)
+    #expect(result.cleanupOutcome?.source == .localFallback)
+    #expect(result.cleanupOutcome?.warning == "Primary cleanup unavailable, used local fallback.")
 
     let inserted = await recorder.latest() ?? ""
     #expect(inserted.contains("Steno"))
@@ -79,14 +128,14 @@ func sessionCoordinatorFallbackOnCloudFailure() async throws {
     #expect(recent[0].audioURL == nil)
 }
 
-@Test("SessionCoordinator skips cloud cleanup when budget hard cap is reached")
-func sessionCoordinatorRespectsBudgetHardCap() async throws {
+@Test("SessionCoordinator keeps slash commands raw for IDE passthrough profile")
+func sessionCoordinatorCommandPassthroughStaysLocalOnly() async throws {
     let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
     try Data().write(to: audioURL)
 
     let capture = StubAudioCaptureService(queuedAudioURLs: [audioURL])
     let transcription = StaticTranscriptionEngine { _, _ in
-        RawTranscript(text: "uh this should stay local")
+        RawTranscript(text: "/build target")
     }
 
     let recorder = InsertRecorder()
@@ -98,42 +147,38 @@ func sessionCoordinatorRespectsBudgetHardCap() async throws {
         ]
     )
 
-    let clipboard = MemoryClipboardService()
+    let style = StyleProfile(
+        name: "IDE",
+        tone: .natural,
+        structureMode: .natural,
+        fillerPolicy: .minimal,
+        commandPolicy: .passthrough
+    )
+
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: clipboard)
-
-    let lexicon = PersonalLexiconService()
-    let styles = StyleProfileService()
-
-    let cleanupCounter = CleanupCounter()
-    let countingCleanup = CountingCleanupEngine(counter: cleanupCounter)
+    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
 
     let coordinator = SessionCoordinator(
         captureService: capture,
         transcriptionEngine: transcription,
-        cleanupEngine: countingCleanup,
+        cleanupEngine: RuleBasedCleanupEngine(),
         insertionService: insertionService,
         historyStore: history,
-        lexiconService: lexicon,
-        styleProfileService: styles,
-        budgetGuard: BudgetGuard(startingSpendUSD: Decimal(string: "8.00")!),
-        fallbackCleanupEngine: RuleBasedCleanupEngine()
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService(globalProfile: style)
     )
 
-    let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+    let ideContext = AppContext(bundleIdentifier: "com.apple.dt.Xcode", appName: "Xcode", isIDE: true)
+    let sessionID = try await coordinator.startPressToTalk(appContext: ideContext)
     let result = try await coordinator.stopPressToTalk(sessionID: sessionID)
 
     #expect(result.status == .inserted)
-    #expect(await cleanupCounter.value() == 0)
+    #expect(result.cleanupOutcome?.source == .localOnly)
 
     let inserted = await recorder.latest() ?? ""
-    #expect(!inserted.localizedCaseInsensitiveContains("uh "))
-
-    let recent = await history.recent(limit: 1)
-    #expect(recent.count == 1)
-    #expect(recent[0].audioURL == nil)
+    #expect(inserted == "/build target")
 }
 
 @Test("SessionCoordinator hands-free state uses explicit setter")
@@ -153,8 +198,7 @@ func sessionCoordinatorExplicitHandsFreeSetter() async throws {
             clipboardService: MemoryClipboardService()
         ),
         lexiconService: PersonalLexiconService(),
-        styleProfileService: StyleProfileService(),
-        budgetGuard: BudgetGuard()
+        styleProfileService: StyleProfileService()
     )
 
     #expect(await coordinator.isHandsFreeEnabled == false)

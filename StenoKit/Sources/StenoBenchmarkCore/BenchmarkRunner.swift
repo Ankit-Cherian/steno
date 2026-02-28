@@ -190,8 +190,7 @@ public enum BenchmarkRunner {
                 let cleaned = try await cleanup.cleanup(
                     raw: RawTranscript(text: rawText, durationMS: sample.audioDurationMS ?? 0),
                     profile: configuration.profile,
-                    lexicon: configuration.lexicon,
-                    tier: .none
+                    lexicon: configuration.lexicon
                 )
 
                 let cleanedMetrics = BenchmarkScorer.score(

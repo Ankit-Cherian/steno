@@ -60,20 +60,17 @@ public struct CleanTranscript: Sendable, Codable, Equatable {
     public var edits: [TranscriptEdit]
     public var removedFillers: [String]
     public var uncertaintyFlags: [String]
-    public var modelTier: CloudModelTier
 
     public init(
         text: String,
         edits: [TranscriptEdit] = [],
         removedFillers: [String] = [],
-        uncertaintyFlags: [String] = [],
-        modelTier: CloudModelTier = .none
+        uncertaintyFlags: [String] = []
     ) {
         self.text = text
         self.edits = edits
         self.removedFillers = removedFillers
         self.uncertaintyFlags = uncertaintyFlags
-        self.modelTier = modelTier
     }
 }
 
@@ -90,22 +87,44 @@ public enum InsertionStatus: String, Sendable, Codable, Equatable {
     case failed
 }
 
+public enum CleanupSource: String, Sendable, Codable, Equatable {
+    case localOnly
+    case localSuccess
+    case localFallback
+}
+
+public struct CleanupOutcome: Sendable, Codable, Equatable {
+    public var source: CleanupSource
+    public var warning: String?
+
+    public init(
+        source: CleanupSource,
+        warning: String? = nil
+    ) {
+        self.source = source
+        self.warning = warning
+    }
+}
+
 public struct InsertResult: Sendable, Codable, Equatable {
     public var status: InsertionStatus
     public var method: InsertionMethod
     public var insertedText: String
     public var errorMessage: String?
+    public var cleanupOutcome: CleanupOutcome?
 
     public init(
         status: InsertionStatus,
         method: InsertionMethod,
         insertedText: String,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        cleanupOutcome: CleanupOutcome? = nil
     ) {
         self.status = status
         self.method = method
         self.insertedText = insertedText
         self.errorMessage = errorMessage
+        self.cleanupOutcome = cleanupOutcome
     }
 }
 

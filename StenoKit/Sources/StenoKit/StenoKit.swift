@@ -23,7 +23,6 @@ public enum StenoKitAssembly {
         let insertionService = InsertionService(transports: transports)
         let lexiconService = PersonalLexiconService()
         let styleService = StyleProfileService()
-        let budgetGuard = BudgetGuard()
 
         return SessionCoordinator(
             captureService: captureService,
@@ -32,8 +31,7 @@ public enum StenoKitAssembly {
             insertionService: insertionService,
             historyStore: historyStore,
             lexiconService: lexiconService,
-            styleProfileService: styleService,
-            budgetGuard: budgetGuard
+            styleProfileService: styleService
         )
     }
 }

@@ -90,7 +90,6 @@ private func runLocalCleanup(
     return try await engine.cleanup(
         raw: RawTranscript(text: text),
         profile: profile,
-        lexicon: PersonalLexicon(entries: []),
-        tier: .none
+        lexicon: PersonalLexicon(entries: [])
     )
 }

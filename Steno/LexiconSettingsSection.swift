@@ -2,7 +2,7 @@ import SwiftUI
 import StenoKit
 
 struct LexiconSettingsSection: View {
-    @EnvironmentObject private var controller: DictationController
+    @Binding var preferences: AppPreferences
     @State private var newTerm: String = ""
     @State private var newPreferred: String = ""
     @State private var newBundleID: String = ""
@@ -13,17 +13,17 @@ struct LexiconSettingsSection: View {
             "Word Corrections",
             subtitle: "Auto-fix words that speech recognition gets wrong"
         ) {
-            if controller.preferences.lexiconEntries.isEmpty {
+            if preferences.lexiconEntries.isEmpty {
                 Text("No corrections yet. Example: \u{201C}stenoh\u{201D} \u{2192} \u{201C}Steno\u{201D}")
                     .foregroundStyle(StenoDesign.textSecondary)
             } else {
-                ForEach(controller.preferences.lexiconEntries.indices, id: \.self) { index in
-                    let entry = controller.preferences.lexiconEntries[index]
+                ForEach(preferences.lexiconEntries.indices, id: \.self) { index in
+                    let entry = preferences.lexiconEntries[index]
                     entryRow(
                         leading: "\u{201C}\(entry.term)\u{201D} \u{2192} \u{201C}\(entry.preferred)\u{201D}",
                         scope: entry.scope
                     ) {
-                        controller.preferences.lexiconEntries.remove(at: index)
+                        preferences.lexiconEntries.remove(at: index)
                     }
                 }
             }
@@ -44,10 +44,10 @@ struct LexiconSettingsSection: View {
                     guard !newTerm.isEmpty, !newPreferred.isEmpty else { return }
                     let scope: Scope = newGlobal ? .global : .app(bundleID: newBundleID)
                     let newEntry = LexiconEntry(term: newTerm, preferred: newPreferred, scope: scope)
-                    if let existingIndex = controller.preferences.lexiconEntries.firstIndex(where: { $0.term == newEntry.term && $0.scope == newEntry.scope }) {
-                        controller.preferences.lexiconEntries[existingIndex] = newEntry
+                    if let existingIndex = preferences.lexiconEntries.firstIndex(where: { $0.term == newEntry.term && $0.scope == newEntry.scope }) {
+                        preferences.lexiconEntries[existingIndex] = newEntry
                     } else {
-                        controller.preferences.lexiconEntries.append(newEntry)
+                        preferences.lexiconEntries.append(newEntry)
                     }
                     newTerm = ""
                     newPreferred = ""

@@ -28,12 +28,10 @@ public protocol CleanupEngine: Sendable {
     ///   - raw: The raw transcript from the transcription engine.
     ///   - profile: Style profile to apply (capitalization, punctuation).
     ///   - lexicon: Personal lexicon for custom word corrections.
-    ///   - tier: Controls cloud model selection for budget management.
     func cleanup(
         raw: RawTranscript,
         profile: StyleProfile,
-        lexicon: PersonalLexicon,
-        tier: CloudModelTier
+        lexicon: PersonalLexicon
     ) async throws -> CleanTranscript
 }
 

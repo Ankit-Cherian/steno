@@ -6,8 +6,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     public func cleanup(
         raw: RawTranscript,
         profile: StyleProfile,
-        lexicon: PersonalLexicon,
-        tier: CloudModelTier
+        lexicon: PersonalLexicon
     ) async throws -> CleanTranscript {
         let generator = RuleBasedCleanupCandidateGenerator()
         let candidates = try await generator.generateCandidates(
@@ -26,8 +25,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             text: best.text,
             edits: best.appliedEdits,
             removedFillers: best.removedFillers,
-            uncertaintyFlags: [],
-            modelTier: tier
+            uncertaintyFlags: []
         )
     }
 

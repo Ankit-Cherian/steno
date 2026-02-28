@@ -2,14 +2,15 @@ import SwiftUI
 import StenoKit
 
 struct EngineSettingsSection: View {
-    @EnvironmentObject private var controller: DictationController
+    @Binding var preferences: AppPreferences
+    let controller: DictationController
     @State private var testResult: String?
     @State private var testResultIsError = false
     @State private var isTesting = false
 
     var body: some View {
         settingsCard("Engine") {
-            TextField("whisper-cli path", text: $controller.preferences.dictation.whisperCLIPath)
+            TextField("whisper-cli path", text: $preferences.dictation.whisperCLIPath)
                 .textFieldStyle(.roundedBorder)
             if let error = whisperCLIPathError {
                 Text(error)
@@ -17,7 +18,7 @@ struct EngineSettingsSection: View {
                     .foregroundStyle(StenoDesign.error)
             }
 
-            TextField("Model path", text: $controller.preferences.dictation.modelPath)
+            TextField("Model path", text: $preferences.dictation.modelPath)
                 .textFieldStyle(.roundedBorder)
             if let error = modelPathError {
                 Text(error)
@@ -25,8 +26,8 @@ struct EngineSettingsSection: View {
                     .foregroundStyle(StenoDesign.error)
             }
 
-            Stepper(value: $controller.preferences.dictation.threadCount, in: 1...16) {
-                Text("Thread count: \(controller.preferences.dictation.threadCount)")
+            Stepper(value: $preferences.dictation.threadCount, in: 1...16) {
+                Text("Thread count: \(preferences.dictation.threadCount)")
             }
 
             HStack(spacing: StenoDesign.sm) {
@@ -55,13 +56,13 @@ struct EngineSettingsSection: View {
     }
 
     private var whisperCLIPathError: String? {
-        let path = controller.preferences.dictation.whisperCLIPath
+        let path = preferences.dictation.whisperCLIPath
         guard !path.isEmpty else { return nil }
         return FileManager.default.fileExists(atPath: path) ? nil : "File not found at this path"
     }
 
     private var modelPathError: String? {
-        let path = controller.preferences.dictation.modelPath
+        let path = preferences.dictation.modelPath
         guard !path.isEmpty else { return nil }
         return FileManager.default.fileExists(atPath: path) ? nil : "File not found at this path"
     }
@@ -83,7 +84,7 @@ struct EngineSettingsSection: View {
             }
 
             // Test whisper-cli with --help
-            let cliPath = controller.preferences.dictation.whisperCLIPath
+            let cliPath = preferences.dictation.whisperCLIPath
 
             do {
                 let result = try await ProcessRunner.run(

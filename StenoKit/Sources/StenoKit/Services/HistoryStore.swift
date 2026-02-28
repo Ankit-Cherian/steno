@@ -78,8 +78,7 @@ public actor HistoryStore: HistoryStoreProtocol {
         entryID: UUID,
         using cleanupEngine: CleanupEngine,
         profile: StyleProfile,
-        lexicon: PersonalLexicon,
-        tier: CloudModelTier
+        lexicon: PersonalLexicon
     ) async throws -> CleanTranscript {
         ensureLoaded()
         guard let entry = entries.first(where: { $0.id == entryID }) else {
@@ -87,7 +86,7 @@ public actor HistoryStore: HistoryStoreProtocol {
         }
 
         let raw = RawTranscript(text: entry.rawText, durationMS: 0)
-        let retried = try await cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon, tier: tier)
+        let retried = try await cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
 
         if let index = entries.firstIndex(where: { $0.id == entryID }) {
             var updated = entries[index]

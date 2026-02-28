@@ -21,13 +21,11 @@ public protocol HistoryStoreProtocol: Sendable {
     ///   - cleanupEngine: The cleanup engine to use.
     ///   - profile: Style profile to apply.
     ///   - lexicon: Personal lexicon for corrections.
-    ///   - tier: Cloud model tier for budget management.
     func retry(
         entryID: UUID,
         using cleanupEngine: CleanupEngine,
         profile: StyleProfile,
-        lexicon: PersonalLexicon,
-        tier: CloudModelTier
+        lexicon: PersonalLexicon
     ) async throws -> CleanTranscript
 
     /// Retrieves the most recent transcript entry for paste-last functionality.

@@ -3,56 +3,45 @@ import StenoKit
 
 struct SettingsView: View {
     @EnvironmentObject private var controller: DictationController
-    @State private var showClearAPIKeyDialog = false
+    @State private var preferencesDraft: AppPreferences = .default
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: StenoDesign.lg) {
                 PermissionsSettingsSection()
-                RecordingSettingsSection()
-                EngineSettingsSection()
-                CleanupSettingsSection()
-                InsertionSettingsSection()
-                MediaSettingsSection()
-                LexiconSettingsSection()
-                CleanupStyleSettingsSection()
-                SnippetsSettingsSection()
-                GeneralSettingsSection()
+                RecordingSettingsSection(
+                    preferences: $preferencesDraft,
+                    hotkeyRegistrationMessage: controller.hotkeyRegistrationMessage
+                )
+                EngineSettingsSection(
+                    preferences: $preferencesDraft,
+                    controller: controller
+                )
+                InsertionSettingsSection(preferences: $preferencesDraft)
+                MediaSettingsSection(preferences: $preferencesDraft)
+                LexiconSettingsSection(preferences: $preferencesDraft)
+                CleanupStyleSettingsSection(preferences: $preferencesDraft)
+                SnippetsSettingsSection(preferences: $preferencesDraft)
+                GeneralSettingsSection(
+                    preferences: $preferencesDraft,
+                    launchAtLoginWarning: controller.launchAtLoginWarning
+                )
 
                 // Bottom actions
                 HStack(spacing: StenoDesign.sm) {
                     Button("Save & Apply") {
-                        controller.savePreferences()
+                        controller.applySettingsDraft(preferences: preferencesDraft)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(StenoDesign.accent)
-
-                    Button("Save API Key") {
-                        controller.saveAPIKey()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button("Clear API Key") {
-                        showClearAPIKeyDialog = true
-                    }
-                    .buttonStyle(.bordered)
-                    .confirmationDialog(
-                        "Clear API Key?",
-                        isPresented: $showClearAPIKeyDialog,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Clear", role: .destructive) {
-                            controller.clearAPIKey()
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("This removes your saved OpenAI API key. Steno will return to local-only cleanup.")
-                    }
 
                     Spacer()
                 }
             }
             .padding(.vertical, StenoDesign.lg)
+        }
+        .onAppear {
+            preferencesDraft = controller.preferences
         }
     }
 }

@@ -2,11 +2,12 @@ import SwiftUI
 import StenoKit
 
 struct RecordingSettingsSection: View {
-    @EnvironmentObject private var controller: DictationController
+    @Binding var preferences: AppPreferences
+    let hotkeyRegistrationMessage: String
 
     var body: some View {
         settingsCard("Recording") {
-            Toggle("Enable Option hold-to-talk", isOn: $controller.preferences.hotkeys.optionPressToTalkEnabled)
+            Toggle("Enable Option hold-to-talk", isOn: $preferences.hotkeys.optionPressToTalkEnabled)
 
             Picker("Global hands-free key", selection: handsFreeKeyBinding) {
                 Text("Disabled").tag(nil as UInt16?)
@@ -25,8 +26,8 @@ struct RecordingSettingsSection: View {
                 .font(StenoDesign.caption())
                 .foregroundStyle(StenoDesign.textSecondary)
 
-            if !controller.hotkeyRegistrationMessage.isEmpty {
-                Text(controller.hotkeyRegistrationMessage)
+            if !hotkeyRegistrationMessage.isEmpty {
+                Text(hotkeyRegistrationMessage)
                     .font(StenoDesign.caption())
                     .foregroundStyle(StenoDesign.error)
             }
@@ -35,8 +36,8 @@ struct RecordingSettingsSection: View {
 
     private var handsFreeKeyBinding: Binding<UInt16?> {
         Binding(
-            get: { controller.preferences.hotkeys.handsFreeGlobalKeyCode },
-            set: { controller.preferences.hotkeys.handsFreeGlobalKeyCode = $0 }
+            get: { preferences.hotkeys.handsFreeGlobalKeyCode },
+            set: { preferences.hotkeys.handsFreeGlobalKeyCode = $0 }
         )
     }
 }

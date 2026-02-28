@@ -2,7 +2,7 @@ import SwiftUI
 import StenoKit
 
 struct CleanupStyleSettingsSection: View {
-    @EnvironmentObject private var controller: DictationController
+    @Binding var preferences: AppPreferences
     @State private var newStyleBundleID: String = ""
     @State private var newStyleProfile: StyleProfile = .init(
         name: "App Override",
@@ -20,41 +20,41 @@ struct CleanupStyleSettingsSection: View {
             describedPicker(
                 "Tone",
                 description: "How formal the cleaned text sounds",
-                selection: $controller.preferences.globalStyleProfile.tone
+                selection: $preferences.globalStyleProfile.tone
             )
 
             describedPicker(
                 "Structure",
                 description: "How the output text is formatted",
-                selection: $controller.preferences.globalStyleProfile.structureMode
+                selection: $preferences.globalStyleProfile.structureMode
             )
 
             describedPicker(
                 "Filler removal",
                 description: "How aggressively \u{201C}um\u{201D}, \u{201C}like\u{201D} are removed",
-                selection: $controller.preferences.globalStyleProfile.fillerPolicy
+                selection: $preferences.globalStyleProfile.fillerPolicy
             )
 
             describedPicker(
                 "Commands",
                 description: "Whether /slash commands pass through raw",
-                selection: $controller.preferences.globalStyleProfile.commandPolicy
+                selection: $preferences.globalStyleProfile.commandPolicy
             )
 
             DisclosureGroup(
-                "Per-app overrides (\(controller.preferences.appStyleProfiles.count) configured)"
+                "Per-app overrides (\(preferences.appStyleProfiles.count) configured)"
             ) {
                 VStack(alignment: .leading, spacing: StenoDesign.sm) {
-                    if controller.preferences.appStyleProfiles.isEmpty {
+                    if preferences.appStyleProfiles.isEmpty {
                         Text("No app overrides yet. Add a bundle ID to customize cleanup per app.")
                             .foregroundStyle(StenoDesign.textSecondary)
                     } else {
-                        ForEach(controller.preferences.appStyleProfiles.keys.sorted(), id: \.self) { bundleID in
+                        ForEach(preferences.appStyleProfiles.keys.sorted(), id: \.self) { bundleID in
                             entryRow(
                                 leading: bundleID,
-                                trailing: controller.preferences.appStyleProfiles[bundleID]?.name ?? "Profile"
+                                trailing: preferences.appStyleProfiles[bundleID]?.name ?? "Profile"
                             ) {
-                                controller.preferences.appStyleProfiles.removeValue(forKey: bundleID)
+                                preferences.appStyleProfiles.removeValue(forKey: bundleID)
                             }
                         }
                     }
@@ -77,7 +77,7 @@ struct CleanupStyleSettingsSection: View {
                         Spacer()
                         Button {
                             guard !newStyleBundleID.isEmpty else { return }
-                            controller.preferences.appStyleProfiles[newStyleBundleID] = newStyleProfile
+                            preferences.appStyleProfiles[newStyleBundleID] = newStyleProfile
                             newStyleBundleID = ""
                             newStyleProfile = .init(
                                 name: "App Override",

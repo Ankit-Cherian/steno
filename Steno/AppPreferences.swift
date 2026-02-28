@@ -1,11 +1,6 @@
 import Foundation
 import StenoKit
 
-enum CleanupMode: String, Codable, Sendable, Equatable {
-    case localOnly
-    case cloudIfConfigured
-}
-
 struct AppPreferences: Codable, Sendable, Equatable {
     struct General: Codable, Sendable, Equatable {
         var launchAtLoginEnabled: Bool
@@ -48,10 +43,6 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var threadCount: Int
     }
 
-    struct Cleanup: Codable, Sendable, Equatable {
-        var mode: CleanupMode
-    }
-
     struct Insertion: Codable, Sendable, Equatable {
         var orderedMethods: [InsertionMethod]
 
@@ -84,7 +75,6 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var general: General
     var hotkeys: Hotkeys
     var dictation: Dictation
-    var cleanup: Cleanup
     var insertion: Insertion
     var media: Media
 
@@ -113,7 +103,6 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 modelPath: "\(vendorRoot)/models/ggml-small.en.bin",
                 threadCount: 6
             ),
-            cleanup: .init(mode: .cloudIfConfigured),
             insertion: .init(orderedMethods: [.direct, .accessibility, .clipboardPaste]),
             media: .init(pauseDuringHandsFree: true, pauseDuringPressToTalk: true),
             lexiconEntries: [

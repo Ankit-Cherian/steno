@@ -14,7 +14,6 @@ final class DictationController: ObservableObject {
     @Published var hotkeyRegistrationMessage: String = ""
     @Published var launchAtLoginWarning: String = ""
     @Published var preferences: AppPreferences = .default
-    @Published var openAIAPIKey: String = ""
     @Published var microphonePermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var accessibilityPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var inputMonitoringPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
@@ -28,13 +27,11 @@ final class DictationController: ObservableObject {
     private let overlay: MacOverlayPresenter
     private let mediaInterruption: MediaInterruptionService
     private let preferencesStore: AppPreferencesStore
-    private let apiKeyStore: any APIKeyStore
     private let launchAtLoginService: LaunchAtLoginService
 
     private var lexiconService: PersonalLexiconService
     private var styleProfileService: StyleProfileService
     private var snippetService: SnippetService
-    private var budgetGuard: BudgetGuard
     private var coordinator: SessionCoordinator?
 
     private var recordingStateMachine = RecordingStateMachine()
@@ -51,14 +48,12 @@ final class DictationController: ObservableObject {
         overlay: MacOverlayPresenter = MacOverlayPresenter(),
         mediaInterruption: MediaInterruptionService = MacMediaInterruptionService(),
         preferencesStore: AppPreferencesStore = AppPreferencesStore(),
-        apiKeyStore: any APIKeyStore = KeychainAPIKeyStore(),
         launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService()
     ) {
         self.hotkey = hotkey
         self.overlay = overlay
         self.mediaInterruption = mediaInterruption
         self.preferencesStore = preferencesStore
-        self.apiKeyStore = apiKeyStore
         self.launchAtLoginService = launchAtLoginService
         self.historyStore = HistoryStore(clipboardService: clipboardService)
         self.lexiconService = PersonalLexiconService(entries: AppPreferences.default.lexiconEntries)
@@ -67,7 +62,6 @@ final class DictationController: ObservableObject {
             appProfiles: AppPreferences.default.appStyleProfiles
         )
         self.snippetService = SnippetService(snippets: AppPreferences.default.snippets)
-        self.budgetGuard = BudgetGuard(storageURL: BudgetGuard.defaultStorageURL())
 
         hotkey.onPressToTalkStart = { [weak self] in
             self?.pressToTalkStart()
@@ -109,15 +103,6 @@ final class DictationController: ObservableObject {
         var loaded = await preferencesStore.load()
         loaded.normalize()
 
-        if (apiKeyStore.loadAPIKey() ?? "").isEmpty,
-           let envKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"],
-           !envKey.isEmpty {
-            apiKeyStore.saveAPIKey(envKey)
-        }
-
-        let savedKey = apiKeyStore.loadAPIKey() ?? ""
-        openAIAPIKey = savedKey
-
         applyPreferencesLocally(loaded)
         refreshPermissionStatuses()
         validateWhisperPaths()
@@ -140,17 +125,16 @@ final class DictationController: ObservableObject {
         }
     }
 
-    func saveAPIKey() {
-        apiKeyStore.saveAPIKey(openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines))
-        Task {
-            await rebuildRuntimeOrDefer()
-        }
-    }
+    func applySettingsDraft(preferences draft: AppPreferences) {
+        var snapshot = draft
+        snapshot.normalize()
+        preferences = snapshot
 
-    func clearAPIKey() {
-        openAIAPIKey = ""
-        apiKeyStore.saveAPIKey(nil)
         Task {
+            await preferencesStore.save(snapshot)
+            await MainActor.run {
+                status = "Settings saved."
+            }
             await rebuildRuntimeOrDefer()
         }
     }
@@ -413,6 +397,11 @@ final class DictationController: ObservableObject {
                     lastError = reason
                     overlay.show(state: .failure(message: reason))
                 }
+
+                if let fallbackWarning = fallbackWarningText(from: result.cleanupOutcome) {
+                    status = "\(status) \(fallbackWarning)"
+                }
+
                 dismissOverlaySoon()
                 await refreshHistory()
                 recordingStateMachine.markTranscriptionCompleted()
@@ -457,10 +446,6 @@ final class DictationController: ObservableObject {
         await rebuildRuntime()
     }
 
-    private func trimmedAPIKey() -> String {
-        apiKeyStore.loadAPIKey()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    }
-
     private func rebuildRuntime() async {
         var snapshot = preferences
         snapshot.normalize()
@@ -468,13 +453,11 @@ final class DictationController: ObservableObject {
 
         let runtimeFactory = DictationRuntimeFactory(
             snapshot: snapshot,
-            apiKey: trimmedAPIKey(),
             clipboardService: clipboardService
         )
         lexiconService = runtimeFactory.makeLexiconService()
         styleProfileService = runtimeFactory.makeStyleProfileService()
         snippetService = runtimeFactory.makeSnippetService()
-        budgetGuard = runtimeFactory.makeBudgetGuard()
 
         let transcription = runtimeFactory.makeTranscriptionEngine()
         let cleanupEngine: any CleanupEngine = runtimeFactory.makeCleanupEngine()
@@ -489,7 +472,7 @@ final class DictationController: ObservableObject {
             lexiconService: lexiconService,
             styleProfileService: styleProfileService,
             snippetService: snippetService,
-            budgetGuard: budgetGuard
+            fallbackCleanupEngine: RuleBasedCleanupEngine()
         )
 
         do {
@@ -499,13 +482,14 @@ final class DictationController: ObservableObject {
             launchAtLoginWarning = error.localizedDescription
         }
 
-        if snapshot.cleanup.mode == .localOnly {
-            status = "Running local transcription + local cleanup."
-        } else if runtimeFactory.hasCloudCleanupKey {
-            status = "Running local transcription + cloud cleanup (text-only)."
-        } else {
-            status = "Cloud cleanup selected but API key missing. Using local cleanup."
+        status = "Running local transcription + local cleanup."
+    }
+
+    private func fallbackWarningText(from outcome: CleanupOutcome?) -> String? {
+        guard let outcome, outcome.source == .localFallback else {
+            return nil
         }
+        return outcome.warning ?? "Primary cleanup unavailable, used local fallback."
     }
 
     private func validateWhisperPaths() {
@@ -541,12 +525,7 @@ final class DictationController: ObservableObject {
 
 private struct DictationRuntimeFactory {
     let snapshot: AppPreferences
-    let apiKey: String
     let clipboardService: any ClipboardService
-
-    var hasCloudCleanupKey: Bool {
-        !apiKey.isEmpty && snapshot.cleanup.mode == .cloudIfConfigured
-    }
 
     func makeLexiconService() -> PersonalLexiconService {
         PersonalLexiconService(entries: snapshot.lexiconEntries)
@@ -563,10 +542,6 @@ private struct DictationRuntimeFactory {
         SnippetService(snippets: snapshot.snippets)
     }
 
-    func makeBudgetGuard() -> BudgetGuard {
-        BudgetGuard(storageURL: BudgetGuard.defaultStorageURL())
-    }
-
     func makeTranscriptionEngine() -> WhisperCLITranscriptionEngine {
         let whisperCLIPath = URL(fileURLWithPath: snapshot.dictation.whisperCLIPath)
         let modelPath = URL(fileURLWithPath: snapshot.dictation.modelPath)
@@ -580,11 +555,7 @@ private struct DictationRuntimeFactory {
     }
 
     func makeCleanupEngine() -> any CleanupEngine {
-        guard hasCloudCleanupKey else {
-            return RuleBasedCleanupEngine()
-        }
-
-        return OpenAICleanupEngine(config: .init(apiKey: apiKey))
+        RuleBasedCleanupEngine()
     }
 
     func makeInsertionTransports() -> [any InsertionTransport] {

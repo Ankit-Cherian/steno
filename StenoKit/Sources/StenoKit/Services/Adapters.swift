@@ -34,8 +34,7 @@ public struct FailingCleanupEngine: CleanupEngine, Sendable {
     public func cleanup(
         raw: RawTranscript,
         profile: StyleProfile,
-        lexicon: PersonalLexicon,
-        tier: CloudModelTier
+        lexicon: PersonalLexicon
     ) async throws -> CleanTranscript {
         throw NSError(domain: "FailingCleanupEngine", code: 1)
     }
@@ -65,11 +64,10 @@ public struct CountingCleanupEngine: CleanupEngine, Sendable {
     public func cleanup(
         raw: RawTranscript,
         profile: StyleProfile,
-        lexicon: PersonalLexicon,
-        tier: CloudModelTier
+        lexicon: PersonalLexicon
     ) async throws -> CleanTranscript {
         await counter.increment()
-        return CleanTranscript(text: raw.text + " cleaned", modelTier: .premium)
+        return CleanTranscript(text: raw.text + " cleaned")
     }
 }
 

@@ -17,6 +17,11 @@ public actor SessionCoordinator {
         var startedAt: Date
     }
 
+    private struct CleanupExecutionResult: Sendable {
+        var transcript: CleanTranscript
+        var outcome: CleanupOutcome
+    }
+
     private let captureService: AudioCaptureService
     private let transcriptionEngine: TranscriptionEngine
     private let cleanupEngine: CleanupEngine
@@ -26,7 +31,6 @@ public actor SessionCoordinator {
     private let lexiconService: PersonalLexiconService
     private let styleProfileService: StyleProfileService
     private let snippetService: SnippetService
-    private let budgetGuard: BudgetGuard
 
     private var activeSessions: [SessionID: ActiveSession] = [:]
     private(set) var isHandsFreeEnabled: Bool = false
@@ -40,7 +44,6 @@ public actor SessionCoordinator {
         lexiconService: PersonalLexiconService,
         styleProfileService: StyleProfileService,
         snippetService: SnippetService = SnippetService(),
-        budgetGuard: BudgetGuard,
         fallbackCleanupEngine: CleanupEngine = RuleBasedCleanupEngine()
     ) {
         self.captureService = captureService
@@ -51,7 +54,6 @@ public actor SessionCoordinator {
         self.lexiconService = lexiconService
         self.styleProfileService = styleProfileService
         self.snippetService = snippetService
-        self.budgetGuard = budgetGuard
         self.fallbackCleanupEngine = fallbackCleanupEngine
     }
 
@@ -77,19 +79,20 @@ public actor SessionCoordinator {
         let profile = await styleProfileService.resolve(for: active.appContext)
         let lexicon = await lexiconService.snapshot(for: active.appContext)
 
-        let cleaned = try await prepareCleanTranscript(
+        let cleanupResult = try await prepareCleanTranscript(
             raw: rawTranscript,
             profile: profile,
             lexicon: lexicon,
             appContext: active.appContext
         )
 
-        let insertResult = await insertionService.insert(text: cleaned.text, target: active.appContext)
+        var insertResult = await insertionService.insert(text: cleanupResult.transcript.text, target: active.appContext)
+        insertResult.cleanupOutcome = cleanupResult.outcome
 
         let entry = TranscriptEntry(
             appBundleID: active.appContext.bundleIdentifier,
             rawText: rawTranscript.text,
-            cleanText: cleaned.text,
+            cleanText: cleanupResult.transcript.text,
             // Audio artifacts are ephemeral; do not persist paths that are deleted on return.
             audioURL: nil,
             insertionStatus: insertResult.status
@@ -113,32 +116,30 @@ public actor SessionCoordinator {
         profile: StyleProfile,
         lexicon: PersonalLexicon,
         appContext: AppContext
-    ) async throws -> CleanTranscript {
+    ) async throws -> CleanupExecutionResult {
         if profile.commandPolicy == .passthrough,
            appContext.isIDE,
            raw.text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
-            return CleanTranscript(text: raw.text, modelTier: .none)
-        }
-
-        let estimatedTokens = TokenEstimator.estimatedTokens(for: raw.text)
-        let decision = await budgetGuard.authorize(estimatedTokens: estimatedTokens)
-
-        if decision.mode == .disabled {
-            var fallback = try await fallbackCleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon, tier: .none)
-            if let reason = decision.reason {
-                fallback.uncertaintyFlags.append(reason)
-            }
-            return fallback
+            return CleanupExecutionResult(
+                transcript: CleanTranscript(text: raw.text),
+                outcome: CleanupOutcome(source: .localOnly)
+            )
         }
 
         do {
-            let cloud = try await cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon, tier: decision.tier)
-            await budgetGuard.record(costUSD: decision.estimatedCostUSD)
-            return cloud
+            let cleaned = try await cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
+            return CleanupExecutionResult(
+                transcript: cleaned,
+                outcome: CleanupOutcome(source: .localSuccess)
+            )
         } catch {
-            var fallback = try await fallbackCleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon, tier: .none)
-            fallback.uncertaintyFlags.append("Cloud cleanup unavailable, used local fallback")
-            return fallback
+            var fallback = try await fallbackCleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
+            let warning = "Primary cleanup unavailable, used local fallback."
+            fallback.uncertaintyFlags.append(warning)
+            return CleanupExecutionResult(
+                transcript: fallback,
+                outcome: CleanupOutcome(source: .localFallback, warning: warning)
+            )
         }
     }
 }
