@@ -48,7 +48,7 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         let outputBase = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("steno-out-\(UUID().uuidString)")
 
-        let txtURL = URL(fileURLWithPath: outputBase.path + ".txt")
+        let txtURL = outputBase.appendingPathExtension("txt")
         defer { try? FileManager.default.removeItem(at: txtURL) }
 
         var args: [String] = [
@@ -104,6 +104,14 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
 
     private func processEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
+
+        // Local whisper.cpp builds commonly rely on DYLD_* paths.
+        // Hardened Runtime builds must include:
+        // com.apple.security.cs.allow-dyld-environment-variables
+        // to preserve these variables in child processes.
+        if env["STENO_DISABLE_DYLD_ENV"] == "1" {
+            return env
+        }
 
         let libSearchPaths = dynamicLibrarySearchPaths()
         guard !libSearchPaths.isEmpty else {

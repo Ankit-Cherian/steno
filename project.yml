@@ -19,9 +19,13 @@ targets:
         # - each contributor chooses their own team in local Xcode settings
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: Apple Development
+        CODE_SIGN_ENTITLEMENTS: Steno/Steno.entitlements
         SWIFT_VERSION: 6.0
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Steno needs microphone access for dictation.
+      configs:
+        Release:
+          ENABLE_HARDENED_RUNTIME: YES
     dependencies:
       - package: StenoKit
         product: StenoKit

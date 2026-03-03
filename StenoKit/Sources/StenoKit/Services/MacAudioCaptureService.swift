@@ -4,15 +4,24 @@ import Foundation
 
 public enum MacAudioCaptureError: Error, LocalizedError {
     case failedToCreateRecorder
+    case failedToPrepareRecorder
     case failedToStartRecording
+    case encodingFailure(details: String?)
     case sessionNotFound
 
     public var errorDescription: String? {
         switch self {
         case .failedToCreateRecorder:
             return "Failed to create audio recorder"
+        case .failedToPrepareRecorder:
+            return "Failed to prepare audio recorder"
         case .failedToStartRecording:
             return "Failed to start audio recording"
+        case .encodingFailure(let details):
+            if let details, !details.isEmpty {
+                return "Audio recording failed during encoding: \(details)"
+            }
+            return "Audio recording failed during encoding"
         case .sessionNotFound:
             return "Recording session not found"
         }
@@ -20,9 +29,11 @@ public enum MacAudioCaptureError: Error, LocalizedError {
 }
 
 @MainActor
-public final class MacAudioCaptureService: NSObject, AudioCaptureService {
+public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preconcurrency AVAudioRecorderDelegate {
     private var recorders: [SessionID: AVAudioRecorder] = [:]
     private var outputURLs: [SessionID: URL] = [:]
+    private var recorderSessionIDs: [ObjectIdentifier: SessionID] = [:]
+    private var recorderErrors: [SessionID: MacAudioCaptureError] = [:]
 
     public override init() {
         super.init()
@@ -39,15 +50,33 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService {
             AVLinearPCMIsBigEndianKey: false
         ]
 
-        let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
-        recorder.prepareToRecord()
+        var shouldCleanup = true
+        defer {
+            if shouldCleanup {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+        }
+
+        let recorder: AVAudioRecorder
+        do {
+            recorder = try AVAudioRecorder(url: fileURL, settings: settings)
+        } catch {
+            throw MacAudioCaptureError.failedToCreateRecorder
+        }
+        recorder.delegate = self
+        guard recorder.prepareToRecord() else {
+            throw MacAudioCaptureError.failedToPrepareRecorder
+        }
 
         guard recorder.record() else {
             throw MacAudioCaptureError.failedToStartRecording
         }
 
+        shouldCleanup = false
         recorders[sessionID] = recorder
         outputURLs[sessionID] = fileURL
+        recorderSessionIDs[ObjectIdentifier(recorder)] = sessionID
+        recorderErrors[sessionID] = nil
     }
 
     public func endCapture(sessionID: SessionID) async throws -> URL {
@@ -57,6 +86,11 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService {
         }
 
         recorder.stop()
+        recorderSessionIDs.removeValue(forKey: ObjectIdentifier(recorder))
+        if let captureError = recorderErrors.removeValue(forKey: sessionID) {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw captureError
+        }
         return fileURL
     }
 
@@ -67,12 +101,22 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService {
         }
 
         recorder.stop()
+        recorderSessionIDs.removeValue(forKey: ObjectIdentifier(recorder))
+        recorderErrors[sessionID] = nil
         try? FileManager.default.removeItem(at: fileURL)
     }
 
     private static func tempAudioURL(for sessionID: SessionID) -> URL {
-        URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("steno-audio-\(sessionID.uuidString).wav")
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("steno-audio-\(sessionID.uuidString)")
+            .appendingPathExtension("wav")
+    }
+
+    public func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: (any Error)?) {
+        guard let sessionID = recorderSessionIDs[ObjectIdentifier(recorder)] else {
+            return
+        }
+        recorderErrors[sessionID] = .encodingFailure(details: error?.localizedDescription)
     }
 }
 #endif
