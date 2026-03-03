@@ -1,4 +1,5 @@
 import Foundation
+import StenoKit
 
 public actor StubAudioCaptureService: AudioCaptureService {
     private var queuedAudioURLs: [URL]

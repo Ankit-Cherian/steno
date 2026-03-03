@@ -7,12 +7,15 @@ let package = Package(
     name: "StenoKit",
     platforms: [
         .macOS(.v13),
-        .iOS(.v16),
     ],
     products: [
         .library(
             name: "StenoKit",
             targets: ["StenoKit"]
+        ),
+        .library(
+            name: "StenoKitTestSupport",
+            targets: ["StenoKitTestSupport"]
         ),
         .executable(
             name: "StenoBenchmarkCLI",
@@ -27,13 +30,17 @@ let package = Package(
             name: "StenoBenchmarkCore",
             dependencies: ["StenoKit"]
         ),
+        .target(
+            name: "StenoKitTestSupport",
+            dependencies: ["StenoKit"]
+        ),
         .executableTarget(
             name: "StenoBenchmarkCLI",
             dependencies: ["StenoBenchmarkCore"]
         ),
         .testTarget(
             name: "StenoKitTests",
-            dependencies: ["StenoKit"]
+            dependencies: ["StenoKit", "StenoKitTestSupport"]
         ),
         .testTarget(
             name: "StenoBenchmarkCoreTests",

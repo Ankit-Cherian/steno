@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import StenoKitTestSupport
 @testable import StenoKit
 
 private actor InsertRecorder {
