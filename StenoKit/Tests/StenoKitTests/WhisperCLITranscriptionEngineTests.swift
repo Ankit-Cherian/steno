@@ -107,23 +107,15 @@ func whisperCLITranscriptionEngineMissingOutput() async throws {
     }
 }
 
-@Test("WhisperCLITranscriptionEngine is cancellable")
-func whisperCLITranscriptionEngineCancellation() async throws {
+@Test("WhisperCLITranscriptionEngine cancellation escalates when child ignores SIGTERM")
+func whisperCLITranscriptionEngineCancellationEscalation() async throws {
     let scriptURL = try makeExecutableScript(
         """
         #!/bin/sh
-        sleep 5
-        output_base=""
-        while [ "$#" -gt 0 ]; do
-          if [ "$1" = "-of" ]; then
-            shift
-            output_base="$1"
-          fi
-          shift
+        trap '' TERM
+        while :; do
+          sleep 1
         done
-        if [ -n "$output_base" ]; then
-          printf "late output\\n" > "${output_base}.txt"
-        fi
         """
     )
     defer { try? FileManager.default.removeItem(at: scriptURL) }
@@ -146,14 +138,41 @@ func whisperCLITranscriptionEngineCancellation() async throws {
 
     try await Task.sleep(nanoseconds: 120_000_000)
     task.cancel()
+    let cancellationStart = Date()
 
     do {
-        _ = try await task.value
+        _ = try await awaitTaskValue(task, timeoutNanoseconds: 6_000_000_000)
         Issue.record("Expected cancellation to throw.")
     } catch is CancellationError {
-        // Expected.
+        let elapsed = Date().timeIntervalSince(cancellationStart)
+        #expect(elapsed < 6.0)
+    } catch is TaskValueTimeoutError {
+        Issue.record("Cancellation did not complete within timeout.")
     } catch {
         Issue.record("Expected CancellationError, got: \(error)")
+    }
+}
+
+private struct TaskValueTimeoutError: Error {}
+
+private func awaitTaskValue<T>(
+    _ task: Task<T, Error>,
+    timeoutNanoseconds: UInt64
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await task.value
+        }
+        group.addTask {
+            try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            task.cancel()
+            throw TaskValueTimeoutError()
+        }
+        guard let value = try await group.next() else {
+            throw TaskValueTimeoutError()
+        }
+        group.cancelAll()
+        return value
     }
 }
 
