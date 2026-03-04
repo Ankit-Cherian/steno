@@ -8,6 +8,9 @@ private final class TapContext: @unchecked Sendable {
     var keyCode: UInt16?
     var onToggle: (() -> Void)?
     var machPort: CFMachPort?
+    /// Monotonic timestamp of the last tap re-enable, used to debounce rapid
+    /// disable/re-enable cycles that can occur when the system times out the tap.
+    var lastReenableTime: CFAbsoluteTime = 0
 }
 
 @MainActor
@@ -31,6 +34,7 @@ public final class MacHotkeyMonitor: HotkeyService {
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var isOptionHeld = false
+    private var callbackGeneration: UInt64 = 0
 
     private var hasStarted = false
 
@@ -49,12 +53,14 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     public func start() {
         guard !hasStarted else { return }
+        callbackGeneration &+= 1
         hasStarted = true
         installOptionMonitors()
         updateHandsFreeStatus()
     }
 
     public func stop() {
+        callbackGeneration &+= 1
         hasStarted = false
         uninstallEventTap()
         uninstallOptionMonitors()
@@ -98,10 +104,28 @@ public final class MacHotkeyMonitor: HotkeyService {
         }
 
         isOptionHeld = optionIsNowHeld
+        let generation = callbackGeneration
+
+        // Dispatch callbacks async to avoid re-entrancy while the
+        // NSEvent monitor callback is still unwinding.
         if optionIsNowHeld {
-            onPressToTalkStart?()
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.hasStarted,
+                      self.callbackGeneration == generation else {
+                    return
+                }
+                self.onPressToTalkStart?()
+            }
         } else {
-            onPressToTalkStop?()
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.hasStarted,
+                      self.callbackGeneration == generation else {
+                    return
+                }
+                self.onPressToTalkStop?()
+            }
         }
     }
 
@@ -168,12 +192,19 @@ public final class MacHotkeyMonitor: HotkeyService {
     /// C-compatible callback for the CGEventTap. Runs on the main thread
     /// (tap is installed on the main run loop). Accesses TapContext via userInfo
     /// to avoid @MainActor isolation issues.
+    /// Minimum interval between tap re-enables to prevent rapid disable/enable cycling.
+    private static let reenableDebounceInterval: CFAbsoluteTime = 0.1
+
     private static let eventTapCallback: CGEventTapCallBack = { _, type, event, userInfo in
-        // Re-enable tap if macOS disabled it due to timeout or user input
+        // Re-enable tap if macOS disabled it due to timeout or user input,
+        // with a debounce to avoid rapid re-enable cycling.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let userInfo {
                 let ctx = Unmanaged<TapContext>.fromOpaque(userInfo).takeUnretainedValue()
-                if let machPort = ctx.machPort {
+                let now = CFAbsoluteTimeGetCurrent()
+                if let machPort = ctx.machPort,
+                   now - ctx.lastReenableTime >= reenableDebounceInterval {
+                    ctx.lastReenableTime = now
                     CGEvent.tapEnable(tap: machPort, enable: true)
                 }
             }
@@ -201,6 +232,17 @@ public final class MacHotkeyMonitor: HotkeyService {
         // re-entrancy while the tap callback is still unwinding.
         DispatchQueue.main.async { ctx.onToggle?() }
         return nil // For .defaultTap, nil suppresses delivery to downstream apps.
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            uninstallEventTap()
+            uninstallOptionMonitors()
+            // Clear callback state defensively after uninstall.
+            tapContext.machPort = nil
+            tapContext.onToggle = nil
+            tapContext.keyCode = nil
+        }
     }
 
     // MARK: - Utilities
