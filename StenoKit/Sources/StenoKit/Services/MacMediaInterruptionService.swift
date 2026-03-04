@@ -2,6 +2,17 @@
 import AppKit
 import IOKit.hidsystem
 
+internal func stenoMediaKeyTapLocation(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> CGEventTapLocation {
+    switch environment["STENO_MEDIA_KEY_TAP"]?.lowercased() {
+    case "annotated":
+        return .cgAnnotatedSessionEventTap
+    default:
+        return .cghidEventTap
+    }
+}
+
 @MainActor
 public final class MacMediaInterruptionService: MediaInterruptionService {
     private static let logger = StenoKitDiagnostics.logger
@@ -435,10 +446,11 @@ final class MediaRemoteBridge: MediaRemoteBridging {
             setWantsNowPlayingNotifications?(false)
             StenoKitDiagnostics.logger.debug("MediaRemote bridge deinit forced unregister cleanup.")
         }
-        // Ensure callbackQueue has drained before unloading the framework image.
-        callbackQueue.sync {}
-        if let handle {
-            dlclose(handle)
+        // Defer dlclose to after the serial callbackQueue drains, avoiding
+        // a sync-on-self deadlock if deinit runs on the callbackQueue thread.
+        let handle = self.handle
+        callbackQueue.async {
+            if let handle { dlclose(handle) }
         }
     }
 
@@ -580,6 +592,8 @@ private enum SystemMediaKeySender {
     private static func postSystemDefinedMediaEvent(key: Int32, isKeyDown: Bool) -> Bool {
         // Undocumented system media event encoding used by NSEvent.systemDefined.
         // keyState 0xA = down, 0xB = up; modifierFlags 0xA00 marks media-key context.
+        // Media keys intentionally use a dedicated tap policy for compatibility,
+        // separate from insertion event posting.
         let keyState = isKeyDown ? 0xA : 0xB
         let data1 = Int((key << 16) | (Int32(keyState) << 8))
 
@@ -597,7 +611,7 @@ private enum SystemMediaKeySender {
             return false
         }
 
-        event.cgEvent?.post(tap: .cghidEventTap)
+        event.cgEvent?.post(tap: stenoMediaKeyTapLocation())
         return true
     }
 }

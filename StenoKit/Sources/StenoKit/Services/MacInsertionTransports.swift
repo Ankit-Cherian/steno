@@ -3,6 +3,16 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+/// Preferred tap location for synthetic event posting.
+/// Defaults to `.cgAnnotatedSessionEventTap` (avoids traversing other event taps).
+/// Set `STENO_SYNTH_EVENT_TAP=hid` in the environment to revert to `.cghidEventTap`.
+let stenoSyntheticEventTapLocation: CGEventTapLocation = {
+    if ProcessInfo.processInfo.environment["STENO_SYNTH_EVENT_TAP"]?.lowercased() == "hid" {
+        return .cghidEventTap
+    }
+    return .cgAnnotatedSessionEventTap
+}()
+
 public enum MacInsertionError: Error, LocalizedError {
     case eventSourceUnavailable
     case accessibilityPermissionMissing
@@ -126,8 +136,8 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
             // InsertionService keeps accessibility and clipboard transports as fallbacks.
             keyDown.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
             keyUp.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-            keyDown.post(tap: .cghidEventTap)
-            keyUp.post(tap: .cghidEventTap)
+            keyDown.post(tap: stenoSyntheticEventTapLocation)
+            keyUp.post(tap: stenoSyntheticEventTapLocation)
 
             if end < allCodeUnits.count {
                 try await Task.sleep(nanoseconds: 10_000_000) // 10ms between chunks
@@ -328,8 +338,8 @@ public enum MacPasteHelper {
         else { return false }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        keyDown.post(tap: stenoSyntheticEventTapLocation)
+        keyUp.post(tap: stenoSyntheticEventTapLocation)
         return true
     }
 }
