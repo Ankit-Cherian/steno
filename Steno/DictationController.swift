@@ -42,6 +42,7 @@ final class DictationController: ObservableObject {
     private var pendingRuntimeRebuild = false
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
+    private var terminationObserver: Any?
 
     init(
         hotkey: MacHotkeyMonitor = MacHotkeyMonitor(),
@@ -85,9 +86,36 @@ final class DictationController: ObservableObject {
         hotkey.start()
         menuBar.setup(controller: self)
 
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.teardown()
+        }
+
         Task {
             await bootstrap()
         }
+    }
+
+    /// Idempotent shutdown: stops hotkeys, cancels in-flight work, releases media,
+    /// hides the overlay, and invalidates timers. Triggered by willTerminateNotification.
+    func teardown() {
+        if let observer = terminationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            terminationObserver = nil
+        }
+        hotkey.stop()
+        overlay.hide()
+        activeStartTask?.cancel()
+        activeStartTask = nil
+        if let token = activeMediaToken {
+            mediaInterruption.endInterruption(token: token)
+            activeMediaToken = nil
+        }
+        recordingTimer?.invalidate()
+        recordingTimer = nil
     }
 
     var menuBarIconName: String {
@@ -108,6 +136,7 @@ final class DictationController: ObservableObject {
         validateWhisperPaths()
         await rebuildRuntime()
         await refreshHistory()
+        overlay.prepareWindow()
         hasBootstrapped = true
     }
 

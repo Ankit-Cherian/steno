@@ -31,7 +31,18 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     deinit {
-        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        MainActor.assumeIsolated {
+            timer?.invalidate()
+            timer = nil
+            pulseTimer?.invalidate()
+            pulseTimer = nil
+            NSWorkspace.shared.notificationCenter.removeObserver(self)
+        }
+    }
+
+    /// Pre-create the overlay window so the first `show` has no lazy-init stutter.
+    public func prepareWindow() {
+        ensureWindow()
     }
 
     public func show(state: OverlayState) {
