@@ -109,6 +109,24 @@ func mediaInterruptionPausesWhenPlaybackIsActive() async {
     #expect(recorder.sendCalls == 1)
 }
 
+@Test("Media key tap location defaults to HID")
+func mediaKeyTapLocationDefaultsToHID() {
+    let tap = stenoMediaKeyTapLocation(environment: [:])
+    #expect(tap == .cghidEventTap)
+}
+
+@Test("Media key tap location honors annotated override")
+func mediaKeyTapLocationHonorsAnnotatedOverride() {
+    let tap = stenoMediaKeyTapLocation(environment: ["STENO_MEDIA_KEY_TAP": "annotated"])
+    #expect(tap == .cgAnnotatedSessionEventTap)
+}
+
+@Test("Media key tap location falls back to HID for invalid overrides")
+func mediaKeyTapLocationFallsBackToHIDForInvalidOverride() {
+    let tap = stenoMediaKeyTapLocation(environment: ["STENO_MEDIA_KEY_TAP": "nope"])
+    #expect(tap == .cghidEventTap)
+}
+
 @MainActor
 @Test("Media interruption pauses when playback is likely active")
 func mediaInterruptionPausesWhenPlaybackIsLikelyActive() async {
