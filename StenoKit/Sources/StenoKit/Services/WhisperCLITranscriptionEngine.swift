@@ -35,9 +35,12 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
     }
 
     private let config: Configuration
+    /// Cached at init to avoid copying ProcessInfo.environment + stat() calls per transcription.
+    private let cachedEnvironment: [String: String]
 
     public init(config: Configuration) {
         self.config = config
+        self.cachedEnvironment = Self.buildProcessEnvironment(config: config)
     }
 
     public func transcribe(audioURL: URL, languageHints: [String]) async throws -> RawTranscript {
@@ -69,7 +72,7 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         let result = try await ProcessRunner.run(
             executableURL: config.whisperCLIPath,
             arguments: args,
-            environment: processEnvironment(),
+            environment: cachedEnvironment,
             standardOutput: FileHandle.nullDevice
         )
 
@@ -102,7 +105,7 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         return lower.isEmpty ? nil : lower
     }
 
-    private func processEnvironment() -> [String: String] {
+    private static func buildProcessEnvironment(config: Configuration) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
 
         // Local whisper.cpp builds commonly rely on DYLD_* paths.
@@ -113,7 +116,7 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
             return env
         }
 
-        let libSearchPaths = dynamicLibrarySearchPaths()
+        let libSearchPaths = dynamicLibrarySearchPaths(config: config)
         guard !libSearchPaths.isEmpty else {
             return env
         }
@@ -133,7 +136,7 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         return env
     }
 
-    private func dynamicLibrarySearchPaths() -> [String] {
+    private static func dynamicLibrarySearchPaths(config: Configuration) -> [String] {
         let fileManager = FileManager.default
         let binDir = config.whisperCLIPath.deletingLastPathComponent()
         let buildDir = binDir.deletingLastPathComponent()
@@ -148,7 +151,7 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         return orderedUnique(candidates.filter { fileManager.fileExists(atPath: $0) })
     }
 
-    private func orderedUnique(_ values: [String]) -> [String] {
+    private static func orderedUnique(_ values: [String]) -> [String] {
         var seen: Set<String> = []
         var output: [String] = []
         output.reserveCapacity(values.count)

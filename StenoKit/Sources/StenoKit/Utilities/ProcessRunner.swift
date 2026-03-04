@@ -33,15 +33,49 @@ public enum ProcessRunner {
         process.standardOutput = standardOutput ?? outputPipe
         process.standardError = standardError ?? errorPipe
 
+        // Stream pipe data as it arrives to prevent the subprocess from blocking
+        // on a full pipe buffer (64 KB on macOS). Without streaming, a verbose
+        // subprocess can deadlock: it blocks on write(), we wait for it to exit.
+        let outputBuffer = PipeAccumulator()
+        let errorBuffer = PipeAccumulator()
+
+        if let pipe = outputPipe {
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if !chunk.isEmpty { outputBuffer.append(chunk) }
+            }
+        }
+        if let pipe = errorPipe {
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if !chunk.isEmpty { errorBuffer.append(chunk) }
+            }
+        }
+
         let state = ProcessRunState(process: process)
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProcessExecutionResult, Error>) in
                 state.prepare(continuation: continuation)
                 process.terminationHandler = { _ in
-                    let output = outputPipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
-                    let error = errorPipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
-                    state.finish(terminationStatus: process.terminationStatus, standardOutput: output, standardError: error)
+                    // Disable streaming handlers first, then drain remaining bytes.
+                    outputPipe?.fileHandleForReading.readabilityHandler = nil
+                    errorPipe?.fileHandleForReading.readabilityHandler = nil
+
+                    if let pipe = outputPipe {
+                        let remaining = pipe.fileHandleForReading.readDataToEndOfFile()
+                        if !remaining.isEmpty { outputBuffer.append(remaining) }
+                    }
+                    if let pipe = errorPipe {
+                        let remaining = pipe.fileHandleForReading.readDataToEndOfFile()
+                        if !remaining.isEmpty { errorBuffer.append(remaining) }
+                    }
+
+                    state.finish(
+                        terminationStatus: process.terminationStatus,
+                        standardOutput: outputBuffer.consume(),
+                        standardError: errorBuffer.consume()
+                    )
                 }
 
                 do {
@@ -53,6 +87,25 @@ public enum ProcessRunner {
         } onCancel: {
             state.cancel()
         }
+    }
+}
+
+/// Thread-safe accumulator for pipe data arriving via readabilityHandler.
+private final class PipeAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+
+    func consume() -> Data {
+        lock.lock()
+        let result = data
+        lock.unlock()
+        return result
     }
 }
 
@@ -125,7 +178,17 @@ private final class ProcessRunState: @unchecked Sendable {
         lock.unlock()
 
         if process.isRunning {
-            process.terminate()
+            process.terminate() // SIGTERM
+            // Escalate to SIGKILL after 3 seconds if the subprocess ignores SIGTERM.
+            let pid = process.processIdentifier
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [self] in
+                guard pid > 0,
+                      self.process.isRunning,
+                      self.process.processIdentifier == pid else {
+                    return
+                }
+                kill(pid, SIGKILL)
+            }
         } else if let continuation {
             // Resume outside lock. See withTaskCancellationHandler lock guidance.
             continuation.resume(throwing: CancellationError())
