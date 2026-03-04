@@ -113,7 +113,7 @@ public actor HistoryStore: HistoryStoreProtocol {
 
     private func persist() throws {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted]
+        encoder.outputFormatting = []
         encoder.dateEncodingStrategy = .iso8601
 
         do {
