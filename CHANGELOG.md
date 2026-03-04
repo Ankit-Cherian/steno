@@ -7,6 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-03-03
+
+### Changed
+- Hardened hotkey lifecycle and shutdown behavior to avoid late callback execution during stop/quit, including idempotent teardown and eager overlay window warm-up.
+- Updated synthetic event routing so insertion and paste remain configurable through `STENO_SYNTH_EVENT_TAP`, while media keys use a dedicated tap resolver with HID as the default.
+- Improved subprocess execution reliability by streaming pipe output during process lifetime, adding cancellation escalation safeguards, and caching whisper process environment setup at engine initialization.
+- Optimized local cleanup and replacement paths by precompiling reusable regexes, caching lexicon/snippet regexes with cache invalidation on mutation, and preserving longest-first lexicon ordering as an explicit invariant.
+- Reduced history persistence overhead by removing pretty-printed JSON output formatting.
+
+### Fixed
+- Restored reliable media pause/resume behavior during dictation by routing media key posting through a dedicated HID-default tap path.
+- Prevented event-tap re-enable thrash with debounce handling after timeout/user-input tap disable events.
+- Added defensive teardown behavior for overlay timers and hotkey monitor resources during object deinitialization.
+- Prevented potential deadlocks and cancellation stalls in process execution paths when child processes ignore graceful termination.
+
+### Tests
+- Added media key tap routing regression coverage for default, override, and invalid environment values.
+- Hardened cancellation regression coverage to verify bounded completion when subprocesses ignore `SIGTERM`.
+
 ## [0.1.6] - 2026-03-03
 
 ### Added
