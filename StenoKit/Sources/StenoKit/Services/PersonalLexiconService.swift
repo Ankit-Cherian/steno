@@ -12,9 +12,11 @@ public struct LexiconApplicationResult: Sendable, Equatable {
 
 public actor PersonalLexiconService {
     private var entries: [LexiconEntry]
+    /// Compiled regexes keyed by lowercased term. Invalidated on mutation.
+    private var regexCache: [String: NSRegularExpression] = [:]
 
     public init(entries: [LexiconEntry] = []) {
-        self.entries = entries
+        self.entries = entries.sorted { $0.term.count > $1.term.count }
     }
 
     public func upsert(term: String, preferred: String, scope: Scope) {
@@ -24,16 +26,19 @@ public actor PersonalLexiconService {
             $0.term.caseInsensitiveCompare(term) == .orderedSame && $0.scope == scope
         }) {
             entries[index] = LexiconEntry(term: term, preferred: preferred, scope: scope)
-            return
+        } else {
+            entries.append(LexiconEntry(term: term, preferred: preferred, scope: scope))
         }
 
-        entries.append(LexiconEntry(term: term, preferred: preferred, scope: scope))
+        entries.sort { $0.term.count > $1.term.count }
+        regexCache.removeAll()
     }
 
     public func remove(term: String, scope: Scope) {
         entries.removeAll {
             $0.term.caseInsensitiveCompare(term) == .orderedSame && $0.scope == scope
         }
+        regexCache.removeAll()
     }
 
     public func snapshot() -> PersonalLexicon {
@@ -53,8 +58,8 @@ public actor PersonalLexiconService {
             return LexiconApplicationResult(text: text, edits: [])
         }
 
+        // Entries are already sorted longest-first by the actor invariant.
         let applicable = filteredEntries(for: appContext)
-            .sorted { $0.term.count > $1.term.count }
 
         var updatedText = text
         var edits: [TranscriptEdit] = []
@@ -62,8 +67,7 @@ public actor PersonalLexiconService {
         for entry in applicable {
             let replacement = replaceWholeWord(
                 in: updatedText,
-                pattern: entry.term,
-                replacement: entry.preferred
+                entry: entry
             )
             if replacement.replacements > 0 {
                 updatedText = replacement.text
@@ -93,14 +97,20 @@ public actor PersonalLexiconService {
 
     private func replaceWholeWord(
         in text: String,
-        pattern: String,
-        replacement: String
+        entry: LexiconEntry
     ) -> (text: String, replacements: Int) {
-        let escaped = NSRegularExpression.escapedPattern(for: pattern)
-        let regexPattern = "\\b\(escaped)\\b"
-
-        guard let regex = try? NSRegularExpression(pattern: regexPattern, options: [.caseInsensitive]) else {
-            return (text, 0)
+        let cacheKey = entry.term.lowercased()
+        let regex: NSRegularExpression
+        if let cached = regexCache[cacheKey] {
+            regex = cached
+        } else {
+            let escaped = NSRegularExpression.escapedPattern(for: entry.term)
+            let regexPattern = "\\b\(escaped)\\b"
+            guard let compiled = try? NSRegularExpression(pattern: regexPattern, options: [.caseInsensitive]) else {
+                return (text, 0)
+            }
+            regexCache[cacheKey] = compiled
+            regex = compiled
         }
 
         let nsRange = NSRange(text.startIndex..., in: text)
@@ -109,7 +119,8 @@ public actor PersonalLexiconService {
             return (text, 0)
         }
 
-        let replaced = regex.stringByReplacingMatches(in: text, range: nsRange, withTemplate: replacement)
+        let safeReplacement = NSRegularExpression.escapedTemplate(for: entry.preferred)
+        let replaced = regex.stringByReplacingMatches(in: text, range: nsRange, withTemplate: safeReplacement)
         return (replaced, matchCount)
     }
 }

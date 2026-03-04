@@ -60,6 +60,38 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         )
     }
 
+    // MARK: - Precompiled Regexes
+
+    private static let fillerRegexes: [String: NSRegularExpression] = {
+        let fillers = ["um", "uh", "you know", "i mean", "basically", "sort of", "kind of"]
+        var dict: [String: NSRegularExpression] = [:]
+        for filler in fillers {
+            let escaped = NSRegularExpression.escapedPattern(for: filler)
+            let pattern = "(?i)(?:\\s|^)\(escaped)(?=\\s|[,.!?]|$)"
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                dict[filler] = regex
+            }
+        }
+        return dict
+    }()
+
+    private static let likePatterns: [(regex: NSRegularExpression, replacement: String)] = {
+        let specs: [(pattern: String, replacement: String)] = [
+            ("(?i)(^|[.!?]\\s+)like,\\s+", "$1"),
+            ("(?i),\\s*like,\\s*", ", ")
+        ]
+        return specs.compactMap { spec in
+            guard let regex = try? NSRegularExpression(pattern: spec.pattern) else { return nil }
+            return (regex, spec.replacement)
+        }
+    }()
+
+    private static let whitespaceRegex: NSRegularExpression = {
+        try! NSRegularExpression(pattern: "\\s+")
+    }()
+
+    // MARK: - Filler Removal
+
     private func removeFillers(from text: String, policy: FillerPolicy) -> (text: String, removed: [String], edits: [TranscriptEdit]) {
         guard policy != .minimal else {
             return (text, [], [])
@@ -74,9 +106,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         var edits: [TranscriptEdit] = []
 
         for filler in directFillers {
-            let escaped = NSRegularExpression.escapedPattern(for: filler)
-            let pattern = "(?i)(?:\\s|^)\(escaped)(?=\\s|[,.!?]|$)"
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            guard let regex = Self.fillerRegexes[filler] else { continue }
 
             let range = NSRange(updated.startIndex..., in: updated)
             let count = regex.numberOfMatches(in: updated, range: range)
@@ -102,19 +132,11 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         var updated = text
         var removedCount = 0
 
-        let patterns: [(pattern: String, replacement: String)] = [
-            // Sentence-initial discourse marker: "Like, ..."
-            ("(?i)(^|[.!?]\\s+)like,\\s+", "$1"),
-            // Parenthetical discourse marker: ", like, ..."
-            ("(?i),\\s*like,\\s*", ", ")
-        ]
-
-        for item in patterns {
-            guard let regex = try? NSRegularExpression(pattern: item.pattern) else { continue }
+        for item in Self.likePatterns {
             let range = NSRange(updated.startIndex..., in: updated)
-            let count = regex.numberOfMatches(in: updated, range: range)
+            let count = item.regex.numberOfMatches(in: updated, range: range)
             if count > 0 {
-                updated = regex.stringByReplacingMatches(in: updated, range: range, withTemplate: item.replacement)
+                updated = item.regex.stringByReplacingMatches(in: updated, range: range, withTemplate: item.replacement)
                 removedCount += count
             }
         }
@@ -122,24 +144,30 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         return (updated, removedCount)
     }
 
+    // MARK: - Lexicon
+
     private func applyLexicon(text: String, lexicon: PersonalLexicon) -> (text: String, edits: [TranscriptEdit]) {
         var updated = text
         var edits: [TranscriptEdit] = []
 
-        for entry in lexicon.entries.sorted(by: { $0.term.count > $1.term.count }) {
+        // Lexicon entries are already sorted longest-first by the PersonalLexicon invariant.
+        for entry in lexicon.entries {
             let escaped = NSRegularExpression.escapedPattern(for: entry.term)
             let pattern = "\\b\(escaped)\\b"
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
             let range = NSRange(updated.startIndex..., in: updated)
             let count = regex.numberOfMatches(in: updated, range: range)
             if count > 0 {
-                updated = regex.stringByReplacingMatches(in: updated, range: range, withTemplate: entry.preferred)
+                let safeReplacement = NSRegularExpression.escapedTemplate(for: entry.preferred)
+                updated = regex.stringByReplacingMatches(in: updated, range: range, withTemplate: safeReplacement)
                 edits.append(TranscriptEdit(kind: .lexiconCorrection, from: entry.term, to: entry.preferred))
             }
         }
 
         return (updated, edits)
     }
+
+    // MARK: - Structure
 
     private func applyStructure(text: String, mode: StructureMode) -> (text: String, edits: [TranscriptEdit]) {
         switch mode {
@@ -178,7 +206,8 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     }
 
     private func collapseWhitespace(_ text: String) -> String {
-        let collapsed = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        let range = NSRange(text.startIndex..., in: text)
+        let collapsed = Self.whitespaceRegex.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
         return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

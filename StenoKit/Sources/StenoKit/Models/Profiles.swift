@@ -69,8 +69,10 @@ public struct LexiconEntry: Sendable, Codable, Equatable {
 public struct PersonalLexicon: Sendable, Codable, Equatable {
     public var entries: [LexiconEntry]
 
+    /// Entries are sorted longest-term-first so longer multi-word phrases
+    /// match before shorter substrings during lexicon application.
     public init(entries: [LexiconEntry] = []) {
-        self.entries = entries
+        self.entries = entries.sorted { $0.term.count > $1.term.count }
     }
 }
 
