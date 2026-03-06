@@ -67,16 +67,26 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
    cd ../..
    ```
 
-4. Generate the local Xcode project (generated from `project.yml`, not tracked in git):
+4. **(Strongly recommended)** Download the VAD model for silence/background-noise suppression:
+   ```bash
+   cd vendor/whisper.cpp/models
+   ./download-vad-model.sh silero-v6.2.0
+   cd ../../..
+   ```
+   This downloads `ggml-silero-v6.2.0.bin` into the models directory. With VAD enabled (the default), Steno uses whisper.cpp's built-in voice activity detection to avoid inserting hallucinated text when no speech is present. If the VAD model is missing, dictation still works but with weaker protection against silence and background noise.
+
+   > **Note:** The `for-tests-silero-v6.2.0-ggml.bin` file in the models directory is a test stub, not a usable model.
+
+5. Generate the local Xcode project (generated from `project.yml`, not tracked in git):
    ```bash
    xcodegen generate
    ```
 
-5. Open your local `Steno.xcodeproj` in Xcode and set your Apple Developer Team in Signing & Capabilities.
+6. Open your local `Steno.xcodeproj` in Xcode and set your Apple Developer Team in Signing & Capabilities.
 
-6. Build and run (Cmd+R).
+7. Build and run (Cmd+R).
 
-7. Grant required permissions when prompted:
+8. Grant required permissions when prompted:
    - Microphone: record your voice
    - Accessibility: let Steno type or paste into the active app
    - Input Monitoring: let Steno detect global hotkeys
