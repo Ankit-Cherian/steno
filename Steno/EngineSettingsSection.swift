@@ -30,6 +30,25 @@ struct EngineSettingsSection: View {
                 Text("Thread count: \(preferences.dictation.threadCount)")
             }
 
+            Divider()
+
+            Toggle("Voice Activity Detection (VAD)", isOn: $preferences.dictation.vadEnabled)
+                .font(StenoDesign.bodyEmphasis())
+
+            if preferences.dictation.vadEnabled {
+                TextField("VAD model path", text: $preferences.dictation.vadModelPath)
+                    .textFieldStyle(.roundedBorder)
+                if let error = vadModelPathError {
+                    HStack(spacing: StenoDesign.xs) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(StenoDesign.caption())
+                        Text(error)
+                            .font(StenoDesign.caption())
+                    }
+                    .foregroundStyle(StenoDesign.warning)
+                }
+            }
+
             HStack(spacing: StenoDesign.sm) {
                 Button {
                     runTestSetup()
@@ -65,6 +84,15 @@ struct EngineSettingsSection: View {
         let path = preferences.dictation.modelPath
         guard !path.isEmpty else { return nil }
         return FileManager.default.fileExists(atPath: path) ? nil : "File not found at this path"
+    }
+
+    private var vadModelPathError: String? {
+        let path = preferences.dictation.vadModelPath
+        guard !path.isEmpty else {
+            return "VAD model path is empty. Download with: ./models/download-vad-model.sh silero-v6.2.0"
+        }
+        if FileManager.default.fileExists(atPath: path) { return nil }
+        return "VAD model not found. Dictation will work without it, but silence/noise suppression will be weaker. Download with: ./models/download-vad-model.sh silero-v6.2.0"
     }
 
     private func runTestSetup() {

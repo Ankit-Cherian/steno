@@ -204,7 +204,7 @@ struct OnboardingView: View {
                     .foregroundStyle(StenoDesign.textPrimary)
                     .accessibilityAddTraits(.isHeader)
 
-                Text("Confirm the paths to your local whisper-cli binary and model file.")
+                Text("Confirm the paths to your local whisper-cli binary and model file. For better silence and background-noise suppression, download the optional VAD model (see Settings \u{2192} Engine after setup).")
                     .font(StenoDesign.subheadline())
                     .foregroundStyle(StenoDesign.textSecondary)
             }
