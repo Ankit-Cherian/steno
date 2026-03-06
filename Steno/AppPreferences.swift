@@ -49,7 +49,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             self.modelPath = modelPath
             self.threadCount = threadCount
             self.vadEnabled = vadEnabled
-            self.vadModelPath = vadModelPath ?? Self.defaultVADModelPath(relativeTo: modelPath)
+            self.vadModelPath = vadModelPath ?? WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: modelPath)
         }
 
         init(from decoder: Decoder) throws {
@@ -59,12 +59,16 @@ struct AppPreferences: Codable, Sendable, Equatable {
             threadCount = try container.decodeIfPresent(Int.self, forKey: .threadCount) ?? 6
             vadEnabled = try container.decodeIfPresent(Bool.self, forKey: .vadEnabled) ?? true
             let savedVAD = try container.decodeIfPresent(String.self, forKey: .vadModelPath)
-            vadModelPath = savedVAD ?? Self.defaultVADModelPath(relativeTo: modelPath)
+            vadModelPath = savedVAD ?? WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: modelPath)
         }
 
-        static func defaultVADModelPath(relativeTo modelPath: String) -> String {
-            let modelsDir = (modelPath as NSString).deletingLastPathComponent
-            return (modelsDir as NSString).appendingPathComponent("ggml-silero-v6.2.0.bin")
+        mutating func updateModelPath(_ newModelPath: String) {
+            vadModelPath = WhisperRuntimeConfiguration.syncedVADModelPath(
+                currentVADModelPath: vadModelPath,
+                previousModelPath: modelPath,
+                newModelPath: newModelPath
+            )
+            modelPath = newModelPath
         }
     }
 

@@ -384,7 +384,7 @@ struct OnboardingView: View {
             controller.preferences.dictation.whisperCLIPath = whisperCLIPath
         }
         if modelPath != controller.preferences.dictation.modelPath {
-            controller.preferences.dictation.modelPath = modelPath
+            controller.preferences.dictation.updateModelPath(modelPath)
         }
 
         controller.completeOnboarding()

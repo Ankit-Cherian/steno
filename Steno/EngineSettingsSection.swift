@@ -18,7 +18,7 @@ struct EngineSettingsSection: View {
                     .foregroundStyle(StenoDesign.error)
             }
 
-            TextField("Model path", text: $preferences.dictation.modelPath)
+            TextField("Model path", text: modelPathBinding)
                 .textFieldStyle(.roundedBorder)
             if let error = modelPathError {
                 Text(error)
@@ -84,6 +84,13 @@ struct EngineSettingsSection: View {
         let path = preferences.dictation.modelPath
         guard !path.isEmpty else { return nil }
         return FileManager.default.fileExists(atPath: path) ? nil : "File not found at this path"
+    }
+
+    private var modelPathBinding: Binding<String> {
+        Binding(
+            get: { preferences.dictation.modelPath },
+            set: { preferences.dictation.updateModelPath($0) }
+        )
     }
 
     private var vadModelPathError: String? {

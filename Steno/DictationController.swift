@@ -584,15 +584,11 @@ private struct DictationRuntimeFactory {
     func makeTranscriptionEngine() -> WhisperCLITranscriptionEngine {
         let whisperCLIPath = URL(fileURLWithPath: snapshot.dictation.whisperCLIPath)
         let modelPath = URL(fileURLWithPath: snapshot.dictation.modelPath)
-
-        var extraArgs = ["-t", "\(snapshot.dictation.threadCount)", "--suppress-nst"]
-
-        if snapshot.dictation.vadEnabled {
-            let vadPath = snapshot.dictation.vadModelPath
-            if FileManager.default.fileExists(atPath: vadPath) {
-                extraArgs.append(contentsOf: ["--vad", "--vad-model", vadPath])
-            }
-        }
+        let extraArgs = WhisperRuntimeConfiguration.additionalArguments(
+            threadCount: snapshot.dictation.threadCount,
+            vadEnabled: snapshot.dictation.vadEnabled,
+            vadModelPath: snapshot.dictation.vadModelPath
+        )
 
         return WhisperCLITranscriptionEngine(
             config: .init(
