@@ -3,6 +3,12 @@ import Foundation
 public struct LocalCleanupRanker: Sendable {
     public init() {}
 
+    private static let removableYouKnowRegex: NSRegularExpression = {
+        let protected = "a|an|the|this|that|these|those|i|you|he|she|it|we|they|me|him|her|us|them|my|your|his|its|our|their|what|when|where|which|who|whom|whose|why|how|if"
+        let pattern = "(?i)(?:\\s|^)you know(?=\\s(?!(?:\(protected))\\b)|[,.!?]|$)"
+        return try! NSRegularExpression(pattern: pattern)
+    }()
+
     public func bestCandidate(
         rawText: String,
         candidates: [CleanupCandidate],
@@ -110,6 +116,10 @@ public struct LocalCleanupRanker: Sendable {
         let safeRemoved = candidate.removedFillers.filter { isUnambiguousFiller($0) }.count
         if safeRemoved > 0 {
             score += min(0.2, Double(safeRemoved) * 0.1)
+        }
+
+        if isContextualYouKnowRemoved(rawText: rawText, candidate: candidate) {
+            score += 0.15
         }
 
         let lexiconEdits = candidate.appliedEdits.filter { $0.kind == .lexiconCorrection }.count
@@ -220,6 +230,23 @@ public struct LocalCleanupRanker: Sendable {
             options: .regularExpression
         ) != nil
         return candidateStillHasInterjection == false
+    }
+
+    private func isContextualYouKnowRemoved(rawText: String, candidate: CleanupCandidate) -> Bool {
+        guard candidate.removedFillers.contains(where: { $0.caseInsensitiveCompare("you know") == .orderedSame }) else {
+            return false
+        }
+
+        let rawRange = NSRange(rawText.startIndex..., in: rawText)
+        let rawHasRemovableYouKnow = Self.removableYouKnowRegex.numberOfMatches(in: rawText, range: rawRange) > 0
+        guard rawHasRemovableYouKnow else { return false }
+
+        let candidateRange = NSRange(candidate.text.startIndex..., in: candidate.text)
+        let candidateStillHasRemovableYouKnow = Self.removableYouKnowRegex.numberOfMatches(
+            in: candidate.text,
+            range: candidateRange
+        ) > 0
+        return candidateStillHasRemovableYouKnow == false
     }
 
     private func levenshteinDistance<Element: Equatable>(

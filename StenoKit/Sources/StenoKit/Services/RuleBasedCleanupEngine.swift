@@ -62,8 +62,8 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
     // MARK: - Precompiled Regexes
 
-    private static let fillerRegexes: [String: NSRegularExpression] = {
-        let fillers = ["um", "uh", "you know", "i mean", "basically", "sort of", "kind of"]
+    private static let unconditionalFillerRegexes: [String: NSRegularExpression] = {
+        let fillers = ["um", "uh"]
         var dict: [String: NSRegularExpression] = [:]
         for filler in fillers {
             let escaped = NSRegularExpression.escapedPattern(for: filler)
@@ -73,6 +73,25 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             }
         }
         return dict
+    }()
+
+    private static let aggressiveFillerRegexes: [String: NSRegularExpression] = {
+        let fillers = ["i mean", "basically", "sort of", "kind of"]
+        var dict: [String: NSRegularExpression] = [:]
+        for filler in fillers {
+            let escaped = NSRegularExpression.escapedPattern(for: filler)
+            let pattern = "(?i)(?:\\s|^)\(escaped)(?=\\s|[,.!?]|$)"
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                dict[filler] = regex
+            }
+        }
+        return dict
+    }()
+
+    private static let contextualYouKnowRegex: NSRegularExpression = {
+        let protected = "a|an|the|this|that|these|those|i|you|he|she|it|we|they|me|him|her|us|them|my|your|his|its|our|their|what|when|where|which|who|whom|whose|why|how|if"
+        let pattern = "(?i)(?:\\s|^)you know(?=\\s(?!(?:\(protected))\\b)|[,.!?]|$)"
+        return try! NSRegularExpression(pattern: pattern)
     }()
 
     private static let likePatterns: [(regex: NSRegularExpression, replacement: String)] = {
@@ -90,6 +109,10 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         try! NSRegularExpression(pattern: "\\s+")
     }()
 
+    private static let punctuationSpacingRegex: NSRegularExpression = {
+        try! NSRegularExpression(pattern: "\\s+([,.!?])")
+    }()
+
     // MARK: - Filler Removal
 
     private func removeFillers(from text: String, policy: FillerPolicy) -> (text: String, removed: [String], edits: [TranscriptEdit]) {
@@ -97,25 +120,44 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             return (text, [], [])
         }
 
-        let balancedFillers = ["um", "uh", "you know"]
-        let aggressiveFillers = balancedFillers + ["i mean", "basically", "sort of", "kind of"]
-        let directFillers = policy == .balanced ? balancedFillers : aggressiveFillers
+        let unconditionalFillers = ["um", "uh"]
+        let aggressiveFillers = ["i mean", "basically", "sort of", "kind of"]
 
         var updated = text
         var removed: [String] = []
         var edits: [TranscriptEdit] = []
 
-        for filler in directFillers {
-            guard let regex = Self.fillerRegexes[filler] else { continue }
+        for filler in unconditionalFillers {
+            guard let regex = Self.unconditionalFillerRegexes[filler] else { continue }
+            applyFillerRemoval(
+                filler,
+                regex: regex,
+                to: &updated,
+                removed: &removed,
+                edits: &edits
+            )
+        }
 
-            let range = NSRange(updated.startIndex..., in: updated)
-            let count = regex.numberOfMatches(in: updated, range: range)
-            if count > 0 {
-                updated = regex.stringByReplacingMatches(in: updated, range: range, withTemplate: " ")
-                removed.append(contentsOf: Array(repeating: filler, count: count))
-                edits.append(TranscriptEdit(kind: .fillerRemoval, from: filler, to: ""))
+        if policy == .aggressive {
+            for filler in aggressiveFillers {
+                guard let regex = Self.aggressiveFillerRegexes[filler] else { continue }
+                applyFillerRemoval(
+                    filler,
+                    regex: regex,
+                    to: &updated,
+                    removed: &removed,
+                    edits: &edits
+                )
             }
         }
+
+        applyFillerRemoval(
+            "you know",
+            regex: Self.contextualYouKnowRegex,
+            to: &updated,
+            removed: &removed,
+            edits: &edits
+        )
 
         let likeRemovals = removeInterjectionalLike(from: updated)
         updated = likeRemovals.text
@@ -126,6 +168,22 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
         updated = collapseWhitespace(updated)
         return (updated, removed, edits)
+    }
+
+    private func applyFillerRemoval(
+        _ filler: String,
+        regex: NSRegularExpression,
+        to text: inout String,
+        removed: inout [String],
+        edits: inout [TranscriptEdit]
+    ) {
+        let range = NSRange(text.startIndex..., in: text)
+        let count = regex.numberOfMatches(in: text, range: range)
+        if count > 0 {
+            text = regex.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
+            removed.append(contentsOf: Array(repeating: filler, count: count))
+            edits.append(TranscriptEdit(kind: .fillerRemoval, from: filler, to: ""))
+        }
     }
 
     private func removeInterjectionalLike(from text: String) -> (text: String, count: Int) {
@@ -208,6 +266,12 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     private func collapseWhitespace(_ text: String) -> String {
         let range = NSRange(text.startIndex..., in: text)
         let collapsed = Self.whitespaceRegex.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
-        return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        let punctuationRange = NSRange(collapsed.startIndex..., in: collapsed)
+        let tightened = Self.punctuationSpacingRegex.stringByReplacingMatches(
+            in: collapsed,
+            range: punctuationRange,
+            withTemplate: "$1"
+        )
+        return tightened.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
