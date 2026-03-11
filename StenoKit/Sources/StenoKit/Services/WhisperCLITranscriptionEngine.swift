@@ -108,49 +108,10 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
     }
 
     private static func buildProcessEnvironment(config: Configuration) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-
-        // Local whisper.cpp builds commonly rely on DYLD_* paths.
-        // Hardened Runtime builds must include:
-        // com.apple.security.cs.allow-dyld-environment-variables
-        // to preserve these variables in child processes.
-        if env["STENO_DISABLE_DYLD_ENV"] == "1" {
-            return env
-        }
-
-        let libSearchPaths = dynamicLibrarySearchPaths(config: config)
-        guard !libSearchPaths.isEmpty else {
-            return env
-        }
-
-        let existingDYLD = env["DYLD_LIBRARY_PATH"]?
-            .split(separator: ":")
-            .map(String.init) ?? []
-        let mergedDYLD = orderedUnique(libSearchPaths + existingDYLD)
-        env["DYLD_LIBRARY_PATH"] = mergedDYLD.joined(separator: ":")
-
-        let existingFallback = env["DYLD_FALLBACK_LIBRARY_PATH"]?
-            .split(separator: ":")
-            .map(String.init) ?? []
-        let mergedFallback = orderedUnique(libSearchPaths + existingFallback)
-        env["DYLD_FALLBACK_LIBRARY_PATH"] = mergedFallback.joined(separator: ":")
-
-        return env
-    }
-
-    private static func dynamicLibrarySearchPaths(config: Configuration) -> [String] {
-        let fileManager = FileManager.default
-        let binDir = config.whisperCLIPath.deletingLastPathComponent()
-        let buildDir = binDir.deletingLastPathComponent()
-
-        let candidates = [
-            buildDir.appendingPathComponent("src", isDirectory: true).path,
-            buildDir.appendingPathComponent("ggml/src", isDirectory: true).path,
-            buildDir.appendingPathComponent("ggml/src/ggml-blas", isDirectory: true).path,
-            buildDir.appendingPathComponent("ggml/src/ggml-metal", isDirectory: true).path
-        ]
-
-        return orderedUnique(candidates.filter { fileManager.fileExists(atPath: $0) })
+        WhisperRuntimeConfiguration.processEnvironment(
+            whisperCLIPath: config.whisperCLIPath.path,
+            modelPath: config.modelPath.path
+        )
     }
 
     // MARK: - Artifact Stripping
@@ -194,17 +155,5 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         let collapsedRange = NSRange(result.startIndex..., in: result)
         result = multiSpacePattern.stringByReplacingMatches(in: result, range: collapsedRange, withTemplate: " ")
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func orderedUnique(_ values: [String]) -> [String] {
-        var seen: Set<String> = []
-        var output: [String] = []
-        output.reserveCapacity(values.count)
-
-        for value in values where !value.isEmpty && !seen.contains(value) {
-            seen.insert(value)
-            output.append(value)
-        }
-        return output
     }
 }

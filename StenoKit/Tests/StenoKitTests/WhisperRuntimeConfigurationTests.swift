@@ -82,3 +82,32 @@ func additionalArgumentsOmitMissingVADFlags() {
 
     #expect(args == ["-t", "6", "--suppress-nst"])
 }
+
+@Test("processEnvironment adds local whisper library search paths")
+func processEnvironmentAddsLocalWhisperLibraryPaths() {
+    let cliPath = "/tmp/whisper.cpp/build/bin/whisper-cli"
+    let modelPath = "/tmp/whisper.cpp/models/ggml-small.en.bin"
+    let existing = [
+        "DYLD_LIBRARY_PATH": "/already/present",
+        "DYLD_FALLBACK_LIBRARY_PATH": "/fallback/present"
+    ]
+    let existingPaths: Set<String> = [
+        "/tmp/whisper.cpp/build/src",
+        "/tmp/whisper.cpp/build/ggml/src",
+        "/tmp/whisper.cpp/build/ggml/src/ggml-blas",
+        "/tmp/whisper.cpp/build/ggml/src/ggml-metal",
+        "/tmp/whisper.cpp/models"
+    ]
+
+    let env = WhisperRuntimeConfiguration.processEnvironment(
+        whisperCLIPath: cliPath,
+        modelPath: modelPath,
+        environment: existing,
+        fileExists: { existingPaths.contains($0) }
+    )
+
+    #expect(env["DYLD_LIBRARY_PATH"]?.contains("/tmp/whisper.cpp/build/src") == true)
+    #expect(env["DYLD_LIBRARY_PATH"]?.contains("/already/present") == true)
+    #expect(env["DYLD_FALLBACK_LIBRARY_PATH"]?.contains("/tmp/whisper.cpp/models") == true)
+    #expect(env["DYLD_FALLBACK_LIBRARY_PATH"]?.contains("/fallback/present") == true)
+}

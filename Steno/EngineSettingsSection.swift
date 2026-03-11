@@ -120,15 +120,22 @@ struct EngineSettingsSection: View {
 
             // Test whisper-cli with --help
             let cliPath = preferences.dictation.whisperCLIPath
+            let environment = WhisperRuntimeConfiguration.processEnvironment(
+                whisperCLIPath: cliPath,
+                modelPath: preferences.dictation.modelPath
+            )
 
             do {
                 let result = try await ProcessRunner.run(
                     executableURL: URL(fileURLWithPath: cliPath),
                     arguments: ["--help"],
+                    environment: environment,
                     standardOutput: FileHandle.nullDevice,
-                    standardError: FileHandle.nullDevice
+                    standardError: nil
                 )
                 let success = result.terminationStatus == 0
+                let stderr = String(data: result.standardError, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 await MainActor.run {
                     if success {
                         testResult = "whisper-cli is working."
@@ -140,7 +147,11 @@ struct EngineSettingsSection: View {
                             }
                         }
                     } else {
-                        testResult = "whisper-cli exited with code \(result.terminationStatus)."
+                        if let stderr, !stderr.isEmpty {
+                            testResult = "whisper-cli exited with code \(result.terminationStatus): \(stderr)"
+                        } else {
+                            testResult = "whisper-cli exited with code \(result.terminationStatus)."
+                        }
                         testResultIsError = true
                     }
                     isTesting = false
