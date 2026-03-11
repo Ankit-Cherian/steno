@@ -448,9 +448,10 @@ final class MediaRemoteBridge: MediaRemoteBridging {
         }
         // Defer dlclose to after the serial callbackQueue drains, avoiding
         // a sync-on-self deadlock if deinit runs on the callbackQueue thread.
-        let handle = self.handle
+        let handleAddress = self.handle.map { Int(bitPattern: $0) }
         callbackQueue.async {
-            if let handle { dlclose(handle) }
+            guard let handleAddress else { return }
+            Self.closeHandle(address: handleAddress)
         }
     }
 
@@ -529,6 +530,11 @@ final class MediaRemoteBridge: MediaRemoteBridging {
         let pointer = symbol.assumingMemoryBound(to: CFString?.self)
         guard let value = pointer.pointee else { return nil }
         return value as String
+    }
+
+    nonisolated private static func closeHandle(address: Int) {
+        guard let handle = UnsafeMutableRawPointer(bitPattern: address) else { return }
+        dlclose(handle)
     }
 }
 

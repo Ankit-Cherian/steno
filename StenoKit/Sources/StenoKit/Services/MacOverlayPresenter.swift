@@ -13,6 +13,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var pulseTimer: Timer?
     private var dotPulseHigh = true
     private var wasHidden = true
+    private var pendingTextUpdate: String?
 
     private static let dotBlue = NSColor(red: 0.118, green: 0.565, blue: 1.0, alpha: 1.0)
 
@@ -36,16 +37,20 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             timer = nil
             pulseTimer?.invalidate()
             pulseTimer = nil
+            NSObject.cancelPreviousPerformRequests(withTarget: self)
             NSWorkspace.shared.notificationCenter.removeObserver(self)
         }
     }
 
     /// Pre-create the overlay window so the first `show` has no lazy-init stutter.
+    @MainActor
     public func prepareWindow() {
         ensureWindow()
     }
 
+    @MainActor
     public func show(state: OverlayState) {
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(finishHide), object: nil)
         ensureWindow()
 
         let isFirstShow = wasHidden
@@ -93,41 +98,31 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         centerWindowNearTop()
 
-        if isFirstShow && !reduceMotion {
-            // Entrance animation: fade in + slide up
-            window?.alphaValue = 0
-            let finalOrigin = window?.frame.origin ?? .zero
-            window?.setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y - 20))
-            window?.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.3
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                self.window?.animator().alphaValue = 1
-                self.window?.animator().setFrameOrigin(finalOrigin)
-            }
-        } else {
-            window?.alphaValue = 1
-            window?.orderFrontRegardless()
-        }
+        presentWindow(isFirstShow: isFirstShow)
     }
 
+    @MainActor
     public func hide() {
         stopTimer()
         stopDotPulse()
         wasHidden = true
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(applyPendingTextUpdate), object: nil)
 
         if !reduceMotion {
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration = 0.2
-                self.window?.animator().alphaValue = 0
-            }, completionHandler: {
-                self.window?.orderOut(nil)
-            })
+            guard let window else { return }
+            NSAnimationContext.beginGrouping()
+            let context = NSAnimationContext.current
+            context.duration = 0.2
+            window.animator().alphaValue = 0
+            NSAnimationContext.endGrouping()
+            NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(finishHide), object: nil)
+            perform(#selector(finishHide), with: nil, afterDelay: 0.2)
         } else {
             window?.orderOut(nil)
         }
     }
 
+    @MainActor
     private func ensureWindow() {
         if window != nil {
             return
@@ -189,6 +184,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         self.textField = label
     }
 
+    @MainActor
     private func animateDotColor(_ color: NSColor) {
         guard !reduceMotion else {
             statusDot?.layer?.backgroundColor = color.cgColor
@@ -200,23 +196,26 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         CATransaction.commit()
     }
 
+    @MainActor
     private func updateText(_ newText: String) {
         guard !reduceMotion else {
             textField?.stringValue = newText
             return
         }
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.1
-            self.textField?.animator().alphaValue = 0
-        }, completionHandler: {
-            self.textField?.stringValue = newText
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.15
-                self.textField?.animator().alphaValue = 1
-            }
-        })
+
+        guard let textField else { return }
+        pendingTextUpdate = newText
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(applyPendingTextUpdate), object: nil)
+
+        NSAnimationContext.beginGrouping()
+        let fadeOutContext = NSAnimationContext.current
+        fadeOutContext.duration = 0.1
+        textField.animator().alphaValue = 0
+        NSAnimationContext.endGrouping()
+        perform(#selector(applyPendingTextUpdate), with: nil, afterDelay: 0.1)
     }
 
+    @MainActor
     private func startDotPulse() {
         stopDotPulse()
         dotPulseHigh = true
@@ -235,12 +234,14 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         pulseTimer = newTimer
     }
 
+    @MainActor
     private func stopDotPulse() {
         pulseTimer?.invalidate()
         pulseTimer = nil
         statusDot?.alphaValue = 1.0
     }
 
+    @MainActor
     private func startTimer() {
         timer?.invalidate()
         let newTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
@@ -252,12 +253,14 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         timer = newTimer
     }
 
+    @MainActor
     private func stopTimer() {
         timer?.invalidate()
         timer = nil
         listeningStartDate = nil
     }
 
+    @MainActor
     private func updateListeningText() {
         guard let start = listeningStartDate else {
             textField?.stringValue = "Listening 00:00"
@@ -271,6 +274,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         textField?.stringValue = "\(mode) \(String(format: "%02d:%02d", minutes, seconds))"
     }
 
+    @MainActor
     private func centerWindowNearTop() {
         guard let window,
               let screen = NSScreen.main else { return }
@@ -281,11 +285,56 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
+    @MainActor
+    private func presentWindow(isFirstShow: Bool) {
+        guard let window else { return }
+
+        if isFirstShow && !reduceMotion {
+            // Entrance animation: fade in + slide up.
+            window.alphaValue = 0
+            let finalOrigin = window.frame.origin
+            window.setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y - 20))
+            window.orderFrontRegardless()
+
+            NSAnimationContext.beginGrouping()
+            let context = NSAnimationContext.current
+            context.duration = 0.3
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            window.animator().alphaValue = 1
+            window.animator().setFrameOrigin(finalOrigin)
+            NSAnimationContext.endGrouping()
+        } else {
+            window.alphaValue = 1
+            window.orderFrontRegardless()
+        }
+    }
+
     @objc
+    @MainActor
     private func accessibilityDisplayOptionsDidChange(_: Notification) {
         handleAccessibilityDisplayOptionsDidChange()
     }
 
+    @objc
+    @MainActor
+    private func finishHide() {
+        window?.orderOut(nil)
+    }
+
+    @objc
+    @MainActor
+    private func applyPendingTextUpdate() {
+        guard let pendingTextUpdate else { return }
+        self.pendingTextUpdate = nil
+        textField?.stringValue = pendingTextUpdate
+        NSAnimationContext.beginGrouping()
+        let fadeInContext = NSAnimationContext.current
+        fadeInContext.duration = 0.15
+        textField?.animator().alphaValue = 1
+        NSAnimationContext.endGrouping()
+    }
+
+    @MainActor
     private func handleAccessibilityDisplayOptionsDidChange() {
         guard reduceMotion else { return }
         stopDotPulse()

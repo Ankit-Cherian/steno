@@ -42,7 +42,7 @@ final class DictationController: ObservableObject {
     private var pendingRuntimeRebuild = false
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
-    private var terminationObserver: Any?
+    private var terminationTask: Task<Void, Never>?
 
     init(
         hotkey: MacHotkeyMonitor = MacHotkeyMonitor(),
@@ -86,26 +86,24 @@ final class DictationController: ObservableObject {
         hotkey.start()
         menuBar.setup(controller: self)
 
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.teardown()
-        }
+        terminationTask = Task { @MainActor [weak self] in
+            let notifications = NotificationCenter.default
+                .notifications(named: NSApplication.willTerminateNotification)
+                .map { _ in () }
 
-        Task {
-            await bootstrap()
+            for await _ in notifications {
+                self?.teardown()
+                break
+            }
         }
     }
 
     /// Idempotent shutdown: stops hotkeys, cancels in-flight work, releases media,
     /// hides the overlay, and invalidates timers. Triggered by willTerminateNotification.
+    @MainActor
     func teardown() {
-        if let observer = terminationObserver {
-            NotificationCenter.default.removeObserver(observer)
-            terminationObserver = nil
-        }
+        terminationTask?.cancel()
+        terminationTask = nil
         hotkey.stop()
         overlay.hide()
         activeStartTask?.cancel()
@@ -125,6 +123,11 @@ final class DictationController: ObservableObject {
 
     var recordingLifecycleState: RecordingLifecycleState {
         recordingStateMachine.state
+    }
+
+    func bootstrapIfNeeded() async {
+        guard !hasBootstrapped else { return }
+        await bootstrap()
     }
 
     func bootstrap() async {
@@ -350,11 +353,18 @@ final class DictationController: ObservableObject {
 
         activeStartTask = Task {
             do {
-                if shouldPauseMedia {
+                // Press-to-talk should start capture immediately so the first spoken
+                // words are not clipped while media detection/pausing runs.
+                if mode == .handsFree && shouldPauseMedia {
                     activeMediaToken = await mediaInterruption.beginInterruption()
                 }
 
                 currentSessionID = try await coordinator.startPressToTalk(appContext: capturedContext)
+
+                if mode == .pressToTalk && shouldPauseMedia {
+                    activeMediaToken = await mediaInterruption.beginInterruption()
+                }
+
                 await coordinator.setHandsFreeEnabled(mode == .handsFree)
             } catch {
                 if let token = activeMediaToken {

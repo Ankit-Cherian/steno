@@ -19,6 +19,9 @@ struct StenoApp: App {
                         .environmentObject(controller)
                 }
             }
+            .task {
+                await controller.bootstrapIfNeeded()
+            }
         }
         .defaultSize(width: StenoDesign.windowIdealWidth, height: StenoDesign.windowIdealHeight)
         .commands {
