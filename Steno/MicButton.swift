@@ -66,7 +66,7 @@ struct MicButton: View {
                         .scaleEffect(
                             reduceMotion
                                 ? 1.0
-                                : (outerGlowActive ? 1.1 : 1.0)
+                                : (outerGlowActive ? 1.15 : 1.0)
                         )
                         .animation(
                             reduceMotion
@@ -95,7 +95,7 @@ struct MicButton: View {
                         .scaleEffect(
                             reduceMotion
                                 ? 1.0
-                                : (innerGlowActive ? 1.1 : 1.0)
+                                : (innerGlowActive ? 1.15 : 1.0)
                         )
                         .animation(
                             reduceMotion
@@ -132,7 +132,7 @@ struct MicButton: View {
                             .transition(reduceMotion ? .opacity : .scale(scale: 0.8).combined(with: .opacity))
                     } else {
                         Image(systemName: "mic.fill")
-                            .font(.system(size: StenoDesign.iconXL, weight: .medium))
+                            .font(.system(size: StenoDesign.micButtonIconSize, weight: .medium))
                             .foregroundStyle(isRecording ? .white : StenoDesign.accent)
                             .transition(reduceMotion ? .opacity : .scale(scale: 1.1).combined(with: .opacity))
                     }

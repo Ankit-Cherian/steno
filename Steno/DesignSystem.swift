@@ -157,9 +157,10 @@ enum StenoDesign {
 
     // MARK: - Component Sizes
 
-    static let micButtonInnerRingSize: CGFloat = 84
-    static let micButtonOuterRingSize: CGFloat = 96
-    static let micButtonSize: CGFloat = 72
+    static let micButtonInnerRingSize: CGFloat = 104
+    static let micButtonOuterRingSize: CGFloat = 120
+    static let micButtonSize: CGFloat = 88
+    static let micButtonIconSize: CGFloat = 32
     static let dividerHeight: CGFloat = 1
     static let windowMinWidth: CGFloat = 600
     static let windowIdealWidth: CGFloat = 620
