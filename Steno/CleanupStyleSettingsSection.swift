@@ -17,35 +17,31 @@ struct CleanupStyleSettingsSection: View {
             "Cleanup Style",
             subtitle: "How transcripts are cleaned and formatted"
         ) {
-            describedPicker(
-                "Tone",
-                description: "How formal the cleaned text sounds",
-                selection: $preferences.globalStyleProfile.tone
-            )
-
-            Divider()
-
-            describedPicker(
-                "Structure",
-                description: "How the output text is formatted",
-                selection: $preferences.globalStyleProfile.structureMode
-            )
-
-            Divider()
-
-            describedPicker(
-                "Filler removal",
-                description: "How aggressively fillers like \u{201C}um\u{201D}, \u{201C}you know\u{201D}, and \u{201C}like\u{201D} are removed",
-                selection: $preferences.globalStyleProfile.fillerPolicy
-            )
-
-            Divider()
-
-            describedPicker(
-                "Commands",
-                description: "Whether /slash commands pass through raw",
-                selection: $preferences.globalStyleProfile.commandPolicy
-            )
+            Grid(alignment: .leading, horizontalSpacing: StenoDesign.sm, verticalSpacing: 0) {
+                pickerRow(
+                    "Tone",
+                    description: "How formal the cleaned text sounds",
+                    selection: $preferences.globalStyleProfile.tone
+                )
+                Divider().gridCellColumns(2)
+                pickerRow(
+                    "Structure",
+                    description: "How the output text is formatted",
+                    selection: $preferences.globalStyleProfile.structureMode
+                )
+                Divider().gridCellColumns(2)
+                pickerRow(
+                    "Filler removal",
+                    description: "How aggressively fillers like \u{201C}um\u{201D}, \u{201C}you know\u{201D}, and \u{201C}like\u{201D} are removed",
+                    selection: $preferences.globalStyleProfile.fillerPolicy
+                )
+                Divider().gridCellColumns(2)
+                pickerRow(
+                    "Commands",
+                    description: "Whether /slash commands pass through raw",
+                    selection: $preferences.globalStyleProfile.commandPolicy
+                )
+            }
 
             DisclosureGroup(
                 "Per-app overrides (\(preferences.appStyleProfiles.count) configured)"
@@ -101,5 +97,31 @@ struct CleanupStyleSettingsSection: View {
                 .padding(.top, StenoDesign.sm)
             }
         }
+    }
+
+    @ViewBuilder
+    private func pickerRow<T: Hashable & CaseIterable & RawRepresentable>(
+        _ label: String,
+        description: String,
+        selection: Binding<T>
+    ) -> some View where T.RawValue == String {
+        GridRow(alignment: .firstTextBaseline) {
+            Text(label)
+                .gridColumnAlignment(.trailing)
+            VStack(alignment: .leading, spacing: StenoDesign.xxs) {
+                Picker("", selection: selection) {
+                    ForEach(Array(T.allCases), id: \.self) { value in
+                        Text(value.rawValue.capitalized).tag(value)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+                Text(description)
+                    .font(StenoDesign.caption())
+                    .foregroundStyle(StenoDesign.textSecondary)
+            }
+        }
+        .padding(.vertical, StenoDesign.sm)
     }
 }
