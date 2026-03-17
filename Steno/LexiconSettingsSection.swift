@@ -13,17 +13,19 @@ struct LexiconSettingsSection: View {
             "Word Corrections",
             subtitle: "Auto-fix words that speech recognition gets wrong"
         ) {
-            if preferences.lexiconEntries.isEmpty {
-                Text("No corrections yet. Example: \u{201C}stenoh\u{201D} \u{2192} \u{201C}Steno\u{201D}")
-                    .foregroundStyle(StenoDesign.textSecondary)
-            } else {
-                ForEach(preferences.lexiconEntries.indices, id: \.self) { index in
-                    let entry = preferences.lexiconEntries[index]
-                    entryRow(
-                        leading: "\u{201C}\(entry.term)\u{201D} \u{2192} \u{201C}\(entry.preferred)\u{201D}",
-                        scope: entry.scope
-                    ) {
-                        preferences.lexiconEntries.remove(at: index)
+            VStack(spacing: StenoDesign.sm) {
+                if preferences.lexiconEntries.isEmpty {
+                    Text("No corrections yet. Example: \u{201C}stenoh\u{201D} \u{2192} \u{201C}Steno\u{201D}")
+                        .foregroundStyle(StenoDesign.textSecondary)
+                } else {
+                    ForEach(preferences.lexiconEntries.indices, id: \.self) { index in
+                        let entry = preferences.lexiconEntries[index]
+                        entryRow(
+                            leading: "\u{201C}\(entry.term)\u{201D} \u{2192} \u{201C}\(entry.preferred)\u{201D}",
+                            scope: entry.scope
+                        ) {
+                            preferences.lexiconEntries.remove(at: index)
+                        }
                     }
                 }
             }

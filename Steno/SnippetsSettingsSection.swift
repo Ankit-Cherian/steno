@@ -13,16 +13,18 @@ struct SnippetsSettingsSection: View {
             "Text Shortcuts",
             subtitle: "Say a trigger word to insert longer text"
         ) {
-            if preferences.snippets.isEmpty {
-                Text("No shortcuts yet. Example: \u{201C}brb\u{201D} \u{2192} \u{201C}I'll be right back\u{201D}")
-                    .foregroundStyle(StenoDesign.textSecondary)
-            } else {
-                ForEach(preferences.snippets) { snippet in
-                    entryRow(
-                        leading: "\u{201C}\(snippet.trigger)\u{201D} \u{2192} \(snippet.expansion)",
-                        scope: snippet.scope
-                    ) {
-                        preferences.snippets.removeAll { $0.id == snippet.id }
+            VStack(spacing: StenoDesign.sm) {
+                if preferences.snippets.isEmpty {
+                    Text("No shortcuts yet. Example: \u{201C}brb\u{201D} \u{2192} \u{201C}I'll be right back\u{201D}")
+                        .foregroundStyle(StenoDesign.textSecondary)
+                } else {
+                    ForEach(preferences.snippets) { snippet in
+                        entryRow(
+                            leading: "\u{201C}\(snippet.trigger)\u{201D} \u{2192} \(snippet.expansion)",
+                            scope: snippet.scope
+                        ) {
+                            preferences.snippets.removeAll { $0.id == snippet.id }
+                        }
                     }
                 }
             }
