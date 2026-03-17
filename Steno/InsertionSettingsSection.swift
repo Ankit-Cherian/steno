@@ -10,43 +10,48 @@ struct InsertionSettingsSection: View {
                 .font(StenoDesign.caption())
                 .foregroundStyle(StenoDesign.textSecondary)
 
-            VStack(spacing: StenoDesign.sm) {
-                ForEach(Array(preferences.insertion.orderedMethods.enumerated()), id: \.element.rawValue) { index, method in
+            VStack(spacing: 0) {
+                let methods = preferences.insertion.orderedMethods
+                ForEach(Array(methods.enumerated()), id: \.element.rawValue) { index, method in
                     HStack(spacing: StenoDesign.sm) {
                         Image(systemName: icon(for: method))
                             .foregroundStyle(StenoDesign.accent)
+                            .frame(width: StenoDesign.iconLG)
                         Text(label(for: method))
                             .font(StenoDesign.callout())
                             .lineLimit(1)
                         Spacer()
-                        Button {
-                            moveUp(index)
-                        } label: {
-                            Image(systemName: "chevron.up")
-                                .font(StenoDesign.caption())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(index == 0)
-                        .foregroundStyle(index == 0 ? StenoDesign.textSecondary.opacity(StenoDesign.opacityDisabled) : StenoDesign.textSecondary)
-                        .accessibilityLabel("Move \(label(for: method)) up")
+                        VStack(spacing: 0) {
+                            Button { moveUp(index) } label: {
+                                Image(systemName: "chevron.up")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .frame(width: 20, height: 12)
+                            }
+                            .disabled(index == 0)
+                            .accessibilityLabel("Move \(label(for: method)) up")
 
-                        Button {
-                            moveDown(index)
-                        } label: {
-                            Image(systemName: "chevron.down")
-                                .font(StenoDesign.caption())
+                            Button { moveDown(index) } label: {
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .frame(width: 20, height: 12)
+                            }
+                            .disabled(index == methods.count - 1)
+                            .accessibilityLabel("Move \(label(for: method)) down")
                         }
                         .buttonStyle(.plain)
-                        .disabled(index == preferences.insertion.orderedMethods.count - 1)
-                        .foregroundStyle(index == preferences.insertion.orderedMethods.count - 1 ? StenoDesign.textSecondary.opacity(StenoDesign.opacityDisabled) : StenoDesign.textSecondary)
-                        .accessibilityLabel("Move \(label(for: method)) down")
+                        .foregroundStyle(StenoDesign.textSecondary)
                     }
-                    .padding(.vertical, StenoDesign.xs)
-                    .padding(.horizontal, StenoDesign.sm)
-                    .background(StenoDesign.surfaceSecondary)
-                    .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusSmall))
+                    .padding(.vertical, StenoDesign.sm)
+                    .padding(.horizontal, StenoDesign.md)
+
+                    if index < methods.count - 1 {
+                        Divider()
+                            .padding(.leading, StenoDesign.md + StenoDesign.iconLG + StenoDesign.sm)
+                    }
                 }
             }
+            .background(StenoDesign.surfaceSecondary)
+            .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusSmall))
 
             HStack {
                 Toggle(
