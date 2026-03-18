@@ -17,25 +17,25 @@ struct CleanupStyleSettingsSection: View {
             "Cleanup Style",
             subtitle: "How transcripts are cleaned and formatted"
         ) {
-            Grid(alignment: .leading, horizontalSpacing: StenoDesign.sm, verticalSpacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 pickerRow(
                     "Tone",
                     description: "How formal the cleaned text sounds",
                     selection: $preferences.globalStyleProfile.tone
                 )
-                Divider().gridCellColumns(2)
+                Divider()
                 pickerRow(
                     "Structure",
                     description: "How the output text is formatted",
                     selection: $preferences.globalStyleProfile.structureMode
                 )
-                Divider().gridCellColumns(2)
+                Divider()
                 pickerRow(
                     "Filler removal",
                     description: "How aggressively fillers like \u{201C}um\u{201D}, \u{201C}you know\u{201D}, and \u{201C}like\u{201D} are removed",
                     selection: $preferences.globalStyleProfile.fillerPolicy
                 )
-                Divider().gridCellColumns(2)
+                Divider()
                 pickerRow(
                     "Commands",
                     description: "Whether /slash commands pass through raw",
@@ -99,28 +99,42 @@ struct CleanupStyleSettingsSection: View {
         }
     }
 
+    private func longestOption<T: CaseIterable & RawRepresentable>(for type: T.Type) -> String where T.RawValue == String {
+        T.allCases
+            .map { $0.rawValue.capitalized }
+            .max(by: { $0.count < $1.count }) ?? ""
+    }
+
     @ViewBuilder
     private func pickerRow<T: Hashable & CaseIterable & RawRepresentable>(
         _ label: String,
         description: String,
         selection: Binding<T>
     ) -> some View where T.RawValue == String {
-        GridRow(alignment: .firstTextBaseline) {
-            Text(label)
-                .gridColumnAlignment(.trailing)
-            VStack(alignment: .leading, spacing: StenoDesign.xxs) {
-                Picker("", selection: selection) {
-                    ForEach(Array(T.allCases), id: \.self) { value in
-                        Text(value.rawValue.capitalized).tag(value)
+        VStack(alignment: .leading, spacing: StenoDesign.xxs) {
+            HStack(spacing: StenoDesign.sm) {
+                Text(label)
+                    .frame(width: 100, alignment: .leading)
+                ZStack(alignment: .leading) {
+                    // Invisible sizing text — widest option sets minimum width
+                    Text(longestOption(for: T.self))
+                        .padding(.horizontal, 28)
+                        .opacity(0)
+                        .accessibilityHidden(true)
+                    Picker("", selection: selection) {
+                        ForEach(Array(T.allCases), id: \.self) { value in
+                            Text(value.rawValue.capitalized).tag(value)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
                 .fixedSize()
-                Text(description)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.textSecondary)
+                Spacer()
             }
+            Text(description)
+                .font(StenoDesign.caption())
+                .foregroundStyle(StenoDesign.textSecondary)
         }
         .padding(.vertical, StenoDesign.sm)
     }
