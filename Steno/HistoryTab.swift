@@ -148,27 +148,20 @@ struct HistoryTab: View {
             }
 
             // Body text
-            HStack(alignment: .top, spacing: StenoDesign.xs) {
-                Text(entry.cleanText.isEmpty ? entry.rawText : entry.cleanText)
-                    .font(StenoDesign.callout())
-                    .foregroundStyle(StenoDesign.textPrimary)
-                    .lineLimit(isExpanded ? nil : 2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: StenoDesign.animationFast)) {
-                            if isExpanded {
-                                expandedIDs.remove(entry.id)
-                            } else {
-                                expandedIDs.insert(entry.id)
-                            }
+            Text(entry.cleanText.isEmpty ? entry.rawText : entry.cleanText)
+                .font(StenoDesign.callout())
+                .foregroundStyle(StenoDesign.textPrimary)
+                .lineLimit(isExpanded ? nil : 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: StenoDesign.animationFast)) {
+                        if isExpanded {
+                            expandedIDs.remove(entry.id)
+                        } else {
+                            expandedIDs.insert(entry.id)
                         }
                     }
-
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.textSecondary)
-                    .accessibilityLabel(isExpanded ? "Collapse" : "Expand")
-            }
+                }
 
             // Bottom line: timestamp + copy/paste
             HStack {
