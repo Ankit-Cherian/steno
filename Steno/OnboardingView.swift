@@ -277,7 +277,7 @@ struct OnboardingView: View {
 
             VStack(alignment: .leading, spacing: StenoDesign.md) {
                 tipRow(number: "1", text: "Hold Option to dictate (press-to-talk)")
-                tipRow(number: "2", text: "Press F18 to toggle hands-free mode")
+                tipRow(number: "2", text: "Set a hands-free toggle key in Settings")
                 tipRow(number: "3", text: "Check the History tab for past transcripts")
             }
             .cardStyle()

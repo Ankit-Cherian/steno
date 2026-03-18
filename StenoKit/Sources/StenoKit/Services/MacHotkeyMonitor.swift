@@ -249,6 +249,18 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     static func functionKeyName(for keyCode: UInt16) -> String? {
         switch keyCode {
+        case 122: return "F1"
+        case 120: return "F2"
+        case 160: return "F3"
+        case 131: return "F4"
+        case 96:  return "F5"
+        case 97:  return "F6"
+        case 98:  return "F7"
+        case 100: return "F8"
+        case 101: return "F9"
+        case 109: return "F10"
+        case 103: return "F11"
+        case 111: return "F12"
         case 105: return "F13"
         case 107: return "F14"
         case 113: return "F15"
