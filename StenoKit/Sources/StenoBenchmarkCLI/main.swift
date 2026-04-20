@@ -124,7 +124,8 @@ enum StenoBenchmarkCLI {
             rawOutput: rawOutput,
             configuration: PipelineRunConfiguration(
                 profile: profile,
-                lexicon: lexicon
+                lexicon: lexicon,
+                manifestPath: manifestPath
             )
         )
         try BenchmarkIO.savePipelineOutput(pipelineOutput, to: outputPath)
@@ -188,11 +189,47 @@ enum StenoBenchmarkCLI {
             throw CLIError.invalidValue(argument: "max-regressed-samples", value: maxRegressedText)
         }
 
+        let minTermRecallAccuracy = try parseOptionalDouble(
+            command.optional("min-term-recall-accuracy"),
+            argument: "min-term-recall-accuracy"
+        )
+        let minRepairResolutionRate = try parseOptionalDouble(
+            command.optional("min-repair-resolution-rate"),
+            argument: "min-repair-resolution-rate"
+        )
+        let maxUnintendedRewriteRate = try parseOptionalDouble(
+            command.optional("max-unintended-rewrite-rate"),
+            argument: "max-unintended-rewrite-rate"
+        )
+        let baselineP90LatencyMS = try parseOptionalDouble(
+            command.optional("baseline-p90-latency-ms"),
+            argument: "baseline-p90-latency-ms"
+        )
+        let maxP90RegressionRatio = try parseOptionalDouble(
+            command.optional("max-p90-regression-ratio"),
+            argument: "max-p90-regression-ratio"
+        )
+        let maxP90LatencyMS = try parseOptionalDouble(
+            command.optional("max-p90-latency-ms"),
+            argument: "max-p90-latency-ms"
+        )
+        let maxP99LatencyMS = try parseOptionalDouble(
+            command.optional("max-p99-latency-ms"),
+            argument: "max-p99-latency-ms"
+        )
+
         let pipeline = try BenchmarkIO.loadPipelineOutput(at: pipelinePath)
         let thresholds = PipelineValidationThresholds(
             maxWERDelta: maxWERDelta,
             maxCERDelta: maxCERDelta,
-            maxRegressedSamples: maxRegressed
+            maxRegressedSamples: maxRegressed,
+            minTermRecallAccuracy: minTermRecallAccuracy,
+            minRepairResolutionRate: minRepairResolutionRate,
+            maxUnintendedRewriteRate: maxUnintendedRewriteRate,
+            baselineP90LatencyMS: baselineP90LatencyMS,
+            maxP90RegressionRatio: maxP90RegressionRatio,
+            maxP90LatencyMS: maxP90LatencyMS,
+            maxP99LatencyMS: maxP99LatencyMS
         )
         try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
 
@@ -239,7 +276,11 @@ enum StenoBenchmarkCLI {
         let pipelineOutput = await BenchmarkRunner.runPipeline(
             manifest: manifest,
             rawOutput: rawOutput,
-            configuration: PipelineRunConfiguration(profile: profile, lexicon: lexicon)
+            configuration: PipelineRunConfiguration(
+                profile: profile,
+                lexicon: lexicon,
+                manifestPath: manifestPath
+            )
         )
         try BenchmarkIO.savePipelineOutput(pipelineOutput, to: pipelineOutputPath)
 
@@ -318,6 +359,14 @@ enum StenoBenchmarkCLI {
         return value
     }
 
+    private static func parseOptionalDouble(_ raw: String?, argument: String) throws -> Double? {
+        guard let raw, !raw.isEmpty else { return nil }
+        guard let value = Double(raw) else {
+            throw CLIError.invalidValue(argument: argument, value: raw)
+        }
+        return value
+    }
+
     private static func parseCommandLine(_ args: [String]) throws -> ParsedCommand {
         guard let command = args.first else {
             throw CLIError.usage(helpText())
@@ -386,6 +435,13 @@ enum StenoBenchmarkCLI {
             [--max-wer-delta <double>] (default: 0)
             [--max-cer-delta <double>] (default: 0)
             [--max-regressed-samples <int>] (default: 0)
+            [--min-term-recall-accuracy <double>]
+            [--min-repair-resolution-rate <double>]
+            [--max-unintended-rewrite-rate <double>]
+            [--baseline-p90-latency-ms <double>]
+            [--max-p90-regression-ratio <double>]
+            [--max-p90-latency-ms <double>]
+            [--max-p99-latency-ms <double>]
 
           run-all
             --manifest <path>

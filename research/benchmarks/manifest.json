@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "steno-benchmark-manifest/v1",
+  "benchmarkName": "Steno Functional Followups",
+  "evidenceTier": "smokeFixture",
+  "scoring": {
+    "normalization": {
+      "version": "steno-normalization-v1",
+      "lowercase": true,
+      "collapseWhitespace": true,
+      "trimWhitespace": true,
+      "stripPunctuation": true,
+      "keepApostrophes": true
+    }
+  },
+  "samples": [
+    {
+      "id": "repair-term-recovery",
+      "dataset": "functional-followups",
+      "audioPath": "fixtures/audio/repair-term-recovery.wav",
+      "referenceText": "send it to Jane and ping TURSO",
+      "languageHint": "en",
+      "audioDurationMS": 10000
+    },
+    {
+      "id": "filler-heavy-small-model",
+      "dataset": "functional-followups",
+      "audioPath": "fixtures/audio/filler-heavy-small-model.wav",
+      "referenceText": "I think this should ship today",
+      "languageHint": "en",
+      "audioDurationMS": 10000
+    },
+    {
+      "id": "ide-slash-safety",
+      "dataset": "functional-followups",
+      "audioPath": "fixtures/audio/ide-slash-safety.wav",
+      "referenceText": "/build target",
+      "languageHint": "en",
+      "audioDurationMS": 10000
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "steno-benchmark-manifest/v1",
+  "benchmarkName": "Steno Release Signoff",
+  "evidenceTier": "releaseSignoff",
+  "hardwareProfile": {
+    "chipClass": "m5-pro",
+    "memoryGB": 64,
+    "modelID": "large-v3-turbo"
+  },
+  "scoring": {
+    "normalization": {
+      "version": "steno-normalization-v1",
+      "lowercase": true,
+      "collapseWhitespace": true,
+      "trimWhitespace": true,
+      "stripPunctuation": true,
+      "keepApostrophes": true
+    }
+  },
+  "samples": [
+    {
+      "id": "repair-term-recovery",
+      "dataset": "release-signoff",
+      "audioPath": "local-signoff/audio/repair-term-recovery.wav",
+      "referenceText": "send it to Jane and ping TURSO",
+      "languageHint": "en",
+      "audioDurationMS": 10000
+    }
+  ]
+}
