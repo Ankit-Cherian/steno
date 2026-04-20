@@ -701,6 +701,7 @@ RELEASE_VALIDATE_LOG="$RELEASE_VALIDATE_LOG" \
 "$PYTHON_BIN" - <<'PY'
 import json
 import os
+import re
 from pathlib import Path
 
 repo_root = Path(os.environ["REPO_ROOT"])
@@ -731,6 +732,8 @@ for row in rows:
 
 sample_truth = {sample["id"]: sample for sample in manifest["samples"]}
 raw_samples = {sample["id"]: sample for sample in raw["samples"]}
+normalization_policy = manifest.get("scoring", {}).get("normalization", {})
+punctuation_pattern = re.compile(r"[^\w\s']") if normalization_policy.get("keepApostrophes", True) else re.compile(r"[^\w\s]")
 
 def fmt_number(value):
     if value is None:
@@ -743,6 +746,26 @@ def fmt_percent(value):
     if value is None:
         return "n/a"
     return f"{value * 100:.2f}%"
+
+def normalize_text(text):
+    value = text or ""
+    if normalization_policy.get("lowercase", True):
+        value = value.lower()
+    if normalization_policy.get("stripPunctuation", True):
+        value = punctuation_pattern.sub(" ", value)
+    if normalization_policy.get("collapseWhitespace", True):
+        value = " ".join(value.split())
+    if normalization_policy.get("trimWhitespace", True):
+        value = value.strip()
+    return value
+
+def truncate_text(text, limit=80):
+    if text is None:
+        return None
+    compact = " ".join(str(text).split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1] + "…"
 
 def gate(status, gate_id, label, actual, threshold, comparison, message):
     return {
@@ -825,19 +848,43 @@ def punctuation_artifact(text):
         return True
     return False
 
-worst_samples = []
+def build_sample_record(sample, truth, notes_for_sample):
+    observations = sample.get("coordinatorObservations", [])
+    insert_results = [obs.get("insertResult") for obs in observations if obs.get("insertResult")]
+    last_insert = insert_results[-1] if insert_results else None
+    raw_metrics = sample.get("rawMetrics") or {}
+    cleaned_metrics = sample.get("cleanedMetrics") or {}
+    latencies = [obs.get("latencyMS") for obs in observations if obs.get("latencyMS") is not None]
+    return {
+        "id": sample["id"],
+        "dataset": sample["dataset"],
+        "audioSource": truth.get("audioSource"),
+        "intentLabels": truth.get("intentLabels", []),
+        "notes": notes_for_sample,
+        "rawWER": raw_metrics.get("wer"),
+        "cleanedWER": cleaned_metrics.get("wer"),
+        "status": sample.get("status"),
+        "outcome": sample.get("outcome"),
+        "insertStatus": last_insert["status"] if last_insert else None,
+        "insertMethod": last_insert["method"] if last_insert else None,
+        "lastInsertedText": last_insert.get("insertedText") if last_insert else None,
+        "rawText": sample.get("rawText"),
+        "cleanedText": sample.get("cleanedText"),
+        "maxLatencyMS": max(latencies) if latencies else None,
+    }
+
+flagged_samples = []
 for sample in pipeline["samples"]:
     truth = sample_truth.get(sample["id"], {})
-    raw_sample = raw_samples.get(sample["id"], {})
     notes_for_sample = []
     if sample.get("status") != "success":
         notes_for_sample.append(sample.get("errorMessage") or "Pipeline sample was not scored.")
-    if "repair" in truth.get("intentLabels", []) and sample.get("cleanedText", "").strip().lower() != truth.get("referenceText", "").strip().lower():
+    if "repair" in truth.get("intentLabels", []) and normalize_text(sample.get("cleanedText", "")) != normalize_text(truth.get("referenceText", "")):
         notes_for_sample.append("repair not resolved to reference")
     if "literal" in truth.get("intentLabels", []):
-        cleaned_lower = sample.get("cleanedText", "").lower()
+        cleaned_lower = normalize_text(sample.get("cleanedText", ""))
         preserved = truth.get("preservedPhrases", [])
-        if any(phrase.lower() not in cleaned_lower for phrase in preserved):
+        if any(normalize_text(phrase) not in cleaned_lower for phrase in preserved):
             notes_for_sample.append("literal repair phrase not preserved")
     if "command" in truth.get("intentLabels", []) and not command_text_matches(sample.get("coordinatorObservations", []), truth.get("referenceText", "")):
         notes_for_sample.append("command text not passed through exactly")
@@ -845,26 +892,11 @@ for sample in pipeline["samples"]:
         notes_for_sample.append("no-speech sample produced an insert")
     if punctuation_artifact(sample.get("cleanedText", "")):
         notes_for_sample.append("punctuation artifact detected")
-    raw_metrics = sample.get("rawMetrics") or {}
-    cleaned_metrics = sample.get("cleanedMetrics") or {}
     if notes_for_sample or sample.get("outcome") == "regressed":
-        observations = sample.get("coordinatorObservations", [])
-        insert_results = [obs.get("insertResult") for obs in observations if obs.get("insertResult")]
-        worst_samples.append(
-            {
-                "id": sample["id"],
-                "dataset": sample["dataset"],
-                "audioSource": truth.get("audioSource"),
-                "intentLabels": truth.get("intentLabels", []),
-                "notes": notes_for_sample,
-                "rawWER": raw_metrics.get("wer"),
-                "cleanedWER": cleaned_metrics.get("wer"),
-                "status": sample.get("status"),
-                "outcome": sample.get("outcome"),
-                "insertStatus": insert_results[-1]["status"] if insert_results else None,
-                "insertMethod": insert_results[-1]["method"] if insert_results else None,
-            }
-        )
+        flagged_samples.append(build_sample_record(sample, truth, notes_for_sample))
+
+failing_samples = [item for item in flagged_samples if item["notes"]]
+worst_samples = list(flagged_samples)
 
 worst_samples.sort(
     key=lambda item: (
@@ -874,6 +906,35 @@ worst_samples.sort(
     ),
     reverse=True,
 )
+failing_samples.sort(
+    key=lambda item: (
+        len(item["notes"]),
+        item["cleanedWER"] if item["cleanedWER"] is not None else -1,
+        item["rawWER"] if item["rawWER"] is not None else -1,
+    ),
+    reverse=True,
+)
+
+latency_outliers = []
+for sample in pipeline["samples"]:
+    observations = [obs for obs in sample.get("coordinatorObservations", []) if obs.get("latencyMS") is not None]
+    if not observations:
+        continue
+    peak = max(observations, key=lambda obs: obs["latencyMS"])
+    insert_result = peak.get("insertResult") or {}
+    latency_outliers.append(
+        {
+            "id": sample["id"],
+            "dataset": sample["dataset"],
+            "audioSource": sample_truth.get(sample["id"], {}).get("audioSource"),
+            "peakLatencyMS": peak["latencyMS"],
+            "iteration": peak["iteration"],
+            "insertStatus": insert_result.get("status"),
+            "insertMethod": insert_result.get("method"),
+            "insertedText": insert_result.get("insertedText"),
+        }
+    )
+latency_outliers.sort(key=lambda item: item["peakLatencyMS"], reverse=True)
 
 likely_causes = []
 recommended_next_fixes = []
@@ -942,7 +1003,9 @@ summary_payload = {
     "gates": gates,
     "failingGates": failing_gates,
     "missingMetrics": missing_metrics,
+    "failingSamples": failing_samples,
     "worstSamples": worst_samples[:12],
+    "latencyOutliers": latency_outliers[:10],
     "analysis": {
         "likelyCauses": likely_causes,
         "recommendedNextFixes": recommended_next_fixes,
@@ -970,10 +1033,16 @@ for name, values in sorted(raw["datasetBreakdown"].items()):
         f"| {name} | {values['totalSamples']} | {fmt_percent(values['failureRate'])} | {fmt_number(values.get('wer'))} | {fmt_number(values.get('cer'))} | {fmt_number(values.get('meanLatencyMS'))} |"
     )
 
-sample_rows = []
-for sample in worst_samples[:12]:
-    sample_rows.append(
+failing_sample_rows = []
+for sample in failing_samples:
+    failing_sample_rows.append(
         f"| {sample['id']} | {sample['dataset']} | {sample.get('audioSource') or 'n/a'} | {sample['status']} / {sample['outcome']} | {', '.join(sample['notes']) or 'n/a'} | {fmt_number(sample.get('rawWER'))} | {fmt_number(sample.get('cleanedWER'))} | {sample.get('insertStatus') or 'n/a'} | {sample.get('insertMethod') or 'n/a'} |"
+    )
+
+latency_rows = []
+for sample in latency_outliers[:10]:
+    latency_rows.append(
+        f"| {sample['id']} | {sample['dataset']} | {sample.get('audioSource') or 'n/a'} | {fmt_number(sample.get('peakLatencyMS'))} | {sample.get('iteration') or 'n/a'} | {sample.get('insertStatus') or 'n/a'} | {sample.get('insertMethod') or 'n/a'} | {truncate_text(sample.get('insertedText')) or 'n/a'} |"
     )
 
 audio_rows = [f"- `{key}`: {value} samples" for key, value in sorted(audio_source_counts.items())]
@@ -1042,7 +1111,12 @@ report = f"""# Release Eval Report
 ### Failing Samples
 | Sample ID | Dataset | Audio Source | Status / Outcome | Failure Notes | Raw WER | Cleaned WER | Insert Status | Insert Method |
 |---|---|---|---|---|---:|---:|---|---|
-{chr(10).join(sample_rows) if sample_rows else '| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |'}
+{chr(10).join(failing_sample_rows) if failing_sample_rows else '| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |'}
+
+### Latency Tail Samples
+| Sample ID | Dataset | Audio Source | Peak Latency (ms) | Iteration | Insert Status | Insert Method | Insert Text |
+|---|---|---|---:|---:|---|---|---|
+{chr(10).join(latency_rows) if latency_rows else '| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a |'}
 
 ### Audio Evidence
 {chr(10).join(audio_rows)}
