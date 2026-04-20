@@ -35,10 +35,27 @@ public struct RawTranscript: Sendable, Codable, Equatable {
     }
 }
 
+public struct TranscriptionRequest: Sendable, Codable, Equatable {
+    public var languageHints: [String]
+    public var appContext: AppContext?
+    public var hotTerms: [String]
+
+    public init(
+        languageHints: [String] = [],
+        appContext: AppContext? = nil,
+        hotTerms: [String] = []
+    ) {
+        self.languageHints = languageHints
+        self.appContext = appContext
+        self.hotTerms = hotTerms
+    }
+}
+
 public struct TranscriptEdit: Sendable, Codable, Equatable {
     public enum Kind: String, Sendable, Codable, Equatable {
         case fillerRemoval
         case lexiconCorrection
+        case repairResolution
         case structureRewrite
         case punctuation
         case commandTransform

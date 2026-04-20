@@ -18,6 +18,32 @@ public enum WhisperCLITranscriptionError: Error, LocalizedError {
 }
 
 public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
+    private struct WhisperJSONOutput: Decodable {
+        struct TranscriptionSegment: Decodable {
+            struct Offsets: Decodable {
+                var from: Int
+                var to: Int
+            }
+
+            struct Token: Decodable {
+                struct Offsets: Decodable {
+                    var from: Int
+                    var to: Int
+                }
+
+                var text: String
+                var p: Double?
+                var offsets: Offsets?
+            }
+
+            var offsets: Offsets?
+            var text: String
+            var tokens: [Token]?
+        }
+
+        var transcription: [TranscriptionSegment]
+    }
+
     public struct Configuration: Sendable {
         public var whisperCLIPath: URL
         public var modelPath: URL
@@ -44,6 +70,13 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
     }
 
     public func transcribe(audioURL: URL, languageHints: [String]) async throws -> RawTranscript {
+        try await transcribe(
+            audioURL: audioURL,
+            request: TranscriptionRequest(languageHints: languageHints)
+        )
+    }
+
+    public func transcribe(audioURL: URL, request: TranscriptionRequest) async throws -> RawTranscript {
         guard FileManager.default.fileExists(atPath: config.whisperCLIPath.path) else {
             throw WhisperCLITranscriptionError.cliNotFound(path: config.whisperCLIPath.path)
         }
@@ -52,22 +85,32 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
             .appendingPathComponent("steno-out-\(UUID().uuidString)")
 
         let txtURL = outputBase.appendingPathExtension("txt")
-        defer { try? FileManager.default.removeItem(at: txtURL) }
+        let jsonURL = outputBase.appendingPathExtension("json")
+        defer {
+            try? FileManager.default.removeItem(at: txtURL)
+            try? FileManager.default.removeItem(at: jsonURL)
+        }
 
         var args: [String] = [
             "-m", config.modelPath.path,
             "-f", audioURL.path,
             "-of", outputBase.path,
             "-otxt",
+            "-ojf",
             "-nt"
         ]
 
-        if let firstHint = languageHints.first,
+        if let firstHint = request.languageHints.first,
            let languageCode = normalizeLanguage(from: firstHint) {
             args.append(contentsOf: ["-l", languageCode])
         }
 
         args.append(contentsOf: config.additionalArguments)
+
+        if config.additionalArguments.contains("--prompt") == false,
+           let prompt = WhisperRuntimeConfiguration.buildPrompt(for: request) {
+            args.append(contentsOf: ["--prompt", prompt])
+        }
 
         let result = try await ProcessRunner.run(
             executableURL: config.whisperCLIPath,
@@ -82,16 +125,16 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
             throw WhisperCLITranscriptionError.failedToRun(status: result.terminationStatus, stderr: stderrText)
         }
 
+        if FileManager.default.fileExists(atPath: jsonURL.path),
+           let richTranscript = try parseRichTranscript(at: jsonURL) {
+            return richTranscript
+        }
+
         guard FileManager.default.fileExists(atPath: txtURL.path) else {
             throw WhisperCLITranscriptionError.outputMissing
         }
 
-        let rawText = try String(contentsOf: txtURL, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let text = Self.stripArtifacts(rawText)
-
-        return RawTranscript(text: text)
+        return try parsePlainTranscript(at: txtURL)
     }
 
     private func normalizeLanguage(from hint: String) -> String? {
@@ -112,6 +155,69 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
             whisperCLIPath: config.whisperCLIPath.path,
             modelPath: config.modelPath.path
         )
+    }
+
+    private func parsePlainTranscript(at txtURL: URL) throws -> RawTranscript {
+        let rawText = try String(contentsOf: txtURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let text = Self.stripArtifacts(rawText)
+
+        return RawTranscript(text: text)
+    }
+
+    private func parseRichTranscript(at jsonURL: URL) throws -> RawTranscript? {
+        let decoder = JSONDecoder()
+        guard let output = try? decoder.decode(WhisperJSONOutput.self, from: Data(contentsOf: jsonURL)) else {
+            return nil
+        }
+
+        var segments: [TranscriptSegment] = []
+        var transcriptParts: [String] = []
+        var tokenConfidences: [Double] = []
+
+        for item in output.transcription {
+            let segmentText = Self.stripArtifacts(item.text).trimmingCharacters(in: .whitespacesAndNewlines)
+            let segmentConfidence = averageConfidence(for: item.tokens)
+            tokenConfidences.append(contentsOf: item.tokens?.compactMap(\.p) ?? [])
+
+            let startMS = item.offsets?.from ?? 0
+            let endMS = item.offsets?.to ?? startMS
+
+            if !segmentText.isEmpty {
+                transcriptParts.append(segmentText)
+                segments.append(
+                    TranscriptSegment(
+                        startMS: startMS,
+                        endMS: endMS,
+                        text: segmentText,
+                        confidence: segmentConfidence
+                    )
+                )
+            }
+        }
+
+        let text = transcriptParts.joined(separator: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let durationMS = segments.map(\.endMS).max() ?? 0
+        let avgConfidence = tokenConfidences.isEmpty
+            ? nil
+            : tokenConfidences.reduce(0, +) / Double(tokenConfidences.count)
+
+        return RawTranscript(
+            text: text,
+            segments: segments,
+            avgConfidence: avgConfidence,
+            durationMS: durationMS
+        )
+    }
+
+    private func averageConfidence(for tokens: [WhisperJSONOutput.TranscriptionSegment.Token]?) -> Double? {
+        guard let tokens else { return nil }
+        let confidences = tokens.compactMap(\.p)
+        guard confidences.isEmpty == false else { return nil }
+        return confidences.reduce(0, +) / Double(confidences.count)
     }
 
     // MARK: - Artifact Stripping

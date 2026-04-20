@@ -74,7 +74,12 @@ public actor SessionCoordinator {
 
         let audioURL = try await captureService.endCapture(sessionID: sessionID)
         defer { try? FileManager.default.removeItem(at: audioURL) }
-        var rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, languageHints: languageHints)
+        let request = TranscriptionRequest(
+            languageHints: languageHints,
+            appContext: active.appContext,
+            hotTerms: await lexiconService.hotTerms(for: active.appContext, limit: 8)
+        )
+        var rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, request: request)
 
         if rawTranscript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return InsertResult(status: .noSpeech, method: .none, insertedText: "")

@@ -16,8 +16,8 @@ public protocol AudioCaptureService: Sendable {
 
 /// Converts audio files to raw text transcripts using speech recognition.
 public protocol TranscriptionEngine: Sendable {
-    /// Transcribes the audio at the given URL, optionally using language hints.
-    func transcribe(audioURL: URL, languageHints: [String]) async throws -> RawTranscript
+    /// Transcribes the audio at the given URL using dynamic request context.
+    func transcribe(audioURL: URL, request: TranscriptionRequest) async throws -> RawTranscript
 }
 
 /// Refines raw transcripts by applying style profiles, personal lexicon corrections, and filler word policies.

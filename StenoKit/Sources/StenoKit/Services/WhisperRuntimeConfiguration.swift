@@ -58,15 +58,51 @@ public enum WhisperRuntimeConfiguration {
         threadCount: Int,
         vadEnabled: Bool,
         vadModelPath: String,
+        prompt: String? = nil,
+        suppressRegex: String? = nil,
         pathExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) -> [String] {
         var args = ["-t", "\(max(1, threadCount))", "--suppress-nst"]
+
+        if let prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            args.append(contentsOf: ["--prompt", prompt])
+        }
+
+        if let suppressRegex, !suppressRegex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            args.append(contentsOf: ["--suppress-regex", suppressRegex])
+        }
 
         if vadEnabled && pathExists(vadModelPath) {
             args.append(contentsOf: ["--vad", "--vad-model", vadModelPath])
         }
 
         return args
+    }
+
+    public static func buildPrompt(
+        for request: TranscriptionRequest,
+        maxHotTerms: Int = 8
+    ) -> String? {
+        var parts: [String] = []
+
+        if let firstHint = request.languageHints.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !firstHint.isEmpty {
+            let language = firstHint.lowercased().split(separator: "-").first.map(String.init) ?? firstHint.lowercased()
+            parts.append("Language: \(language).")
+        }
+
+        if let appName = request.appContext?.appName.trimmingCharacters(in: .whitespacesAndNewlines),
+           !appName.isEmpty {
+            parts.append("App: \(appName).")
+        }
+
+        let hotTerms = Array(request.hotTerms.prefix(maxHotTerms))
+        if !hotTerms.isEmpty {
+            parts.append("Terms: \(hotTerms.joined(separator: ", ")).")
+        }
+
+        let prompt = parts.joined(separator: " ")
+        return prompt.isEmpty ? nil : prompt
     }
 
     private static func dynamicLibrarySearchPaths(
