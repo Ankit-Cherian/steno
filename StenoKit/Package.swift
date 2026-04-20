@@ -49,5 +49,9 @@ let package = Package(
             name: "StenoBenchmarkCoreTests",
             dependencies: ["StenoBenchmarkCore"]
         ),
+        .testTarget(
+            name: "StenoBenchmarkCLITests",
+            dependencies: ["StenoBenchmarkCLI"]
+        ),
     ]
 )

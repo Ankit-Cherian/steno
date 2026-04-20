@@ -405,12 +405,13 @@ enum StenoBenchmarkCLI {
         return value
     }
 
-    private static func parseCommandLine(_ args: [String]) throws -> ParsedCommand {
+    static func parseCommandLine(_ args: [String]) throws -> ParsedCommand {
         guard let command = args.first else {
             throw CLIError.usage(helpText())
         }
 
         var options: [String: [String]] = [:]
+        let allowsDashedValue: Set<String> = ["extra-arg"]
         var index = 1
         while index < args.count {
             let token = args[index]
@@ -418,7 +419,8 @@ enum StenoBenchmarkCLI {
                 throw CLIError.usage("Unexpected token: \(token)\n\n\(helpText())")
             }
             let key = String(token.dropFirst(2))
-            if index + 1 < args.count, !args[index + 1].hasPrefix("--") {
+            if index + 1 < args.count,
+               (!args[index + 1].hasPrefix("--") || allowsDashedValue.contains(key)) {
                 options[key, default: []].append(args[index + 1])
                 index += 2
             } else {
