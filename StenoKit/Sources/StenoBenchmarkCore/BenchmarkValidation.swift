@@ -8,6 +8,10 @@ public struct PipelineValidationThresholds: Sendable {
     public var minTermRecallAccuracy: Double?
     public var minRepairResolutionRate: Double?
     public var maxUnintendedRewriteRate: Double?
+    public var minLiteralRepairPhrasePreservationRate: Double?
+    public var maxPunctuationArtifactRate: Double?
+    public var minCommandPassthroughAccuracy: Double?
+    public var maxNoSpeechFalseInsertRate: Double?
     public var baselineP90LatencyMS: Double?
     public var maxP90RegressionRatio: Double?
     public var maxP90LatencyMS: Double?
@@ -21,6 +25,10 @@ public struct PipelineValidationThresholds: Sendable {
         minTermRecallAccuracy: Double? = nil,
         minRepairResolutionRate: Double? = nil,
         maxUnintendedRewriteRate: Double? = nil,
+        minLiteralRepairPhrasePreservationRate: Double? = nil,
+        maxPunctuationArtifactRate: Double? = nil,
+        minCommandPassthroughAccuracy: Double? = nil,
+        maxNoSpeechFalseInsertRate: Double? = nil,
         baselineP90LatencyMS: Double? = nil,
         maxP90RegressionRatio: Double? = nil,
         maxP90LatencyMS: Double? = nil,
@@ -33,6 +41,10 @@ public struct PipelineValidationThresholds: Sendable {
         self.minTermRecallAccuracy = minTermRecallAccuracy
         self.minRepairResolutionRate = minRepairResolutionRate
         self.maxUnintendedRewriteRate = maxUnintendedRewriteRate
+        self.minLiteralRepairPhrasePreservationRate = minLiteralRepairPhrasePreservationRate
+        self.maxPunctuationArtifactRate = maxPunctuationArtifactRate
+        self.minCommandPassthroughAccuracy = minCommandPassthroughAccuracy
+        self.maxNoSpeechFalseInsertRate = maxNoSpeechFalseInsertRate
         self.baselineP90LatencyMS = baselineP90LatencyMS
         self.maxP90RegressionRatio = maxP90RegressionRatio
         self.maxP90LatencyMS = maxP90LatencyMS
@@ -52,6 +64,10 @@ public enum PipelineValidationError: Error, LocalizedError {
     case termRecallAccuracyBelowThreshold(actual: Double, minRequired: Double)
     case repairResolutionRateBelowThreshold(actual: Double, minRequired: Double)
     case unintendedRewriteRateExceeded(actual: Double, maxAllowed: Double)
+    case literalRepairPhrasePreservationRateBelowThreshold(actual: Double, minRequired: Double)
+    case punctuationArtifactRateExceeded(actual: Double, maxAllowed: Double)
+    case commandPassthroughAccuracyBelowThreshold(actual: Double, minRequired: Double)
+    case noSpeechFalseInsertRateExceeded(actual: Double, maxAllowed: Double)
     case p90LatencyExceeded(actual: Double, maxAllowed: Double)
     case p99LatencyExceeded(actual: Double, maxAllowed: Double)
     case p90LatencyRegressionExceeded(actual: Double, baseline: Double, maxRatio: Double)
@@ -78,6 +94,14 @@ public enum PipelineValidationError: Error, LocalizedError {
             return "Pipeline repair resolution rate \(actual) was below required minimum \(minRequired)"
         case .unintendedRewriteRateExceeded(let actual, let maxAllowed):
             return "Pipeline unintended rewrite rate \(actual) exceeded max allowed \(maxAllowed)"
+        case .literalRepairPhrasePreservationRateBelowThreshold(let actual, let minRequired):
+            return "Pipeline literal repair phrase preservation rate \(actual) was below required minimum \(minRequired)"
+        case .punctuationArtifactRateExceeded(let actual, let maxAllowed):
+            return "Pipeline punctuation artifact rate \(actual) exceeded max allowed \(maxAllowed)"
+        case .commandPassthroughAccuracyBelowThreshold(let actual, let minRequired):
+            return "Pipeline command passthrough accuracy \(actual) was below required minimum \(minRequired)"
+        case .noSpeechFalseInsertRateExceeded(let actual, let maxAllowed):
+            return "Pipeline no-speech false insert rate \(actual) exceeded max allowed \(maxAllowed)"
         case .p90LatencyExceeded(let actual, let maxAllowed):
             return "Pipeline p90 latency \(actual)ms exceeded max allowed \(maxAllowed)ms"
         case .p99LatencyExceeded(let actual, let maxAllowed):
@@ -164,6 +188,54 @@ public enum BenchmarkValidation {
             }
         }
 
+        if let minLiteralRepairPhrasePreservationRate = thresholds.minLiteralRepairPhrasePreservationRate {
+            guard let literalRepairPhrasePreservationRate = pipeline.summary.literalRepairPhrasePreservationRate else {
+                throw PipelineValidationError.missingMetric(name: "literalRepairPhrasePreservationRate")
+            }
+            if literalRepairPhrasePreservationRate + thresholds.epsilon < minLiteralRepairPhrasePreservationRate {
+                throw PipelineValidationError.literalRepairPhrasePreservationRateBelowThreshold(
+                    actual: literalRepairPhrasePreservationRate,
+                    minRequired: minLiteralRepairPhrasePreservationRate
+                )
+            }
+        }
+
+        if let maxPunctuationArtifactRate = thresholds.maxPunctuationArtifactRate {
+            guard let punctuationArtifactRate = pipeline.summary.punctuationArtifactRate else {
+                throw PipelineValidationError.missingMetric(name: "punctuationArtifactRate")
+            }
+            if punctuationArtifactRate > maxPunctuationArtifactRate + thresholds.epsilon {
+                throw PipelineValidationError.punctuationArtifactRateExceeded(
+                    actual: punctuationArtifactRate,
+                    maxAllowed: maxPunctuationArtifactRate
+                )
+            }
+        }
+
+        if let minCommandPassthroughAccuracy = thresholds.minCommandPassthroughAccuracy {
+            guard let commandPassthroughAccuracy = pipeline.summary.commandPassthroughAccuracy else {
+                throw PipelineValidationError.missingMetric(name: "commandPassthroughAccuracy")
+            }
+            if commandPassthroughAccuracy + thresholds.epsilon < minCommandPassthroughAccuracy {
+                throw PipelineValidationError.commandPassthroughAccuracyBelowThreshold(
+                    actual: commandPassthroughAccuracy,
+                    minRequired: minCommandPassthroughAccuracy
+                )
+            }
+        }
+
+        if let maxNoSpeechFalseInsertRate = thresholds.maxNoSpeechFalseInsertRate {
+            guard let noSpeechFalseInsertRate = pipeline.summary.noSpeechFalseInsertRate else {
+                throw PipelineValidationError.missingMetric(name: "noSpeechFalseInsertRate")
+            }
+            if noSpeechFalseInsertRate > maxNoSpeechFalseInsertRate + thresholds.epsilon {
+                throw PipelineValidationError.noSpeechFalseInsertRateExceeded(
+                    actual: noSpeechFalseInsertRate,
+                    maxAllowed: maxNoSpeechFalseInsertRate
+                )
+            }
+        }
+
         if let maxP90LatencyMS = thresholds.maxP90LatencyMS ?? matrixLatencyBudgets?.p90 {
             guard let p90LatencyMS = pipeline.summary.p90LatencyMS else {
                 throw PipelineValidationError.missingMetric(name: "p90LatencyMS")
@@ -208,6 +280,10 @@ public enum BenchmarkValidation {
         thresholds.minTermRecallAccuracy != nil
             || thresholds.minRepairResolutionRate != nil
             || thresholds.maxUnintendedRewriteRate != nil
+            || thresholds.minLiteralRepairPhrasePreservationRate != nil
+            || thresholds.maxPunctuationArtifactRate != nil
+            || thresholds.minCommandPassthroughAccuracy != nil
+            || thresholds.maxNoSpeechFalseInsertRate != nil
             || thresholds.baselineP90LatencyMS != nil
             || thresholds.maxP90RegressionRatio != nil
             || thresholds.maxP90LatencyMS != nil

@@ -20,11 +20,57 @@
   "samples": [
     {
       "id": "repair-term-recovery",
-      "dataset": "release-signoff",
-      "audioPath": "local-signoff/audio/repair-term-recovery.wav",
+      "dataset": "repair-intent",
+      "audioPath": "relative/or/generated/path/repair-term-recovery.wav",
       "referenceText": "send it to Jane and ping TURSO",
       "languageHint": "en",
-      "audioDurationMS": 10000
+      "audioDurationMS": 10000,
+      "audioSource": "syntheticSpeech",
+      "intentLabels": ["repair", "termRecall"]
+    },
+    {
+      "id": "literal-scratch-that",
+      "dataset": "literal-counterexamples",
+      "audioPath": "relative/or/generated/path/literal-scratch-that.wav",
+      "referenceText": "type scratch that literally",
+      "languageHint": "en",
+      "audioDurationMS": 2500,
+      "audioSource": "syntheticSpeech",
+      "intentLabels": ["literal"],
+      "preservedPhrases": ["scratch that"]
+    },
+    {
+      "id": "command-slash-build",
+      "dataset": "command-safety",
+      "audioPath": "relative/or/generated/path/command-slash-build.wav",
+      "referenceText": "/build target",
+      "languageHint": "en",
+      "audioDurationMS": 1500,
+      "audioSource": "syntheticSpeech",
+      "intentLabels": ["command"],
+      "appContextPreset": "ide"
+    },
+    {
+      "id": "no-speech-silence",
+      "dataset": "no-speech",
+      "audioPath": "relative/or/generated/path/no-speech-silence.wav",
+      "referenceText": "",
+      "languageHint": "en",
+      "audioDurationMS": 2000,
+      "audioSource": "syntheticSilence",
+      "intentLabels": ["noSpeech"],
+      "appContextPreset": "editor"
+    },
+    {
+      "id": "librispeech-test-clean-0000",
+      "dataset": "librispeech-test-clean",
+      "audioPath": "/absolute/path/from/STENO_LIBRISPEECH_ROOT/librispeech-test-clean-0000.wav",
+      "referenceText": "CONCORD RETURNED TO ITS PLACE AMIDST THE TENTS",
+      "languageHint": "en",
+      "audioDurationMS": 3505,
+      "audioSource": "librispeech",
+      "intentLabels": [],
+      "appContextPreset": "editor"
     }
   ]
 }

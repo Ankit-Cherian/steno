@@ -202,6 +202,60 @@ func pipelineValidationFailsOnRewriteRateAndLatency() {
     }
 }
 
+@Test("Pipeline validation fails when literal preservation drops below threshold")
+func pipelineValidationFailsOnLiteralPreservation() {
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0,
+        cerDelta: 0.0,
+        regressed: 0,
+        literalRepairPhrasePreservationRate: 0.5
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        minLiteralRepairPhrasePreservationRate: 1.0
+    )
+
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected literal preservation validation failure.")
+    } catch PipelineValidationError.literalRepairPhrasePreservationRateBelowThreshold(let actual, let minRequired) {
+        #expect(actual == 0.5)
+        #expect(minRequired == 1.0)
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+}
+
+@Test("Pipeline validation fails when punctuation artifacts or no-speech false inserts exceed thresholds")
+func pipelineValidationFailsOnPunctuationAndNoSpeech() {
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0,
+        cerDelta: 0.0,
+        regressed: 0,
+        punctuationArtifactRate: 0.25,
+        noSpeechFalseInsertRate: 0.25
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        maxPunctuationArtifactRate: 0.0,
+        maxNoSpeechFalseInsertRate: 0.0
+    )
+
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected punctuation artifact validation failure.")
+    } catch PipelineValidationError.punctuationArtifactRateExceeded(let actual, let maxAllowed) {
+        #expect(actual == 0.25)
+        #expect(maxAllowed == 0.0)
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+}
+
 @Test("Pipeline validation rejects release thresholds for smoke fixture evidence tier")
 func pipelineValidationRejectsReleaseThresholdsForSmokeFixture() {
     let pipeline = makePipelineOutput(
@@ -274,10 +328,56 @@ private func makePipelineOutput(
     termRecallAccuracy: Double? = 1.0,
     repairResolutionRate: Double? = 1.0,
     unintendedRewriteRate: Double? = 0.0,
+    literalRepairPhrasePreservationRate: Double? = 1.0,
+    punctuationArtifactRate: Double? = 0.0,
+    commandPassthroughAccuracy: Double? = 1.0,
+    noSpeechFalseInsertRate: Double? = 0.0,
+    p50LatencyMS: Double? = 650,
     p90LatencyMS: Double? = 700,
     p99LatencyMS: Double? = 1_100
 ) -> PipelineOutput {
-    PipelineOutput(
+    let summary = PipelineAggregate(
+        totalSamples: 1,
+        scoredSamples: 1,
+        rawWER: 0.03,
+        rawCER: 0.01,
+        cleanedWER: 0.03 + (werDelta ?? 0),
+        cleanedCER: 0.01 + (cerDelta ?? 0),
+        werDelta: werDelta,
+        cerDelta: cerDelta,
+        improved: 0,
+        unchanged: 1 - regressed,
+        regressed: regressed,
+        unscored: 0,
+        termRecallAccuracy: termRecallAccuracy,
+        repairResolutionRate: repairResolutionRate,
+        unintendedRewriteRate: unintendedRewriteRate,
+        literalRepairPhrasePreservationRate: literalRepairPhrasePreservationRate,
+        punctuationArtifactRate: punctuationArtifactRate,
+        commandPassthroughAccuracy: commandPassthroughAccuracy,
+        noSpeechFalseInsertRate: noSpeechFalseInsertRate,
+        p50LatencyMS: p50LatencyMS,
+        p90LatencyMS: p90LatencyMS,
+        p99LatencyMS: p99LatencyMS,
+        lexicon: .init(
+            totalAppliedEdits: 0,
+            editsMatchingReference: 0,
+            editsNotMatchingReference: 0,
+            referenceMatchAccuracy: nil
+        ),
+        fillerImpact: .init(
+            samplesWithFillerRemovals: 0,
+            totalRemovedFillers: 0,
+            rawWEROnFillerSamples: nil,
+            cleanedWEROnFillerSamples: nil,
+            deltaWEROnFillerSamples: nil,
+            improved: 0,
+            unchanged: 0,
+            regressed: 0
+        )
+    )
+
+    return PipelineOutput(
         benchmarkName: "Validation Fixture",
         evidenceTier: evidenceTier,
         hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
@@ -290,41 +390,7 @@ private func makePipelineOutput(
         ),
         lexiconEntryCount: 0,
         normalizationPolicy: .init(),
-        summary: .init(
-            totalSamples: 1,
-            scoredSamples: 1,
-            rawWER: 0.03,
-            rawCER: 0.01,
-            cleanedWER: 0.03 + (werDelta ?? 0),
-            cleanedCER: 0.01 + (cerDelta ?? 0),
-            werDelta: werDelta,
-            cerDelta: cerDelta,
-            improved: 0,
-            unchanged: 1 - regressed,
-            regressed: regressed,
-            unscored: 0,
-            termRecallAccuracy: termRecallAccuracy,
-            repairResolutionRate: repairResolutionRate,
-            unintendedRewriteRate: unintendedRewriteRate,
-            p90LatencyMS: p90LatencyMS,
-            p99LatencyMS: p99LatencyMS,
-            lexicon: .init(
-                totalAppliedEdits: 0,
-                editsMatchingReference: 0,
-                editsNotMatchingReference: 0,
-                referenceMatchAccuracy: nil
-            ),
-            fillerImpact: .init(
-                samplesWithFillerRemovals: 0,
-                totalRemovedFillers: 0,
-                rawWEROnFillerSamples: nil,
-                cleanedWEROnFillerSamples: nil,
-                deltaWEROnFillerSamples: nil,
-                improved: 0,
-                unchanged: 0,
-                regressed: 0
-            )
-        ),
+        summary: summary,
         samples: []
     )
 }

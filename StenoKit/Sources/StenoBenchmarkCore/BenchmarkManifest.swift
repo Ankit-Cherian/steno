@@ -95,6 +95,48 @@ public struct NormalizationPolicy: Sendable, Codable {
     }
 }
 
+public enum BenchmarkAudioSource: String, Sendable, Codable, Equatable {
+    case librispeech
+    case syntheticSpeech
+    case syntheticSilence
+    case syntheticNoise
+    case microphone
+}
+
+public enum BenchmarkIntentLabel: String, Sendable, Codable, Equatable {
+    case repair
+    case literal
+    case termRecall
+    case command
+    case noSpeech
+    case fillerRemovable
+    case fillerMeaningBearing
+}
+
+public enum BenchmarkAppContextPreset: String, Sendable, Codable, Equatable {
+    case unknown
+    case editor
+    case terminal
+    case ide
+
+    public var appContext: AppContext {
+        switch self {
+        case .unknown:
+            return .unknown
+        case .editor:
+            return AppContext(bundleIdentifier: "com.apple.TextEdit", appName: "TextEdit")
+        case .terminal:
+            return AppContext(bundleIdentifier: "com.apple.Terminal", appName: "Terminal")
+        case .ide:
+            return AppContext(
+                bundleIdentifier: "com.microsoft.VSCode",
+                appName: "Visual Studio Code",
+                isIDE: true
+            )
+        }
+    }
+}
+
 public struct BenchmarkSample: Sendable, Codable {
     public var id: String
     public var dataset: String
@@ -102,6 +144,10 @@ public struct BenchmarkSample: Sendable, Codable {
     public var referenceText: String
     public var languageHint: String?
     public var audioDurationMS: Int?
+    public var audioSource: BenchmarkAudioSource?
+    public var intentLabels: [BenchmarkIntentLabel]
+    public var preservedPhrases: [String]
+    public var appContextPreset: BenchmarkAppContextPreset?
 
     public init(
         id: String,
@@ -109,7 +155,11 @@ public struct BenchmarkSample: Sendable, Codable {
         audioPath: String,
         referenceText: String,
         languageHint: String? = nil,
-        audioDurationMS: Int? = nil
+        audioDurationMS: Int? = nil,
+        audioSource: BenchmarkAudioSource? = nil,
+        intentLabels: [BenchmarkIntentLabel] = [],
+        preservedPhrases: [String] = [],
+        appContextPreset: BenchmarkAppContextPreset? = nil
     ) {
         self.id = id
         self.dataset = dataset
@@ -117,6 +167,37 @@ public struct BenchmarkSample: Sendable, Codable {
         self.referenceText = referenceText
         self.languageHint = languageHint
         self.audioDurationMS = audioDurationMS
+        self.audioSource = audioSource
+        self.intentLabels = intentLabels
+        self.preservedPhrases = preservedPhrases
+        self.appContextPreset = appContextPreset
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case dataset
+        case audioPath
+        case referenceText
+        case languageHint
+        case audioDurationMS
+        case audioSource
+        case intentLabels
+        case preservedPhrases
+        case appContextPreset
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        dataset = try container.decode(String.self, forKey: .dataset)
+        audioPath = try container.decode(String.self, forKey: .audioPath)
+        referenceText = try container.decode(String.self, forKey: .referenceText)
+        languageHint = try container.decodeIfPresent(String.self, forKey: .languageHint)
+        audioDurationMS = try container.decodeIfPresent(Int.self, forKey: .audioDurationMS)
+        audioSource = try container.decodeIfPresent(BenchmarkAudioSource.self, forKey: .audioSource)
+        intentLabels = try container.decodeIfPresent([BenchmarkIntentLabel].self, forKey: .intentLabels) ?? []
+        preservedPhrases = try container.decodeIfPresent([String].self, forKey: .preservedPhrases) ?? []
+        appContextPreset = try container.decodeIfPresent(BenchmarkAppContextPreset.self, forKey: .appContextPreset)
     }
 }
 
@@ -401,6 +482,28 @@ public struct PipelineSampleDelta: Sendable, Codable {
     }
 }
 
+public struct PipelineCoordinatorObservation: Sendable, Codable, Equatable {
+    public var iteration: Int
+    public var latencyMS: Int?
+    public var status: BenchmarkSampleStatus
+    public var insertResult: InsertResult?
+    public var errorMessage: String?
+
+    public init(
+        iteration: Int,
+        latencyMS: Int?,
+        status: BenchmarkSampleStatus,
+        insertResult: InsertResult?,
+        errorMessage: String?
+    ) {
+        self.iteration = iteration
+        self.latencyMS = latencyMS
+        self.status = status
+        self.insertResult = insertResult
+        self.errorMessage = errorMessage
+    }
+}
+
 public struct PipelineSampleResult: Sendable, Codable {
     public var id: String
     public var dataset: String
@@ -415,6 +518,7 @@ public struct PipelineSampleResult: Sendable, Codable {
     public var cleanedMetrics: BenchmarkTextQualityMetrics?
     public var delta: PipelineSampleDelta?
     public var outcome: PipelineOutcome
+    public var coordinatorObservations: [PipelineCoordinatorObservation]
 
     public init(
         id: String,
@@ -429,7 +533,8 @@ public struct PipelineSampleResult: Sendable, Codable {
         rawMetrics: BenchmarkTextQualityMetrics?,
         cleanedMetrics: BenchmarkTextQualityMetrics?,
         delta: PipelineSampleDelta?,
-        outcome: PipelineOutcome
+        outcome: PipelineOutcome,
+        coordinatorObservations: [PipelineCoordinatorObservation] = []
     ) {
         self.id = id
         self.dataset = dataset
@@ -444,6 +549,42 @@ public struct PipelineSampleResult: Sendable, Codable {
         self.cleanedMetrics = cleanedMetrics
         self.delta = delta
         self.outcome = outcome
+        self.coordinatorObservations = coordinatorObservations
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case dataset
+        case referenceText
+        case rawText
+        case cleanedText
+        case status
+        case errorMessage
+        case edits
+        case removedFillers
+        case rawMetrics
+        case cleanedMetrics
+        case delta
+        case outcome
+        case coordinatorObservations
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        dataset = try container.decode(String.self, forKey: .dataset)
+        referenceText = try container.decode(String.self, forKey: .referenceText)
+        rawText = try container.decodeIfPresent(String.self, forKey: .rawText)
+        cleanedText = try container.decodeIfPresent(String.self, forKey: .cleanedText)
+        status = try container.decode(BenchmarkSampleStatus.self, forKey: .status)
+        errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+        edits = try container.decodeIfPresent([TranscriptEdit].self, forKey: .edits) ?? []
+        removedFillers = try container.decodeIfPresent([String].self, forKey: .removedFillers) ?? []
+        rawMetrics = try container.decodeIfPresent(BenchmarkTextQualityMetrics.self, forKey: .rawMetrics)
+        cleanedMetrics = try container.decodeIfPresent(BenchmarkTextQualityMetrics.self, forKey: .cleanedMetrics)
+        delta = try container.decodeIfPresent(PipelineSampleDelta.self, forKey: .delta)
+        outcome = try container.decodeIfPresent(PipelineOutcome.self, forKey: .outcome) ?? .unscored
+        coordinatorObservations = try container.decodeIfPresent([PipelineCoordinatorObservation].self, forKey: .coordinatorObservations) ?? []
     }
 }
 
@@ -513,6 +654,11 @@ public struct PipelineAggregate: Sendable, Codable {
     public var termRecallAccuracy: Double?
     public var repairResolutionRate: Double?
     public var unintendedRewriteRate: Double?
+    public var literalRepairPhrasePreservationRate: Double?
+    public var punctuationArtifactRate: Double?
+    public var commandPassthroughAccuracy: Double?
+    public var noSpeechFalseInsertRate: Double?
+    public var p50LatencyMS: Double?
     public var p90LatencyMS: Double?
     public var p99LatencyMS: Double?
     public var lexicon: PipelineLexiconSummary
@@ -534,6 +680,11 @@ public struct PipelineAggregate: Sendable, Codable {
         termRecallAccuracy: Double? = nil,
         repairResolutionRate: Double? = nil,
         unintendedRewriteRate: Double? = nil,
+        literalRepairPhrasePreservationRate: Double? = nil,
+        punctuationArtifactRate: Double? = nil,
+        commandPassthroughAccuracy: Double? = nil,
+        noSpeechFalseInsertRate: Double? = nil,
+        p50LatencyMS: Double? = nil,
         p90LatencyMS: Double? = nil,
         p99LatencyMS: Double? = nil,
         lexicon: PipelineLexiconSummary,
@@ -554,10 +705,70 @@ public struct PipelineAggregate: Sendable, Codable {
         self.termRecallAccuracy = termRecallAccuracy
         self.repairResolutionRate = repairResolutionRate
         self.unintendedRewriteRate = unintendedRewriteRate
+        self.literalRepairPhrasePreservationRate = literalRepairPhrasePreservationRate
+        self.punctuationArtifactRate = punctuationArtifactRate
+        self.commandPassthroughAccuracy = commandPassthroughAccuracy
+        self.noSpeechFalseInsertRate = noSpeechFalseInsertRate
+        self.p50LatencyMS = p50LatencyMS
         self.p90LatencyMS = p90LatencyMS
         self.p99LatencyMS = p99LatencyMS
         self.lexicon = lexicon
         self.fillerImpact = fillerImpact
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case totalSamples
+        case scoredSamples
+        case rawWER
+        case rawCER
+        case cleanedWER
+        case cleanedCER
+        case werDelta
+        case cerDelta
+        case improved
+        case unchanged
+        case regressed
+        case unscored
+        case termRecallAccuracy
+        case repairResolutionRate
+        case unintendedRewriteRate
+        case literalRepairPhrasePreservationRate
+        case punctuationArtifactRate
+        case commandPassthroughAccuracy
+        case noSpeechFalseInsertRate
+        case p50LatencyMS
+        case p90LatencyMS
+        case p99LatencyMS
+        case lexicon
+        case fillerImpact
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        totalSamples = try container.decode(Int.self, forKey: .totalSamples)
+        scoredSamples = try container.decode(Int.self, forKey: .scoredSamples)
+        rawWER = try container.decodeIfPresent(Double.self, forKey: .rawWER)
+        rawCER = try container.decodeIfPresent(Double.self, forKey: .rawCER)
+        cleanedWER = try container.decodeIfPresent(Double.self, forKey: .cleanedWER)
+        cleanedCER = try container.decodeIfPresent(Double.self, forKey: .cleanedCER)
+        werDelta = try container.decodeIfPresent(Double.self, forKey: .werDelta)
+        cerDelta = try container.decodeIfPresent(Double.self, forKey: .cerDelta)
+        improved = try container.decode(Int.self, forKey: .improved)
+        unchanged = try container.decode(Int.self, forKey: .unchanged)
+        regressed = try container.decode(Int.self, forKey: .regressed)
+        unscored = try container.decode(Int.self, forKey: .unscored)
+        termRecallAccuracy = try container.decodeIfPresent(Double.self, forKey: .termRecallAccuracy)
+        repairResolutionRate = try container.decodeIfPresent(Double.self, forKey: .repairResolutionRate)
+        unintendedRewriteRate = try container.decodeIfPresent(Double.self, forKey: .unintendedRewriteRate)
+        literalRepairPhrasePreservationRate = try container.decodeIfPresent(Double.self, forKey: .literalRepairPhrasePreservationRate)
+        punctuationArtifactRate = try container.decodeIfPresent(Double.self, forKey: .punctuationArtifactRate)
+        commandPassthroughAccuracy = try container.decodeIfPresent(Double.self, forKey: .commandPassthroughAccuracy)
+        noSpeechFalseInsertRate = try container.decodeIfPresent(Double.self, forKey: .noSpeechFalseInsertRate)
+        p50LatencyMS = try container.decodeIfPresent(Double.self, forKey: .p50LatencyMS)
+        p90LatencyMS = try container.decodeIfPresent(Double.self, forKey: .p90LatencyMS)
+        p99LatencyMS = try container.decodeIfPresent(Double.self, forKey: .p99LatencyMS)
+        lexicon = try container.decode(PipelineLexiconSummary.self, forKey: .lexicon)
+        fillerImpact = try container.decode(PipelineFillerImpactSummary.self, forKey: .fillerImpact)
     }
 }
 

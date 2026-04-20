@@ -131,7 +131,8 @@ func pipelineRunComputesAdvancedQualityMetrics() async {
                 id: "sample-1",
                 dataset: "fixture",
                 audioPath: "audio.wav",
-                referenceText: "send it to Jane and ping TURSO"
+                referenceText: "send it to Jane and ping TURSO",
+                intentLabels: [.repair]
             )
         ]
     )
@@ -305,4 +306,254 @@ func releaseSignoffPipelineMeasuresCoordinatorLatency() async throws {
 
     #expect(output.summary.p90LatencyMS != nil)
     #expect(output.summary.p99LatencyMS != nil)
+}
+
+@Test("Release signoff pipeline computes literal command no-speech punctuation and multi-iteration latency metrics")
+func releaseSignoffPipelineComputesExtendedMetrics() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("benchmark-extended-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let sampleFileNames = [
+        "repair.wav",
+        "literal.wav",
+        "command.wav",
+        "artifact.wav",
+        "nospeech.wav",
+    ]
+    for fileName in sampleFileNames {
+        try Data().write(to: tempDir.appendingPathComponent(fileName))
+    }
+
+    let scriptURL = tempDir.appendingPathComponent("fake-whisper.sh")
+    try """
+    #!/bin/sh
+    input_file=""
+    output_base=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "-f" ]; then
+        input_file="$arg"
+      fi
+      if [ "$prev" = "-of" ]; then
+        output_base="$arg"
+      fi
+      prev="$arg"
+    done
+    case "$(basename "$input_file")" in
+      repair.wav)
+        text="send it to John scratch that Jane"
+        ;;
+      literal.wav)
+        text="type scratch that literally"
+        ;;
+      command.wav)
+        text="/build target"
+        ;;
+      artifact.wav)
+        text="hello ,"
+        ;;
+      nospeech.wav)
+        text="   "
+        ;;
+      *)
+        text="unknown"
+        ;;
+    esac
+    printf "%s\\n" "$text" > "${output_base}.txt"
+    exit 0
+    """.write(to: scriptURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: NSNumber(value: Int16(0o755))],
+        ofItemAtPath: scriptURL.path
+    )
+
+    let manifest = BenchmarkManifest(
+        benchmarkName: "Extended Release Signoff Fixture",
+        evidenceTier: .releaseSignoff,
+        hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
+        samples: [
+            .init(
+                id: "repair",
+                dataset: "targeted",
+                audioPath: "repair.wav",
+                referenceText: "send it to Jane",
+                audioDurationMS: 1_000,
+                audioSource: .syntheticSpeech,
+                intentLabels: [.repair]
+            ),
+            .init(
+                id: "literal",
+                dataset: "targeted",
+                audioPath: "literal.wav",
+                referenceText: "type scratch that literally",
+                audioDurationMS: 1_000,
+                audioSource: .syntheticSpeech,
+                intentLabels: [.literal],
+                preservedPhrases: ["scratch that"]
+            ),
+            .init(
+                id: "command",
+                dataset: "targeted",
+                audioPath: "command.wav",
+                referenceText: "/build target",
+                audioDurationMS: 1_000,
+                audioSource: .syntheticSpeech,
+                intentLabels: [.command],
+                appContextPreset: .ide
+            ),
+            .init(
+                id: "artifact",
+                dataset: "targeted",
+                audioPath: "artifact.wav",
+                referenceText: "hello",
+                audioDurationMS: 1_000,
+                audioSource: .syntheticSpeech
+            ),
+            .init(
+                id: "nospeech",
+                dataset: "targeted",
+                audioPath: "nospeech.wav",
+                referenceText: "",
+                audioDurationMS: 1_000,
+                audioSource: .syntheticSilence,
+                intentLabels: [.noSpeech]
+            ),
+        ]
+    )
+
+    let rawOutput = RawEngineOutput(
+        benchmarkName: "Extended Release Signoff Fixture",
+        evidenceTier: .releaseSignoff,
+        hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
+        manifestSchemaVersion: manifest.schemaVersion,
+        normalizationPolicy: manifest.scoring.normalization,
+        whisperConfiguration: .init(
+            whisperCLIPath: scriptURL.path,
+            modelPath: tempDir.appendingPathComponent("fake-model.bin").path
+        ),
+        summary: .init(
+            totalSamples: 5,
+            succeeded: 4,
+            failed: 1,
+            failureRate: 0.2,
+            wer: 0.25,
+            cer: 0.1,
+            meanLatencyMS: 720,
+            p50LatencyMS: 720,
+            p90LatencyMS: 720,
+            p99LatencyMS: 720,
+            meanRTF: 0.25
+        ),
+        datasetBreakdown: [:],
+        samples: [
+            .init(
+                id: "repair",
+                dataset: "targeted",
+                audioPath: "repair.wav",
+                referenceText: "send it to Jane",
+                hypothesisText: "send it to John scratch that Jane",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 720,
+                audioDurationMS: 1_000,
+                rtf: 0.25,
+                metrics: nil
+            ),
+            .init(
+                id: "literal",
+                dataset: "targeted",
+                audioPath: "literal.wav",
+                referenceText: "type scratch that literally",
+                hypothesisText: "type scratch that literally",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 720,
+                audioDurationMS: 1_000,
+                rtf: 0.25,
+                metrics: nil
+            ),
+            .init(
+                id: "command",
+                dataset: "targeted",
+                audioPath: "command.wav",
+                referenceText: "/build target",
+                hypothesisText: "/build target",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 720,
+                audioDurationMS: 1_000,
+                rtf: 0.25,
+                metrics: nil
+            ),
+            .init(
+                id: "artifact",
+                dataset: "targeted",
+                audioPath: "artifact.wav",
+                referenceText: "hello",
+                hypothesisText: "hello ,",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 720,
+                audioDurationMS: 1_000,
+                rtf: 0.25,
+                metrics: nil
+            ),
+            .init(
+                id: "nospeech",
+                dataset: "targeted",
+                audioPath: "nospeech.wav",
+                referenceText: "",
+                hypothesisText: nil,
+                languageHint: "en",
+                status: .failed,
+                errorMessage: "Expected no speech from coordinator run.",
+                elapsedMS: 720,
+                audioDurationMS: 1_000,
+                rtf: 0.25,
+                metrics: nil
+            ),
+        ]
+    )
+
+    let profile = StyleProfile(
+        name: "benchmark-local",
+        tone: .natural,
+        structureMode: .natural,
+        fillerPolicy: .balanced,
+        commandPolicy: .passthrough
+    )
+
+    let output = await BenchmarkRunner.runPipeline(
+        manifest: manifest,
+        rawOutput: rawOutput,
+        configuration: .init(
+            profile: profile,
+            lexicon: .init(entries: []),
+            manifestPath: tempDir.path,
+            latencyIterations: 3
+        )
+    )
+
+    #expect(output.summary.repairResolutionRate == 1)
+    #expect(output.summary.literalRepairPhrasePreservationRate == 1)
+    #expect(output.summary.commandPassthroughAccuracy == 1)
+    #expect(output.summary.noSpeechFalseInsertRate == 0)
+    #expect(output.summary.punctuationArtifactRate == 0.25)
+    #expect(output.summary.p50LatencyMS != nil)
+    #expect(output.summary.p90LatencyMS != nil)
+    #expect(output.summary.p99LatencyMS != nil)
+
+    let commandSample = try #require(output.samples.first(where: { $0.id == "command" }))
+    #expect(commandSample.coordinatorObservations.count == 3)
+    #expect(commandSample.coordinatorObservations.allSatisfy { $0.insertResult?.insertedText == "/build target" })
+
+    let noSpeechSample = try #require(output.samples.first(where: { $0.id == "nospeech" }))
+    #expect(noSpeechSample.coordinatorObservations.count == 3)
+    #expect(noSpeechSample.coordinatorObservations.allSatisfy { $0.insertResult?.status == .noSpeech })
 }
