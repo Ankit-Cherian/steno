@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Rebuilt the macOS app shell with a custom window surface, bespoke title bar, segmented navigation, and a redesigned stage background.
+- Redesigned the Record tab around two hero styles (`pill` and `ring`), richer listening/idle states, inline level meters, and a rebuilt transcript dock.
+- Redesigned the History tab with grouped transcript rows, richer selection states, inline copy/paste actions, and a dedicated preview pane.
+- Redesigned Settings with a sidebar layout, broader full-width cards, improved permissions/engine surfaces, and a new Appearance section.
+- Added persistent appearance preferences for light/dark mode, accent selection, hero style, and atmosphere intensity.
+- Refreshed onboarding to match the redesigned shell and visual system.
+- Reworked the overlay recorder into a waveform-based floating panel with animated bars, terminal-state icons, and accent-aware styling.
+- Repo setup guidance now keeps `small.en` as the fastest baseline but explicitly recommends `large-v3-turbo` for higher-end Apple Silicon Macs.
+
+### Fixed
+- Disabled broad background dragging on the custom title-bar window so Record / History / Settings tab clicks register reliably.
+- Title bar and overlay now follow the selected accent more consistently instead of falling back to a fixed blue treatment.
+- Transcript timestamps now use a 12-hour clock with `AM/PM` instead of 24-hour time.
+- The Record screen model badge now reflects the configured Whisper model path instead of hardcoding `small.en`.
+- Preference repair now re-detects local `whisper.cpp` runtime paths more reliably across local checkout/worktree layouts.
+
 ## [0.1.10] - 2026-03-17
 
 ### Changed

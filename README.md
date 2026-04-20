@@ -67,6 +67,13 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
    ./models/download-ggml-model.sh small.en
    cd ../..
    ```
+   `small.en` remains the fastest low-friction baseline. On higher-end Apple Silicon Macs, `large-v3-turbo` is the recommended upgrade for better local transcription quality:
+   ```bash
+   cd vendor/whisper.cpp
+   ./models/download-ggml-model.sh large-v3-turbo
+   cd ../..
+   ```
+   If you download both, point Steno at the one you want from Settings -> Engine.
 
 4. **(Strongly recommended)** Download the VAD model for silence/background-noise suppression:
    ```bash

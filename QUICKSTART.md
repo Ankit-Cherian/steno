@@ -20,6 +20,16 @@ cd ../..
 
 Expected result: `whisper.cpp`, the `small.en` model, and the `ggml-silero-v6.2.0.bin` VAD model are ready under `vendor/whisper.cpp`.
 
+If you are on a higher-end Apple Silicon Mac and want a stronger local Whisper-family model, you can download `large-v3-turbo` instead of or alongside `small.en`:
+
+```bash
+cd vendor/whisper.cpp
+./models/download-ggml-model.sh large-v3-turbo
+cd ../..
+```
+
+If both models are present, choose the one you want from Settings -> Engine.
+
 ## 2) Generate the Xcode project
 
 ```bash
