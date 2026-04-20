@@ -9,9 +9,14 @@ struct PermissionStatusCard: View {
 
     var body: some View {
         HStack(spacing: StenoDesign.md) {
-            Image(systemName: statusIconName)
-                .font(.system(size: StenoDesign.iconLG))
-                .foregroundStyle(statusColor)
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(statusColor.opacity(0.12))
+                Image(systemName: statusIconName)
+                    .font(.system(size: StenoDesign.iconLG, weight: .semibold))
+                    .foregroundStyle(statusColor)
+            }
+            .frame(width: 36, height: 36)
 
             VStack(alignment: .leading, spacing: StenoDesign.xxs) {
                 Text(title)

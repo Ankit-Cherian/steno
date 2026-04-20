@@ -45,7 +45,9 @@ struct MicButton: View {
     }
 
     private var micButton: some View {
-        Button(action: onTap) {
+        Button {
+            onTap()
+        } label: {
             ZStack {
                 // Outer glow ring (visible only when recording)
                 if isRecording {
@@ -109,7 +111,12 @@ struct MicButton: View {
                 Circle()
                     .fill(isRecording ? StenoDesign.accent : StenoDesign.surface)
                     .frame(width: StenoDesign.micButtonSize, height: StenoDesign.micButtonSize)
-                    .shadowStyle(isRecording ? .recording : .idle)
+                    .shadow(
+                        color: isRecording ? StenoDesign.accent.opacity(0.25) : .black.opacity(0.14),
+                        radius: isRecording ? 16 : 6,
+                        x: 0,
+                        y: 2
+                    )
                     .overlay(
                         Circle()
                             .stroke(
@@ -118,7 +125,7 @@ struct MicButton: View {
                             )
                     )
                     .animation(
-                        reduceMotion ? nil : .spring(response: StenoDesign.animationNormal, dampingFraction: 0.8),
+                        reduceMotion ? nil : Animation.spring(response: StenoDesign.animationNormal, dampingFraction: 0.8),
                         value: isRecording
                     )
 

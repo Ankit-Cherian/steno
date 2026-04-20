@@ -18,6 +18,7 @@ final class DictationController: ObservableObject {
     @Published var accessibilityPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var inputMonitoringPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var recordingElapsed: TimeInterval = 0
+    @Published var recordingStartedAt: Date?
     @Published var hasBootstrapped = false
 
     private let captureService = MacAudioCaptureService()
@@ -171,6 +172,18 @@ final class DictationController: ObservableObject {
         }
     }
 
+    func saveAppearance(_ appearance: AppPreferences.Appearance) {
+        var snapshot = preferences
+        snapshot.appearance = appearance
+        snapshot.normalize()
+        preferences = snapshot
+        applyOverlayAppearance(for: snapshot.appearance)
+
+        Task {
+            await preferencesStore.save(snapshot)
+        }
+    }
+
     func resetOnboarding() {
         preferences.general.showOnboarding = true
         savePreferences()
@@ -279,6 +292,29 @@ final class DictationController: ObservableObject {
         }
     }
 
+    func retryCleanup(for entry: TranscriptEntry) {
+        Task {
+            let context = appContext(for: entry.appBundleID)
+            let profile = await styleProfileService.resolve(for: context)
+            let lexicon = await lexiconService.snapshot(for: context)
+
+            do {
+                _ = try await historyStore.retry(
+                    entryID: entry.id,
+                    using: RuleBasedCleanupEngine(),
+                    profile: profile,
+                    lexicon: lexicon
+                )
+                await refreshHistory()
+                status = "Cleanup re-run with current rules."
+                lastError = ""
+            } catch {
+                status = "Cleanup re-run failed"
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
     func clearErrors() {
         lastError = ""
         hotkeyRegistrationMessage = ""
@@ -340,6 +376,7 @@ final class DictationController: ObservableObject {
         menuBar.updateIcon(isRecording: true, handsFreeOn: mode == .handsFree)
         activeRecordingMode = mode
         recordingElapsed = 0
+        recordingStartedAt = Date()
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.recordingElapsed += 1
@@ -374,6 +411,7 @@ final class DictationController: ObservableObject {
                 self.recordingTimer?.invalidate()
                 self.recordingTimer = nil
                 self.recordingElapsed = 0
+                self.recordingStartedAt = nil
                 isRecording = false
                 handsFreeOn = false
                 menuBar.updateIcon(isRecording: false, handsFreeOn: false)
@@ -396,6 +434,7 @@ final class DictationController: ObservableObject {
         recordingTimer?.invalidate()
         recordingTimer = nil
         recordingElapsed = 0
+        recordingStartedAt = nil
         isRecording = false
         handsFreeOn = false
         menuBar.updateIcon(isRecording: false, handsFreeOn: false)
@@ -478,6 +517,7 @@ final class DictationController: ObservableObject {
         hotkey.isOptionPressToTalkEnabled = newValue.hotkeys.optionPressToTalkEnabled
         hotkey.globalToggleKeyCode = newValue.hotkeys.handsFreeGlobalKeyCode
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
+        applyOverlayAppearance(for: newValue.appearance)
     }
 
     private func rebuildRuntimeOrDefer() async {
@@ -559,6 +599,16 @@ final class DictationController: ObservableObject {
         NSApp.setActivationPolicy(policy)
     }
 
+    private func appContext(for bundleID: String) -> AppContext {
+        let name = StenoDesign.appDisplayName(for: bundleID)
+        return AppContext(
+            bundleIdentifier: bundleID,
+            appName: name,
+            isRemoteDesktop: bundleID.lowercased().contains("remote"),
+            isIDE: bundleID.contains("Xcode") || bundleID.contains("com.todesktop") || bundleID.contains("warp")
+        )
+    }
+
     private func copiedOnlyStatusMessage(for result: InsertResult) -> String {
         guard let reason = result.errorMessage?.lowercased() else {
             return "Transcript copied to clipboard. Paste with Cmd+V."
@@ -569,6 +619,11 @@ final class DictationController: ObservableObject {
         }
 
         return "Transcript copied to clipboard. Paste with Cmd+V."
+    }
+
+    private func applyOverlayAppearance(for appearance: AppPreferences.Appearance) {
+        let theme = StenoDesign.theme(for: appearance)
+        overlay.updateAccentColor(NSColor(theme.accent), glowColor: NSColor(theme.accentGlow))
     }
 }
 

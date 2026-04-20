@@ -127,6 +127,7 @@ func sessionCoordinatorLocalFallbackOnPrimaryFailure() async throws {
     #expect(recent.count == 1)
     #expect(recent[0].cleanText == inserted)
     #expect(recent[0].audioURL == nil)
+    #expect(recent[0].durationMS == 0)
 }
 
 @Test("SessionCoordinator keeps slash commands raw for IDE passthrough profile")

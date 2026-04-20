@@ -2,6 +2,37 @@ import Foundation
 import StenoKit
 
 struct AppPreferences: Codable, Sendable, Equatable {
+    struct Appearance: Codable, Sendable, Equatable {
+        var mode: StenoAppearanceMode
+        var accent: StenoAccentStyle
+        var recordHeroStyle: StenoRecordHeroStyle
+        var atmosphereIntensity: Int
+
+        init(
+            mode: StenoAppearanceMode = .dark,
+            accent: StenoAccentStyle = .dodger,
+            recordHeroStyle: StenoRecordHeroStyle = .pill,
+            atmosphereIntensity: Int = 100
+        ) {
+            self.mode = mode
+            self.accent = accent
+            self.recordHeroStyle = recordHeroStyle
+            self.atmosphereIntensity = atmosphereIntensity
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            mode = try container.decodeIfPresent(StenoAppearanceMode.self, forKey: .mode) ?? .dark
+            accent = try container.decodeIfPresent(StenoAccentStyle.self, forKey: .accent) ?? .dodger
+            recordHeroStyle = try container.decodeIfPresent(StenoRecordHeroStyle.self, forKey: .recordHeroStyle) ?? .pill
+            atmosphereIntensity = try container.decodeIfPresent(Int.self, forKey: .atmosphereIntensity) ?? 100
+        }
+
+        mutating func normalize() {
+            atmosphereIntensity = max(0, min(100, atmosphereIntensity))
+        }
+    }
+
     struct General: Codable, Sendable, Equatable {
         var launchAtLoginEnabled: Bool
         var showDockIcon: Bool
@@ -70,6 +101,68 @@ struct AppPreferences: Codable, Sendable, Equatable {
             )
             modelPath = newModelPath
         }
+
+        mutating func repairPathsIfNeeded() {
+            let fileManager = FileManager.default
+            let cliExists = fileManager.fileExists(atPath: whisperCLIPath)
+            let modelExists = fileManager.fileExists(atPath: modelPath)
+            let vadExists = fileManager.fileExists(atPath: vadModelPath)
+
+            guard !(cliExists && modelExists && (!vadEnabled || vadExists)) else {
+                return
+            }
+
+            guard let vendorRoot = Self.detectedVendorRoot() else {
+                return
+            }
+
+            let repairedCLI = vendorRoot.appendingPathComponent("build/bin/whisper-cli").path
+            let repairedModel = vendorRoot.appendingPathComponent("models/ggml-small.en.bin").path
+            let repairedVAD = vendorRoot.appendingPathComponent("models/ggml-silero-v6.2.0.bin").path
+
+            if fileManager.fileExists(atPath: repairedCLI) {
+                whisperCLIPath = repairedCLI
+            }
+
+            if fileManager.fileExists(atPath: repairedModel) {
+                modelPath = repairedModel
+            }
+
+            if fileManager.fileExists(atPath: repairedVAD) {
+                vadModelPath = repairedVAD
+            } else if fileManager.fileExists(atPath: modelPath) {
+                vadModelPath = WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: modelPath)
+            }
+        }
+
+        private static func detectedVendorRoot() -> URL? {
+            let fileManager = FileManager.default
+            let home = fileManager.homeDirectoryForCurrentUser
+            let cwd = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
+
+            var candidates: [URL] = [
+                home.appendingPathComponent("vendor/whisper.cpp", isDirectory: true),
+                cwd.appendingPathComponent("vendor/whisper.cpp", isDirectory: true),
+                cwd.appendingPathComponent("../vendor/whisper.cpp", isDirectory: true),
+                cwd.appendingPathComponent("../Steno/vendor/whisper.cpp", isDirectory: true)
+            ]
+
+            let localProjects = home.appendingPathComponent("Desktop/LocalProjects", isDirectory: true)
+            if let projectDirs = try? fileManager.contentsOfDirectory(
+                at: localProjects,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) {
+                candidates.append(contentsOf: projectDirs.map {
+                    $0.appendingPathComponent("vendor/whisper.cpp", isDirectory: true)
+                })
+            }
+
+            return candidates.first { candidate in
+                fileManager.fileExists(atPath: candidate.appendingPathComponent("build/bin/whisper-cli").path)
+                    && fileManager.fileExists(atPath: candidate.appendingPathComponent("models/ggml-small.en.bin").path)
+            }
+        }
     }
 
     struct Insertion: Codable, Sendable, Equatable {
@@ -101,6 +194,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         }
     }
 
+    var appearance: Appearance
     var general: General
     var hotkeys: Hotkeys
     var dictation: Dictation
@@ -118,6 +212,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             .path
 
         return AppPreferences(
+            appearance: .init(),
             general: .init(
                 launchAtLoginEnabled: false,
                 showDockIcon: true,
@@ -151,6 +246,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
     }
 
     mutating func normalize() {
+        appearance.normalize()
+        dictation.repairPathsIfNeeded()
         let supported: Set<InsertionMethod> = [.direct, .accessibility, .clipboardPaste]
         var seen: Set<InsertionMethod> = []
         var normalized: [InsertionMethod] = []
