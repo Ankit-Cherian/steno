@@ -115,6 +115,10 @@ enum StenoBenchmarkCLI {
         let outputPath = try command.required("output")
         let profile = try parseProfile(command)
         let lexicon = try parseLexicon(command)
+        let latencyIterations = try parseOptionalInt(
+            command.optional("latency-iterations"),
+            argument: "latency-iterations"
+        ) ?? 1
 
         let manifest = try BenchmarkIO.loadManifest(at: manifestPath)
         let rawOutput = try BenchmarkIO.loadRawOutput(at: rawPath)
@@ -125,7 +129,8 @@ enum StenoBenchmarkCLI {
             configuration: PipelineRunConfiguration(
                 profile: profile,
                 lexicon: lexicon,
-                manifestPath: manifestPath
+                manifestPath: manifestPath,
+                latencyIterations: latencyIterations
             )
         )
         try BenchmarkIO.savePipelineOutput(pipelineOutput, to: outputPath)
@@ -201,6 +206,22 @@ enum StenoBenchmarkCLI {
             command.optional("max-unintended-rewrite-rate"),
             argument: "max-unintended-rewrite-rate"
         )
+        let minLiteralRepairPhrasePreservationRate = try parseOptionalDouble(
+            command.optional("min-literal-repair-phrase-preservation-rate"),
+            argument: "min-literal-repair-phrase-preservation-rate"
+        )
+        let maxPunctuationArtifactRate = try parseOptionalDouble(
+            command.optional("max-punctuation-artifact-rate"),
+            argument: "max-punctuation-artifact-rate"
+        )
+        let minCommandPassthroughAccuracy = try parseOptionalDouble(
+            command.optional("min-command-passthrough-accuracy"),
+            argument: "min-command-passthrough-accuracy"
+        )
+        let maxNoSpeechFalseInsertRate = try parseOptionalDouble(
+            command.optional("max-no-speech-false-insert-rate"),
+            argument: "max-no-speech-false-insert-rate"
+        )
         let baselineP90LatencyMS = try parseOptionalDouble(
             command.optional("baseline-p90-latency-ms"),
             argument: "baseline-p90-latency-ms"
@@ -226,6 +247,10 @@ enum StenoBenchmarkCLI {
             minTermRecallAccuracy: minTermRecallAccuracy,
             minRepairResolutionRate: minRepairResolutionRate,
             maxUnintendedRewriteRate: maxUnintendedRewriteRate,
+            minLiteralRepairPhrasePreservationRate: minLiteralRepairPhrasePreservationRate,
+            maxPunctuationArtifactRate: maxPunctuationArtifactRate,
+            minCommandPassthroughAccuracy: minCommandPassthroughAccuracy,
+            maxNoSpeechFalseInsertRate: maxNoSpeechFalseInsertRate,
             baselineP90LatencyMS: baselineP90LatencyMS,
             maxP90RegressionRatio: maxP90RegressionRatio,
             maxP90LatencyMS: maxP90LatencyMS,
@@ -273,13 +298,18 @@ enum StenoBenchmarkCLI {
 
         let profile = try parseProfile(command)
         let lexicon = try parseLexicon(command)
+        let latencyIterations = try parseOptionalInt(
+            command.optional("latency-iterations"),
+            argument: "latency-iterations"
+        ) ?? 1
         let pipelineOutput = await BenchmarkRunner.runPipeline(
             manifest: manifest,
             rawOutput: rawOutput,
             configuration: PipelineRunConfiguration(
                 profile: profile,
                 lexicon: lexicon,
-                manifestPath: manifestPath
+                manifestPath: manifestPath,
+                latencyIterations: latencyIterations
             )
         )
         try BenchmarkIO.savePipelineOutput(pipelineOutput, to: pipelineOutputPath)
@@ -367,6 +397,14 @@ enum StenoBenchmarkCLI {
         return value
     }
 
+    private static func parseOptionalInt(_ raw: String?, argument: String) throws -> Int? {
+        guard let raw, !raw.isEmpty else { return nil }
+        guard let value = Int(raw), value > 0 else {
+            throw CLIError.invalidValue(argument: argument, value: raw)
+        }
+        return value
+    }
+
     private static func parseCommandLine(_ args: [String]) throws -> ParsedCommand {
         guard let command = args.first else {
             throw CLIError.usage(helpText())
@@ -410,6 +448,7 @@ enum StenoBenchmarkCLI {
             --manifest <path>
             --raw <path>
             --output <path>
+            [--latency-iterations <int>]
             [--lexicon <path>]
             [--profile-name <name>]
             [--tone natural|professional|concise|friendly|technical]
@@ -438,6 +477,10 @@ enum StenoBenchmarkCLI {
             [--min-term-recall-accuracy <double>]
             [--min-repair-resolution-rate <double>]
             [--max-unintended-rewrite-rate <double>]
+            [--min-literal-repair-phrase-preservation-rate <double>]
+            [--max-punctuation-artifact-rate <double>]
+            [--min-command-passthrough-accuracy <double>]
+            [--max-no-speech-false-insert-rate <double>]
             [--baseline-p90-latency-ms <double>]
             [--max-p90-regression-ratio <double>]
             [--max-p90-latency-ms <double>]
@@ -454,6 +497,7 @@ enum StenoBenchmarkCLI {
             [--threads <int>]
             [--extra-arg <arg>] (repeatable)
             [--default-language <code>]
+            [--latency-iterations <int>]
             [--lexicon <path>]
             [--profile-name <name>]
             [--tone natural|professional|concise|friendly|technical]

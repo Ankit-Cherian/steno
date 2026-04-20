@@ -67,6 +67,11 @@ func reportRendererIncludesRequiredLabels() throws {
             unchanged: 1,
             regressed: 0,
             unscored: 0,
+            literalRepairPhrasePreservationRate: 1,
+            punctuationArtifactRate: 0,
+            commandPassthroughAccuracy: 1,
+            noSpeechFalseInsertRate: 0,
+            p50LatencyMS: 100,
             lexicon: .init(
                 totalAppliedEdits: 0,
                 editsMatchingReference: 0,
@@ -106,6 +111,11 @@ func reportRendererIncludesRequiredLabels() throws {
     #expect(report.contains("releaseSignoff"))
     #expect(report.contains("m5-pro"))
     #expect(report.contains("large-v3-turbo"))
+    #expect(report.contains("Literal Repair Phrase Preservation Rate"))
+    #expect(report.contains("Punctuation Artifact Rate"))
+    #expect(report.contains("Command Passthrough Accuracy"))
+    #expect(report.contains("No-Speech False Insert Rate"))
+    #expect(report.contains("p50 Latency (ms)"))
 }
 
 @Test("Report validation fails if required labels are missing")

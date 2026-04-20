@@ -155,6 +155,22 @@ SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
 swift test --filter sessionCoordinatorLocalFallbackOnPrimaryFailure
 ```
 
+## Release Eval
+
+Run the local release-eval entrypoint with explicit dependency overrides:
+
+```bash
+STENO_WHISPER_CLI=/absolute/path/to/whisper-cli \
+STENO_WHISPER_MODEL=/absolute/path/to/ggml-large-v3-turbo.bin \
+STENO_VAD_MODEL=/absolute/path/to/ggml-silero-v6.2.0.bin \
+STENO_LIBRISPEECH_ROOT=/absolute/path/to/librispeech_test_clean \
+scripts/run-release-eval.sh
+```
+
+- `scripts/run-release-eval.sh --smoke-only` runs only the package tests plus the smoke fixture benchmark.
+- Full release eval writes ignored local bundles under `research/benchmarks/generated/`.
+- Passing smoke fixtures is not release evidence. Only the measured hardware/model row from a full release-eval run can be treated as validated.
+
 ## Known Limitations
 
 - macOS only (no Windows/Linux desktop target yet)

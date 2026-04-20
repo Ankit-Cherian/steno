@@ -32,15 +32,18 @@ public struct PipelineRunConfiguration: Sendable {
     public var profile: StyleProfile
     public var lexicon: PersonalLexicon
     public var manifestPath: String?
+    public var latencyIterations: Int
 
     public init(
         profile: StyleProfile,
         lexicon: PersonalLexicon,
-        manifestPath: String? = nil
+        manifestPath: String? = nil,
+        latencyIterations: Int = 1
     ) {
         self.profile = profile
         self.lexicon = lexicon
         self.manifestPath = manifestPath
+        self.latencyIterations = max(1, latencyIterations)
     }
 }
 
@@ -143,7 +146,7 @@ public enum BenchmarkRunner {
             rawByID[sample.id] = sample
         }
 
-        let coordinatorLatencies = await measureCoordinatorLatenciesIfNeeded(
+        let coordinatorObservations = await measureCoordinatorObservationsIfNeeded(
             manifest: manifest,
             rawOutput: rawOutput,
             configuration: configuration
@@ -168,7 +171,8 @@ public enum BenchmarkRunner {
                         rawMetrics: nil,
                         cleanedMetrics: nil,
                         delta: nil,
-                        outcome: .unscored
+                        outcome: .unscored,
+                        coordinatorObservations: coordinatorObservations[sample.id] ?? []
                     )
                 )
                 continue
@@ -189,7 +193,8 @@ public enum BenchmarkRunner {
                         rawMetrics: rawSample.metrics,
                         cleanedMetrics: nil,
                         delta: nil,
-                        outcome: .unscored
+                        outcome: .unscored,
+                        coordinatorObservations: coordinatorObservations[sample.id] ?? []
                     )
                 )
                 continue
@@ -234,7 +239,8 @@ public enum BenchmarkRunner {
                         rawMetrics: rawMetrics,
                         cleanedMetrics: cleanedMetrics,
                         delta: delta,
-                        outcome: classifyOutcome(raw: rawMetrics, cleaned: cleanedMetrics)
+                        outcome: classifyOutcome(raw: rawMetrics, cleaned: cleanedMetrics),
+                        coordinatorObservations: coordinatorObservations[sample.id] ?? []
                     )
                 )
             } catch {
@@ -252,7 +258,8 @@ public enum BenchmarkRunner {
                         rawMetrics: rawMetrics,
                         cleanedMetrics: nil,
                         delta: nil,
-                        outcome: .unscored
+                        outcome: .unscored,
+                        coordinatorObservations: coordinatorObservations[sample.id] ?? []
                     )
                 )
             }
@@ -262,7 +269,7 @@ public enum BenchmarkRunner {
             sampleResults: sampleResults,
             normalizer: normalizer,
             lexicon: configuration.lexicon,
-            coordinatorLatencies: coordinatorLatencies
+            manifest: manifest
         )
 
         return PipelineOutput(
@@ -358,7 +365,7 @@ public enum BenchmarkRunner {
         sampleResults: [PipelineSampleResult],
         normalizer: TextNormalizer,
         lexicon: PersonalLexicon,
-        coordinatorLatencies: [String: Int]
+        manifest: BenchmarkManifest
     ) -> PipelineAggregate {
         var rawTotals = MetricTotals()
         var cleanedTotals = MetricTotals()
@@ -393,8 +400,19 @@ public enum BenchmarkRunner {
         var repairRelevantSamples = 0
         var repairResolvedSamples = 0
         var unintendedRewriteSamples = 0
+        var literalRelevantSamples = 0
+        var literalPreservedSamples = 0
+        var commandRelevantSamples = 0
+        var commandPassthroughSamples = 0
+        var noSpeechRelevantSamples = 0
+        var noSpeechFalseInsertSamples = 0
+        var punctuationEligibleSamples = 0
+        var punctuationArtifactSamples = 0
+        let manifestSamplesByID = Dictionary(uniqueKeysWithValues: manifest.samples.map { ($0.id, $0) })
 
         for sample in sampleResults {
+            let manifestSample = manifestSamplesByID[sample.id]
+
             if let rawMetrics = sample.rawMetrics, let cleanedMetrics = sample.cleanedMetrics {
                 rawTotals.add(rawMetrics)
                 cleanedTotals.add(cleanedMetrics)
@@ -447,7 +465,7 @@ public enum BenchmarkRunner {
 
             let normalizedCleaned = normalizer.normalize(sample.cleanedText ?? "")
             let normalizedRaw = normalizer.normalize(sample.rawText ?? "")
-            let rawHasRepairMarker = containsRepairMarker(sample.rawText ?? "")
+            let hasRepairIntent = manifestSample?.intentLabels.contains(.repair) == true
 
             let referenceTerms = normalizedPreferredTerms.filter {
                 BenchmarkScorer.containsWholeWordOrPhrase(
@@ -455,7 +473,8 @@ public enum BenchmarkRunner {
                     term: $0
                 )
             }
-            if referenceTerms.isEmpty == false {
+            let hasExplicitTermIntent = manifestSample?.intentLabels.contains(.termRecall) == true
+            if hasExplicitTermIntent || referenceTerms.isEmpty == false {
                 termRelevantSamples += 1
                 let recoveredAllTerms = referenceTerms.allSatisfy {
                     BenchmarkScorer.containsWholeWordOrPhrase(
@@ -468,13 +487,56 @@ public enum BenchmarkRunner {
                 }
             }
 
-            if rawHasRepairMarker {
+            if hasRepairIntent {
                 repairRelevantSamples += 1
-                let resolvedRepair = sample.edits.contains(where: { $0.kind == .repairResolution })
-                    && containsRepairMarker(sample.cleanedText ?? "") == false
-                    && sample.outcome != .regressed
+                let resolvedRepair = normalizedCleaned == normalizedReference
                 if resolvedRepair {
                     repairResolvedSamples += 1
+                }
+            }
+
+            if let manifestSample,
+               manifestSample.intentLabels.contains(.literal) {
+                literalRelevantSamples += 1
+                let preservedAllPhrases = preservesPhrases(
+                    manifestSample.preservedPhrases,
+                    in: sample.cleanedText ?? "",
+                    normalizer: normalizer
+                )
+                if preservedAllPhrases {
+                    literalPreservedSamples += 1
+                }
+                if preservedAllPhrases == false {
+                    unintendedRewriteSamples += 1
+                }
+            }
+
+            if let manifestSample,
+               manifestSample.intentLabels.contains(.command) {
+                commandRelevantSamples += 1
+                if commandMatchesReference(
+                    sample.coordinatorObservations,
+                    referenceText: manifestSample.referenceText
+                ) {
+                    commandPassthroughSamples += 1
+                } else {
+                    unintendedRewriteSamples += 1
+                }
+            }
+
+            if let manifestSample,
+               manifestSample.intentLabels.contains(.noSpeech) {
+                noSpeechRelevantSamples += 1
+                if hasNoSpeechFalseInsert(sample.coordinatorObservations) {
+                    noSpeechFalseInsertSamples += 1
+                }
+            }
+
+            if let cleanedText = sample.cleanedText,
+               cleanedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                punctuationEligibleSamples += 1
+                if containsPunctuationArtifact(cleanedText) {
+                    punctuationArtifactSamples += 1
                 }
             }
 
@@ -525,10 +587,26 @@ public enum BenchmarkRunner {
         let repairResolutionRate = repairRelevantSamples > 0
             ? Double(repairResolvedSamples) / Double(repairRelevantSamples)
             : nil
+        let literalRepairPhrasePreservationRate = literalRelevantSamples > 0
+            ? Double(literalPreservedSamples) / Double(literalRelevantSamples)
+            : nil
+        let punctuationArtifactRate = punctuationEligibleSamples > 0
+            ? Double(punctuationArtifactSamples) / Double(punctuationEligibleSamples)
+            : nil
+        let commandPassthroughAccuracy = commandRelevantSamples > 0
+            ? Double(commandPassthroughSamples) / Double(commandRelevantSamples)
+            : nil
+        let noSpeechFalseInsertRate = noSpeechRelevantSamples > 0
+            ? Double(noSpeechFalseInsertSamples) / Double(noSpeechRelevantSamples)
+            : nil
         let unintendedRewriteRate = sampleResults.isEmpty == false
             ? Double(unintendedRewriteSamples) / Double(max(sampleResults.count - unscored, 1))
             : nil
-        let latencyValues = coordinatorLatencies.values.sorted()
+        let latencyValues = sampleResults
+            .flatMap(\.coordinatorObservations)
+            .compactMap(\.latencyMS)
+            .sorted()
+        let p50LatencyMS = latencyValues.isEmpty ? nil : BenchmarkScorer.percentile(latencyValues, percentile: 0.5)
         let p90LatencyMS = latencyValues.isEmpty ? nil : BenchmarkScorer.percentile(latencyValues, percentile: 0.9)
         let p99LatencyMS = latencyValues.isEmpty ? nil : BenchmarkScorer.percentile(latencyValues, percentile: 0.99)
 
@@ -554,6 +632,11 @@ public enum BenchmarkRunner {
             termRecallAccuracy: termRecallAccuracy,
             repairResolutionRate: repairResolutionRate,
             unintendedRewriteRate: unintendedRewriteRate,
+            literalRepairPhrasePreservationRate: literalRepairPhrasePreservationRate,
+            punctuationArtifactRate: punctuationArtifactRate,
+            commandPassthroughAccuracy: commandPassthroughAccuracy,
+            noSpeechFalseInsertRate: noSpeechFalseInsertRate,
+            p50LatencyMS: p50LatencyMS,
             p90LatencyMS: p90LatencyMS,
             p99LatencyMS: p99LatencyMS,
             lexicon: lexiconSummary,
@@ -561,11 +644,11 @@ public enum BenchmarkRunner {
         )
     }
 
-    private static func measureCoordinatorLatenciesIfNeeded(
+    private static func measureCoordinatorObservationsIfNeeded(
         manifest: BenchmarkManifest,
         rawOutput: RawEngineOutput,
         configuration: PipelineRunConfiguration
-    ) async -> [String: Int] {
+    ) async -> [String: [PipelineCoordinatorObservation]] {
         guard manifest.evidenceTier == .releaseSignoff,
               let manifestPath = configuration.manifestPath else {
             return [:]
@@ -578,7 +661,7 @@ public enum BenchmarkRunner {
         } else {
             manifestDirectory = manifestURL.deletingLastPathComponent()
         }
-        var results: [String: Int] = [:]
+        var results: [String: [PipelineCoordinatorObservation]] = [:]
 
         for sample in manifest.samples {
             let audioSourceURL = resolveSampleAudioPath(sample.audioPath, manifestDirectory: manifestDirectory)
@@ -592,7 +675,11 @@ public enum BenchmarkRunner {
             )
             let insertionService = InsertionService(
                 transports: [
-                    ClosureInsertionTransport(method: .direct) { _, _ in }
+                    ClosureInsertionTransport(method: .direct) { _, _ in },
+                    ClipboardInsertionTransport(
+                        clipboard: MemoryClipboardService(),
+                        autoPaste: { _ in .attempted }
+                    ),
                 ]
             )
             let historyStore = HistoryStore(
@@ -610,36 +697,100 @@ public enum BenchmarkRunner {
                 styleProfileService: StyleProfileService(globalProfile: configuration.profile)
             )
 
-            do {
-                let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
-                let started = Date()
-                _ = try await coordinator.stopPressToTalk(
-                    sessionID: sessionID,
-                    languageHints: sample.languageHint.map { [$0] } ?? ["en-US"]
-                )
-                results[sample.id] = elapsedMilliseconds(since: started)
-            } catch {
-                continue
+            var observations: [PipelineCoordinatorObservation] = []
+            observations.reserveCapacity(configuration.latencyIterations)
+
+            for iteration in 1...configuration.latencyIterations {
+                do {
+                    let sessionID = try await coordinator.startPressToTalk(
+                        appContext: sample.appContextPreset?.appContext ?? .unknown
+                    )
+                    let started = Date()
+                    let insertResult = try await coordinator.stopPressToTalk(
+                        sessionID: sessionID,
+                        languageHints: sample.languageHint.map { [$0] } ?? ["en-US"]
+                    )
+                    observations.append(
+                        PipelineCoordinatorObservation(
+                            iteration: iteration,
+                            latencyMS: elapsedMilliseconds(since: started),
+                            status: .success,
+                            insertResult: insertResult,
+                            errorMessage: nil
+                        )
+                    )
+                } catch {
+                    observations.append(
+                        PipelineCoordinatorObservation(
+                            iteration: iteration,
+                            latencyMS: nil,
+                            status: .failed,
+                            insertResult: nil,
+                            errorMessage: error.localizedDescription
+                        )
+                    )
+                }
             }
+
+            results[sample.id] = observations
         }
 
         return results
     }
 
-    private static func containsRepairMarker(_ text: String) -> Bool {
-        let markers = [
-            "scratch that",
-            "delete that",
-            "erase that",
-            "never mind",
-            "actually",
-            "i mean",
-            "no,"
-        ]
-
-        return markers.contains { marker in
-            text.range(of: marker, options: [.caseInsensitive]) != nil
+    private static func preservesPhrases(
+        _ phrases: [String],
+        in text: String,
+        normalizer: TextNormalizer
+    ) -> Bool {
+        guard phrases.isEmpty == false else { return true }
+        let normalizedText = normalizer.normalize(text)
+        return phrases.map(normalizer.normalize).allSatisfy { phrase in
+            phrase.isEmpty == false
+                && BenchmarkScorer.containsWholeWordOrPhrase(in: normalizedText, term: phrase)
         }
+    }
+
+    private static func commandMatchesReference(
+        _ observations: [PipelineCoordinatorObservation],
+        referenceText: String
+    ) -> Bool {
+        let successfulResults = observations.compactMap(\.insertResult)
+        guard successfulResults.isEmpty == false else { return false }
+        let normalizedReference = commandComparable(referenceText)
+        return successfulResults.allSatisfy {
+            commandComparable($0.insertedText) == normalizedReference
+        }
+    }
+
+    private static func hasNoSpeechFalseInsert(_ observations: [PipelineCoordinatorObservation]) -> Bool {
+        guard observations.isEmpty == false else { return true }
+        return observations.contains { observation in
+            guard let insertResult = observation.insertResult else { return true }
+            return insertResult.status != .noSpeech
+                || insertResult.method != .none
+                || insertResult.insertedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
+    }
+
+    private static func containsPunctuationArtifact(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return false }
+        let patterns = [
+            #"^[,;:!?]"#,
+            #"\s+[,.!?]"#,
+            #"[!?]{2,}"#,
+            #",\s*$"#,
+        ]
+        return patterns.contains { pattern in
+            trimmed.range(of: pattern, options: .regularExpression) != nil
+        }
+    }
+
+    private static func commandComparable(_ text: String) -> String {
+        text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
     }
 }
 
@@ -656,8 +807,10 @@ private actor BenchmarkAudioCaptureService: AudioCaptureService {
 
     func endCapture(sessionID: SessionID) async throws -> URL {
         _ = sessionID
-        let copiedURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("benchmark-audio-\(UUID().uuidString).wav")
+        let tempDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("benchmark-audio-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let copiedURL = tempDirectory.appendingPathComponent(sourceAudioURL.lastPathComponent)
         try FileManager.default.copyItem(at: sourceAudioURL, to: copiedURL)
         return copiedURL
     }
