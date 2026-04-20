@@ -259,3 +259,53 @@ func candidateGeneratorDeterministicDeduped() async throws {
     let uniquePaths = Set(first.map(\.rulePathID))
     #expect(uniquePaths.count == first.count)
 }
+
+@Test("Ranker boosts recovery on low-confidence spans and penalizes it on high-confidence spans")
+func rankerUsesConfidenceForRecoveryEdits() {
+    let profile = StyleProfile(
+        name: "Ranker",
+        tone: .natural,
+        structureMode: .natural,
+        fillerPolicy: .balanced,
+        commandPolicy: .passthrough
+    )
+    let lowConfidenceRaw = RawTranscript(
+        text: "ping terso",
+        segments: [.init(startMS: 0, endMS: 1_000, text: "ping terso", confidence: 0.55)],
+        avgConfidence: 0.55,
+        durationMS: 1_000
+    )
+    let highConfidenceRaw = RawTranscript(
+        text: "ping terso",
+        segments: [.init(startMS: 0, endMS: 1_000, text: "ping terso", confidence: 0.96)],
+        avgConfidence: 0.96,
+        durationMS: 1_000
+    )
+    let literal = CleanupCandidate(
+        text: "ping terso",
+        appliedEdits: [],
+        removedFillers: [],
+        rulePathID: "literal"
+    )
+    let recovered = CleanupCandidate(
+        text: "ping TURSO",
+        appliedEdits: [.init(kind: .lexiconCorrection, from: "terso", to: "TURSO")],
+        removedFillers: [],
+        rulePathID: "recovered"
+    )
+
+    let ranker = LocalCleanupRanker()
+    let lowConfidenceBest = ranker.bestCandidate(
+        raw: lowConfidenceRaw,
+        candidates: [literal, recovered],
+        profile: profile
+    )
+    let highConfidenceBest = ranker.bestCandidate(
+        raw: highConfidenceRaw,
+        candidates: [literal, recovered],
+        profile: profile
+    )
+
+    #expect(lowConfidenceBest.rulePathID == "recovered")
+    #expect(highConfidenceBest.rulePathID == "literal")
+}

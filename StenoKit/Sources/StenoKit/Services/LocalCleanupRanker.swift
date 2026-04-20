@@ -10,13 +10,13 @@ public struct LocalCleanupRanker: Sendable {
     }()
 
     public func bestCandidate(
-        rawText: String,
+        raw: RawTranscript,
         candidates: [CleanupCandidate],
         profile: StyleProfile
     ) -> CleanupCandidate {
         guard let first = candidates.first else {
             return CleanupCandidate(
-                text: rawText,
+                text: raw.text,
                 appliedEdits: [],
                 removedFillers: [],
                 rulePathID: "raw-pass-through"
@@ -24,10 +24,10 @@ public struct LocalCleanupRanker: Sendable {
         }
 
         var best = first
-        var bestScore = scoreCandidate(rawText: rawText, candidate: first, profile: profile)
+        var bestScore = scoreCandidate(raw: raw, candidate: first, profile: profile)
 
         for candidate in candidates.dropFirst() {
-            let score = scoreCandidate(rawText: rawText, candidate: candidate, profile: profile)
+            let score = scoreCandidate(raw: raw, candidate: candidate, profile: profile)
             if score.totalScore > bestScore.totalScore + 1e-12 {
                 best = candidate
                 bestScore = score
@@ -44,21 +44,40 @@ public struct LocalCleanupRanker: Sendable {
         return best
     }
 
-    public func scoreCandidate(
+    public func bestCandidate(
         rawText: String,
+        candidates: [CleanupCandidate],
+        profile: StyleProfile
+    ) -> CleanupCandidate {
+        bestCandidate(
+            raw: RawTranscript(text: rawText),
+            candidates: candidates,
+            profile: profile
+        )
+    }
+
+    public func scoreCandidate(
+        raw: RawTranscript,
         candidate: CleanupCandidate,
         profile: StyleProfile
     ) -> CleanupRankingScore {
-        let semantic = semanticPreservationScore(rawText: rawText, candidate: candidate)
+        let semantic = semanticPreservationScore(rawText: raw.text, candidate: candidate)
         let fluency = fluencyScore(text: candidate.text)
-        let editPenalty = editDistancePenalty(rawText: rawText, candidateText: candidate.text)
+        let editPenalty = editDistancePenalty(rawText: raw.text, candidateText: candidate.text)
         let commandPenalty = commandSafetyPenalty(
-            rawText: rawText,
+            rawText: raw.text,
             candidateText: candidate.text,
             profile: profile
         )
+        let confidenceAdjustment = confidenceAdjustment(raw: raw, candidate: candidate)
+        let phoneticPenalty = phoneticPenalty(candidate: candidate)
 
-        let total = (semantic * 0.65) + (fluency * 0.25) - (editPenalty * 0.10) - (commandPenalty * 1.0)
+        let total = (semantic * 0.65)
+            + (fluency * 0.25)
+            + confidenceAdjustment
+            - (editPenalty * 0.10)
+            - (commandPenalty * 1.0)
+            - phoneticPenalty
 
         return CleanupRankingScore(
             semanticPreservationScore: semantic,
@@ -66,6 +85,18 @@ public struct LocalCleanupRanker: Sendable {
             editDistancePenalty: editPenalty,
             commandSafetyPenalty: commandPenalty,
             totalScore: total
+        )
+    }
+
+    public func scoreCandidate(
+        rawText: String,
+        candidate: CleanupCandidate,
+        profile: StyleProfile
+    ) -> CleanupRankingScore {
+        scoreCandidate(
+            raw: RawTranscript(text: rawText),
+            candidate: candidate,
+            profile: profile
         )
     }
 
@@ -116,6 +147,16 @@ public struct LocalCleanupRanker: Sendable {
         let safeRemoved = candidate.removedFillers.filter { isUnambiguousFiller($0) }.count
         if safeRemoved > 0 {
             score += min(0.2, Double(safeRemoved) * 0.1)
+        }
+
+        let repairEdits = candidate.appliedEdits.filter { $0.kind == .repairResolution }.count
+        if repairEdits > 0 {
+            score += min(0.35, Double(repairEdits) * 0.2)
+            if repairMarkersPresent(in: rawText) && !repairMarkersPresent(in: candidate.text) {
+                score += 0.15
+            }
+        } else if repairMarkersPresent(in: rawText) && repairMarkersPresent(in: candidate.text) {
+            score -= 0.2
         }
 
         if isContextualYouKnowRemoved(rawText: rawText, candidate: candidate) {
@@ -247,6 +288,61 @@ public struct LocalCleanupRanker: Sendable {
             range: candidateRange
         ) > 0
         return candidateStillHasRemovableYouKnow == false
+    }
+
+    private func repairMarkersPresent(in text: String) -> Bool {
+        let markers = [
+            "scratch that",
+            "delete that",
+            "erase that",
+            "never mind",
+            "actually",
+            "i mean",
+            "no,"
+        ]
+
+        return markers.contains { marker in
+            text.range(of: marker, options: [.caseInsensitive]) != nil
+        }
+    }
+
+    private func confidenceAdjustment(raw: RawTranscript, candidate: CleanupCandidate) -> Double {
+        let relevantEdits = candidate.appliedEdits.filter {
+            $0.kind == .repairResolution || $0.kind == .lexiconCorrection
+        }
+        guard relevantEdits.isEmpty == false else { return 0 }
+
+        let segmentConfidences = raw.segments.compactMap { segment -> Double? in
+            guard let confidence = segment.confidence else { return nil }
+            let normalizedSegment = normalize(segment.text)
+            let overlaps = relevantEdits.contains { edit in
+                let from = normalize(edit.from)
+                let to = normalize(edit.to)
+                return (!from.isEmpty && normalizedSegment.contains(from))
+                    || (!to.isEmpty && normalizedSegment.contains(to))
+            }
+            return overlaps ? confidence : nil
+        }
+
+        let effectiveConfidence: Double?
+        if segmentConfidences.isEmpty == false {
+            effectiveConfidence = segmentConfidences.reduce(0, +) / Double(segmentConfidences.count)
+        } else {
+            effectiveConfidence = raw.avgConfidence
+        }
+
+        guard let effectiveConfidence else { return 0 }
+        if effectiveConfidence < 0.70 {
+            return 0.08
+        }
+        if effectiveConfidence > 0.90 {
+            return -0.12
+        }
+        return 0
+    }
+
+    private func phoneticPenalty(candidate: CleanupCandidate) -> Double {
+        candidate.rulePathID.contains("/phonetic-") ? 0.02 : 0
     }
 
     private func levenshteinDistance<Element: Equatable>(

@@ -74,6 +74,19 @@ func balancedPolicyRemovesUmAndUh() async throws {
     #expect(cleaned.edits.filter { $0.kind == .fillerRemoval }.count == 2)
 }
 
+@Test("Balanced filler policy removes punctuated um and uh without leaving comma artifacts")
+func balancedPolicyRemovesPunctuatedUmAndUh() async throws {
+    let cleaned = try await runLocalCleanup(
+        text: "Um, I think, uh, this should ship today.",
+        fillerPolicy: .balanced
+    )
+
+    #expect(cleaned.text == "I think this should ship today.")
+    #expect(cleaned.removedFillers == ["um", "uh"])
+    #expect(cleaned.text.hasPrefix(",") == false)
+    #expect(cleaned.text.contains(",,") == false)
+}
+
 @Test("Balanced filler policy preserves you know before determiner")
 func balancedPolicyPreservesYouKnowBeforeDeterminer() async throws {
     let cleaned = try await runLocalCleanup(
