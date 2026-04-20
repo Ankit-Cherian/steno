@@ -24,7 +24,10 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "StenoKit"
+            name: "StenoKit",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .target(
             name: "StenoBenchmarkCore",
