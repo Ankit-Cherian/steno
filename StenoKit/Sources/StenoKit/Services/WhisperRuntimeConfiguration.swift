@@ -83,6 +83,14 @@ public enum WhisperRuntimeConfiguration {
         for request: TranscriptionRequest,
         maxHotTerms: Int = 8
     ) -> String? {
+        let prompt = promptFragments(for: request, maxHotTerms: maxHotTerms).joined(separator: " ")
+        return prompt.isEmpty ? nil : prompt
+    }
+
+    public static func promptFragments(
+        for request: TranscriptionRequest,
+        maxHotTerms: Int = 8
+    ) -> [String] {
         var parts: [String] = []
 
         if let firstHint = request.languageHints.first?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -101,8 +109,7 @@ public enum WhisperRuntimeConfiguration {
             parts.append("Terms: \(hotTerms.joined(separator: ", ")).")
         }
 
-        let prompt = parts.joined(separator: " ")
-        return prompt.isEmpty ? nil : prompt
+        return parts
     }
 
     private static func dynamicLibrarySearchPaths(

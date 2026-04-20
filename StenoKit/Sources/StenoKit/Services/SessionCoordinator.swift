@@ -82,7 +82,17 @@ public actor SessionCoordinator {
         var rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, request: request)
 
         if rawTranscript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return InsertResult(status: .noSpeech, method: .none, insertedText: "")
+            return noSpeechResult()
+        }
+
+        if let sanitizedPromptContamination = sanitizePromptContamination(
+            rawTranscript,
+            request: request
+        ) {
+            if sanitizedPromptContamination.isEmpty {
+                return noSpeechResult()
+            }
+            rawTranscript.text = sanitizedPromptContamination
         }
 
         rawTranscript.text = await snippetService.apply(to: rawTranscript.text, appContext: active.appContext)
@@ -112,6 +122,10 @@ public actor SessionCoordinator {
         try await historyStore.append(entry: entry)
 
         return insertResult
+    }
+
+    private func noSpeechResult() -> InsertResult {
+        InsertResult(status: .noSpeech, method: .none, insertedText: "")
     }
 
     public func cancel(sessionID: SessionID) async {
@@ -153,5 +167,84 @@ public actor SessionCoordinator {
                 outcome: CleanupOutcome(source: .localFallback, warning: warning)
             )
         }
+    }
+
+    private func sanitizePromptContamination(
+        _ transcript: RawTranscript,
+        request: TranscriptionRequest
+    ) -> String? {
+        let trimmed = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+        guard containsPromptMetadataLabel(trimmed) else { return nil }
+
+        let promptFragments = WhisperRuntimeConfiguration.promptFragments(for: request)
+        guard promptFragments.isEmpty == false else { return nil }
+
+        let normalizedTranscript = normalizePromptComparable(trimmed)
+        guard normalizedTranscript.isEmpty == false else { return nil }
+
+        let normalizedPrompt = normalizePromptComparable(promptFragments.joined(separator: " "))
+        let normalizedFragments = promptFragments.map(normalizePromptComparable).filter { !$0.isEmpty }
+
+        if normalizedTranscript == normalizedPrompt || normalizedFragments.contains(normalizedTranscript) {
+            return ""
+        }
+
+        let transcriptTokens = Set(normalizedTranscript.split(separator: " ").map(String.init))
+        let promptTokens = Set(normalizedPrompt.split(separator: " ").map(String.init))
+        if transcriptTokens.isEmpty == false && transcriptTokens.isSubset(of: promptTokens) {
+            return ""
+        }
+
+        guard metadataLabelCount(in: trimmed) >= 2 else {
+            return nil
+        }
+
+        let strippedLabels = stripPromptMetadataLabels(from: trimmed)
+        let normalizedStripped = normalizePromptComparable(strippedLabels)
+        guard normalizedStripped.isEmpty == false else { return "" }
+
+        let strippedTokens = Set(normalizedStripped.split(separator: " ").map(String.init))
+        if strippedTokens.isEmpty == false && strippedTokens.isSubset(of: promptTokens) {
+            return ""
+        }
+
+        return strippedLabels == trimmed ? nil : strippedLabels
+    }
+
+    private func containsPromptMetadataLabel(_ text: String) -> Bool {
+        text.range(
+            of: #"(^|[.!?]\s*)(language|app|terms)\s*:"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+
+    private func normalizePromptComparable(_ text: String) -> String {
+        text
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .split(separator: " ")
+            .joined(separator: " ")
+    }
+
+    private func metadataLabelCount(in text: String) -> Int {
+        let pattern = try? NSRegularExpression(
+            pattern: #"(^|[.!?]\s*)(language|app|terms)\s*:"#,
+            options: [.caseInsensitive]
+        )
+        let fullRange = NSRange(text.startIndex..., in: text)
+        return pattern?.numberOfMatches(in: text, options: [], range: fullRange) ?? 0
+    }
+
+    private func stripPromptMetadataLabels(from text: String) -> String {
+        text
+            .replacingOccurrences(
+                of: #"(^|[.!?]\s*)(language|app|terms)\s*:\s*"#,
+                with: "$1",
+                options: [.regularExpression, .caseInsensitive]
+            )
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+([,.!?])"#, with: "$1", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
