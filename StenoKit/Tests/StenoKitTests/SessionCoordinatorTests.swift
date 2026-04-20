@@ -15,6 +15,18 @@ private actor InsertRecorder {
     }
 }
 
+private actor TranscriptionRequestRecorder {
+    private var lastRequest: TranscriptionRequest?
+
+    func record(_ request: TranscriptionRequest) {
+        lastRequest = request
+    }
+
+    func latest() -> TranscriptionRequest? {
+        lastRequest
+    }
+}
+
 @Test("SessionCoordinator marks localSuccess when primary cleanup succeeds")
 func sessionCoordinatorLocalSuccessOutcome() async throws {
     let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
@@ -208,4 +220,52 @@ func sessionCoordinatorExplicitHandsFreeSetter() async throws {
     #expect(await coordinator.isHandsFreeEnabled == true)
     await coordinator.setHandsFreeEnabled(false)
     #expect(await coordinator.isHandsFreeEnabled == false)
+}
+
+@Test("SessionCoordinator forwards app context and hot terms to the transcription engine")
+func sessionCoordinatorForwardsTranscriptionContext() async throws {
+    let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
+    try Data().write(to: audioURL)
+
+    let capture = StubAudioCaptureService(queuedAudioURLs: [audioURL])
+    let recorder = TranscriptionRequestRecorder()
+    let transcription = StaticTranscriptionEngine { _, request in
+        await recorder.record(request)
+        return RawTranscript(text: "ping terso")
+    }
+
+    let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("history-tests", isDirectory: true)
+        .appendingPathComponent("history-\(UUID().uuidString).json")
+    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+
+    let lexicon = PersonalLexiconService()
+    await lexicon.upsert(
+        term: "TURSO",
+        preferred: "TURSO",
+        scope: .app(bundleID: "com.todesktop.230313mzl4w4u92"),
+        aliases: ["terso", "ter so"]
+    )
+
+    let coordinator = SessionCoordinator(
+        captureService: capture,
+        transcriptionEngine: transcription,
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: InsertionService(transports: []),
+        historyStore: history,
+        lexiconService: lexicon,
+        styleProfileService: StyleProfileService()
+    )
+
+    let appContext = AppContext(
+        bundleIdentifier: "com.todesktop.230313mzl4w4u92",
+        appName: "Cursor",
+        isIDE: true
+    )
+    let sessionID = try await coordinator.startPressToTalk(appContext: appContext)
+    _ = try await coordinator.stopPressToTalk(sessionID: sessionID)
+
+    let request = await recorder.latest()
+    #expect(request?.appContext == appContext)
+    #expect(request?.hotTerms.contains("TURSO") == true)
 }

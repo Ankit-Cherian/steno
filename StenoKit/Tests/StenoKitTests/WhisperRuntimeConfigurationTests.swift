@@ -83,6 +83,27 @@ func additionalArgumentsOmitMissingVADFlags() {
     #expect(args == ["-t", "6", "--suppress-nst"])
 }
 
+@Test("additionalArguments include prompt and suppress regex when configured")
+func additionalArgumentsIncludePromptAndSuppressRegex() {
+    let args = WhisperRuntimeConfiguration.additionalArguments(
+        threadCount: 6,
+        vadEnabled: false,
+        vadModelPath: "/tmp/missing-vad.bin",
+        prompt: "Language: en. App: Cursor. Terms: TURSO, StenoKit.",
+        suppressRegex: #"\[(?:MUSIC|NOISE)\]"#,
+        pathExists: { _ in false }
+    )
+
+    #expect(
+        args == [
+            "-t", "6",
+            "--suppress-nst",
+            "--prompt", "Language: en. App: Cursor. Terms: TURSO, StenoKit.",
+            "--suppress-regex", #"\[(?:MUSIC|NOISE)\]"#
+        ]
+    )
+}
+
 @Test("processEnvironment adds local whisper library search paths")
 func processEnvironmentAddsLocalWhisperLibraryPaths() {
     let cliPath = "/tmp/whisper.cpp/build/bin/whisper-cli"

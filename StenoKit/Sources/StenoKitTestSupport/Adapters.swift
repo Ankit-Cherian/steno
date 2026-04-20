@@ -73,13 +73,13 @@ public struct CountingCleanupEngine: CleanupEngine, Sendable {
 }
 
 public struct StaticTranscriptionEngine: TranscriptionEngine, Sendable {
-    private let provider: @Sendable (URL, [String]) async throws -> RawTranscript
+    private let provider: @Sendable (URL, TranscriptionRequest) async throws -> RawTranscript
 
-    public init(provider: @escaping @Sendable (URL, [String]) async throws -> RawTranscript) {
+    public init(provider: @escaping @Sendable (URL, TranscriptionRequest) async throws -> RawTranscript) {
         self.provider = provider
     }
 
-    public func transcribe(audioURL: URL, languageHints: [String]) async throws -> RawTranscript {
-        try await provider(audioURL, languageHints)
+    public func transcribe(audioURL: URL, request: TranscriptionRequest) async throws -> RawTranscript {
+        try await provider(audioURL, request)
     }
 }
