@@ -203,11 +203,11 @@
     "chipClass": "m5-pro",
     "memoryRangeGB": { "minGB": 64, "maxGB": 64 },
     "modelID": "large-v3-turbo",
-    "supportLevel": "validated",
+    "supportLevel": "allowed-warning",
     "qualityTier": "recommended",
     "p90BudgetMS": 1100,
     "p99BudgetMS": 1200,
-    "notes": "Validated locally on Apple M5 Pro with 64GB unified memory using the release-signoff benchmark suite."
+    "notes": "Preferred default for 64GB M5 Pro Macs pending stricter release signoff."
   },
   {
     "chipClass": "m5-pro",
