@@ -67,6 +67,9 @@ func reportRendererIncludesRequiredLabels() throws {
             unchanged: 1,
             regressed: 0,
             unscored: 0,
+            repairMarkerPreservationRate: 1,
+            repairResolutionRate: 1,
+            repairExactMatchRate: 1,
             literalRepairPhrasePreservationRate: 1,
             punctuationArtifactRate: 0,
             commandPassthroughAccuracy: 1,
@@ -111,6 +114,12 @@ func reportRendererIncludesRequiredLabels() throws {
     #expect(report.contains("releaseSignoff"))
     #expect(report.contains("m5-pro"))
     #expect(report.contains("large-v3-turbo"))
+    #expect(report.contains("Pipeline Cleanup Quality"))
+    #expect(report.contains("Coordinator End-to-End Replay"))
+    #expect(report.contains("Repair Marker Preservation Rate"))
+    #expect(report.contains("Repair Trigger Detection Rate"))
+    #expect(report.contains("Repair Exact Match Rate"))
+    #expect(report.contains("Command Passthrough Coverage Rate"))
     #expect(report.contains("Literal Repair Phrase Preservation Rate"))
     #expect(report.contains("Punctuation Artifact Rate"))
     #expect(report.contains("Command Passthrough Accuracy"))

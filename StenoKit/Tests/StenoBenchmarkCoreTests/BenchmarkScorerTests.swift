@@ -195,10 +195,306 @@ func pipelineRunComputesAdvancedQualityMetrics() async {
     )
 
     #expect(output.summary.termRecallAccuracy == 1)
+    #expect(output.summary.repairMarkerPreservationRate == 1)
     #expect(output.summary.repairResolutionRate == 1)
+    #expect(output.summary.repairExactMatchRate == 1)
     #expect(output.summary.unintendedRewriteRate == 0)
     #expect(output.summary.p90LatencyMS == nil)
     #expect(output.summary.p99LatencyMS == nil)
+}
+
+@Test("Pipeline run does not count command passthrough failures as unintended rewrites")
+func pipelineRunCommandFailureDoesNotInflateRewriteRate() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("benchmark-command-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let audioURL = tempDir.appendingPathComponent("command.wav")
+    try Data().write(to: audioURL)
+
+    let scriptURL = tempDir.appendingPathComponent("fake-whisper.sh")
+    try """
+    #!/bin/sh
+    output_base=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "-of" ]; then
+        output_base="$arg"
+      fi
+      prev="$arg"
+    done
+    printf "Bill Target.\\n" > "${output_base}.txt"
+    exit 0
+    """.write(to: scriptURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: NSNumber(value: Int16(0o755))],
+        ofItemAtPath: scriptURL.path
+    )
+
+    let manifest = BenchmarkManifest(
+        benchmarkName: "Command Fixture",
+        evidenceTier: .releaseSignoff,
+        hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
+        samples: [
+            .init(
+                id: "command",
+                dataset: "targeted",
+                audioPath: "command.wav",
+                referenceText: "/build target",
+                audioDurationMS: 1_000,
+                audioSource: .syntheticSpeech,
+                intentLabels: [.command],
+                appContextPreset: .ide
+            )
+        ]
+    )
+
+    let rawOutput = RawEngineOutput(
+        benchmarkName: "Command Fixture",
+        evidenceTier: .releaseSignoff,
+        hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
+        manifestSchemaVersion: manifest.schemaVersion,
+        normalizationPolicy: manifest.scoring.normalization,
+        whisperConfiguration: .init(
+            whisperCLIPath: scriptURL.path,
+            modelPath: tempDir.appendingPathComponent("fake-model.bin").path
+        ),
+        summary: .init(
+            totalSamples: 1,
+            succeeded: 1,
+            failed: 0,
+            failureRate: 0,
+            wer: 1,
+            cer: 1,
+            meanLatencyMS: 720,
+            p50LatencyMS: 720,
+            p90LatencyMS: 720,
+            p99LatencyMS: 720,
+            meanRTF: 0.25
+        ),
+        datasetBreakdown: [:],
+        samples: [
+            .init(
+                id: "command",
+                dataset: "targeted",
+                audioPath: "command.wav",
+                referenceText: "/build target",
+                hypothesisText: "Build target.",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 720,
+                audioDurationMS: 1_000,
+                rtf: 0.25,
+                metrics: nil
+            )
+        ]
+    )
+
+    let output = await BenchmarkRunner.runPipeline(
+        manifest: manifest,
+        rawOutput: rawOutput,
+        configuration: .init(
+            profile: .init(
+                name: "benchmark-local",
+                tone: .natural,
+                structureMode: .natural,
+                fillerPolicy: .balanced,
+                commandPolicy: .passthrough
+            ),
+            lexicon: .init(entries: []),
+            manifestPath: tempDir.path
+        )
+    )
+
+    #expect(output.summary.commandPassthroughAccuracy == nil)
+    #expect(output.summary.commandPassthroughCoverageRate == 0)
+    #expect(output.summary.unintendedRewriteRate == 0)
+}
+
+@Test("Pipeline command coverage follows coordinator replay localOnly passthrough")
+func pipelineRunCommandCoverageUsesCoordinatorReplayContract() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("benchmark-command-coverage-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let audioURL = tempDir.appendingPathComponent("command.wav")
+    try Data().write(to: audioURL)
+
+    let scriptURL = tempDir.appendingPathComponent("fake-whisper.sh")
+    try """
+    #!/bin/sh
+    output_base=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "-of" ]; then
+        output_base="$arg"
+      fi
+      prev="$arg"
+    done
+    printf "/build target\\n" > "${output_base}.txt"
+    exit 0
+    """.write(to: scriptURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: NSNumber(value: Int16(0o755))],
+        ofItemAtPath: scriptURL.path
+    )
+
+    let manifest = BenchmarkManifest(
+        benchmarkName: "Command Coverage Fixture",
+        evidenceTier: .releaseSignoff,
+        hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
+        samples: [
+            .init(
+                id: "command",
+                dataset: "targeted",
+                audioPath: "command.wav",
+                referenceText: "/build target",
+                audioDurationMS: 1_000,
+                audioSource: .syntheticSpeech,
+                intentLabels: [.command],
+                appContextPreset: .ide
+            )
+        ]
+    )
+
+    let rawOutput = RawEngineOutput(
+        benchmarkName: "Command Coverage Fixture",
+        evidenceTier: .releaseSignoff,
+        hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
+        manifestSchemaVersion: manifest.schemaVersion,
+        normalizationPolicy: manifest.scoring.normalization,
+        whisperConfiguration: .init(
+            whisperCLIPath: scriptURL.path,
+            modelPath: tempDir.appendingPathComponent("fake-model.bin").path
+        ),
+        summary: .init(
+            totalSamples: 1,
+            succeeded: 1,
+            failed: 0,
+            failureRate: 0,
+            wer: 1,
+            cer: 1,
+            meanLatencyMS: 720,
+            p50LatencyMS: 720,
+            p90LatencyMS: 720,
+            p99LatencyMS: 720,
+            meanRTF: 0.25
+        ),
+        datasetBreakdown: [:],
+        samples: [
+            .init(
+                id: "command",
+                dataset: "targeted",
+                audioPath: "command.wav",
+                referenceText: "/build target",
+                hypothesisText: "Build target.",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 720,
+                audioDurationMS: 1_000,
+                rtf: 0.25,
+                metrics: nil
+            )
+        ]
+    )
+
+    let output = await BenchmarkRunner.runPipeline(
+        manifest: manifest,
+        rawOutput: rawOutput,
+        configuration: .init(
+            profile: .init(
+                name: "benchmark-local",
+                tone: .natural,
+                structureMode: .natural,
+                fillerPolicy: .balanced,
+                commandPolicy: .passthrough
+            ),
+            lexicon: .init(entries: []),
+            manifestPath: tempDir.path
+        )
+    )
+
+    #expect(output.summary.commandPassthroughCoverageRate == 1)
+    #expect(output.summary.commandPassthroughAccuracy == 1)
+}
+
+@Test("Pipeline run tracks repair detection separately from exact match")
+func pipelineRunSeparatesRepairDetectionFromExactMatch() async {
+    let manifest = BenchmarkManifest(
+        benchmarkName: "Repair Detection Fixture",
+        samples: [
+            .init(
+                id: "repair",
+                dataset: "repair-intent",
+                audioPath: "repair.wav",
+                referenceText: "Call Jane",
+                intentLabels: [.repair]
+            )
+        ]
+    )
+
+    let rawOutput = RawEngineOutput(
+        benchmarkName: "Repair Detection Fixture",
+        manifestSchemaVersion: manifest.schemaVersion,
+        normalizationPolicy: manifest.scoring.normalization,
+        whisperConfiguration: .init(
+            whisperCLIPath: "/tmp/whisper-cli",
+            modelPath: "/tmp/model.bin"
+        ),
+        summary: .init(
+            totalSamples: 1,
+            succeeded: 1,
+            failed: 0,
+            failureRate: 0,
+            wer: 0.5,
+            cer: 0.2,
+            meanLatencyMS: 720,
+            p50LatencyMS: 720,
+            p90LatencyMS: 720,
+            p99LatencyMS: 720,
+            meanRTF: 0.25
+        ),
+        datasetBreakdown: [:],
+        samples: [
+            .init(
+                id: "repair",
+                dataset: "repair-intent",
+                audioPath: "repair.wav",
+                referenceText: "Call Jane",
+                hypothesisText: "Call Bob delete that gene",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 720,
+                audioDurationMS: 1_000,
+                rtf: 0.25,
+                metrics: nil
+            )
+        ]
+    )
+
+    let output = await BenchmarkRunner.runPipeline(
+        manifest: manifest,
+        rawOutput: rawOutput,
+        configuration: .init(
+            profile: .init(
+                name: "benchmark-local",
+                tone: .natural,
+                structureMode: .natural,
+                fillerPolicy: .balanced,
+                commandPolicy: .passthrough
+            ),
+            lexicon: .init(entries: [])
+        )
+    )
+
+    #expect(output.summary.repairMarkerPreservationRate == 1)
+    #expect(output.summary.repairResolutionRate == 1)
+    #expect(output.summary.repairExactMatchRate == 0)
 }
 
 @Test("Release signoff pipeline measures coordinator stop-to-insert latency")
@@ -306,6 +602,8 @@ func releaseSignoffPipelineMeasuresCoordinatorLatency() async throws {
 
     #expect(output.summary.p90LatencyMS != nil)
     #expect(output.summary.p99LatencyMS != nil)
+    let observation = try #require(output.samples[0].coordinatorObservations.first)
+    #expect(observation.timingBreakdownMS?.transcriptionMS != nil)
 }
 
 @Test("Release signoff pipeline computes literal command no-speech punctuation and multi-iteration latency metrics")
@@ -540,7 +838,10 @@ func releaseSignoffPipelineComputesExtendedMetrics() async throws {
         )
     )
 
+    #expect(output.summary.repairMarkerPreservationRate == 1)
     #expect(output.summary.repairResolutionRate == 1)
+    #expect(output.summary.repairExactMatchRate == 1)
+    #expect(output.summary.commandPassthroughCoverageRate == 1)
     #expect(output.summary.literalRepairPhrasePreservationRate == 1)
     #expect(output.summary.commandPassthroughAccuracy == 1)
     #expect(output.summary.noSpeechFalseInsertRate == 0)

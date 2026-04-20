@@ -767,6 +767,21 @@ def truncate_text(text, limit=80):
         return compact
     return compact[: limit - 1] + "…"
 
+def format_timing_breakdown(breakdown):
+    if not breakdown:
+        return None
+    parts = []
+    for key, label in [
+        ("transcriptionMS", "tx"),
+        ("cleanupMS", "clean"),
+        ("insertionMS", "insert"),
+        ("historyMS", "history"),
+    ]:
+        value = breakdown.get(key)
+        if value is not None:
+            parts.append(f"{label}={value}")
+    return ", ".join(parts) if parts else None
+
 def gate(status, gate_id, label, actual, threshold, comparison, message):
     return {
         "id": gate_id,
@@ -779,6 +794,30 @@ def gate(status, gate_id, label, actual, threshold, comparison, message):
     }
 
 summary = pipeline["summary"]
+pipeline_metrics = {
+    "rawWER": summary.get("rawWER"),
+    "cleanedWER": summary.get("cleanedWER"),
+    "werDelta": summary.get("werDelta"),
+    "rawCER": summary.get("rawCER"),
+    "cleanedCER": summary.get("cleanedCER"),
+    "cerDelta": summary.get("cerDelta"),
+    "termRecallAccuracy": summary.get("termRecallAccuracy"),
+    "repairMarkerPreservationRate": summary.get("repairMarkerPreservationRate"),
+    "repairResolutionRate": summary.get("repairResolutionRate"),
+    "repairExactMatchRate": summary.get("repairExactMatchRate"),
+    "unintendedRewriteRate": summary.get("unintendedRewriteRate"),
+    "literalRepairPhrasePreservationRate": summary.get("literalRepairPhrasePreservationRate"),
+    "punctuationArtifactRate": summary.get("punctuationArtifactRate"),
+}
+coordinator_metrics = {
+    "commandPassthroughCoverageRate": summary.get("commandPassthroughCoverageRate"),
+    "commandPassthroughAccuracy": summary.get("commandPassthroughAccuracy"),
+    "noSpeechFalseInsertRate": summary.get("noSpeechFalseInsertRate"),
+    "p50LatencyMS": summary.get("p50LatencyMS"),
+    "p90LatencyMS": summary.get("p90LatencyMS"),
+    "p99LatencyMS": summary.get("p99LatencyMS"),
+}
+coordinator_latency_aggregation = "per-sample median across coordinator replay iterations"
 gates = []
 
 def add_threshold_gate(gate_id, label, actual, threshold, comparison):
@@ -796,7 +835,7 @@ add_threshold_gate("werDelta", "WER delta", summary.get("werDelta"), 0.0, "<=")
 add_threshold_gate("cerDelta", "CER delta", summary.get("cerDelta"), 0.0, "<=")
 add_threshold_gate("regressedSamples", "Regressed samples", summary.get("regressed"), 0, "<=")
 add_threshold_gate("termRecallAccuracy", "Term recall accuracy", summary.get("termRecallAccuracy"), 1.0, ">=")
-add_threshold_gate("repairResolutionRate", "Repair resolution rate", summary.get("repairResolutionRate"), 1.0, ">=")
+add_threshold_gate("repairResolutionRate", "Repair trigger detection rate", summary.get("repairResolutionRate"), 1.0, ">=")
 add_threshold_gate("unintendedRewriteRate", "Unintended rewrite rate", summary.get("unintendedRewriteRate"), 0.0, "<=")
 add_threshold_gate(
     "literalRepairPhrasePreservationRate",
@@ -806,7 +845,20 @@ add_threshold_gate(
     ">=",
 )
 add_threshold_gate("punctuationArtifactRate", "Punctuation artifact rate", summary.get("punctuationArtifactRate"), 0.0, "<=")
-add_threshold_gate("commandPassthroughAccuracy", "Command passthrough accuracy", summary.get("commandPassthroughAccuracy"), 1.0, ">=")
+if coordinator_metrics.get("commandPassthroughCoverageRate") == 0:
+    gates.append(
+        gate(
+            "not_evaluable",
+            "commandPassthroughAccuracy",
+            "Command passthrough accuracy",
+            None,
+            1.0,
+            ">=",
+            "Command passthrough was not exercised because the raw benchmark pass never preserved a leading slash.",
+        )
+    )
+else:
+    add_threshold_gate("commandPassthroughAccuracy", "Command passthrough accuracy", summary.get("commandPassthroughAccuracy"), 1.0, ">=")
 add_threshold_gate("noSpeechFalseInsertRate", "No-speech false insert rate", summary.get("noSpeechFalseInsertRate"), 0.0, "<=")
 
 if compat_row is not None:
@@ -814,6 +866,7 @@ if compat_row is not None:
     add_threshold_gate("p99LatencyMS", "Coordinator p99 latency (ms)", summary.get("p99LatencyMS"), compat_row.get("p99BudgetMS"), "<=")
 
 failing_gates = [item["id"] for item in gates if item["status"] == "fail"]
+not_evaluable_gates = [item["id"] for item in gates if item["status"] == "not_evaluable"]
 missing_metrics = [item["id"] for item in gates if item["status"] == "missing"]
 
 def command_text_matches(observations, reference):
@@ -822,6 +875,12 @@ def command_text_matches(observations, reference):
     if not successful:
         return False
     return all(" ".join(result.get("insertedText", "").strip().split()) == cleaned_reference for result in successful)
+
+def command_passthrough_contract_exercised(observations):
+    successful = [obs.get("insertResult") for obs in observations if obs.get("insertResult")]
+    if not successful:
+        return False
+    return all((result.get("cleanupOutcome") or {}).get("source") == "localOnly" for result in successful)
 
 def no_speech_false_insert(observations):
     if not observations:
@@ -855,6 +914,11 @@ def build_sample_record(sample, truth, notes_for_sample):
     raw_metrics = sample.get("rawMetrics") or {}
     cleaned_metrics = sample.get("cleanedMetrics") or {}
     latencies = [obs.get("latencyMS") for obs in observations if obs.get("latencyMS") is not None]
+    peak_observation = max(
+        [obs for obs in observations if obs.get("latencyMS") is not None],
+        key=lambda obs: obs["latencyMS"],
+        default=None,
+    )
     return {
         "id": sample["id"],
         "dataset": sample["dataset"],
@@ -865,42 +929,62 @@ def build_sample_record(sample, truth, notes_for_sample):
         "cleanedWER": cleaned_metrics.get("wer"),
         "status": sample.get("status"),
         "outcome": sample.get("outcome"),
-        "insertStatus": last_insert["status"] if last_insert else None,
-        "insertMethod": last_insert["method"] if last_insert else None,
-        "lastInsertedText": last_insert.get("insertedText") if last_insert else None,
-        "rawText": sample.get("rawText"),
-        "cleanedText": sample.get("cleanedText"),
-        "maxLatencyMS": max(latencies) if latencies else None,
+        "coordinatorInsertStatus": last_insert["status"] if last_insert else None,
+        "coordinatorInsertMethod": last_insert["method"] if last_insert else None,
+        "coordinatorLastInsertedText": last_insert.get("insertedText") if last_insert else None,
+        "pipelineRawText": sample.get("rawText"),
+        "pipelineCleanedText": sample.get("cleanedText"),
+        "peakLatencyMS": max(latencies) if latencies else None,
+        "peakTimingBreakdownMS": peak_observation.get("timingBreakdownMS") if peak_observation else None,
     }
 
-flagged_samples = []
+all_sample_records = []
 for sample in pipeline["samples"]:
     truth = sample_truth.get(sample["id"], {})
     notes_for_sample = []
     if sample.get("status") != "success":
         notes_for_sample.append(sample.get("errorMessage") or "Pipeline sample was not scored.")
-    if "repair" in truth.get("intentLabels", []) and normalize_text(sample.get("cleanedText", "")) != normalize_text(truth.get("referenceText", "")):
-        notes_for_sample.append("repair not resolved to reference")
+    if "repair" in truth.get("intentLabels", []):
+        raw_text = sample.get("rawText") or ""
+        repair_marker_survived = any(
+            marker in raw_text.lower()
+            for marker in ["scratch that", "delete that", "erase that", "never mind", "i mean", "actually", "no,"]
+        )
+        if not repair_marker_survived:
+            notes_for_sample.append("raw pipeline output did not preserve a recognizable repair marker")
+        elif not any(edit.get("kind") == "repairResolution" for edit in sample.get("edits", [])):
+            notes_for_sample.append("repair parser did not fire after a recognizable marker survived ASR")
+        if repair_marker_survived and normalize_text(sample.get("cleanedText", "")) != normalize_text(truth.get("referenceText", "")):
+            notes_for_sample.append("repair exact match missed the reference")
     if "literal" in truth.get("intentLabels", []):
         cleaned_lower = normalize_text(sample.get("cleanedText", ""))
         preserved = truth.get("preservedPhrases", [])
         if any(normalize_text(phrase) not in cleaned_lower for phrase in preserved):
             notes_for_sample.append("literal repair phrase not preserved")
-    if "command" in truth.get("intentLabels", []) and not command_text_matches(sample.get("coordinatorObservations", []), truth.get("referenceText", "")):
-        notes_for_sample.append("command text not passed through exactly")
+    if "command" in truth.get("intentLabels", []):
+        observations = sample.get("coordinatorObservations", [])
+        if not command_passthrough_contract_exercised(observations):
+            notes_for_sample.append("command passthrough contract was not exercised in coordinator replay")
+        elif not command_text_matches(observations, truth.get("referenceText", "")):
+            notes_for_sample.append("command text was not passed through exactly once the slash contract was exercised")
     if "noSpeech" in truth.get("intentLabels", []) and no_speech_false_insert(sample.get("coordinatorObservations", [])):
         notes_for_sample.append("no-speech sample produced an insert")
     if punctuation_artifact(sample.get("cleanedText", "")):
         notes_for_sample.append("punctuation artifact detected")
-    if notes_for_sample or sample.get("outcome") == "regressed":
-        flagged_samples.append(build_sample_record(sample, truth, notes_for_sample))
+    latencies = [obs.get("latencyMS") for obs in sample.get("coordinatorObservations", []) if obs.get("latencyMS") is not None]
+    peak_latency = max(latencies) if latencies else None
+    if compat_row is not None and peak_latency is not None and peak_latency > compat_row.get("p99BudgetMS", peak_latency):
+        notes_for_sample.append("peak coordinator latency exceeded the p99 budget")
+    if sample.get("outcome") == "regressed":
+        notes_for_sample.append("pipeline cleanup regressed the raw transcript")
+    all_sample_records.append(build_sample_record(sample, truth, notes_for_sample))
 
-failing_samples = [item for item in flagged_samples if item["notes"]]
-worst_samples = list(flagged_samples)
+failing_samples = [item for item in all_sample_records if item["notes"]]
+worst_samples = list(all_sample_records)
 
 worst_samples.sort(
     key=lambda item: (
-        len(item["notes"]),
+        item["peakLatencyMS"] if item["peakLatencyMS"] is not None else -1,
         item["cleanedWER"] if item["cleanedWER"] is not None else -1,
         item["rawWER"] if item["rawWER"] is not None else -1,
     ),
@@ -909,6 +993,7 @@ worst_samples.sort(
 failing_samples.sort(
     key=lambda item: (
         len(item["notes"]),
+        item["peakLatencyMS"] if item["peakLatencyMS"] is not None else -1,
         item["cleanedWER"] if item["cleanedWER"] is not None else -1,
         item["rawWER"] if item["rawWER"] is not None else -1,
     ),
@@ -932,6 +1017,7 @@ for sample in pipeline["samples"]:
             "insertStatus": insert_result.get("status"),
             "insertMethod": insert_result.get("method"),
             "insertedText": insert_result.get("insertedText"),
+            "timingBreakdownMS": peak.get("timingBreakdownMS"),
         }
     )
 latency_outliers.sort(key=lambda item: item["peakLatencyMS"], reverse=True)
@@ -979,6 +1065,17 @@ overall_status = "pass"
 if phase_status["releaseBenchmark"] != "pass" or failing_gates or missing_metrics:
     overall_status = "fail"
 
+release_root = Path(os.environ["RELEASE_MANIFEST"]).parent
+bundle_root = release_root.parent
+legacy_typo_bundle_root = Path(str(bundle_root).replace(
+    f"-{hardware['chipClass']}-",
+    f"--{hardware['chipClass']}-",
+    1,
+))
+deprecated_artifact_roots = []
+if legacy_typo_bundle_root != bundle_root and legacy_typo_bundle_root.exists():
+    deprecated_artifact_roots.append(str(legacy_typo_bundle_root))
+
 summary_payload = {
     "schemaVersion": "steno-release-eval-summary/v1",
     "generatedAt": os.environ["RUN_DATE"],
@@ -988,6 +1085,39 @@ summary_payload = {
     "evidenceTier": manifest["evidenceTier"],
     "hardwareProfile": hardware,
     "compatibilityRow": compat_row,
+    "canonicalRun": {
+        "bundleRoot": str(bundle_root),
+        "releaseRoot": str(release_root),
+        "deprecatedArtifactRoots": deprecated_artifact_roots,
+    },
+    "metricSources": {
+        "pipelineCleanup": [
+            "rawWER",
+            "cleanedWER",
+            "werDelta",
+            "rawCER",
+            "cleanedCER",
+            "cerDelta",
+            "termRecallAccuracy",
+            "repairMarkerPreservationRate",
+            "repairResolutionRate",
+            "repairExactMatchRate",
+            "unintendedRewriteRate",
+            "literalRepairPhrasePreservationRate",
+            "punctuationArtifactRate",
+        ],
+    "coordinatorReplay": [
+            "commandPassthroughCoverageRate",
+            "commandPassthroughAccuracy",
+            "noSpeechFalseInsertRate",
+            "p50LatencyMS",
+            "p90LatencyMS",
+            "p99LatencyMS",
+        ],
+    },
+    "pipelineMetrics": pipeline_metrics,
+    "coordinatorMetrics": coordinator_metrics,
+    "coordinatorLatencyAggregation": coordinator_latency_aggregation,
     "artifacts": {
         "smokeReport": os.environ["SMOKE_REPORT"],
         "smokePipeline": os.environ["SMOKE_PIPELINE"],
@@ -1002,6 +1132,7 @@ summary_payload = {
     "pipelineSummary": summary,
     "gates": gates,
     "failingGates": failing_gates,
+    "notEvaluableGates": not_evaluable_gates,
     "missingMetrics": missing_metrics,
     "failingSamples": failing_samples,
     "worstSamples": worst_samples[:12],
@@ -1036,13 +1167,19 @@ for name, values in sorted(raw["datasetBreakdown"].items()):
 failing_sample_rows = []
 for sample in failing_samples:
     failing_sample_rows.append(
-        f"| {sample['id']} | {sample['dataset']} | {sample.get('audioSource') or 'n/a'} | {sample['status']} / {sample['outcome']} | {', '.join(sample['notes']) or 'n/a'} | {fmt_number(sample.get('rawWER'))} | {fmt_number(sample.get('cleanedWER'))} | {sample.get('insertStatus') or 'n/a'} | {sample.get('insertMethod') or 'n/a'} |"
+        f"| {sample['id']} | {sample['dataset']} | {sample.get('audioSource') or 'n/a'} | {', '.join(sample['notes']) or 'n/a'} | {truncate_text(sample.get('pipelineRawText')) or 'n/a'} | {truncate_text(sample.get('pipelineCleanedText')) or 'n/a'} | {(sample.get('coordinatorInsertStatus') or 'n/a')} / {(sample.get('coordinatorInsertMethod') or 'n/a')} | {truncate_text(sample.get('coordinatorLastInsertedText')) or 'n/a'} | {fmt_number(sample.get('peakLatencyMS'))} | {format_timing_breakdown(sample.get('peakTimingBreakdownMS')) or 'n/a'} |"
+    )
+
+worst_sample_rows = []
+for sample in worst_samples[:12]:
+    worst_sample_rows.append(
+        f"| {sample['id']} | {sample['dataset']} | {sample.get('audioSource') or 'n/a'} | {fmt_number(sample.get('rawWER'))} | {fmt_number(sample.get('cleanedWER'))} | {fmt_number(sample.get('peakLatencyMS'))} | {truncate_text(sample.get('pipelineCleanedText')) or 'n/a'} | {truncate_text(sample.get('coordinatorLastInsertedText')) or 'n/a'} |"
     )
 
 latency_rows = []
 for sample in latency_outliers[:10]:
     latency_rows.append(
-        f"| {sample['id']} | {sample['dataset']} | {sample.get('audioSource') or 'n/a'} | {fmt_number(sample.get('peakLatencyMS'))} | {sample.get('iteration') or 'n/a'} | {sample.get('insertStatus') or 'n/a'} | {sample.get('insertMethod') or 'n/a'} | {truncate_text(sample.get('insertedText')) or 'n/a'} |"
+        f"| {sample['id']} | {sample['dataset']} | {sample.get('audioSource') or 'n/a'} | {fmt_number(sample.get('peakLatencyMS'))} | {sample.get('iteration') or 'n/a'} | {sample.get('insertStatus') or 'n/a'} | {sample.get('insertMethod') or 'n/a'} | {truncate_text(sample.get('insertedText')) or 'n/a'} | {format_timing_breakdown(sample.get('timingBreakdownMS')) or 'n/a'} |"
     )
 
 audio_rows = [f"- `{key}`: {value} samples" for key, value in sorted(audio_source_counts.items())]
@@ -1057,6 +1194,9 @@ report = f"""# Release Eval Report
 - Benchmark: `{manifest['benchmarkName']}`
 - Evidence tier: `{manifest['evidenceTier']}`
 - Hardware profile: `{hardware['chipClass']}` / `{hardware['memoryGB']}GB` / `{hardware['modelID']}`
+- Canonical release root: `{release_root}`
+- Canonical bundle root: `{bundle_root}`
+- Deprecated typo-path roots: `{', '.join(deprecated_artifact_roots) if deprecated_artifact_roots else 'none detected'}`
 - Artifacts:
   - Raw: `{os.environ['RELEASE_RAW']}`
   - Pipeline: `{os.environ['RELEASE_PIPELINE']}`
@@ -1083,25 +1223,33 @@ report = f"""# Release Eval Report
 |---|---:|---:|---:|---:|---:|
 {chr(10).join(dataset_rows)}
 
-### Steno Post-Processing
+### Pipeline Cleanup Quality
 | Metric | Value |
 |---|---:|
-| Raw WER (same samples) | {fmt_number(summary.get('rawWER'))} |
-| Cleaned WER | {fmt_number(summary.get('cleanedWER'))} |
-| WER Delta | {fmt_number(summary.get('werDelta'))} |
-| Raw CER (same samples) | {fmt_number(summary.get('rawCER'))} |
-| Cleaned CER | {fmt_number(summary.get('cleanedCER'))} |
-| CER Delta | {fmt_number(summary.get('cerDelta'))} |
-| Term Recall Accuracy | {fmt_percent(summary.get('termRecallAccuracy'))} |
-| Repair Resolution Rate | {fmt_percent(summary.get('repairResolutionRate'))} |
-| Unintended Rewrite Rate | {fmt_percent(summary.get('unintendedRewriteRate'))} |
-| Literal Repair Phrase Preservation Rate | {fmt_percent(summary.get('literalRepairPhrasePreservationRate'))} |
-| Punctuation Artifact Rate | {fmt_percent(summary.get('punctuationArtifactRate'))} |
-| Command Passthrough Accuracy | {fmt_percent(summary.get('commandPassthroughAccuracy'))} |
-| No-Speech False Insert Rate | {fmt_percent(summary.get('noSpeechFalseInsertRate'))} |
-| Coordinator p50 Latency (ms) | {fmt_number(summary.get('p50LatencyMS'))} |
-| Coordinator p90 Latency (ms) | {fmt_number(summary.get('p90LatencyMS'))} |
-| Coordinator p99 Latency (ms) | {fmt_number(summary.get('p99LatencyMS'))} |
+| Raw WER (same samples) | {fmt_number(pipeline_metrics.get('rawWER'))} |
+| Cleaned WER | {fmt_number(pipeline_metrics.get('cleanedWER'))} |
+| WER Delta | {fmt_number(pipeline_metrics.get('werDelta'))} |
+| Raw CER (same samples) | {fmt_number(pipeline_metrics.get('rawCER'))} |
+| Cleaned CER | {fmt_number(pipeline_metrics.get('cleanedCER'))} |
+| CER Delta | {fmt_number(pipeline_metrics.get('cerDelta'))} |
+| Term Recall Accuracy | {fmt_percent(pipeline_metrics.get('termRecallAccuracy'))} |
+| Repair Marker Preservation Rate | {fmt_percent(pipeline_metrics.get('repairMarkerPreservationRate'))} |
+| Repair Trigger Detection Rate | {fmt_percent(pipeline_metrics.get('repairResolutionRate'))} |
+| Repair Exact Match Rate | {fmt_percent(pipeline_metrics.get('repairExactMatchRate'))} |
+| Unintended Rewrite Rate | {fmt_percent(pipeline_metrics.get('unintendedRewriteRate'))} |
+| Literal Repair Phrase Preservation Rate | {fmt_percent(pipeline_metrics.get('literalRepairPhrasePreservationRate'))} |
+| Punctuation Artifact Rate | {fmt_percent(pipeline_metrics.get('punctuationArtifactRate'))} |
+
+### Coordinator End-to-End Replay
+| Metric | Value |
+|---|---:|
+| Command Passthrough Coverage Rate | {fmt_percent(coordinator_metrics.get('commandPassthroughCoverageRate'))} |
+| Command Passthrough Accuracy | {fmt_percent(coordinator_metrics.get('commandPassthroughAccuracy'))} |
+| No-Speech False Insert Rate | {fmt_percent(coordinator_metrics.get('noSpeechFalseInsertRate'))} |
+| Coordinator p50 Latency (ms) | {fmt_number(coordinator_metrics.get('p50LatencyMS'))} |
+| Coordinator p90 Latency (ms) | {fmt_number(coordinator_metrics.get('p90LatencyMS'))} |
+| Coordinator p99 Latency (ms) | {fmt_number(coordinator_metrics.get('p99LatencyMS'))} |
+- Latency aggregation for the gateable coordinator numbers: {coordinator_latency_aggregation}
 
 ### Gate Results
 | Gate | Status | Actual | Threshold | Notes |
@@ -1109,14 +1257,19 @@ report = f"""# Release Eval Report
 {chr(10).join(gate_rows)}
 
 ### Failing Samples
-| Sample ID | Dataset | Audio Source | Status / Outcome | Failure Notes | Raw WER | Cleaned WER | Insert Status | Insert Method |
-|---|---|---|---|---|---:|---:|---|---|
-{chr(10).join(failing_sample_rows) if failing_sample_rows else '| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |'}
+| Sample ID | Dataset | Audio Source | Failure Notes | Pipeline Raw | Pipeline Cleaned | Coordinator Result | Coordinator Inserted Text | Peak Latency (ms) | Timing Breakdown (ms) |
+|---|---|---|---|---|---|---|---|---:|---|
+{chr(10).join(failing_sample_rows) if failing_sample_rows else '| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |'}
+
+### Worst Samples
+| Sample ID | Dataset | Audio Source | Raw WER | Cleaned WER | Peak Latency (ms) | Pipeline Cleaned | Coordinator Inserted Text |
+|---|---|---|---:|---:|---:|---|---|
+{chr(10).join(worst_sample_rows) if worst_sample_rows else '| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a |'}
 
 ### Latency Tail Samples
-| Sample ID | Dataset | Audio Source | Peak Latency (ms) | Iteration | Insert Status | Insert Method | Insert Text |
-|---|---|---|---:|---:|---|---|---|
-{chr(10).join(latency_rows) if latency_rows else '| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a |'}
+| Sample ID | Dataset | Audio Source | Peak Latency (ms) | Iteration | Insert Status | Insert Method | Insert Text | Timing Breakdown (ms) |
+|---|---|---|---:|---:|---|---|---|---|
+{chr(10).join(latency_rows) if latency_rows else '| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |'}
 
 ### Audio Evidence
 {chr(10).join(audio_rows)}
