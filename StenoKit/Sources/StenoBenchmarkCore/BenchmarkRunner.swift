@@ -31,10 +31,16 @@ public struct RawRunConfiguration: Sendable {
 public struct PipelineRunConfiguration: Sendable {
     public var profile: StyleProfile
     public var lexicon: PersonalLexicon
+    public var manifestPath: String?
 
-    public init(profile: StyleProfile, lexicon: PersonalLexicon) {
+    public init(
+        profile: StyleProfile,
+        lexicon: PersonalLexicon,
+        manifestPath: String? = nil
+    ) {
         self.profile = profile
         self.lexicon = lexicon
+        self.manifestPath = manifestPath
     }
 }
 
@@ -65,7 +71,9 @@ public enum BenchmarkRunner {
             do {
                 let raw = try await engine.transcribe(
                     audioURL: audioURL,
-                    languageHints: languageHint.map { [$0] } ?? []
+                    request: TranscriptionRequest(
+                        languageHints: languageHint.map { [$0] } ?? []
+                    )
                 )
                 let elapsedMS = elapsedMilliseconds(since: started)
                 let metrics = BenchmarkScorer.score(
@@ -112,6 +120,8 @@ public enum BenchmarkRunner {
 
         return RawEngineOutput(
             benchmarkName: manifest.benchmarkName,
+            evidenceTier: manifest.evidenceTier,
+            hardwareProfile: manifest.hardwareProfile,
             manifestSchemaVersion: manifest.schemaVersion,
             normalizationPolicy: manifest.scoring.normalization,
             whisperConfiguration: configuration.whisperConfiguration,
@@ -132,6 +142,12 @@ public enum BenchmarkRunner {
         for sample in rawOutput.samples {
             rawByID[sample.id] = sample
         }
+
+        let coordinatorLatencies = await measureCoordinatorLatenciesIfNeeded(
+            manifest: manifest,
+            rawOutput: rawOutput,
+            configuration: configuration
+        )
 
         var sampleResults: [PipelineSampleResult] = []
         sampleResults.reserveCapacity(manifest.samples.count)
@@ -244,11 +260,15 @@ public enum BenchmarkRunner {
 
         let summary = aggregatePipeline(
             sampleResults: sampleResults,
-            normalizer: normalizer
+            normalizer: normalizer,
+            lexicon: configuration.lexicon,
+            coordinatorLatencies: coordinatorLatencies
         )
 
         return PipelineOutput(
             benchmarkName: manifest.benchmarkName,
+            evidenceTier: manifest.evidenceTier,
+            hardwareProfile: manifest.hardwareProfile,
             profile: configuration.profile,
             lexiconEntryCount: configuration.lexicon.entries.count,
             normalizationPolicy: manifest.scoring.normalization,
@@ -336,7 +356,9 @@ public enum BenchmarkRunner {
 
     private static func aggregatePipeline(
         sampleResults: [PipelineSampleResult],
-        normalizer: TextNormalizer
+        normalizer: TextNormalizer,
+        lexicon: PersonalLexicon,
+        coordinatorLatencies: [String: Int]
     ) -> PipelineAggregate {
         var rawTotals = MetricTotals()
         var cleanedTotals = MetricTotals()
@@ -357,6 +379,20 @@ public enum BenchmarkRunner {
         var fillerImproved = 0
         var fillerUnchanged = 0
         var fillerRegressed = 0
+
+        let normalizedPreferredTerms = Array(
+            Set(
+                lexicon.entries
+                    .map(\.preferred)
+                    .map(normalizer.normalize)
+                    .filter { !$0.isEmpty }
+            )
+        )
+        var termRelevantSamples = 0
+        var termRecoveredSamples = 0
+        var repairRelevantSamples = 0
+        var repairResolvedSamples = 0
+        var unintendedRewriteSamples = 0
 
         for sample in sampleResults {
             if let rawMetrics = sample.rawMetrics, let cleanedMetrics = sample.cleanedMetrics {
@@ -408,6 +444,46 @@ public enum BenchmarkRunner {
                     break
                 }
             }
+
+            let normalizedCleaned = normalizer.normalize(sample.cleanedText ?? "")
+            let normalizedRaw = normalizer.normalize(sample.rawText ?? "")
+            let rawHasRepairMarker = containsRepairMarker(sample.rawText ?? "")
+
+            let referenceTerms = normalizedPreferredTerms.filter {
+                BenchmarkScorer.containsWholeWordOrPhrase(
+                    in: normalizedReference,
+                    term: $0
+                )
+            }
+            if referenceTerms.isEmpty == false {
+                termRelevantSamples += 1
+                let recoveredAllTerms = referenceTerms.allSatisfy {
+                    BenchmarkScorer.containsWholeWordOrPhrase(
+                        in: normalizedCleaned,
+                        term: $0
+                    )
+                }
+                if recoveredAllTerms {
+                    termRecoveredSamples += 1
+                }
+            }
+
+            if rawHasRepairMarker {
+                repairRelevantSamples += 1
+                let resolvedRepair = sample.edits.contains(where: { $0.kind == .repairResolution })
+                    && containsRepairMarker(sample.cleanedText ?? "") == false
+                    && sample.outcome != .regressed
+                if resolvedRepair {
+                    repairResolvedSamples += 1
+                }
+            }
+
+            if let rawMetrics = sample.rawMetrics,
+               let cleanedMetrics = sample.cleanedMetrics,
+               normalizedRaw != normalizedCleaned,
+               cleanedMetrics.wer > rawMetrics.wer {
+                unintendedRewriteSamples += 1
+            }
         }
 
         let rawWER = rawTotals.wer()
@@ -443,6 +519,19 @@ public enum BenchmarkRunner {
             referenceMatchAccuracy: lexiconAccuracy
         )
 
+        let termRecallAccuracy = termRelevantSamples > 0
+            ? Double(termRecoveredSamples) / Double(termRelevantSamples)
+            : nil
+        let repairResolutionRate = repairRelevantSamples > 0
+            ? Double(repairResolvedSamples) / Double(repairRelevantSamples)
+            : nil
+        let unintendedRewriteRate = sampleResults.isEmpty == false
+            ? Double(unintendedRewriteSamples) / Double(max(sampleResults.count - unscored, 1))
+            : nil
+        let latencyValues = coordinatorLatencies.values.sorted()
+        let p90LatencyMS = latencyValues.isEmpty ? nil : BenchmarkScorer.percentile(latencyValues, percentile: 0.9)
+        let p99LatencyMS = latencyValues.isEmpty ? nil : BenchmarkScorer.percentile(latencyValues, percentile: 0.99)
+
         return PipelineAggregate(
             totalSamples: sampleResults.count,
             scoredSamples: sampleResults.count - unscored,
@@ -462,8 +551,118 @@ public enum BenchmarkRunner {
             unchanged: unchanged,
             regressed: regressed,
             unscored: unscored,
+            termRecallAccuracy: termRecallAccuracy,
+            repairResolutionRate: repairResolutionRate,
+            unintendedRewriteRate: unintendedRewriteRate,
+            p90LatencyMS: p90LatencyMS,
+            p99LatencyMS: p99LatencyMS,
             lexicon: lexiconSummary,
             fillerImpact: fillerSummary
         )
+    }
+
+    private static func measureCoordinatorLatenciesIfNeeded(
+        manifest: BenchmarkManifest,
+        rawOutput: RawEngineOutput,
+        configuration: PipelineRunConfiguration
+    ) async -> [String: Int] {
+        guard manifest.evidenceTier == .releaseSignoff,
+              let manifestPath = configuration.manifestPath else {
+            return [:]
+        }
+
+        let manifestURL = URL(fileURLWithPath: manifestPath)
+        let manifestDirectory: URL
+        if manifestURL.hasDirectoryPath {
+            manifestDirectory = manifestURL
+        } else {
+            manifestDirectory = manifestURL.deletingLastPathComponent()
+        }
+        var results: [String: Int] = [:]
+
+        for sample in manifest.samples {
+            let audioSourceURL = resolveSampleAudioPath(sample.audioPath, manifestDirectory: manifestDirectory)
+            let captureService = BenchmarkAudioCaptureService(sourceAudioURL: audioSourceURL)
+            let engine = WhisperCLITranscriptionEngine(
+                config: .init(
+                    whisperCLIPath: URL(fileURLWithPath: rawOutput.whisperConfiguration.whisperCLIPath),
+                    modelPath: URL(fileURLWithPath: rawOutput.whisperConfiguration.modelPath),
+                    additionalArguments: rawOutput.whisperConfiguration.additionalArguments
+                )
+            )
+            let insertionService = InsertionService(
+                transports: [
+                    ClosureInsertionTransport(method: .direct) { _, _ in }
+                ]
+            )
+            let historyStore = HistoryStore(
+                storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
+                    .appendingPathComponent("benchmark-history-\(UUID().uuidString).json"),
+                clipboardService: MemoryClipboardService()
+            )
+            let coordinator = SessionCoordinator(
+                captureService: captureService,
+                transcriptionEngine: engine,
+                cleanupEngine: RuleBasedCleanupEngine(),
+                insertionService: insertionService,
+                historyStore: historyStore,
+                lexiconService: PersonalLexiconService(entries: configuration.lexicon.entries),
+                styleProfileService: StyleProfileService(globalProfile: configuration.profile)
+            )
+
+            do {
+                let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+                let started = Date()
+                _ = try await coordinator.stopPressToTalk(
+                    sessionID: sessionID,
+                    languageHints: sample.languageHint.map { [$0] } ?? ["en-US"]
+                )
+                results[sample.id] = elapsedMilliseconds(since: started)
+            } catch {
+                continue
+            }
+        }
+
+        return results
+    }
+
+    private static func containsRepairMarker(_ text: String) -> Bool {
+        let markers = [
+            "scratch that",
+            "delete that",
+            "erase that",
+            "never mind",
+            "actually",
+            "i mean",
+            "no,"
+        ]
+
+        return markers.contains { marker in
+            text.range(of: marker, options: [.caseInsensitive]) != nil
+        }
+    }
+}
+
+private actor BenchmarkAudioCaptureService: AudioCaptureService {
+    private let sourceAudioURL: URL
+
+    init(sourceAudioURL: URL) {
+        self.sourceAudioURL = sourceAudioURL
+    }
+
+    func beginCapture(sessionID: SessionID) async throws {
+        _ = sessionID
+    }
+
+    func endCapture(sessionID: SessionID) async throws -> URL {
+        _ = sessionID
+        let copiedURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("benchmark-audio-\(UUID().uuidString).wav")
+        try FileManager.default.copyItem(at: sourceAudioURL, to: copiedURL)
+        return copiedURL
+    }
+
+    func cancelCapture(sessionID: SessionID) async {
+        _ = sessionID
     }
 }

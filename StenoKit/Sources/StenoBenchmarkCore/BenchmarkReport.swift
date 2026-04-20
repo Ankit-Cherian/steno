@@ -1,4 +1,5 @@
 import Foundation
+import StenoKit
 
 public enum BenchmarkReportError: Error, LocalizedError {
     case missingRequiredLabel(String)
@@ -29,6 +30,19 @@ public enum BenchmarkReportRenderer {
         markdown.append("")
         markdown.append("## Methodology")
         markdown.append("- Manifest schema: `\(manifest.schemaVersion)`")
+        markdown.append("- Evidence tier: `\(pipeline.evidenceTier.rawValue)`")
+        if let hardwareProfile = pipeline.hardwareProfile {
+            markdown.append("- Hardware profile: `\(hardwareProfile.chipClass.rawValue)` · \(hardwareProfile.memoryGB)GB · `\(hardwareProfile.modelID.rawValue)`")
+            if let service = try? WhisperCompatibilityService.bundled(),
+               let row = service.row(
+                for: hardwareProfile.chipClass,
+                memoryGB: hardwareProfile.memoryGB,
+                modelID: hardwareProfile.modelID
+               ) {
+                markdown.append("- Compatibility row: `\(row.supportLevel.rawValue)` / `\(row.qualityTier.rawValue)`")
+                markdown.append("- Compatibility notes: \(row.notes)")
+            }
+        }
         markdown.append("- Scoring normalization: `\(manifest.scoring.normalization.version)`")
         markdown.append("- Samples: \(manifest.samples.count)")
         markdown.append("- Whisper model path: `\(raw.whisperConfiguration.modelPath)`")
@@ -80,6 +94,11 @@ public enum BenchmarkReportRenderer {
         markdown.append("| Unchanged | \(pipelineSummary.unchanged) |")
         markdown.append("| Regressed | \(pipelineSummary.regressed) |")
         markdown.append("| Unscored | \(pipelineSummary.unscored) |")
+        markdown.append("| Term Recall Accuracy | \(percent(pipelineSummary.termRecallAccuracy)) |")
+        markdown.append("| Repair Resolution Rate | \(percent(pipelineSummary.repairResolutionRate)) |")
+        markdown.append("| Unintended Rewrite Rate | \(percent(pipelineSummary.unintendedRewriteRate)) |")
+        markdown.append("| p90 Latency (ms) | \(decimal(pipelineSummary.p90LatencyMS)) |")
+        markdown.append("| p99 Latency (ms) | \(decimal(pipelineSummary.p99LatencyMS)) |")
         markdown.append("")
 
         markdown.append("### Lexicon Effectiveness (\(pipelineLabel))")

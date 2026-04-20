@@ -7,6 +7,8 @@ import Testing
 func reportRendererIncludesRequiredLabels() throws {
     let manifest = BenchmarkManifest(
         benchmarkName: "Report Fixture",
+        evidenceTier: .releaseSignoff,
+        hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
         samples: [
             .init(
                 id: "sample-1",
@@ -18,6 +20,8 @@ func reportRendererIncludesRequiredLabels() throws {
     )
     let raw = RawEngineOutput(
         benchmarkName: "Report Fixture",
+        evidenceTier: .releaseSignoff,
+        hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
         manifestSchemaVersion: manifest.schemaVersion,
         normalizationPolicy: manifest.scoring.normalization,
         whisperConfiguration: .init(whisperCLIPath: "/tmp/whisper-cli", modelPath: "/tmp/model.bin"),
@@ -39,6 +43,8 @@ func reportRendererIncludesRequiredLabels() throws {
     )
     let pipeline = PipelineOutput(
         benchmarkName: "Report Fixture",
+        evidenceTier: .releaseSignoff,
+        hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
         profile: .init(
             name: "benchmark-local",
             tone: .natural,
@@ -96,6 +102,10 @@ func reportRendererIncludesRequiredLabels() throws {
 
     #expect(report.contains(BenchmarkReportRenderer.rawLabel))
     #expect(report.contains(BenchmarkReportRenderer.pipelineLabel))
+    #expect(report.contains("Evidence tier"))
+    #expect(report.contains("releaseSignoff"))
+    #expect(report.contains("m5-pro"))
+    #expect(report.contains("large-v3-turbo"))
 }
 
 @Test("Report validation fails if required labels are missing")
@@ -110,4 +120,3 @@ func reportValidationFailsWithoutRequiredLabels() {
         Issue.record("Unexpected error type: \(error)")
     }
 }
-

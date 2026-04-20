@@ -130,13 +130,157 @@ func pipelineValidationHonorsEpsilon() throws {
     try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
 }
 
+@Test("Pipeline validation fails when term recall accuracy drops below threshold")
+func pipelineValidationFailsOnTermRecallAccuracy() {
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0,
+        cerDelta: 0.0,
+        regressed: 0,
+        termRecallAccuracy: 0.5,
+        repairResolutionRate: 1.0,
+        unintendedRewriteRate: 0.0,
+        p90LatencyMS: 700,
+        p99LatencyMS: 1_100
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        minTermRecallAccuracy: 1.0,
+        minRepairResolutionRate: 1.0,
+        maxUnintendedRewriteRate: 0.0,
+        baselineP90LatencyMS: 650,
+        maxP90RegressionRatio: 0.10,
+        maxP90LatencyMS: 800,
+        maxP99LatencyMS: 1_200
+    )
+
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected term recall validation failure.")
+    } catch PipelineValidationError.termRecallAccuracyBelowThreshold(let actual, let minRequired) {
+        #expect(actual == 0.5)
+        #expect(minRequired == 1.0)
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+}
+
+@Test("Pipeline validation fails when unintended rewrite rate or latency exceed thresholds")
+func pipelineValidationFailsOnRewriteRateAndLatency() {
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0,
+        cerDelta: 0.0,
+        regressed: 0,
+        termRecallAccuracy: 1.0,
+        repairResolutionRate: 1.0,
+        unintendedRewriteRate: 0.25,
+        p90LatencyMS: 900,
+        p99LatencyMS: 1_300
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        minTermRecallAccuracy: 1.0,
+        minRepairResolutionRate: 1.0,
+        maxUnintendedRewriteRate: 0.0,
+        baselineP90LatencyMS: 700,
+        maxP90RegressionRatio: 0.10,
+        maxP90LatencyMS: 800,
+        maxP99LatencyMS: 1_200
+    )
+
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected unintended rewrite validation failure.")
+    } catch PipelineValidationError.unintendedRewriteRateExceeded(let actual, let maxAllowed) {
+        #expect(actual == 0.25)
+        #expect(maxAllowed == 0.0)
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+}
+
+@Test("Pipeline validation rejects release thresholds for smoke fixture evidence tier")
+func pipelineValidationRejectsReleaseThresholdsForSmokeFixture() {
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0,
+        cerDelta: 0.0,
+        regressed: 0,
+        evidenceTier: .smokeFixture
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        minTermRecallAccuracy: 1.0,
+        minRepairResolutionRate: 1.0,
+        maxUnintendedRewriteRate: 0.0,
+        baselineP90LatencyMS: 700,
+        maxP90RegressionRatio: 0.10,
+        maxP90LatencyMS: 800,
+        maxP99LatencyMS: 1_200
+    )
+
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected smoke fixture release-threshold validation failure.")
+    } catch PipelineValidationError.releaseSignoffRequired(let actualTier) {
+        #expect(actualTier == .smokeFixture)
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+}
+
+@Test("Pipeline validation uses compatibility-matrix latency budgets for release signoff")
+func pipelineValidationUsesCompatibilityMatrixLatencyBudgets() {
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0,
+        cerDelta: 0.0,
+        regressed: 0,
+        evidenceTier: .releaseSignoff,
+        termRecallAccuracy: 1.0,
+        repairResolutionRate: 1.0,
+        unintendedRewriteRate: 0.0,
+        p90LatencyMS: 850,
+        p99LatencyMS: 1_250
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        minTermRecallAccuracy: 1.0,
+        minRepairResolutionRate: 1.0,
+        maxUnintendedRewriteRate: 0.0
+    )
+
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected compatibility-matrix latency validation failure.")
+    } catch PipelineValidationError.p99LatencyExceeded(let actual, let maxAllowed) {
+        #expect(actual == 1_250)
+        #expect(maxAllowed == 1_200)
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+}
+
 private func makePipelineOutput(
     werDelta: Double?,
     cerDelta: Double?,
-    regressed: Int
+    regressed: Int,
+    evidenceTier: BenchmarkEvidenceTier = .releaseSignoff,
+    termRecallAccuracy: Double? = 1.0,
+    repairResolutionRate: Double? = 1.0,
+    unintendedRewriteRate: Double? = 0.0,
+    p90LatencyMS: Double? = 700,
+    p99LatencyMS: Double? = 1_100
 ) -> PipelineOutput {
     PipelineOutput(
         benchmarkName: "Validation Fixture",
+        evidenceTier: evidenceTier,
+        hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
         profile: .init(
             name: "benchmark-local",
             tone: .natural,
@@ -159,6 +303,11 @@ private func makePipelineOutput(
             unchanged: 1 - regressed,
             regressed: regressed,
             unscored: 0,
+            termRecallAccuracy: termRecallAccuracy,
+            repairResolutionRate: repairResolutionRate,
+            unintendedRewriteRate: unintendedRewriteRate,
+            p90LatencyMS: p90LatencyMS,
+            p99LatencyMS: p99LatencyMS,
             lexicon: .init(
                 totalAppliedEdits: 0,
                 editsMatchingReference: 0,

@@ -1,22 +1,64 @@
 import Foundation
 import StenoKit
 
+public enum BenchmarkEvidenceTier: String, Sendable, Codable, Equatable {
+    case smokeFixture = "smokeFixture"
+    case releaseSignoff = "releaseSignoff"
+}
+
+public struct BenchmarkHardwareProfile: Sendable, Codable, Equatable {
+    public var chipClass: AppleSiliconChipClass
+    public var memoryGB: Int
+    public var modelID: WhisperModelID
+
+    public init(chipClass: AppleSiliconChipClass, memoryGB: Int, modelID: WhisperModelID) {
+        self.chipClass = chipClass
+        self.memoryGB = memoryGB
+        self.modelID = modelID
+    }
+}
+
 public struct BenchmarkManifest: Sendable, Codable {
     public var schemaVersion: String
     public var benchmarkName: String
+    public var evidenceTier: BenchmarkEvidenceTier
+    public var hardwareProfile: BenchmarkHardwareProfile?
     public var scoring: ScoringConfiguration
     public var samples: [BenchmarkSample]
 
     public init(
         schemaVersion: String = "steno-benchmark-manifest/v1",
         benchmarkName: String = "Steno Benchmark",
+        evidenceTier: BenchmarkEvidenceTier = .smokeFixture,
+        hardwareProfile: BenchmarkHardwareProfile? = nil,
         scoring: ScoringConfiguration = ScoringConfiguration(),
         samples: [BenchmarkSample]
     ) {
         self.schemaVersion = schemaVersion
         self.benchmarkName = benchmarkName
+        self.evidenceTier = evidenceTier
+        self.hardwareProfile = hardwareProfile
         self.scoring = scoring
         self.samples = samples
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case benchmarkName
+        case evidenceTier
+        case hardwareProfile
+        case scoring
+        case samples
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(String.self, forKey: .schemaVersion) ?? "steno-benchmark-manifest/v1"
+        benchmarkName = try container.decodeIfPresent(String.self, forKey: .benchmarkName) ?? "Steno Benchmark"
+        evidenceTier = try container.decodeIfPresent(BenchmarkEvidenceTier.self, forKey: .evidenceTier) ?? .smokeFixture
+        hardwareProfile = try container.decodeIfPresent(BenchmarkHardwareProfile.self, forKey: .hardwareProfile)
+        scoring = try container.decodeIfPresent(ScoringConfiguration.self, forKey: .scoring) ?? ScoringConfiguration()
+        samples = try container.decode([BenchmarkSample].self, forKey: .samples)
     }
 }
 
@@ -95,18 +137,35 @@ public struct BenchmarkLexiconEntry: Sendable, Codable {
     public var term: String
     public var preferred: String
     public var bundleID: String?
+    public var phoneticRecovery: PhoneticRecoveryPolicy?
 
-    public init(term: String, preferred: String, bundleID: String? = nil) {
+    public init(
+        term: String,
+        preferred: String,
+        bundleID: String? = nil,
+        phoneticRecovery: PhoneticRecoveryPolicy? = nil
+    ) {
         self.term = term
         self.preferred = preferred
         self.bundleID = bundleID
+        self.phoneticRecovery = phoneticRecovery
     }
 
     public var stenoEntry: LexiconEntry {
         if let bundleID, !bundleID.isEmpty {
-            return LexiconEntry(term: term, preferred: preferred, scope: .app(bundleID: bundleID))
+            return LexiconEntry(
+                term: term,
+                preferred: preferred,
+                scope: .app(bundleID: bundleID),
+                phoneticRecovery: phoneticRecovery ?? .off
+            )
         }
-        return LexiconEntry(term: term, preferred: preferred, scope: .global)
+        return LexiconEntry(
+            term: term,
+            preferred: preferred,
+            scope: .global,
+            phoneticRecovery: phoneticRecovery ?? .off
+        )
     }
 }
 
@@ -259,6 +318,8 @@ public struct RawEngineAggregate: Sendable, Codable {
 public struct RawEngineOutput: Sendable, Codable {
     public var schemaVersion: String
     public var benchmarkName: String
+    public var evidenceTier: BenchmarkEvidenceTier
+    public var hardwareProfile: BenchmarkHardwareProfile?
     public var runtime: BenchmarkRuntimeMetadata
     public var manifestSchemaVersion: String
     public var normalizationPolicy: NormalizationPolicy
@@ -270,6 +331,8 @@ public struct RawEngineOutput: Sendable, Codable {
     public init(
         schemaVersion: String = "steno-raw-engine-results/v1",
         benchmarkName: String,
+        evidenceTier: BenchmarkEvidenceTier = .smokeFixture,
+        hardwareProfile: BenchmarkHardwareProfile? = nil,
         runtime: BenchmarkRuntimeMetadata = BenchmarkRuntimeMetadata(),
         manifestSchemaVersion: String,
         normalizationPolicy: NormalizationPolicy,
@@ -280,6 +343,8 @@ public struct RawEngineOutput: Sendable, Codable {
     ) {
         self.schemaVersion = schemaVersion
         self.benchmarkName = benchmarkName
+        self.evidenceTier = evidenceTier
+        self.hardwareProfile = hardwareProfile
         self.runtime = runtime
         self.manifestSchemaVersion = manifestSchemaVersion
         self.normalizationPolicy = normalizationPolicy
@@ -287,6 +352,35 @@ public struct RawEngineOutput: Sendable, Codable {
         self.summary = summary
         self.datasetBreakdown = datasetBreakdown
         self.samples = samples
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case benchmarkName
+        case evidenceTier
+        case hardwareProfile
+        case runtime
+        case manifestSchemaVersion
+        case normalizationPolicy
+        case whisperConfiguration
+        case summary
+        case datasetBreakdown
+        case samples
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(String.self, forKey: .schemaVersion) ?? "steno-raw-engine-results/v1"
+        benchmarkName = try container.decode(String.self, forKey: .benchmarkName)
+        evidenceTier = try container.decodeIfPresent(BenchmarkEvidenceTier.self, forKey: .evidenceTier) ?? .smokeFixture
+        hardwareProfile = try container.decodeIfPresent(BenchmarkHardwareProfile.self, forKey: .hardwareProfile)
+        runtime = try container.decodeIfPresent(BenchmarkRuntimeMetadata.self, forKey: .runtime) ?? BenchmarkRuntimeMetadata()
+        manifestSchemaVersion = try container.decode(String.self, forKey: .manifestSchemaVersion)
+        normalizationPolicy = try container.decode(NormalizationPolicy.self, forKey: .normalizationPolicy)
+        whisperConfiguration = try container.decode(BenchmarkWhisperConfiguration.self, forKey: .whisperConfiguration)
+        summary = try container.decode(RawEngineAggregate.self, forKey: .summary)
+        datasetBreakdown = try container.decodeIfPresent([String: RawEngineAggregate].self, forKey: .datasetBreakdown) ?? [:]
+        samples = try container.decodeIfPresent([RawEngineSampleResult].self, forKey: .samples) ?? []
     }
 }
 
@@ -416,6 +510,11 @@ public struct PipelineAggregate: Sendable, Codable {
     public var unchanged: Int
     public var regressed: Int
     public var unscored: Int
+    public var termRecallAccuracy: Double?
+    public var repairResolutionRate: Double?
+    public var unintendedRewriteRate: Double?
+    public var p90LatencyMS: Double?
+    public var p99LatencyMS: Double?
     public var lexicon: PipelineLexiconSummary
     public var fillerImpact: PipelineFillerImpactSummary
 
@@ -432,6 +531,11 @@ public struct PipelineAggregate: Sendable, Codable {
         unchanged: Int,
         regressed: Int,
         unscored: Int,
+        termRecallAccuracy: Double? = nil,
+        repairResolutionRate: Double? = nil,
+        unintendedRewriteRate: Double? = nil,
+        p90LatencyMS: Double? = nil,
+        p99LatencyMS: Double? = nil,
         lexicon: PipelineLexiconSummary,
         fillerImpact: PipelineFillerImpactSummary
     ) {
@@ -447,6 +551,11 @@ public struct PipelineAggregate: Sendable, Codable {
         self.unchanged = unchanged
         self.regressed = regressed
         self.unscored = unscored
+        self.termRecallAccuracy = termRecallAccuracy
+        self.repairResolutionRate = repairResolutionRate
+        self.unintendedRewriteRate = unintendedRewriteRate
+        self.p90LatencyMS = p90LatencyMS
+        self.p99LatencyMS = p99LatencyMS
         self.lexicon = lexicon
         self.fillerImpact = fillerImpact
     }
@@ -455,6 +564,8 @@ public struct PipelineAggregate: Sendable, Codable {
 public struct PipelineOutput: Sendable, Codable {
     public var schemaVersion: String
     public var benchmarkName: String
+    public var evidenceTier: BenchmarkEvidenceTier
+    public var hardwareProfile: BenchmarkHardwareProfile?
     public var runtime: BenchmarkRuntimeMetadata
     public var profile: StyleProfile
     public var lexiconEntryCount: Int
@@ -465,6 +576,8 @@ public struct PipelineOutput: Sendable, Codable {
     public init(
         schemaVersion: String = "steno-pipeline-results/v1",
         benchmarkName: String,
+        evidenceTier: BenchmarkEvidenceTier = .smokeFixture,
+        hardwareProfile: BenchmarkHardwareProfile? = nil,
         runtime: BenchmarkRuntimeMetadata = BenchmarkRuntimeMetadata(),
         profile: StyleProfile,
         lexiconEntryCount: Int,
@@ -474,12 +587,41 @@ public struct PipelineOutput: Sendable, Codable {
     ) {
         self.schemaVersion = schemaVersion
         self.benchmarkName = benchmarkName
+        self.evidenceTier = evidenceTier
+        self.hardwareProfile = hardwareProfile
         self.runtime = runtime
         self.profile = profile
         self.lexiconEntryCount = lexiconEntryCount
         self.normalizationPolicy = normalizationPolicy
         self.summary = summary
         self.samples = samples
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case benchmarkName
+        case evidenceTier
+        case hardwareProfile
+        case runtime
+        case profile
+        case lexiconEntryCount
+        case normalizationPolicy
+        case summary
+        case samples
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(String.self, forKey: .schemaVersion) ?? "steno-pipeline-results/v1"
+        benchmarkName = try container.decode(String.self, forKey: .benchmarkName)
+        evidenceTier = try container.decodeIfPresent(BenchmarkEvidenceTier.self, forKey: .evidenceTier) ?? .smokeFixture
+        hardwareProfile = try container.decodeIfPresent(BenchmarkHardwareProfile.self, forKey: .hardwareProfile)
+        runtime = try container.decodeIfPresent(BenchmarkRuntimeMetadata.self, forKey: .runtime) ?? BenchmarkRuntimeMetadata()
+        profile = try container.decode(StyleProfile.self, forKey: .profile)
+        lexiconEntryCount = try container.decodeIfPresent(Int.self, forKey: .lexiconEntryCount) ?? 0
+        normalizationPolicy = try container.decode(NormalizationPolicy.self, forKey: .normalizationPolicy)
+        summary = try container.decode(PipelineAggregate.self, forKey: .summary)
+        samples = try container.decodeIfPresent([PipelineSampleResult].self, forKey: .samples) ?? []
     }
 }
 
