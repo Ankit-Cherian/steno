@@ -320,6 +320,34 @@ func pipelineValidationUsesCompatibilityMatrixLatencyBudgets() {
     }
 }
 
+@Test("Pipeline validation skips command passthrough threshold when coverage is zero")
+func pipelineValidationSkipsCommandThresholdWithoutCoverage() throws {
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0,
+        cerDelta: 0.0,
+        regressed: 0,
+        commandPassthroughAccuracy: nil,
+        commandPassthroughCoverageRate: 0.0,
+        noSpeechFalseInsertRate: 0.0,
+        p90LatencyMS: 800,
+        p99LatencyMS: 1_100
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        minTermRecallAccuracy: 1.0,
+        minRepairResolutionRate: 1.0,
+        maxUnintendedRewriteRate: 0.0,
+        minCommandPassthroughAccuracy: 1.0,
+        maxNoSpeechFalseInsertRate: 0.0,
+        maxP90LatencyMS: 1_100,
+        maxP99LatencyMS: 1_200
+    )
+
+    try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+}
+
 private func makePipelineOutput(
     werDelta: Double?,
     cerDelta: Double?,
@@ -331,6 +359,7 @@ private func makePipelineOutput(
     literalRepairPhrasePreservationRate: Double? = 1.0,
     punctuationArtifactRate: Double? = 0.0,
     commandPassthroughAccuracy: Double? = 1.0,
+    commandPassthroughCoverageRate: Double? = 1.0,
     noSpeechFalseInsertRate: Double? = 0.0,
     p50LatencyMS: Double? = 650,
     p90LatencyMS: Double? = 700,
@@ -355,6 +384,7 @@ private func makePipelineOutput(
         literalRepairPhrasePreservationRate: literalRepairPhrasePreservationRate,
         punctuationArtifactRate: punctuationArtifactRate,
         commandPassthroughAccuracy: commandPassthroughAccuracy,
+        commandPassthroughCoverageRate: commandPassthroughCoverageRate,
         noSpeechFalseInsertRate: noSpeechFalseInsertRate,
         p50LatencyMS: p50LatencyMS,
         p90LatencyMS: p90LatencyMS,

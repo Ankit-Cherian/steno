@@ -483,6 +483,7 @@ public struct PipelineSampleDelta: Sendable, Codable {
 }
 
 public struct PipelineCoordinatorObservation: Sendable, Codable, Equatable {
+    public var timingBreakdownMS: PipelineCoordinatorTimingBreakdown?
     public var iteration: Int
     public var latencyMS: Int?
     public var status: BenchmarkSampleStatus
@@ -490,17 +491,38 @@ public struct PipelineCoordinatorObservation: Sendable, Codable, Equatable {
     public var errorMessage: String?
 
     public init(
+        timingBreakdownMS: PipelineCoordinatorTimingBreakdown? = nil,
         iteration: Int,
         latencyMS: Int?,
         status: BenchmarkSampleStatus,
         insertResult: InsertResult?,
         errorMessage: String?
     ) {
+        self.timingBreakdownMS = timingBreakdownMS
         self.iteration = iteration
         self.latencyMS = latencyMS
         self.status = status
         self.insertResult = insertResult
         self.errorMessage = errorMessage
+    }
+}
+
+public struct PipelineCoordinatorTimingBreakdown: Sendable, Codable, Equatable {
+    public var transcriptionMS: Int?
+    public var cleanupMS: Int?
+    public var insertionMS: Int?
+    public var historyMS: Int?
+
+    public init(
+        transcriptionMS: Int? = nil,
+        cleanupMS: Int? = nil,
+        insertionMS: Int? = nil,
+        historyMS: Int? = nil
+    ) {
+        self.transcriptionMS = transcriptionMS
+        self.cleanupMS = cleanupMS
+        self.insertionMS = insertionMS
+        self.historyMS = historyMS
     }
 }
 
@@ -652,11 +674,14 @@ public struct PipelineAggregate: Sendable, Codable {
     public var regressed: Int
     public var unscored: Int
     public var termRecallAccuracy: Double?
+    public var repairMarkerPreservationRate: Double?
     public var repairResolutionRate: Double?
+    public var repairExactMatchRate: Double?
     public var unintendedRewriteRate: Double?
     public var literalRepairPhrasePreservationRate: Double?
     public var punctuationArtifactRate: Double?
     public var commandPassthroughAccuracy: Double?
+    public var commandPassthroughCoverageRate: Double?
     public var noSpeechFalseInsertRate: Double?
     public var p50LatencyMS: Double?
     public var p90LatencyMS: Double?
@@ -678,11 +703,14 @@ public struct PipelineAggregate: Sendable, Codable {
         regressed: Int,
         unscored: Int,
         termRecallAccuracy: Double? = nil,
+        repairMarkerPreservationRate: Double? = nil,
         repairResolutionRate: Double? = nil,
+        repairExactMatchRate: Double? = nil,
         unintendedRewriteRate: Double? = nil,
         literalRepairPhrasePreservationRate: Double? = nil,
         punctuationArtifactRate: Double? = nil,
         commandPassthroughAccuracy: Double? = nil,
+        commandPassthroughCoverageRate: Double? = nil,
         noSpeechFalseInsertRate: Double? = nil,
         p50LatencyMS: Double? = nil,
         p90LatencyMS: Double? = nil,
@@ -703,11 +731,14 @@ public struct PipelineAggregate: Sendable, Codable {
         self.regressed = regressed
         self.unscored = unscored
         self.termRecallAccuracy = termRecallAccuracy
+        self.repairMarkerPreservationRate = repairMarkerPreservationRate
         self.repairResolutionRate = repairResolutionRate
+        self.repairExactMatchRate = repairExactMatchRate
         self.unintendedRewriteRate = unintendedRewriteRate
         self.literalRepairPhrasePreservationRate = literalRepairPhrasePreservationRate
         self.punctuationArtifactRate = punctuationArtifactRate
         self.commandPassthroughAccuracy = commandPassthroughAccuracy
+        self.commandPassthroughCoverageRate = commandPassthroughCoverageRate
         self.noSpeechFalseInsertRate = noSpeechFalseInsertRate
         self.p50LatencyMS = p50LatencyMS
         self.p90LatencyMS = p90LatencyMS
@@ -730,11 +761,14 @@ public struct PipelineAggregate: Sendable, Codable {
         case regressed
         case unscored
         case termRecallAccuracy
+        case repairMarkerPreservationRate
         case repairResolutionRate
+        case repairExactMatchRate
         case unintendedRewriteRate
         case literalRepairPhrasePreservationRate
         case punctuationArtifactRate
         case commandPassthroughAccuracy
+        case commandPassthroughCoverageRate
         case noSpeechFalseInsertRate
         case p50LatencyMS
         case p90LatencyMS
@@ -758,11 +792,14 @@ public struct PipelineAggregate: Sendable, Codable {
         regressed = try container.decode(Int.self, forKey: .regressed)
         unscored = try container.decode(Int.self, forKey: .unscored)
         termRecallAccuracy = try container.decodeIfPresent(Double.self, forKey: .termRecallAccuracy)
+        repairMarkerPreservationRate = try container.decodeIfPresent(Double.self, forKey: .repairMarkerPreservationRate)
         repairResolutionRate = try container.decodeIfPresent(Double.self, forKey: .repairResolutionRate)
+        repairExactMatchRate = try container.decodeIfPresent(Double.self, forKey: .repairExactMatchRate)
         unintendedRewriteRate = try container.decodeIfPresent(Double.self, forKey: .unintendedRewriteRate)
         literalRepairPhrasePreservationRate = try container.decodeIfPresent(Double.self, forKey: .literalRepairPhrasePreservationRate)
         punctuationArtifactRate = try container.decodeIfPresent(Double.self, forKey: .punctuationArtifactRate)
         commandPassthroughAccuracy = try container.decodeIfPresent(Double.self, forKey: .commandPassthroughAccuracy)
+        commandPassthroughCoverageRate = try container.decodeIfPresent(Double.self, forKey: .commandPassthroughCoverageRate)
         noSpeechFalseInsertRate = try container.decodeIfPresent(Double.self, forKey: .noSpeechFalseInsertRate)
         p50LatencyMS = try container.decodeIfPresent(Double.self, forKey: .p50LatencyMS)
         p90LatencyMS = try container.decodeIfPresent(Double.self, forKey: .p90LatencyMS)

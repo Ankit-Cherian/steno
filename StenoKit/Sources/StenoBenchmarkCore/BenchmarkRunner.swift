@@ -397,11 +397,14 @@ public enum BenchmarkRunner {
         )
         var termRelevantSamples = 0
         var termRecoveredSamples = 0
-        var repairRelevantSamples = 0
-        var repairResolvedSamples = 0
+        var repairIntentSamples = 0
+        var repairRecognizableSamples = 0
+        var repairDetectedSamples = 0
+        var repairExactMatchSamples = 0
         var unintendedRewriteSamples = 0
         var literalRelevantSamples = 0
         var literalPreservedSamples = 0
+        var commandIntentSamples = 0
         var commandRelevantSamples = 0
         var commandPassthroughSamples = 0
         var noSpeechRelevantSamples = 0
@@ -488,10 +491,17 @@ public enum BenchmarkRunner {
             }
 
             if hasRepairIntent {
-                repairRelevantSamples += 1
-                let resolvedRepair = normalizedCleaned == normalizedReference
-                if resolvedRepair {
-                    repairResolvedSamples += 1
+                repairIntentSamples += 1
+                let recognizableRepairMarker = containsRecognizableRepairMarker(sample.rawText ?? "")
+                if recognizableRepairMarker {
+                    repairRecognizableSamples += 1
+                }
+                let detectedRepair = sample.edits.contains { $0.kind == .repairResolution }
+                if recognizableRepairMarker && detectedRepair {
+                    repairDetectedSamples += 1
+                }
+                if recognizableRepairMarker && normalizedCleaned == normalizedReference {
+                    repairExactMatchSamples += 1
                 }
             }
 
@@ -513,14 +523,15 @@ public enum BenchmarkRunner {
 
             if let manifestSample,
                manifestSample.intentLabels.contains(.command) {
-                commandRelevantSamples += 1
-                if commandMatchesReference(
-                    sample.coordinatorObservations,
-                    referenceText: manifestSample.referenceText
-                ) {
-                    commandPassthroughSamples += 1
-                } else {
-                    unintendedRewriteSamples += 1
+                commandIntentSamples += 1
+                if isCommandPassthroughEligible(sample.coordinatorObservations) {
+                    commandRelevantSamples += 1
+                    if commandMatchesReference(
+                        sample.coordinatorObservations,
+                        referenceText: manifestSample.referenceText
+                    ) {
+                        commandPassthroughSamples += 1
+                    }
                 }
             }
 
@@ -584,14 +595,23 @@ public enum BenchmarkRunner {
         let termRecallAccuracy = termRelevantSamples > 0
             ? Double(termRecoveredSamples) / Double(termRelevantSamples)
             : nil
-        let repairResolutionRate = repairRelevantSamples > 0
-            ? Double(repairResolvedSamples) / Double(repairRelevantSamples)
+        let repairMarkerPreservationRate = repairIntentSamples > 0
+            ? Double(repairRecognizableSamples) / Double(repairIntentSamples)
+            : nil
+        let repairResolutionRate = repairRecognizableSamples > 0
+            ? Double(repairDetectedSamples) / Double(repairRecognizableSamples)
+            : nil
+        let repairExactMatchRate = repairRecognizableSamples > 0
+            ? Double(repairExactMatchSamples) / Double(repairRecognizableSamples)
             : nil
         let literalRepairPhrasePreservationRate = literalRelevantSamples > 0
             ? Double(literalPreservedSamples) / Double(literalRelevantSamples)
             : nil
         let punctuationArtifactRate = punctuationEligibleSamples > 0
             ? Double(punctuationArtifactSamples) / Double(punctuationEligibleSamples)
+            : nil
+        let commandPassthroughCoverageRate = commandIntentSamples > 0
+            ? Double(commandRelevantSamples) / Double(commandIntentSamples)
             : nil
         let commandPassthroughAccuracy = commandRelevantSamples > 0
             ? Double(commandPassthroughSamples) / Double(commandRelevantSamples)
@@ -603,8 +623,7 @@ public enum BenchmarkRunner {
             ? Double(unintendedRewriteSamples) / Double(max(sampleResults.count - unscored, 1))
             : nil
         let latencyValues = sampleResults
-            .flatMap(\.coordinatorObservations)
-            .compactMap(\.latencyMS)
+            .compactMap { representativeLatencyMS(for: $0.coordinatorObservations) }
             .sorted()
         let p50LatencyMS = latencyValues.isEmpty ? nil : BenchmarkScorer.percentile(latencyValues, percentile: 0.5)
         let p90LatencyMS = latencyValues.isEmpty ? nil : BenchmarkScorer.percentile(latencyValues, percentile: 0.9)
@@ -630,11 +649,14 @@ public enum BenchmarkRunner {
             regressed: regressed,
             unscored: unscored,
             termRecallAccuracy: termRecallAccuracy,
+            repairMarkerPreservationRate: repairMarkerPreservationRate,
             repairResolutionRate: repairResolutionRate,
+            repairExactMatchRate: repairExactMatchRate,
             unintendedRewriteRate: unintendedRewriteRate,
             literalRepairPhrasePreservationRate: literalRepairPhrasePreservationRate,
             punctuationArtifactRate: punctuationArtifactRate,
             commandPassthroughAccuracy: commandPassthroughAccuracy,
+            commandPassthroughCoverageRate: commandPassthroughCoverageRate,
             noSpeechFalseInsertRate: noSpeechFalseInsertRate,
             p50LatencyMS: p50LatencyMS,
             p90LatencyMS: p90LatencyMS,
@@ -673,34 +695,42 @@ public enum BenchmarkRunner {
                     additionalArguments: rawOutput.whisperConfiguration.additionalArguments
                 )
             )
-            let insertionService = InsertionService(
-                transports: [
-                    ClosureInsertionTransport(method: .direct) { _, _ in },
-                    ClipboardInsertionTransport(
-                        clipboard: MemoryClipboardService(),
-                        autoPaste: { _ in .attempted }
-                    ),
-                ]
-            )
-            let historyStore = HistoryStore(
-                storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
-                    .appendingPathComponent("benchmark-history-\(UUID().uuidString).json"),
-                clipboardService: MemoryClipboardService()
-            )
-            let coordinator = SessionCoordinator(
-                captureService: captureService,
-                transcriptionEngine: engine,
-                cleanupEngine: RuleBasedCleanupEngine(),
-                insertionService: insertionService,
-                historyStore: historyStore,
-                lexiconService: PersonalLexiconService(entries: configuration.lexicon.entries),
-                styleProfileService: StyleProfileService(globalProfile: configuration.profile)
-            )
 
             var observations: [PipelineCoordinatorObservation] = []
             observations.reserveCapacity(configuration.latencyIterations)
 
             for iteration in 1...configuration.latencyIterations {
+                let timingRecorder = CoordinatorTimingRecorder()
+                let insertionService = TimedInsertionService(
+                    base: InsertionService(
+                        transports: [
+                            ClosureInsertionTransport(method: .direct) { _, _ in },
+                            ClipboardInsertionTransport(
+                                clipboard: MemoryClipboardService(),
+                                autoPaste: { _ in .attempted }
+                            ),
+                        ]
+                    ),
+                    recorder: timingRecorder
+                )
+                let historyStore = TimedHistoryStore(
+                    base: HistoryStore(
+                        storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
+                            .appendingPathComponent("benchmark-history-\(UUID().uuidString).json"),
+                        clipboardService: MemoryClipboardService()
+                    ),
+                    recorder: timingRecorder
+                )
+                let coordinator = SessionCoordinator(
+                    captureService: captureService,
+                    transcriptionEngine: TimedTranscriptionEngine(base: engine, recorder: timingRecorder),
+                    cleanupEngine: TimedCleanupEngine(base: RuleBasedCleanupEngine(), recorder: timingRecorder),
+                    insertionService: insertionService,
+                    historyStore: historyStore,
+                    lexiconService: PersonalLexiconService(entries: configuration.lexicon.entries),
+                    styleProfileService: StyleProfileService(globalProfile: configuration.profile)
+                )
+
                 do {
                     let sessionID = try await coordinator.startPressToTalk(
                         appContext: sample.appContextPreset?.appContext ?? .unknown
@@ -712,6 +742,7 @@ public enum BenchmarkRunner {
                     )
                     observations.append(
                         PipelineCoordinatorObservation(
+                            timingBreakdownMS: await timingRecorder.snapshot(),
                             iteration: iteration,
                             latencyMS: elapsedMilliseconds(since: started),
                             status: .success,
@@ -722,6 +753,7 @@ public enum BenchmarkRunner {
                 } catch {
                     observations.append(
                         PipelineCoordinatorObservation(
+                            timingBreakdownMS: await timingRecorder.snapshot(),
                             iteration: iteration,
                             latencyMS: nil,
                             status: .failed,
@@ -792,6 +824,43 @@ public enum BenchmarkRunner {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
     }
+
+    private static func isCommandPassthroughEligible(
+        _ observations: [PipelineCoordinatorObservation]
+    ) -> Bool {
+        let successfulResults = observations.compactMap(\.insertResult)
+        guard successfulResults.isEmpty == false else { return false }
+        return successfulResults.allSatisfy {
+            $0.cleanupOutcome?.source == .localOnly
+        }
+    }
+
+    private static func containsRecognizableRepairMarker(_ text: String) -> Bool {
+        let markers = [
+            "scratch that",
+            "delete that",
+            "erase that",
+            "never mind",
+            "i mean",
+            "actually",
+            "no,"
+        ]
+
+        return markers.contains { marker in
+            text.range(of: marker, options: [.caseInsensitive]) != nil
+        }
+    }
+
+    private static func representativeLatencyMS(
+        for observations: [PipelineCoordinatorObservation]
+    ) -> Int? {
+        let latencies = observations.compactMap(\.latencyMS).sorted()
+        guard latencies.isEmpty == false else { return nil }
+        guard let representative = BenchmarkScorer.percentile(latencies, percentile: 0.5) else {
+            return nil
+        }
+        return Int(representative)
+    }
 }
 
 private actor BenchmarkAudioCaptureService: AudioCaptureService {
@@ -817,5 +886,120 @@ private actor BenchmarkAudioCaptureService: AudioCaptureService {
 
     func cancelCapture(sessionID: SessionID) async {
         _ = sessionID
+    }
+}
+
+private actor CoordinatorTimingRecorder {
+    private var breakdown = PipelineCoordinatorTimingBreakdown()
+
+    func recordTranscription(_ durationMS: Int) {
+        breakdown.transcriptionMS = durationMS
+    }
+
+    func recordCleanup(_ durationMS: Int) {
+        breakdown.cleanupMS = durationMS
+    }
+
+    func recordInsertion(_ durationMS: Int) {
+        breakdown.insertionMS = durationMS
+    }
+
+    func recordHistory(_ durationMS: Int) {
+        breakdown.historyMS = durationMS
+    }
+
+    func snapshot() -> PipelineCoordinatorTimingBreakdown {
+        breakdown
+    }
+}
+
+private struct TimedTranscriptionEngine: TranscriptionEngine {
+    let base: any TranscriptionEngine
+    let recorder: CoordinatorTimingRecorder
+
+    func transcribe(audioURL: URL, request: TranscriptionRequest) async throws -> RawTranscript {
+        let started = Date()
+        do {
+            let transcript = try await base.transcribe(audioURL: audioURL, request: request)
+            await recorder.recordTranscription(Int(Date().timeIntervalSince(started) * 1000))
+            return transcript
+        } catch {
+            await recorder.recordTranscription(Int(Date().timeIntervalSince(started) * 1000))
+            throw error
+        }
+    }
+}
+
+private struct TimedCleanupEngine: CleanupEngine {
+    let base: any CleanupEngine
+    let recorder: CoordinatorTimingRecorder
+
+    func cleanup(
+        raw: RawTranscript,
+        profile: StyleProfile,
+        lexicon: PersonalLexicon
+    ) async throws -> CleanTranscript {
+        let started = Date()
+        do {
+            let transcript = try await base.cleanup(raw: raw, profile: profile, lexicon: lexicon)
+            await recorder.recordCleanup(Int(Date().timeIntervalSince(started) * 1000))
+            return transcript
+        } catch {
+            await recorder.recordCleanup(Int(Date().timeIntervalSince(started) * 1000))
+            throw error
+        }
+    }
+}
+
+private struct TimedInsertionService: InsertionServiceProtocol {
+    let base: any InsertionServiceProtocol
+    let recorder: CoordinatorTimingRecorder
+
+    func insert(text: String, target: AppContext) async -> InsertResult {
+        let started = Date()
+        let result = await base.insert(text: text, target: target)
+        await recorder.recordInsertion(Int(Date().timeIntervalSince(started) * 1000))
+        return result
+    }
+}
+
+private struct TimedHistoryStore: HistoryStoreProtocol {
+    let base: any HistoryStoreProtocol
+    let recorder: CoordinatorTimingRecorder
+
+    func append(entry: TranscriptEntry) async throws {
+        let started = Date()
+        do {
+            try await base.append(entry: entry)
+            await recorder.recordHistory(Int(Date().timeIntervalSince(started) * 1000))
+        } catch {
+            await recorder.recordHistory(Int(Date().timeIntervalSince(started) * 1000))
+            throw error
+        }
+    }
+
+    func delete(entryID: UUID) async throws {
+        try await base.delete(entryID: entryID)
+    }
+
+    func recent(limit: Int) async -> [TranscriptEntry] {
+        await base.recent(limit: limit)
+    }
+
+    func search(query: String) async -> [TranscriptEntry] {
+        await base.search(query: query)
+    }
+
+    func retry(
+        entryID: UUID,
+        using cleanupEngine: CleanupEngine,
+        profile: StyleProfile,
+        lexicon: PersonalLexicon
+    ) async throws -> CleanTranscript {
+        try await base.retry(entryID: entryID, using: cleanupEngine, profile: profile, lexicon: lexicon)
+    }
+
+    func pasteLast() async throws -> TranscriptEntry? {
+        try await base.pasteLast()
     }
 }
