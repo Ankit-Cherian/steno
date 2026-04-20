@@ -86,7 +86,7 @@ public actor HistoryStore: HistoryStoreProtocol {
             throw HistoryStoreError.missingEntry
         }
 
-        let raw = RawTranscript(text: entry.rawText, durationMS: 0)
+        let raw = RawTranscript(text: entry.rawText, durationMS: entry.durationMS)
         let retried = try await cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
 
         if let index = entries.firstIndex(where: { $0.id == entryID }) {

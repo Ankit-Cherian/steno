@@ -99,6 +99,7 @@ public actor SessionCoordinator {
             appBundleID: active.appContext.bundleIdentifier,
             rawText: rawTranscript.text,
             cleanText: cleanupResult.transcript.text,
+            durationMS: rawTranscript.durationMS,
             // Audio artifacts are ephemeral; do not persist paths that are deleted on return.
             audioURL: nil,
             insertionStatus: insertResult.status

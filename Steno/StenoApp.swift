@@ -10,7 +10,7 @@ struct StenoApp: App {
         WindowGroup("Steno") {
             Group {
                 if !controller.hasBootstrapped {
-                    StenoDesign.background
+                    StenoStageBackground(theme: StenoDesign.theme(for: controller.preferences))
                 } else if controller.preferences.general.showOnboarding {
                     OnboardingView()
                         .environmentObject(controller)
@@ -19,6 +19,8 @@ struct StenoApp: App {
                         .environmentObject(controller)
                 }
             }
+            .background(WindowConfigurator().frame(width: 0, height: 0))
+            .preferredColorScheme(controller.preferences.appearance.mode.colorScheme)
             .task {
                 await controller.bootstrapIfNeeded()
             }
@@ -31,6 +33,10 @@ struct StenoApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AppFontRegistry.registerIfNeeded()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }

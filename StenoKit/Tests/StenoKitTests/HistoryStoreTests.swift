@@ -15,6 +15,7 @@ func historyStoreRecoveryFlow() async throws {
         appBundleID: "com.apple.Notes",
         rawText: "um first note",
         cleanText: "First note",
+        durationMS: 14_000,
         audioURL: nil,
         insertionStatus: .inserted
     )
@@ -22,6 +23,7 @@ func historyStoreRecoveryFlow() async throws {
         appBundleID: "com.todesktop.230313mzl4w4u92",
         rawText: "second entry",
         cleanText: "Second entry",
+        durationMS: 28_000,
         audioURL: nil,
         insertionStatus: .copiedOnly
     )
@@ -42,4 +44,5 @@ func historyStoreRecoveryFlow() async throws {
 
     let clipboardValue = await clipboard.latestValue
     #expect(clipboardValue == "Second entry")
+    #expect(recent[0].durationMS == 28_000)
 }

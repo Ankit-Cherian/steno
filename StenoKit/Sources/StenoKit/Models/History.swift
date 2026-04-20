@@ -6,6 +6,7 @@ public struct TranscriptEntry: Sendable, Codable, Equatable, Identifiable {
     public var appBundleID: String
     public var rawText: String
     public var cleanText: String
+    public var durationMS: Int
     public var audioURL: URL?
     public var insertionStatus: InsertionStatus
 
@@ -15,6 +16,7 @@ public struct TranscriptEntry: Sendable, Codable, Equatable, Identifiable {
         appBundleID: String,
         rawText: String,
         cleanText: String,
+        durationMS: Int = 0,
         audioURL: URL?,
         insertionStatus: InsertionStatus
     ) {
@@ -23,6 +25,7 @@ public struct TranscriptEntry: Sendable, Codable, Equatable, Identifiable {
         self.appBundleID = appBundleID
         self.rawText = rawText
         self.cleanText = cleanText
+        self.durationMS = durationMS
         self.audioURL = audioURL
         self.insertionStatus = insertionStatus
     }

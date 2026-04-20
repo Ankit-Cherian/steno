@@ -9,34 +9,49 @@ struct OnboardingView: View {
     @State private var modelPath = ""
 
     var body: some View {
+        let theme = StenoDesign.theme(for: controller.preferences)
+
         VStack(spacing: 0) {
-            // Progress bar
-            progressBar
-                .padding(.horizontal, StenoDesign.lg)
-                .padding(.top, StenoDesign.lg)
-
-            // Step content
-            Group {
-                switch currentStep {
-                case .welcome:
-                    welcomeStep
-                case .permissions:
-                    permissionsStep
-                case .whisperSetup:
-                    whisperSetupStep
-                case .featureTour:
-                    featureTourStep
-                }
+            HStack {
+                Text("Steno")
+                    .font(StenoDesign.heroSerif(size: 21))
+                    .foregroundStyle(theme.text)
+                Spacer()
+                StenoBadge(text: "Onboarding", tone: .accent, theme: theme, compact: true)
             }
-            .id(currentStep)
-            .transition(stepTransition)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, StenoDesign.xl)
+            .padding(.horizontal, 18)
+            .frame(height: StenoDesign.titleBarHeight)
+            .background(theme.titleBarGradient)
 
-            // Navigation bar
-            navigationBar
-                .padding(.horizontal, StenoDesign.lg)
-                .padding(.bottom, StenoDesign.lg)
+            Divider().overlay(theme.line)
+
+            VStack(spacing: 0) {
+                progressBar
+                    .padding(.horizontal, StenoDesign.lg)
+                    .padding(.top, StenoDesign.lg)
+
+                Group {
+                    switch currentStep {
+                    case .welcome:
+                        welcomeStep
+                    case .permissions:
+                        permissionsStep
+                    case .whisperSetup:
+                        whisperSetupStep
+                    case .featureTour:
+                        featureTourStep
+                    }
+                }
+                .id(currentStep)
+                .transition(stepTransition)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, StenoDesign.xl)
+
+                navigationBar
+                    .padding(.horizontal, StenoDesign.lg)
+                    .padding(.bottom, StenoDesign.lg)
+            }
+            .background(theme.shellGradient)
         }
         .frame(
             minWidth: StenoDesign.windowMinWidth,
@@ -44,7 +59,7 @@ struct OnboardingView: View {
             minHeight: StenoDesign.windowMinHeight,
             idealHeight: StenoDesign.windowIdealHeight
         )
-        .background(StenoDesign.background)
+        .background(theme.shellGradient)
         .animation(
             reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85, blendDuration: 0),
             value: currentStep

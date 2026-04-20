@@ -15,24 +15,26 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
     private var wasHidden = true
     private var pendingTextUpdate: String?
     private var barsVisible = true
+    private var accentColor = WaveformOverlayPresenter.defaultAccent
+    private var accentGlowColor = WaveformOverlayPresenter.defaultAccentGlow
 
     // MARK: - Constants
 
-    private static let panelWidth: CGFloat = 270
-    private static let panelHeight: CGFloat = 48
-    private static let cornerRadius: CGFloat = 24
+    private static let panelWidth: CGFloat = 292
+    private static let panelHeight: CGFloat = 52
+    private static let cornerRadius: CGFloat = 26
     private static let barCount = 5
     private static let barWidth: CGFloat = 3.5
     private static let barSpacing: CGFloat = 3
     private static let barCornerRadius: CGFloat = 1.75
-    private static let barClusterX: CGFloat = 20
+    private static let barClusterX: CGFloat = 22
     private static let iconSize: CGFloat = 16
 
-    private static let accent = NSColor(red: 0.118, green: 0.565, blue: 1.0, alpha: 1.0)
-    private static let accentLight = NSColor(red: 0.235, green: 0.65, blue: 1.0, alpha: 1.0)
-    private static let successColor = NSColor(red: 0.20, green: 0.78, blue: 0.35, alpha: 1.0)
-    private static let warningColor = NSColor(red: 1.0, green: 0.58, blue: 0.0, alpha: 1.0)
-    private static let errorColor = NSColor(red: 1.0, green: 0.23, blue: 0.19, alpha: 1.0)
+    private static let defaultAccent = NSColor(red: 30.0 / 255.0, green: 144.0 / 255.0, blue: 1.0, alpha: 1.0)
+    private static let defaultAccentGlow = NSColor(red: 30.0 / 255.0, green: 144.0 / 255.0, blue: 1.0, alpha: 0.45)
+    private static let successColor = NSColor(red: 110.0 / 255.0, green: 191.0 / 255.0, blue: 140.0 / 255.0, alpha: 1.0)
+    private static let warningColor = NSColor(red: 224.0 / 255.0, green: 183.0 / 255.0, blue: 113.0 / 255.0, alpha: 1.0)
+    private static let errorColor = NSColor(red: 242.0 / 255.0, green: 113.0 / 255.0, blue: 106.0 / 255.0, alpha: 1.0)
 
     /// Min and max heights for each bar (index 0..4). Center bar tallest.
     private static let barRanges: [(min: CGFloat, max: CGFloat)] = [
@@ -74,6 +76,21 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     @MainActor
+    public func updateAccentColor(_ color: NSColor, glowColor: NSColor? = nil) {
+        accentColor = color.usingColorSpace(.deviceRGB) ?? color
+        accentGlowColor = glowColor?.usingColorSpace(.deviceRGB) ?? accentColor.withAlphaComponent(0.45)
+
+        if barsVisible {
+            setBarColor(accentColor)
+        }
+
+        if timer != nil {
+            stopBorderGlow()
+            startBorderGlow()
+        }
+    }
+
+    @MainActor
     public func show(state: OverlayState) {
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(finishHide), object: nil)
         ensureWindow()
@@ -88,7 +105,7 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
             updateListeningText()
             startTimer()
             showBars()
-            setBarColor(Self.accent)
+            setBarColor(accentColor)
             startBarAnimations()
             startBorderGlow()
 
@@ -176,15 +193,15 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         content.wantsLayer = true
         content.layer?.cornerRadius = Self.cornerRadius
         content.layer?.masksToBounds = false
-        content.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.95).cgColor
-        content.layer?.borderWidth = 1
-        content.layer?.borderColor = NSColor.separatorColor.cgColor
+        content.layer?.backgroundColor = panelBackgroundColor.cgColor
+        content.layer?.borderWidth = 0.5
+        content.layer?.borderColor = panelBorderColor.cgColor
 
         // Layered shadow system for natural depth
         // Inner contact shadow
-        content.layer?.shadowColor = NSColor.black.withAlphaComponent(0.06).cgColor
+        content.layer?.shadowColor = NSColor.black.withAlphaComponent(0.10).cgColor
         content.layer?.shadowOffset = CGSize(width: 0, height: -1)
-        content.layer?.shadowRadius = 4
+        content.layer?.shadowRadius = 6
         content.layer?.shadowOpacity = 1
         self.contentBackground = content
 
@@ -193,9 +210,9 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         outerShadow.frame = contentRect
         outerShadow.cornerRadius = Self.cornerRadius
         outerShadow.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.01).cgColor
-        outerShadow.shadowColor = NSColor.black.withAlphaComponent(0.10).cgColor
-        outerShadow.shadowOffset = CGSize(width: 0, height: -4)
-        outerShadow.shadowRadius = 20
+        outerShadow.shadowColor = NSColor.black.withAlphaComponent(0.28).cgColor
+        outerShadow.shadowOffset = CGSize(width: 0, height: -6)
+        outerShadow.shadowRadius = 28
         outerShadow.shadowOpacity = 1
 
         // Insert outer shadow behind content in the panel
@@ -218,7 +235,7 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
             let bar = CAGradientLayer()
             bar.frame = CGRect(x: barX, y: clusterCenterY - midHeight / 2, width: Self.barWidth, height: midHeight)
             bar.cornerRadius = Self.barCornerRadius
-            bar.colors = [Self.accentLight.cgColor, Self.accent.cgColor]
+            bar.colors = [accentHighlightColor.cgColor, accentColor.cgColor]
             bar.startPoint = CGPoint(x: 0.5, y: 0)
             bar.endPoint = CGPoint(x: 0.5, y: 1)
             content.layer?.addSublayer(bar)
@@ -237,8 +254,8 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
 
         // Text label
         let label = NSTextField(labelWithString: "Listening 00:00")
-        label.font = .systemFont(ofSize: 14, weight: .medium)
-        label.textColor = .labelColor
+        label.font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .medium)
+        label.textColor = NSColor(calibratedWhite: 0.92, alpha: 1.0)
         label.alignment = .left
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -438,8 +455,8 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         guard !reduceMotion, let layer = contentBackground?.layer else { return }
 
         let borderAnim = CABasicAnimation(keyPath: "borderColor")
-        borderAnim.fromValue = Self.accent.withAlphaComponent(0.4).cgColor
-        borderAnim.toValue = Self.accent.withAlphaComponent(0.6).cgColor
+        borderAnim.fromValue = accentColor.withAlphaComponent(0.35).cgColor
+        borderAnim.toValue = accentColor.withAlphaComponent(0.55).cgColor
         borderAnim.duration = 1.2
         borderAnim.autoreverses = true
         borderAnim.repeatCount = .infinity
@@ -448,7 +465,7 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
 
         let shadowColorAnim = CABasicAnimation(keyPath: "shadowColor")
         shadowColorAnim.fromValue = NSColor.black.withAlphaComponent(0.06).cgColor
-        shadowColorAnim.toValue = Self.accent.withAlphaComponent(0.12).cgColor
+        shadowColorAnim.toValue = accentGlowColor.cgColor
         shadowColorAnim.duration = 1.2
         shadowColorAnim.autoreverses = true
         shadowColorAnim.repeatCount = .infinity
@@ -465,7 +482,7 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         let duration: CFTimeInterval = reduceMotion ? 0 : 0.25
         CATransaction.begin()
         CATransaction.setAnimationDuration(duration)
-        layer.borderColor = NSColor.separatorColor.cgColor
+        layer.borderColor = panelBorderColor.cgColor
         layer.shadowColor = NSColor.black.withAlphaComponent(0.06).cgColor
         CATransaction.commit()
     }
@@ -477,7 +494,7 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         guard !reduceMotion, let layer = contentBackground?.layer else { return }
 
         let successTint = Self.successColor.withAlphaComponent(0.08)
-        let normalBg = NSColor.windowBackgroundColor.withAlphaComponent(0.95)
+        let normalBg = panelBackgroundColor
 
         let flash = CABasicAnimation(keyPath: "backgroundColor")
         flash.fromValue = successTint.cgColor
@@ -600,6 +617,26 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         NSAnimationContext.current.duration = 0.15
         textField?.animator().alphaValue = 1
         NSAnimationContext.endGrouping()
+    }
+
+    @MainActor
+    private var accentHighlightColor: NSColor {
+        accentColor.blended(withFraction: 0.15, of: .white) ?? accentColor
+    }
+
+    @MainActor
+    private var panelBackgroundColor: NSColor {
+        NSColor(
+            calibratedRed: 11.0 / 255.0,
+            green: 14.0 / 255.0,
+            blue: 20.0 / 255.0,
+            alpha: 0.94
+        )
+    }
+
+    @MainActor
+    private var panelBorderColor: NSColor {
+        NSColor.white.withAlphaComponent(0.12)
     }
 }
 
