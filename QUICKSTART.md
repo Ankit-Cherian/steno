@@ -20,15 +20,27 @@ cd ../..
 
 Expected result: `whisper.cpp`, the `small.en` model, and the `ggml-silero-v6.2.0.bin` VAD model are ready under `vendor/whisper.cpp`.
 
-If you are on a higher-end Apple Silicon Mac and want a stronger local Whisper-family model, you can download `large-v3-turbo` instead of or alongside `small.en`:
+Steno curates these canonical local models: `base.en`, `small.en`, `medium.en`, and `large-v3-turbo`.
+
+Conservative starting points:
+
+| Detected Apple silicon tier | Unified memory | Recommended default |
+|---|---:|---|
+| Base M1 / M2 / M3 | 8GB-16GB | `small.en` |
+| Base M2 / M3 / M4 / M5 | 24GB-32GB | `medium.en` |
+| Pro-tier chips | 16GB-31GB | `medium.en` |
+| Pro / Max chips | 32GB+ | `large-v3-turbo` |
+
+If you want additional canonical models available in Settings -> Engine, download them alongside `small.en`:
 
 ```bash
 cd vendor/whisper.cpp
+./models/download-ggml-model.sh medium.en
 ./models/download-ggml-model.sh large-v3-turbo
 cd ../..
 ```
 
-If both models are present, choose the one you want from Settings -> Engine.
+Settings -> Engine detects your chip class and unified memory, recommends the best curated model for that Mac, and warns if the configured model is outside the compatibility matrix. Quantized and other custom models remain manual advanced paths and are never auto-recommended.
 
 ## 2) Generate the Xcode project
 
@@ -57,6 +69,7 @@ Steno runs transcription and cleanup fully locally with no cloud text cleanup st
 - Press and hold `Option` to start recording immediately, then release to transcribe.
 - Toggle hands-free mode using the configured function key (default `F18`).
 - Confirm text output works in both a text editor and a terminal.
+- Open Settings -> Engine and verify the detected hardware line, recommended model, and current model status.
 
 ## If something fails
 

@@ -1,0 +1,272 @@
+[
+  {
+    "chipClass": "m1",
+    "memoryRangeGB": { "minGB": 8, "maxGB": 16 },
+    "modelID": "small.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1500,
+    "p99BudgetMS": 2200,
+    "notes": "Conservative default for base M1 Macs with 8-16GB unified memory until release signoff data is collected."
+  },
+  {
+    "chipClass": "m1",
+    "memoryRangeGB": { "minGB": 8, "maxGB": 16 },
+    "modelID": "base.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "fallback",
+    "p90BudgetMS": 1200,
+    "p99BudgetMS": 1800,
+    "notes": "Fallback for low-memory base M1 Macs when the fastest local path is preferred."
+  },
+  {
+    "chipClass": "m2",
+    "memoryRangeGB": { "minGB": 8, "maxGB": 16 },
+    "modelID": "small.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1400,
+    "p99BudgetMS": 2100,
+    "notes": "Conservative default for base M2 Macs with 8-16GB unified memory until release signoff data is collected."
+  },
+  {
+    "chipClass": "m2",
+    "memoryRangeGB": { "minGB": 24, "maxGB": 24 },
+    "modelID": "medium.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1300,
+    "p99BudgetMS": 1900,
+    "notes": "Preferred default for 24GB base M2 Macs pending release signoff."
+  },
+  {
+    "chipClass": "m3",
+    "memoryRangeGB": { "minGB": 8, "maxGB": 16 },
+    "modelID": "small.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1300,
+    "p99BudgetMS": 1900,
+    "notes": "Conservative default for base M3 Macs with 8-16GB unified memory until release signoff data is collected."
+  },
+  {
+    "chipClass": "m3",
+    "memoryRangeGB": { "minGB": 24, "maxGB": 24 },
+    "modelID": "medium.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1200,
+    "p99BudgetMS": 1700,
+    "notes": "Preferred default for 24GB base M3 Macs pending release signoff."
+  },
+  {
+    "chipClass": "m4",
+    "memoryRangeGB": { "minGB": 16, "maxGB": 16 },
+    "modelID": "small.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1100,
+    "p99BudgetMS": 1600,
+    "notes": "Conservative default for 16GB base M4 Macs pending release signoff."
+  },
+  {
+    "chipClass": "m4",
+    "memoryRangeGB": { "minGB": 24, "maxGB": 32 },
+    "modelID": "medium.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 950,
+    "p99BudgetMS": 1400,
+    "notes": "Preferred default for 24-32GB base M4 Macs pending release signoff."
+  },
+  {
+    "chipClass": "m5",
+    "memoryRangeGB": { "minGB": 16, "maxGB": 16 },
+    "modelID": "small.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1000,
+    "p99BudgetMS": 1500,
+    "notes": "Conservative default for 16GB base M5 Macs pending release signoff."
+  },
+  {
+    "chipClass": "m5",
+    "memoryRangeGB": { "minGB": 24, "maxGB": 32 },
+    "modelID": "medium.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 900,
+    "p99BudgetMS": 1300,
+    "notes": "Preferred default for 24-32GB base M5 Macs pending release signoff."
+  },
+  {
+    "chipClass": "m1-pro",
+    "memoryRangeGB": { "minGB": 16, "maxGB": 31 },
+    "modelID": "medium.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1000,
+    "p99BudgetMS": 1500,
+    "notes": "Preferred default for M1 Pro Macs below 32GB pending release signoff."
+  },
+  {
+    "chipClass": "m1-pro",
+    "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 900,
+    "p99BudgetMS": 1300,
+    "notes": "Preferred default for 32GB+ M1 Pro Macs pending release signoff."
+  },
+  {
+    "chipClass": "m2-pro",
+    "memoryRangeGB": { "minGB": 16, "maxGB": 31 },
+    "modelID": "medium.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1000,
+    "p99BudgetMS": 1500,
+    "notes": "Preferred default for M2 Pro Macs below 32GB pending release signoff."
+  },
+  {
+    "chipClass": "m2-pro",
+    "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 900,
+    "p99BudgetMS": 1300,
+    "notes": "Preferred default for 32GB+ M2 Pro Macs pending release signoff."
+  },
+  {
+    "chipClass": "m3-pro",
+    "memoryRangeGB": { "minGB": 16, "maxGB": 31 },
+    "modelID": "medium.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 950,
+    "p99BudgetMS": 1400,
+    "notes": "Preferred default for M3 Pro Macs below 32GB pending release signoff."
+  },
+  {
+    "chipClass": "m3-pro",
+    "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 850,
+    "p99BudgetMS": 1250,
+    "notes": "Preferred default for 32GB+ M3 Pro Macs pending release signoff."
+  },
+  {
+    "chipClass": "m4-pro",
+    "memoryRangeGB": { "minGB": 24, "maxGB": 31 },
+    "modelID": "medium.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 900,
+    "p99BudgetMS": 1300,
+    "notes": "Preferred default for 24GB M4 Pro Macs pending release signoff."
+  },
+  {
+    "chipClass": "m4-pro",
+    "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 800,
+    "p99BudgetMS": 1200,
+    "notes": "Preferred default for 32GB+ M4 Pro Macs pending release signoff."
+  },
+  {
+    "chipClass": "m5-pro",
+    "memoryRangeGB": { "minGB": 24, "maxGB": 31 },
+    "modelID": "medium.en",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 850,
+    "p99BudgetMS": 1250,
+    "notes": "Preferred default for 24GB M5 Pro Macs pending release signoff."
+  },
+  {
+    "chipClass": "m5-pro",
+    "memoryRangeGB": { "minGB": 32, "maxGB": 63 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1100,
+    "p99BudgetMS": 1200,
+    "notes": "Preferred default for 32GB-63GB M5 Pro Macs pending release signoff."
+  },
+  {
+    "chipClass": "m5-pro",
+    "memoryRangeGB": { "minGB": 64, "maxGB": 64 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "validated",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1100,
+    "p99BudgetMS": 1200,
+    "notes": "Validated locally on Apple M5 Pro with 64GB unified memory using the release-signoff benchmark suite."
+  },
+  {
+    "chipClass": "m5-pro",
+    "memoryRangeGB": { "minGB": 65, "maxGB": 128 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 1100,
+    "p99BudgetMS": 1200,
+    "notes": "Preferred default for 65GB+ M5 Pro Macs pending release signoff."
+  },
+  {
+    "chipClass": "m1-max",
+    "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 850,
+    "p99BudgetMS": 1250,
+    "notes": "Preferred default for M1 Max Macs pending release signoff."
+  },
+  {
+    "chipClass": "m2-max",
+    "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 850,
+    "p99BudgetMS": 1250,
+    "notes": "Preferred default for M2 Max Macs pending release signoff."
+  },
+  {
+    "chipClass": "m3-max",
+    "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 800,
+    "p99BudgetMS": 1200,
+    "notes": "Preferred default for M3 Max Macs pending release signoff."
+  },
+  {
+    "chipClass": "m4-max",
+    "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 800,
+    "p99BudgetMS": 1200,
+    "notes": "Preferred default for M4 Max Macs pending release signoff."
+  },
+  {
+    "chipClass": "m5-max",
+    "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 750,
+    "p99BudgetMS": 1100,
+    "notes": "Preferred default for M5 Max Macs pending release signoff."
+  }
+]

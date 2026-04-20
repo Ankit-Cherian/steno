@@ -15,7 +15,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Added persistent appearance preferences for light/dark mode, accent selection, hero style, and atmosphere intensity.
 - Refreshed onboarding to match the redesigned shell and visual system.
 - Reworked the overlay recorder into a waveform-based floating panel with animated bars, terminal-state icons, and accent-aware styling.
-- Repo setup guidance now keeps `small.en` as the fastest baseline but explicitly recommends `large-v3-turbo` for higher-end Apple Silicon Macs.
+- Repo setup guidance now uses a compatibility matrix keyed by Apple silicon chip class and unified memory instead of generic “higher-end Apple Silicon” wording.
+- Whisper transcription now prefers rich JSON output, preserves segment timing/confidence metadata, and uses dynamic prompt steering built from language hints, app context, and hot terms.
+- Local cleanup now handles repair phrases like `scratch that` through candidate generation and ranking, improves acronym/proper-noun recovery for hot terms, and keeps IDE slash-command passthrough safe.
+- Benchmark reporting and validation now distinguish smoke fixtures from release-signoff runs, record hardware profile provenance, and use coordinator stop-to-insert latency for release-tier guardrails.
 
 ### Fixed
 - Disabled broad background dragging on the custom title-bar window so Record / History / Settings tab clicks register reliably.
@@ -23,6 +26,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Transcript timestamps now use a 12-hour clock with `AM/PM` instead of 24-hour time.
 - The Record screen model badge now reflects the configured Whisper model path instead of hardcoding `small.en`.
 - Preference repair now re-detects local `whisper.cpp` runtime paths more reliably across local checkout/worktree layouts.
+
+### Tests
+- Added regression coverage for rich whisper JSON parsing, prompt/suppress argument forwarding, lexicon aliases and hot terms, repair-aware cleanup, phonetic candidate generation, and the new benchmark validation metrics.
+- Added coverage for Apple silicon hardware detection, compatibility-matrix matching, smoke-vs-release benchmark evidence tiers, short repair prefixes, and confidence-aware ranking.
 
 ## [0.1.10] - 2026-03-17
 

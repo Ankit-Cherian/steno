@@ -67,13 +67,25 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
    ./models/download-ggml-model.sh small.en
    cd ../..
    ```
-   `small.en` remains the fastest low-friction baseline. On higher-end Apple Silicon Macs, `large-v3-turbo` is the recommended upgrade for better local transcription quality:
+   Steno’s compatibility system only reasons about the canonical local models `base.en`, `small.en`, `medium.en`, and `large-v3-turbo`.
+
+   Conservative starting points:
+
+   | Detected Apple silicon tier | Unified memory | Recommended default |
+   |---|---:|---|
+   | Base M1 / M2 / M3 | 8GB-16GB | `small.en` |
+   | Base M2 / M3 / M4 / M5 | 24GB-32GB | `medium.en` |
+   | Pro-tier chips | 16GB-31GB | `medium.en` |
+   | Pro / Max chips | 32GB+ | `large-v3-turbo` |
+
+   If you want multiple canonical models available in Settings -> Engine, download them alongside `small.en`:
    ```bash
    cd vendor/whisper.cpp
+   ./models/download-ggml-model.sh medium.en
    ./models/download-ggml-model.sh large-v3-turbo
    cd ../..
    ```
-   If you download both, point Steno at the one you want from Settings -> Engine.
+   Settings -> Engine detects your Apple silicon chip class and unified memory, recommends the best curated model for that Mac, and warns if the configured model is outside the compatibility matrix. Quantized and other custom models remain expert-mode paths and are never auto-recommended.
 
 4. **(Strongly recommended)** Download the VAD model for silence/background-noise suppression:
    ```bash
@@ -112,6 +124,7 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
 - Hold `Option` to record and release to transcribe.
 - Use the hands-free toggle key (default `F18`).
 - Confirm insertion works in both a text editor and a terminal.
+- Open Settings -> Engine and confirm the detected hardware line, recommended model, and current model status text.
 
 ## Architecture (Contributor View)
 
