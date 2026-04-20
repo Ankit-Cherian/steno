@@ -16,7 +16,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         )
         let ranker = LocalCleanupRanker()
         let best = ranker.bestCandidate(
-            rawText: raw.text,
+            raw: raw,
             candidates: candidates,
             profile: profile
         )
@@ -31,12 +31,14 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
     func buildCandidate(
         raw: RawTranscript,
+        sourceText: String? = nil,
+        seedEdits: [TranscriptEdit] = [],
         profile: StyleProfile,
         lexicon: PersonalLexicon,
         rulePathID: String
     ) -> CleanupCandidate {
-        var text = raw.text
-        var edits: [TranscriptEdit] = []
+        var text = sourceText ?? raw.text
+        var edits: [TranscriptEdit] = seedEdits
         var removedFillers: [String] = []
 
         let fillerResult = removeFillers(from: text, policy: profile.fillerPolicy)
@@ -113,6 +115,14 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         try! NSRegularExpression(pattern: "\\s+([,.!?])")
     }()
 
+    private static let leadingPunctuationRegex: NSRegularExpression = {
+        try! NSRegularExpression(pattern: #"^[,;:\s]+"#)
+    }()
+
+    private static let duplicateCommaRegex: NSRegularExpression = {
+        try! NSRegularExpression(pattern: #",\s*,+"#)
+    }()
+
     // MARK: - Filler Removal
 
     private func removeFillers(from text: String, policy: FillerPolicy) -> (text: String, removed: [String], edits: [TranscriptEdit]) {
@@ -167,6 +177,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         }
 
         updated = collapseWhitespace(updated)
+        updated = cleanupFillerPunctuation(updated)
         return (updated, removed, edits)
     }
 
@@ -210,15 +221,20 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
         // Lexicon entries are already sorted longest-first by the PersonalLexicon invariant.
         for entry in lexicon.entries {
-            let escaped = NSRegularExpression.escapedPattern(for: entry.term)
-            let pattern = "\\b\(escaped)\\b"
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
-            let range = NSRange(updated.startIndex..., in: updated)
-            let count = regex.numberOfMatches(in: updated, range: range)
-            if count > 0 {
-                let safeReplacement = NSRegularExpression.escapedTemplate(for: entry.preferred)
-                updated = regex.stringByReplacingMatches(in: updated, range: range, withTemplate: safeReplacement)
-                edits.append(TranscriptEdit(kind: .lexiconCorrection, from: entry.term, to: entry.preferred))
+            for variant in lexiconVariants(for: entry) {
+                if variant.caseInsensitiveCompare(entry.preferred) == .orderedSame {
+                    continue
+                }
+                let escaped = NSRegularExpression.escapedPattern(for: variant)
+                let pattern = "\\b\(escaped)\\b"
+                guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+                let range = NSRange(updated.startIndex..., in: updated)
+                let count = regex.numberOfMatches(in: updated, range: range)
+                if count > 0 {
+                    let safeReplacement = NSRegularExpression.escapedTemplate(for: entry.preferred)
+                    updated = regex.stringByReplacingMatches(in: updated, range: range, withTemplate: safeReplacement)
+                    edits.append(TranscriptEdit(kind: .lexiconCorrection, from: variant, to: entry.preferred))
+                }
             }
         }
 
@@ -273,5 +289,46 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             withTemplate: "$1"
         )
         return tightened.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func cleanupFillerPunctuation(_ text: String) -> String {
+        let fullRange = NSRange(text.startIndex..., in: text)
+        let withoutLeading = Self.leadingPunctuationRegex.stringByReplacingMatches(
+            in: text,
+            range: fullRange,
+            withTemplate: ""
+        )
+        let duplicateRange = NSRange(withoutLeading.startIndex..., in: withoutLeading)
+        let withoutDuplicateCommas = Self.duplicateCommaRegex.stringByReplacingMatches(
+            in: withoutLeading,
+            range: duplicateRange,
+            withTemplate: ", "
+        )
+
+        return withoutDuplicateCommas
+            .replacingOccurrences(of: #",\s+(this|that|it|we|you|they|he|she|i)\b"#, with: " $1", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func lexiconVariants(for entry: LexiconEntry) -> [String] {
+        var variants = [entry.term]
+        variants.append(contentsOf: entry.aliases)
+
+        for source in [entry.term, entry.preferred] {
+            let spaced = source
+                .replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression)
+                .replacingOccurrences(of: #"[-_/]+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if spaced.caseInsensitiveCompare(source) != .orderedSame {
+                variants.append(spaced)
+            }
+        }
+
+        var seen: Set<String> = []
+        return variants
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .sorted { $0.count > $1.count }
+            .filter { seen.insert($0.lowercased()).inserted }
     }
 }
