@@ -21,6 +21,8 @@ targets:
         CODE_SIGN_IDENTITY: Apple Development
         CODE_SIGN_ENTITLEMENTS: Steno/Steno.entitlements
         SWIFT_VERSION: 6.0
+        MARKETING_VERSION: 0.2.0
+        CURRENT_PROJECT_VERSION: 1
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Steno needs microphone access for dictation.
       configs:

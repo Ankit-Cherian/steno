@@ -112,6 +112,17 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 return
             }
 
+            if let bundledRuntime = BundledWhisperRuntime.resolvedPaths(bundle: .main, fileManager: fileManager) {
+                whisperCLIPath = bundledRuntime.whisperCLIPath
+                modelPath = bundledRuntime.modelPath
+                if let bundledVAD = bundledRuntime.vadModelPath {
+                    vadModelPath = bundledVAD
+                } else {
+                    vadModelPath = WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: modelPath)
+                }
+                return
+            }
+
             guard let vendorRoot = Self.detectedVendorRoot() else {
                 return
             }
@@ -207,9 +218,13 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var snippets: [Snippet]
 
     static var `default`: AppPreferences {
+        let bundledRuntime = BundledWhisperRuntime.resolvedPaths()
         let vendorRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("vendor/whisper.cpp", isDirectory: true)
             .path
+        let defaultCLIPath = bundledRuntime?.whisperCLIPath ?? "\(vendorRoot)/build/bin/whisper-cli"
+        let defaultModelPath = bundledRuntime?.modelPath ?? "\(vendorRoot)/models/ggml-small.en.bin"
+        let defaultVADPath = bundledRuntime?.vadModelPath
 
         return AppPreferences(
             appearance: .init(),
@@ -223,9 +238,11 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 handsFreeGlobalKeyCode: 79
             ),
             dictation: .init(
-                whisperCLIPath: "\(vendorRoot)/build/bin/whisper-cli",
-                modelPath: "\(vendorRoot)/models/ggml-small.en.bin",
-                threadCount: 6
+                whisperCLIPath: defaultCLIPath,
+                modelPath: defaultModelPath,
+                threadCount: 6,
+                vadEnabled: true,
+                vadModelPath: defaultVADPath
             ),
             insertion: .init(orderedMethods: [.direct, .accessibility, .clipboardPaste]),
             media: .init(pauseDuringHandsFree: true, pauseDuringPressToTalk: true),

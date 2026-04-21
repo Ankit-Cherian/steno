@@ -1,0 +1,49 @@
+import Foundation
+
+enum BundledWhisperRuntime {
+    struct ResolvedPaths: Sendable, Equatable {
+        let vendorRoot: URL
+        let whisperCLIPath: String
+        let modelPath: String
+        let vadModelPath: String?
+    }
+
+    private static let bundledVendorRelativePath = "Runtime/whisper.cpp"
+    private static let canonicalModelFilenames = [
+        "ggml-large-v3-turbo.bin",
+        "ggml-medium.en.bin",
+        "ggml-small.en.bin",
+        "ggml-base.en.bin"
+    ]
+
+    static func resolvedPaths(
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) -> ResolvedPaths? {
+        guard let resourceURL = bundle.resourceURL else {
+            return nil
+        }
+
+        let vendorRoot = resourceURL.appendingPathComponent(bundledVendorRelativePath, isDirectory: true)
+        let whisperCLI = vendorRoot.appendingPathComponent("build/bin/whisper-cli").path
+        guard fileManager.fileExists(atPath: whisperCLI) else {
+            return nil
+        }
+
+        let modelsDir = vendorRoot.appendingPathComponent("models", isDirectory: true)
+        guard let modelPath = canonicalModelFilenames
+            .map({ modelsDir.appendingPathComponent($0).path })
+            .first(where: fileManager.fileExists(atPath:))
+        else {
+            return nil
+        }
+
+        let vadPath = modelsDir.appendingPathComponent("ggml-silero-v6.2.0.bin").path
+        return ResolvedPaths(
+            vendorRoot: vendorRoot,
+            whisperCLIPath: whisperCLI,
+            modelPath: modelPath,
+            vadModelPath: fileManager.fileExists(atPath: vadPath) ? vadPath : nil
+        )
+    }
+}

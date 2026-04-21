@@ -7,6 +7,7 @@ struct OnboardingView: View {
     @State private var currentStep: OnboardingStep = .welcome
     @State private var whisperCLIPath = ""
     @State private var modelPath = ""
+    private let bundledRuntime = BundledWhisperRuntime.resolvedPaths()
 
     var body: some View {
         let theme = StenoDesign.theme(for: controller.preferences)
@@ -219,7 +220,7 @@ struct OnboardingView: View {
                     .foregroundStyle(StenoDesign.textPrimary)
                     .accessibilityAddTraits(.isHeader)
 
-                Text("Confirm the paths to your local whisper-cli binary and model file. For better silence and background-noise suppression, download the optional VAD model (see Settings \u{2192} Engine after setup).")
+                Text(whisperSetupDescription)
                     .font(StenoDesign.subheadline())
                     .foregroundStyle(StenoDesign.textSecondary)
             }
@@ -245,6 +246,16 @@ struct OnboardingView: View {
             }
             .cardStyle()
 
+            if bundledRuntime != nil {
+                HStack(spacing: StenoDesign.xs) {
+                    Image(systemName: "shippingbox.fill")
+                        .font(StenoDesign.caption())
+                    Text("This build already includes a bundled local runtime. You can still change these paths later in Settings \u{2192} Engine.")
+                        .font(StenoDesign.caption())
+                }
+                .foregroundStyle(StenoDesign.textSecondary)
+            }
+
             Spacer()
         }
     }
@@ -266,6 +277,14 @@ struct OnboardingView: View {
                 .font(StenoDesign.caption())
                 .foregroundStyle(valid ? StenoDesign.success : StenoDesign.error)
         }
+    }
+
+    private var whisperSetupDescription: String {
+        if bundledRuntime != nil {
+            return "This build already includes a bundled whisper runtime and default model. Confirm the detected paths below, then continue."
+        }
+
+        return "Confirm the paths to your local whisper-cli binary and model file. For better silence and background-noise suppression, download the optional VAD model (see Settings \u{2192} Engine after setup)."
     }
 
     // MARK: - Step 4: Feature Tour
