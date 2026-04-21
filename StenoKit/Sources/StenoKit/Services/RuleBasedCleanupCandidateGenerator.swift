@@ -1,5 +1,125 @@
 import Foundation
 
+enum RepairMarkerMatcher {
+    struct Match {
+        var marker: String
+        var range: Range<String.Index>
+    }
+
+    private static let markerRegexes: [(marker: String, regex: NSRegularExpression)] = {
+        let specs: [(String, String)] = [
+            ("scratch that", #"\bscratch\s+that\b"#),
+            ("delete that", #"\bdelete\s+that\b"#),
+            ("erase that", #"\berase\s+that\b"#),
+            ("never mind", #"\bnever\s+mind\b"#),
+            ("i mean", #"\bi\s+mean\b"#),
+            ("actually", #"\bactually\b"#),
+            ("no", #"^\s*no\b"#),
+        ]
+
+        return specs.map { marker, pattern in
+            (
+                marker: marker,
+                regex: try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+            )
+        }
+    }()
+
+    private static let blockedNoLeadTokens: Set<String> = [
+        "i",
+        "you",
+        "we",
+        "he",
+        "she",
+        "they",
+        "it",
+        "this",
+        "that",
+        "these",
+        "those",
+        "there",
+        "here",
+        "thanks",
+        "thank",
+        "maybe",
+        "sorry",
+    ]
+
+    private static let declarativeSecondTokens: Set<String> = [
+        "am",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "being",
+        "been",
+        "do",
+        "does",
+        "did",
+        "have",
+        "has",
+        "had",
+        "can",
+        "could",
+        "should",
+        "would",
+        "will",
+        "may",
+        "might",
+        "must",
+    ]
+
+    static func firstMatch(in text: String) -> Match? {
+        let fullRange = NSRange(text.startIndex..., in: text)
+
+        for spec in Self.markerRegexes {
+            guard let nsMatch = spec.regex.firstMatch(in: text, range: fullRange),
+                  let range = Range(nsMatch.range, in: text)
+            else {
+                continue
+            }
+
+            let prefix = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let suffix = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if spec.marker == "no", shouldInterpretLeadingNoAsRepair(prefix: prefix, suffix: suffix) == false {
+                continue
+            }
+
+            return Match(marker: spec.marker, range: range)
+        }
+
+        return nil
+    }
+
+    static func containsRepairMarker(in text: String) -> Bool {
+        firstMatch(in: text) != nil
+    }
+
+    private static func shouldInterpretLeadingNoAsRepair(prefix: String, suffix: String) -> Bool {
+        guard prefix.isEmpty else { return false }
+
+        let tokens = normalizedWords(in: suffix)
+        guard let firstToken = tokens.first else { return false }
+        guard !blockedNoLeadTokens.contains(firstToken) else { return false }
+
+        if tokens.count > 1, declarativeSecondTokens.contains(tokens[1]) {
+            return false
+        }
+
+        return true
+    }
+
+    private static func normalizedWords(in text: String) -> [String] {
+        text
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9'\s]+"#, with: " ", options: .regularExpression)
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+    }
+}
+
 public struct RuleBasedCleanupCandidateGenerator: Sendable {
     private struct SeedVariant: Sendable {
         var text: String
@@ -115,56 +235,43 @@ public struct RuleBasedCleanupCandidateGenerator: Sendable {
     }
 
     private func repairVariants(from text: String) -> [SeedVariant] {
-        let markers = [
-            "scratch that",
-            "delete that",
-            "erase that",
-            "never mind",
-            "i mean",
-            "actually",
-            "no,"
-        ]
+        guard let match = RepairMarkerMatcher.firstMatch(in: text) else { return [] }
 
-        for marker in markers {
-            guard let range = text.range(of: marker, options: [.caseInsensitive]) else { continue }
-            let prefix = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let suffix = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !suffix.isEmpty else { continue }
-            guard !looksLikeLiteralInstruction(prefix: prefix, suffix: suffix) else { continue }
+        let prefix = String(text[..<match.range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = String(text[match.range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !suffix.isEmpty else { return [] }
+        guard !looksLikeLiteralInstruction(prefix: prefix, suffix: suffix) else { return [] }
 
-            let prefixTokens = tokenSpans(in: prefix)
-            var candidates: [SeedVariant] = []
+        let prefixTokens = tokenSpans(in: prefix)
+        var candidates: [SeedVariant] = []
 
-            if prefixTokens.isEmpty {
+        if prefixTokens.isEmpty {
+            candidates.append(
+                SeedVariant(
+                    text: normalizedRepairJoin(prefix: "", suffix: suffix),
+                    edits: [.init(kind: .repairResolution, from: match.marker, to: suffix)],
+                    rulePathID: "repair-\(sanitize(match.marker))-drop-prefix"
+                )
+            )
+        } else {
+            let maxReplacement = min(4, prefixTokens.count)
+            for replacementCount in 1...maxReplacement {
+                let replaceStart = prefixTokens[prefixTokens.count - replacementCount].range.lowerBound
+                let rebuilt = normalizedRepairJoin(
+                    prefix: String(prefix[..<replaceStart]),
+                    suffix: suffix
+                )
                 candidates.append(
                     SeedVariant(
-                        text: normalizedRepairJoin(prefix: "", suffix: suffix),
-                        edits: [.init(kind: .repairResolution, from: marker, to: suffix)],
-                        rulePathID: "repair-\(sanitize(marker))-drop-prefix"
+                        text: rebuilt,
+                        edits: [.init(kind: .repairResolution, from: match.marker, to: suffix)],
+                        rulePathID: "repair-\(sanitize(match.marker))-\(replacementCount)"
                     )
                 )
-            } else {
-                let maxReplacement = min(4, prefixTokens.count)
-                for replacementCount in 1...maxReplacement {
-                    let replaceStart = prefixTokens[prefixTokens.count - replacementCount].range.lowerBound
-                    let rebuilt = normalizedRepairJoin(
-                        prefix: String(prefix[..<replaceStart]),
-                        suffix: suffix
-                    )
-                    candidates.append(
-                        SeedVariant(
-                            text: rebuilt,
-                            edits: [.init(kind: .repairResolution, from: marker, to: suffix)],
-                            rulePathID: "repair-\(sanitize(marker))-\(replacementCount)"
-                        )
-                    )
-                }
             }
-
-            return candidates
         }
 
-        return []
+        return candidates
     }
 
     private func looksLikeLiteralInstruction(prefix: String, suffix: String) -> Bool {
@@ -249,12 +356,12 @@ public struct RuleBasedCleanupCandidateGenerator: Sendable {
 
     private func normalizedRepairJoin(prefix: String, suffix: String) -> String {
         let trimmedPrefix = prefix.replacingOccurrences(
-            of: #"[,\-:;]\s*$"#,
+            of: #"[,.!?\-:;]\s*$"#,
             with: "",
             options: .regularExpression
         )
         let trimmedSuffix = suffix.replacingOccurrences(
-            of: #"^[,\-:;]\s*"#,
+            of: #"^[\s,.!?\-:;]+"#,
             with: "",
             options: .regularExpression
         )
