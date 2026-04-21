@@ -16,6 +16,10 @@ struct ContentView: View {
     @State private var selectedSettingsSection: SettingsSection = .appearance
     @State private var keyMonitor: Any?
 
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.0"
+    }
+
     var body: some View {
         let theme = StenoDesign.theme(for: controller.preferences)
 
@@ -67,7 +71,7 @@ struct ContentView: View {
                     .font(StenoDesign.heroSerif(size: 21))
                     .foregroundStyle(theme.text)
                     .lineLimit(1)
-                Text("v0.1.10")
+                Text("v\(appVersion)")
                     .font(StenoDesign.mono(size: 9.5, weight: .medium))
                     .tracking(0.8)
                     .foregroundStyle(theme.textMuted.opacity(0.88))
