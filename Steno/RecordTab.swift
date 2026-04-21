@@ -112,32 +112,26 @@ struct RecordTab: View {
                     .frame(maxHeight: .infinity, alignment: .top)
                 }
 
-                ZStack(alignment: .topTrailing) {
-                    if controller.preferences.appearance.recordHeroStyle == .ring {
-                        RingHeroView(
-                            state: heroState,
-                            theme: theme,
-                            phase: phase,
-                            reduceMotion: reduceMotion,
-                            onToggle: toggleRecord
-                        )
-                    } else {
-                        PillHeroView(
-                            state: heroState,
-                            theme: theme,
-                            phase: phase,
-                            reduceMotion: reduceMotion,
-                            onToggle: toggleRecord
-                        )
-                    }
-
-                    if showsCancelControl {
-                        RecordingCancelButton(theme: theme) {
-                            controller.cancelActiveRecording()
-                        }
-                        .padding(.top, controller.preferences.appearance.recordHeroStyle == .ring ? 22 : 10)
-                        .padding(.trailing, controller.preferences.appearance.recordHeroStyle == .ring ? 44 : 34)
-                    }
+                if controller.preferences.appearance.recordHeroStyle == .ring {
+                    RingHeroView(
+                        state: heroState,
+                        theme: theme,
+                        phase: phase,
+                        reduceMotion: reduceMotion,
+                        showsCancelControl: showsCancelControl,
+                        onToggle: toggleRecord,
+                        onCancel: controller.cancelActiveRecording
+                    )
+                } else {
+                    PillHeroView(
+                        state: heroState,
+                        theme: theme,
+                        phase: phase,
+                        reduceMotion: reduceMotion,
+                        showsCancelControl: showsCancelControl,
+                        onToggle: toggleRecord,
+                        onCancel: controller.cancelActiveRecording
+                    )
                 }
             }
             .padding(.top, 26)
@@ -379,14 +373,15 @@ struct RecordTab: View {
 
 private struct RecordingCancelButton: View {
     let theme: StenoTheme
+    var size: CGFloat = 30
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "xmark")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: size * 0.34, weight: .semibold))
                 .foregroundStyle(theme.textDim)
-                .frame(width: 30, height: 30)
+                .frame(width: size, height: size)
                 .background(Color.white.opacity(theme.isLight ? 0.84 : 0.08))
                 .overlay(
                     Circle()
@@ -452,7 +447,9 @@ private struct PillHeroView: View {
     let theme: StenoTheme
     let phase: TimeInterval
     let reduceMotion: Bool
+    let showsCancelControl: Bool
     let onToggle: () -> Void
+    let onCancel: () -> Void
 
     var body: some View {
         HStack(spacing: 28) {
@@ -514,24 +511,26 @@ private struct PillHeroView: View {
             }
             .buttonStyle(PressableButtonStyle())
 
-            TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: !shouldAnimate)) { context in
-                let samples = waveformSamples(at: context.date.timeIntervalSinceReferenceDate)
-                Canvas { graphicsContext, size in
-                    let barWidth: CGFloat = 2
-                    let gap: CGFloat = 3
-                    let totalWidth = CGFloat(samples.count) * barWidth + CGFloat(samples.count - 1) * gap
-                    let startX = (size.width - totalWidth) / 2
+            HStack(spacing: 14) {
+                TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: !shouldAnimate)) { context in
+                    let samples = waveformSamples(at: context.date.timeIntervalSinceReferenceDate)
+                    Canvas { graphicsContext, size in
+                        let barWidth: CGFloat = 2
+                        let gap: CGFloat = 3
+                        let totalWidth = CGFloat(samples.count) * barWidth + CGFloat(samples.count - 1) * gap
+                        let startX = (size.width - totalWidth) / 2
 
-                    for (index, value) in samples.enumerated() {
-                        let barHeight = CGFloat(max(3, value * 64))
-                        let rect = CGRect(
-                            x: startX + CGFloat(index) * (barWidth + gap),
-                            y: (size.height - barHeight) / 2,
-                            width: barWidth,
-                            height: barHeight
-                        )
-                        let color = state == .recording ? theme.accent.opacity(0.42 + (0.58 * value)) : theme.textDim.opacity(0.34)
-                        graphicsContext.fill(RoundedRectangle(cornerRadius: 1.2).path(in: rect), with: .color(color))
+                        for (index, value) in samples.enumerated() {
+                            let barHeight = CGFloat(max(3, value * 64))
+                            let rect = CGRect(
+                                x: startX + CGFloat(index) * (barWidth + gap),
+                                y: (size.height - barHeight) / 2,
+                                width: barWidth,
+                                height: barHeight
+                            )
+                            let color = state == .recording ? theme.accent.opacity(0.42 + (0.58 * value)) : theme.textDim.opacity(0.34)
+                            graphicsContext.fill(RoundedRectangle(cornerRadius: 1.2).path(in: rect), with: .color(color))
+                        }
                     }
                 }
                 .frame(width: 280, height: 96)
@@ -550,6 +549,16 @@ private struct PillHeroView: View {
                         .stroke(theme.lineStrong, lineWidth: StenoDesign.borderThin)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                if showsCancelControl {
+                    VStack {
+                        RecordingCancelButton(theme: theme, size: 28) {
+                            onCancel()
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: 40, height: 96)
+                }
             }
         }
     }
@@ -596,14 +605,30 @@ private struct RingHeroView: View {
     let theme: StenoTheme
     let phase: TimeInterval
     let reduceMotion: Bool
+    let showsCancelControl: Bool
     let onToggle: () -> Void
+    let onCancel: () -> Void
 
     var body: some View {
         ZStack {
-            ambientGlow
-            dialCanvas
-            centerButton
+            ZStack {
+                ambientGlow
+                dialCanvas
+                centerButton
+            }
+
+            if showsCancelControl {
+                RecordingCancelButton(theme: theme, size: 28) {
+                    onCancel()
+                }
+                .offset(x: ringCancelOffset.width, y: ringCancelOffset.height)
+            }
         }
+        .frame(width: 380, height: 380)
+    }
+
+    private var ringCancelOffset: CGSize {
+        CGSize(width: 208, height: -86)
     }
 
     private var ambientGlow: some View {

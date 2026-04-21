@@ -5,11 +5,11 @@ import QuartzCore
 @MainActor
 public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
     private var window: NSWindow?
-    private var cancelWindow: NSWindow?
     private var contentBackground: NSView?
     private var barLayers: [CALayer] = []
     private var iconLayer: CALayer?
     private var textField: NSTextField?
+    private var cancelButton: OverlayCancelButton?
     private var cancelAction: (() -> Void)?
     private var cancelButtonVisible = false
     private var timer: Timer?
@@ -116,11 +116,7 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
             setBarColor(accentColor)
             startBarAnimations()
             startBorderGlow()
-            if handsFree {
-                showCancelControl()
-            } else {
-                hideCancelControl()
-            }
+            showCancelControl()
 
         case .transcribing:
             stopTimer()
@@ -205,7 +201,7 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         panel.backgroundColor = .clear
         panel.level = .statusBar
         panel.hasShadow = false
-        panel.ignoresMouseEvents = true
+        panel.ignoresMouseEvents = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
         let content = NSView(frame: contentRect)
@@ -235,7 +231,7 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         outerShadow.shadowOpacity = 1
 
         // Insert outer shadow behind content in the panel
-        let wrapper = NSView(frame: contentRect)
+        let wrapper = OverlayPassthroughContainer(frame: contentRect)
         wrapper.wantsLayer = true
         wrapper.layer?.addSublayer(outerShadow)
         wrapper.addSubview(content)
@@ -283,62 +279,22 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         let textLeading = Self.barClusterX + barClusterWidth + 14
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: textLeading),
-            label.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
+            label.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -52),
             label.centerYAnchor.constraint(equalTo: content.centerYAnchor)
         ])
+
+        let cancel = OverlayCancelButton(frame: NSRect(x: Self.panelWidth - 40, y: (Self.panelHeight - 24) / 2, width: 24, height: 24))
+        cancel.isHidden = true
+        cancel.alphaValue = 0
+        cancel.target = self
+        cancel.action = #selector(handleCancelButtonPressed)
+        content.addSubview(cancel)
+        self.cancelButton = cancel
+        wrapper.interactiveButton = cancel
 
         panel.contentView = wrapper
         self.window = panel
         self.textField = label
-        ensureCancelWindow()
-    }
-
-    @MainActor
-    private func ensureCancelWindow() {
-        if cancelWindow != nil { return }
-
-        let buttonSize: CGFloat = 28
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: buttonSize, height: buttonSize),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        panel.isOpaque = false
-        panel.hidesOnDeactivate = false
-        panel.isFloatingPanel = true
-        panel.backgroundColor = .clear
-        panel.level = .statusBar
-        panel.hasShadow = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: buttonSize, height: buttonSize))
-        content.wantsLayer = true
-        content.layer?.backgroundColor = NSColor.clear.cgColor
-
-        let button = OverlayCancelButton(frame: content.bounds)
-        button.autoresizingMask = [.width, .height]
-        button.bezelStyle = .regularSquare
-        button.isBordered = false
-        button.title = ""
-        button.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))?
-            .tinted(with: NSColor(calibratedWhite: 0.82, alpha: 1.0))
-        button.imagePosition = .imageOnly
-        button.contentTintColor = NSColor(calibratedWhite: 0.82, alpha: 1.0)
-        button.toolTip = "Cancel and discard this transcript"
-        button.setAccessibilityLabel("Cancel dictation")
-        button.wantsLayer = true
-        button.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
-        button.layer?.cornerRadius = buttonSize / 2
-        button.layer?.borderWidth = 0.5
-        button.layer?.borderColor = panelBorderColor.cgColor
-        button.target = self
-        button.action = #selector(handleCancelButtonPressed)
-        content.addSubview(button)
-
-        panel.contentView = content
-        cancelWindow = panel
     }
 
     // MARK: - Bar Animations
@@ -634,7 +590,6 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         let x = screenFrame.origin.x + (screenFrame.width - window.frame.width) / 2
         let y = screenFrame.origin.y + screenFrame.height - window.frame.height - 40
         window.setFrameOrigin(NSPoint(x: round(x), y: round(y)))
-        positionCancelWindow()
     }
 
     // MARK: - Presentation
@@ -660,11 +615,6 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
             window.alphaValue = 1
             window.orderFrontRegardless()
         }
-
-        if cancelButtonVisible {
-            cancelWindow?.alphaValue = 1
-            cancelWindow?.orderFrontRegardless()
-        }
     }
 
     // MARK: - Callbacks
@@ -680,7 +630,6 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
     @objc @MainActor
     private func finishHide() {
         window?.orderOut(nil)
-        cancelWindow?.orderOut(nil)
     }
 
     @objc @MainActor
@@ -716,28 +665,36 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
 
     @MainActor
     private func showCancelControl() {
-        ensureCancelWindow()
         cancelButtonVisible = true
-        positionCancelWindow()
-        cancelWindow?.alphaValue = 1
-        cancelWindow?.orderFrontRegardless()
+        guard let cancelButton else { return }
+        cancelButton.isHidden = false
+        if reduceMotion {
+            cancelButton.alphaValue = 1
+        } else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.14
+                cancelButton.animator().alphaValue = 1
+            }
+        }
     }
 
     @MainActor
     private func hideCancelControl() {
         cancelButtonVisible = false
-        cancelWindow?.orderOut(nil)
-    }
-
-    @MainActor
-    private func positionCancelWindow() {
-        guard cancelButtonVisible, let window, let cancelWindow else { return }
-        let buttonSize = cancelWindow.frame.size
-        let origin = NSPoint(
-            x: window.frame.maxX - buttonSize.width - 10,
-            y: window.frame.origin.y + (window.frame.height - buttonSize.height) / 2
-        )
-        cancelWindow.setFrameOrigin(origin)
+        guard let cancelButton else { return }
+        if reduceMotion {
+            cancelButton.alphaValue = 0
+            cancelButton.isHidden = true
+        } else {
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.12
+                cancelButton.animator().alphaValue = 0
+            }, completionHandler: {
+                Task { @MainActor in
+                    cancelButton.isHidden = true
+                }
+            })
+        }
     }
 
     @objc @MainActor
@@ -748,8 +705,39 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
 }
 
 private final class OverlayCancelButton: NSButton {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        bezelStyle = .regularSquare
+        isBordered = false
+        title = ""
+        image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))?
+            .tinted(with: NSColor(calibratedWhite: 0.82, alpha: 1.0))
+        imagePosition = NSControl.ImagePosition.imageOnly
+        contentTintColor = NSColor(calibratedWhite: 0.82, alpha: 1.0)
+        toolTip = "Cancel and discard this transcript"
+        setAccessibilityLabel("Cancel dictation")
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        layer?.cornerRadius = frameRect.width / 2
+        layer?.borderWidth = 0.5
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
+    }
+}
+
+private final class OverlayPassthroughContainer: NSView {
+    weak var interactiveButton: NSView?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        OverlayHitTesting.interactiveView(at: point, in: self, interactiveView: interactiveButton)
     }
 }
 
