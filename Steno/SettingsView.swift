@@ -72,6 +72,10 @@ struct SettingsView: View {
     @State private var preferencesDraft: AppPreferences = .default
     @State private var didLoad = false
 
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.0"
+    }
+
     init(selectedSection: Binding<SettingsSection> = .constant(.appearance)) {
         _selectedSection = selectedSection
     }
@@ -161,7 +165,7 @@ struct SettingsView: View {
                     .font(StenoDesign.mono(size: 9.5, weight: .medium))
                     .tracking(1.6)
                     .foregroundStyle(theme.textMuted)
-                Text("v0.1.10 · macOS")
+                Text("v\(appVersion) · macOS")
                     .font(StenoDesign.subheadline())
                     .foregroundStyle(theme.textDim)
                 Text("swift 6 · whisper.cpp")
