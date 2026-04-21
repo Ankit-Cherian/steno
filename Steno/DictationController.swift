@@ -20,6 +20,8 @@ final class DictationController: ObservableObject {
     @Published var recordingElapsed: TimeInterval = 0
     @Published var recordingStartedAt: Date?
     @Published var hasBootstrapped = false
+    @Published var activeModelDownloadID: WhisperModelID?
+    @Published var modelDownloadMessage: String = ""
 
     private let captureService = MacAudioCaptureService()
     private let clipboardService = MacClipboardService()
@@ -29,6 +31,8 @@ final class DictationController: ObservableObject {
     private let mediaInterruption: MediaInterruptionService
     private let preferencesStore: AppPreferencesStore
     private let launchAtLoginService: LaunchAtLoginService
+    private let modelDownloadService = WhisperModelDownloadService()
+    private let compatibilityService = try? WhisperCompatibilityService.bundled()
 
     private var lexiconService: PersonalLexiconService
     private var styleProfileService: StyleProfileService
@@ -131,6 +135,33 @@ final class DictationController: ObservableObject {
         recordingStateMachine.state
     }
 
+    var whisperModelOptions: [WhisperModelOption] {
+        WhisperModelLibrary.installedOptions(
+            preferences: preferences,
+            compatibilityService: compatibilityService
+        )
+    }
+
+    var recommendedWhisperModel: WhisperModelOption? {
+        whisperModelOptions.first(where: \.isRecommended)
+    }
+
+    var currentHardwareSummary: String? {
+        guard let hardwareProfile = WhisperCompatibilityService.currentHardwareProfile() else {
+            return nil
+        }
+        return "\(hardwareProfile.chipClass.displayName) · \(hardwareProfile.memoryGB)GB unified memory"
+    }
+
+    var recommendedWhisperModelNote: String? {
+        guard let hardwareProfile = WhisperCompatibilityService.currentHardwareProfile(),
+              let row = compatibilityService?.recommendation(for: hardwareProfile)
+        else {
+            return nil
+        }
+        return row.notes
+    }
+
     func bootstrapIfNeeded() async {
         guard !hasBootstrapped else { return }
         await bootstrap()
@@ -197,6 +228,82 @@ final class DictationController: ObservableObject {
     func completeOnboarding() {
         preferences.general.showOnboarding = false
         savePreferences()
+    }
+
+    func handleWhisperModelAction(for option: WhisperModelOption) {
+        if option.isInstalled {
+            activateWhisperModel(option.modelID)
+        } else {
+            downloadWhisperModel(option.modelID)
+        }
+    }
+
+    func activateWhisperModel(_ modelID: WhisperModelID) {
+        guard let option = whisperModelOptions.first(where: { $0.modelID == modelID }),
+              let path = option.path
+        else { return }
+
+        var snapshot = preferences
+        snapshot.dictation.updateModelPath(path)
+        snapshot.normalize()
+        preferences = snapshot
+
+        Task {
+            await preferencesStore.save(snapshot)
+            await MainActor.run {
+                modelDownloadMessage = "Using \(WhisperModelCatalog.title(for: modelID))."
+                status = "Using \(WhisperModelCatalog.title(for: modelID))."
+            }
+            await rebuildRuntimeOrDefer()
+        }
+    }
+
+    func downloadWhisperModel(_ modelID: WhisperModelID) {
+        guard activeModelDownloadID == nil else { return }
+
+        activeModelDownloadID = modelID
+        modelDownloadMessage = "Downloading \(WhisperModelCatalog.title(for: modelID))..."
+
+        let bundledVADPath = BundledWhisperRuntime.resolvedPaths()?.vadModelPath
+        let currentVADPath = FileManager.default.fileExists(atPath: preferences.dictation.vadModelPath)
+            ? preferences.dictation.vadModelPath
+            : nil
+        let preferredVADSource = bundledVADPath ?? currentVADPath
+
+        Task {
+            do {
+                let installed = try await modelDownloadService.install(
+                    modelID: modelID,
+                    vadSourcePath: preferredVADSource
+                )
+
+                var snapshot = preferences
+                snapshot.dictation.updateModelPath(installed.modelPath)
+                if let installedVADPath = installed.vadModelPath {
+                    snapshot.dictation.vadModelPath = installedVADPath
+                }
+                snapshot.normalize()
+
+                await preferencesStore.save(snapshot)
+
+                await MainActor.run {
+                    preferences = snapshot
+                    activeModelDownloadID = nil
+                    modelDownloadMessage = "Downloaded \(WhisperModelCatalog.title(for: modelID)) and switched to it."
+                    status = "Downloaded \(WhisperModelCatalog.title(for: modelID)) and switched to it."
+                    lastError = ""
+                }
+
+                await rebuildRuntimeOrDefer()
+            } catch {
+                await MainActor.run {
+                    activeModelDownloadID = nil
+                    modelDownloadMessage = ""
+                    status = "Model download failed."
+                    lastError = error.localizedDescription
+                }
+            }
+        }
     }
 
     func requestMicrophonePermission() {
