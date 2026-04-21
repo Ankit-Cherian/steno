@@ -36,6 +36,7 @@ struct EngineSettingsSection: View {
             }
 
             compatibilityPanel
+            modelLibraryPanel
 
             Divider()
 
@@ -79,6 +80,93 @@ struct EngineSettingsSection: View {
                         .font(StenoDesign.caption())
                         .foregroundStyle(testResultIsError ? StenoDesign.error : StenoDesign.success)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var modelLibraryPanel: some View {
+        VStack(alignment: .leading, spacing: StenoDesign.sm) {
+            Text("Model Library")
+                .font(StenoDesign.bodyEmphasis())
+                .foregroundStyle(StenoDesign.textPrimary)
+
+            Text("Start with the included Small model, then download Medium or Large V3 Turbo here when your Mac can handle them.")
+                .font(StenoDesign.caption())
+                .foregroundStyle(StenoDesign.textSecondary)
+
+            ForEach(controller.whisperModelOptions) { option in
+                HStack(alignment: .center, spacing: StenoDesign.md) {
+                    VStack(alignment: .leading, spacing: StenoDesign.xxs) {
+                        HStack(spacing: StenoDesign.xs) {
+                            Text(option.title)
+                                .font(StenoDesign.callout())
+                                .foregroundStyle(StenoDesign.textPrimary)
+
+                            if option.isRecommended {
+                                StenoBadge(
+                                    text: "Recommended",
+                                    tone: .accent,
+                                    theme: StenoDesign.theme(for: preferences),
+                                    compact: true
+                                )
+                            }
+
+                            if option.isActive {
+                                StenoBadge(
+                                    text: "Using",
+                                    tone: .green,
+                                    theme: StenoDesign.theme(for: preferences),
+                                    compact: true
+                                )
+                            } else if option.source == .bundled {
+                                StenoBadge(
+                                    text: "Included",
+                                    tone: .neutral,
+                                    theme: StenoDesign.theme(for: preferences),
+                                    compact: true
+                                )
+                            } else if option.source == .downloaded {
+                                StenoBadge(
+                                    text: "Downloaded",
+                                    tone: .neutral,
+                                    theme: StenoDesign.theme(for: preferences),
+                                    compact: true
+                                )
+                            }
+                        }
+
+                        Text(option.summary)
+                            .font(StenoDesign.caption())
+                            .foregroundStyle(StenoDesign.textSecondary)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        controller.handleWhisperModelAction(for: option)
+                    } label: {
+                        if controller.activeModelDownloadID == option.modelID {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
+                        } else {
+                            Text(buttonLabel(for: option))
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(option.isActive || (controller.activeModelDownloadID != nil && controller.activeModelDownloadID != option.modelID))
+                }
+                .padding(.vertical, StenoDesign.xs)
+                .padding(.horizontal, StenoDesign.sm)
+                .background(StenoDesign.surfaceSecondary)
+                .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusSmall))
+            }
+
+            if !controller.modelDownloadMessage.isEmpty {
+                Text(controller.modelDownloadMessage)
+                    .font(StenoDesign.caption())
+                    .foregroundStyle(StenoDesign.textSecondary)
             }
         }
     }
@@ -210,6 +298,13 @@ struct EngineSettingsSection: View {
         case .custom:
             return "slider.horizontal.3"
         }
+    }
+
+    private func buttonLabel(for option: WhisperModelOption) -> String {
+        if option.isInstalled {
+            return option.isActive ? "Using" : "Use"
+        }
+        return "Download"
     }
 
     private func runTestSetup() {

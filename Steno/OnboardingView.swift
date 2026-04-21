@@ -69,6 +69,12 @@ struct OnboardingView: View {
             whisperCLIPath = controller.preferences.dictation.whisperCLIPath
             modelPath = controller.preferences.dictation.modelPath
         }
+        .onChange(of: controller.preferences.dictation.whisperCLIPath) { newValue in
+            whisperCLIPath = newValue
+        }
+        .onChange(of: controller.preferences.dictation.modelPath) { newValue in
+            modelPath = newValue
+        }
     }
 
     // MARK: - Progress Bar
@@ -226,6 +232,10 @@ struct OnboardingView: View {
             }
 
             VStack(alignment: .leading, spacing: StenoDesign.md) {
+                if let recommendedModel = controller.recommendedWhisperModel {
+                    recommendedModelCard(recommendedModel)
+                }
+
                 VStack(alignment: .leading, spacing: StenoDesign.xs) {
                     Text("whisper-cli path")
                         .font(StenoDesign.bodyEmphasis())
@@ -250,7 +260,7 @@ struct OnboardingView: View {
                 HStack(spacing: StenoDesign.xs) {
                     Image(systemName: "shippingbox.fill")
                         .font(StenoDesign.caption())
-                    Text("This build already includes a bundled local runtime. You can still change these paths later in Settings \u{2192} Engine.")
+                    Text("This build includes Small by default. You can keep going now and still download a better model later in Settings \u{2192} Engine.")
                         .font(StenoDesign.caption())
                 }
                 .foregroundStyle(StenoDesign.textSecondary)
@@ -281,10 +291,82 @@ struct OnboardingView: View {
 
     private var whisperSetupDescription: String {
         if bundledRuntime != nil {
-            return "This build already includes a bundled whisper runtime and default model. Confirm the detected paths below, then continue."
+            return "This build already includes a bundled whisper runtime and Small model. Based on your Mac, Steno may recommend downloading a better model before you continue dictating seriously."
         }
 
         return "Confirm the paths to your local whisper-cli binary and model file. For better silence and background-noise suppression, download the optional VAD model (see Settings \u{2192} Engine after setup)."
+    }
+
+    @ViewBuilder
+    private func recommendedModelCard(_ option: WhisperModelOption) -> some View {
+        VStack(alignment: .leading, spacing: StenoDesign.sm) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: StenoDesign.xxs) {
+                    Text("Based on your Mac")
+                        .font(StenoDesign.heading3())
+                        .foregroundStyle(StenoDesign.textPrimary)
+
+                    if let hardwareSummary = controller.currentHardwareSummary {
+                        Text(hardwareSummary)
+                            .font(StenoDesign.caption())
+                            .foregroundStyle(StenoDesign.textSecondary)
+                    }
+                }
+
+                Spacer()
+
+                StenoBadge(
+                    text: option.title,
+                    tone: .accent,
+                    theme: StenoDesign.theme(for: controller.preferences),
+                    icon: "cpu",
+                    compact: true
+                )
+            }
+
+            Text(controller.recommendedWhisperModelNote ?? option.summary)
+                .font(StenoDesign.subheadline())
+                .foregroundStyle(StenoDesign.textSecondary)
+
+            HStack(spacing: StenoDesign.sm) {
+                if option.isInstalled {
+                    Button(option.isActive ? "Using \(option.title)" : "Use \(option.title)") {
+                        if !option.isActive {
+                            controller.activateWhisperModel(option.modelID)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(StenoDesign.accent)
+                    .disabled(option.isActive)
+                } else {
+                    Button {
+                        controller.downloadWhisperModel(option.modelID)
+                    } label: {
+                        if controller.activeModelDownloadID == option.modelID {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
+                        } else {
+                            Text("Download \(option.title)")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(StenoDesign.accent)
+                    .disabled(controller.activeModelDownloadID != nil)
+                }
+
+                Text("You can continue with bundled Small right now.")
+                    .font(StenoDesign.caption())
+                    .foregroundStyle(StenoDesign.textSecondary)
+            }
+
+            if !controller.modelDownloadMessage.isEmpty {
+                Text(controller.modelDownloadMessage)
+                    .font(StenoDesign.caption())
+                    .foregroundStyle(StenoDesign.textSecondary)
+            }
+        }
+        .cardStyle()
     }
 
     // MARK: - Step 4: Feature Tour
