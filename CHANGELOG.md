@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 - Added a formal release-eval workflow with repo-level `scripts/run-release-eval.sh` and `scripts/run-smoke-benchmark.sh` entrypoints.
+- Added a self-contained direct-distribution workflow that bundles a local `whisper.cpp` runtime and model into the app and packages Steno as a DMG-ready macOS app.
 - Added a compatibility matrix keyed by Apple silicon chip class and unified memory so model recommendations are backed by explicit support tiers instead of generic hardware advice.
 - Added richer whisper transcript ingestion, including segment timing/confidence metadata and prompt steering assembled from language hints, app context, and hot terms.
 - Added appearance preferences for accent selection, atmosphere intensity, color mode, and Record hero style.

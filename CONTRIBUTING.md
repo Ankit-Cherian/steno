@@ -105,6 +105,8 @@ Important boundaries:
 
 For the detailed workflow, see [docs/release/release-eval.md](docs/release/release-eval.md).
 
+For the self-contained DMG distribution path, see [docs/release/direct-distribution.md](docs/release/direct-distribution.md).
+
 ## Code Style
 
 ### Swift 6 concurrency
