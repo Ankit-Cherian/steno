@@ -119,4 +119,4 @@ The host app in `Steno/` still owns:
 - Repo overview: [`README.md`](../README.md)
 - Contributor workflow: [`CONTRIBUTING.md`](../CONTRIBUTING.md)
 - Release-eval guide: [`docs/release/release-eval.md`](../docs/release/release-eval.md)
-- Internal 0.2 release truth: [`docs/release/v0.2.0-release-brief.md`](../docs/release/v0.2.0-release-brief.md)
+- Detailed 0.2 release brief: [`docs/release/v0.2.0-release-brief.md`](../docs/release/v0.2.0-release-brief.md)
