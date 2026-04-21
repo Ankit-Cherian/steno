@@ -15,6 +15,7 @@ public enum RecordingLifecycleState: String, Sendable, Codable, Equatable {
 public enum RecordingTransition: Sendable, Equatable {
     case start(mode: RecordingMode)
     case stop(mode: RecordingMode)
+    case cancel(mode: RecordingMode)
     case ignore(reason: String)
 }
 
@@ -65,6 +66,21 @@ public struct RecordingStateMachine: Sendable, Equatable {
             return .ignore(reason: "Option hold-to-talk is active.")
         case .transcribing:
             return .ignore(reason: "Still transcribing the previous session.")
+        }
+    }
+
+    public mutating func handleCancel() -> RecordingTransition {
+        switch state {
+        case .recordingHandsFree:
+            state = .idle
+            return .cancel(mode: .handsFree)
+        case .recordingPressToTalk:
+            state = .idle
+            return .cancel(mode: .pressToTalk)
+        case .idle:
+            return .ignore(reason: "No active recording to cancel.")
+        case .transcribing:
+            return .ignore(reason: "Cannot cancel after recording has stopped.")
         }
     }
 
