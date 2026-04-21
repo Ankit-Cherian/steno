@@ -92,6 +92,7 @@ public enum WhisperRuntimeConfiguration {
         maxHotTerms: Int = 8
     ) -> [String] {
         var parts: [String] = []
+        let hotTerms = Array(request.hotTerms.prefix(maxHotTerms))
 
         if let firstHint = request.languageHints.first?.trimmingCharacters(in: .whitespacesAndNewlines),
            !firstHint.isEmpty {
@@ -100,11 +101,11 @@ public enum WhisperRuntimeConfiguration {
         }
 
         if let appName = request.appContext?.appName.trimmingCharacters(in: .whitespacesAndNewlines),
-           !appName.isEmpty {
+           !appName.isEmpty,
+           hotTerms.isEmpty {
             parts.append("App: \(appName).")
         }
 
-        let hotTerms = Array(request.hotTerms.prefix(maxHotTerms))
         if !hotTerms.isEmpty {
             parts.append("Terms: \(hotTerms.joined(separator: ", ")).")
         }
