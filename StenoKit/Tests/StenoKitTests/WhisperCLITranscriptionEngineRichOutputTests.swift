@@ -170,8 +170,8 @@ func whisperCLITranscriptionEnginePassesPromptAndSuppressRegex() async throws {
     )
 
     #expect(result.text.contains("--prompt"))
-    #expect(result.text.contains("App: Cursor"))
     #expect(result.text.contains("Terms: TURSO, StenoKit"))
+    #expect(!result.text.contains("App: Cursor"))
     #expect(result.text.contains("--suppress-regex"))
     #expect(result.text.contains(#"\[(?:MUSIC|NOISE)\]"#))
 }

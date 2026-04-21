@@ -173,14 +173,14 @@ func noSpeechGatePromptEchoTermsTranscript() async throws {
     #expect(await history.recent(limit: 10).isEmpty)
 }
 
-@Test("SessionCoordinator returns noSpeech for app-and-terms prompt echo transcript")
-func noSpeechGatePromptEchoAppAndTermsTranscript() async throws {
+@Test("SessionCoordinator returns noSpeech for app-only prompt echo transcript")
+func noSpeechGatePromptEchoAppOnlyTranscript() async throws {
     let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
     try Data().write(to: audioURL)
 
     let capture = StubAudioCaptureService(queuedAudioURLs: [audioURL])
     let transcription = StaticTranscriptionEngine { _, _ in
-        RawTranscript(text: "App: TextEdit. Terms: TURSO, RT.")
+        RawTranscript(text: "App: TextEdit.")
     }
 
     let recorder = InsertCallRecorder()
@@ -197,17 +197,13 @@ func noSpeechGatePromptEchoAppAndTermsTranscript() async throws {
         .appendingPathComponent("history-\(UUID().uuidString).json")
     let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
 
-    let lexicon = PersonalLexiconService()
-    await lexicon.upsert(term: "TURSO", preferred: "TURSO", scope: .global)
-    await lexicon.upsert(term: "RT", preferred: "RT", scope: .global)
-
     let coordinator = SessionCoordinator(
         captureService: capture,
         transcriptionEngine: transcription,
         cleanupEngine: RuleBasedCleanupEngine(),
         insertionService: insertionService,
         historyStore: history,
-        lexiconService: lexicon,
+        lexiconService: PersonalLexiconService(),
         styleProfileService: StyleProfileService()
     )
 

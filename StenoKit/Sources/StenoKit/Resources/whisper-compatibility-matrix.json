@@ -203,11 +203,11 @@
     "chipClass": "m5-pro",
     "memoryRangeGB": { "minGB": 64, "maxGB": 64 },
     "modelID": "large-v3-turbo",
-    "supportLevel": "allowed-warning",
+    "supportLevel": "validated",
     "qualityTier": "recommended",
     "p90BudgetMS": 1100,
     "p99BudgetMS": 1200,
-    "notes": "Preferred default for 64GB M5 Pro Macs pending stricter release signoff."
+    "notes": "Validated on the 2026-04-20 release-signoff benchmark for 64GB M5 Pro Macs."
   },
   {
     "chipClass": "m5-pro",

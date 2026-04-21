@@ -104,6 +104,49 @@ func additionalArgumentsIncludePromptAndSuppressRegex() {
     )
 }
 
+@Test("promptFragments omit app metadata when hot terms are present")
+func promptFragmentsOmitAppMetadataWhenHotTermsPresent() {
+    let fragments = WhisperRuntimeConfiguration.promptFragments(
+        for: TranscriptionRequest(
+            languageHints: ["en-US"],
+            appContext: AppContext(
+                bundleIdentifier: "com.todesktop.230313mzl4w4u92",
+                appName: "Cursor",
+                isIDE: true
+            ),
+            hotTerms: ["TURSO", "StenoKit"]
+        )
+    )
+
+    #expect(
+        fragments == [
+            "Language: en.",
+            "Terms: TURSO, StenoKit."
+        ]
+    )
+}
+
+@Test("promptFragments keep app metadata when no hot terms are present")
+func promptFragmentsKeepAppMetadataWithoutHotTerms() {
+    let fragments = WhisperRuntimeConfiguration.promptFragments(
+        for: TranscriptionRequest(
+            languageHints: ["en-US"],
+            appContext: AppContext(
+                bundleIdentifier: "com.todesktop.230313mzl4w4u92",
+                appName: "Cursor",
+                isIDE: true
+            )
+        )
+    )
+
+    #expect(
+        fragments == [
+            "Language: en.",
+            "App: Cursor."
+        ]
+    )
+}
+
 @Test("processEnvironment adds local whisper library search paths")
 func processEnvironmentAddsLocalWhisperLibraryPaths() {
     let cliPath = "/tmp/whisper.cpp/build/bin/whisper-cli"
