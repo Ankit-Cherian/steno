@@ -80,21 +80,21 @@ Key package interfaces include:
 Run the package tests:
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 swift test --package-path StenoKit
 ```
 
 Run the smoke benchmark:
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 scripts/run-smoke-benchmark.sh
 ```
 
 Run the full release-eval path:
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 STENO_WHISPER_CLI=/absolute/path/to/whisper-cli \
 STENO_WHISPER_MODEL=/absolute/path/to/ggml-large-v3-turbo.bin \
 STENO_VAD_MODEL=/absolute/path/to/ggml-silero-v6.2.0.bin \
