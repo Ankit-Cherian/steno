@@ -291,19 +291,7 @@ public struct LocalCleanupRanker: Sendable {
     }
 
     private func repairMarkersPresent(in text: String) -> Bool {
-        let markers = [
-            "scratch that",
-            "delete that",
-            "erase that",
-            "never mind",
-            "actually",
-            "i mean",
-            "no,"
-        ]
-
-        return markers.contains { marker in
-            text.range(of: marker, options: [.caseInsensitive]) != nil
-        }
+        RepairMarkerMatcher.containsRepairMarker(in: text)
     }
 
     private func confidenceAdjustment(raw: RawTranscript, candidate: CleanupCandidate) -> Double {
