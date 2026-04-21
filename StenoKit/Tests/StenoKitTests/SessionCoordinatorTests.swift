@@ -269,3 +269,41 @@ func sessionCoordinatorForwardsTranscriptionContext() async throws {
     #expect(request?.appContext == appContext)
     #expect(request?.hotTerms.contains("TURSO") == true)
 }
+
+@Test("SessionCoordinator cancel stops capture without creating history or insertion")
+func sessionCoordinatorCancelSkipsHistoryAndInsertion() async throws {
+    let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
+    try Data().write(to: audioURL)
+
+    let capture = StubAudioCaptureService(queuedAudioURLs: [audioURL])
+    let recorder = InsertRecorder()
+    let insertionService = InsertionService(
+        transports: [
+            ClosureInsertionTransport(method: .direct) { text, _ in
+                await recorder.record(text)
+            }
+        ]
+    )
+
+    let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("history-tests", isDirectory: true)
+        .appendingPathComponent("history-\(UUID().uuidString).json")
+    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+
+    let coordinator = SessionCoordinator(
+        captureService: capture,
+        transcriptionEngine: StaticTranscriptionEngine { _, _ in RawTranscript(text: "ignored") },
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: insertionService,
+        historyStore: history,
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+    await coordinator.cancel(sessionID: sessionID)
+
+    let recent = await history.recent(limit: 10)
+    #expect(recent.isEmpty)
+    #expect(await recorder.latest() == nil)
+}
