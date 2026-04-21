@@ -64,6 +64,11 @@ final class DictationController: ObservableObject {
             appProfiles: AppPreferences.default.appStyleProfiles
         )
         self.snippetService = SnippetService(snippets: AppPreferences.default.snippets)
+        self.overlay.setCancelAction { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.cancelActiveRecording()
+            }
+        }
 
         hotkey.onPressToTalkStart = { [weak self] in
             self?.pressToTalkStart()
@@ -261,6 +266,10 @@ final class DictationController: ObservableObject {
         apply(transition: recordingStateMachine.handleHandsFreeToggle())
     }
 
+    func cancelActiveRecording() {
+        apply(transition: recordingStateMachine.handleCancel())
+    }
+
     func pasteLastTranscript() {
         Task {
             do {
@@ -357,6 +366,8 @@ final class DictationController: ObservableObject {
             startSession(mode: mode)
         case .stop(let mode):
             stopSession(mode: mode)
+        case .cancel(let mode):
+            cancelSession(mode: mode)
         case .ignore(let reason):
             status = reason
         }
@@ -396,13 +407,29 @@ final class DictationController: ObservableObject {
                     activeMediaToken = await mediaInterruption.beginInterruption()
                 }
 
+                try Task.checkCancellation()
+
                 currentSessionID = try await coordinator.startPressToTalk(appContext: capturedContext)
+
+                try Task.checkCancellation()
 
                 if mode == .pressToTalk && shouldPauseMedia {
                     activeMediaToken = await mediaInterruption.beginInterruption()
                 }
 
+                try Task.checkCancellation()
+
                 await coordinator.setHandsFreeEnabled(mode == .handsFree)
+            } catch is CancellationError {
+                if let token = activeMediaToken {
+                    mediaInterruption.endInterruption(token: token)
+                    activeMediaToken = nil
+                }
+
+                if let sessionID = currentSessionID {
+                    currentSessionID = nil
+                    await coordinator.cancel(sessionID: sessionID)
+                }
             } catch {
                 if let token = activeMediaToken {
                     mediaInterruption.endInterruption(token: token)
@@ -423,6 +450,42 @@ final class DictationController: ObservableObject {
                 dismissOverlaySoon()
             }
             activeStartTask = nil
+        }
+    }
+
+    private func cancelSession(mode: RecordingMode) {
+        let pendingStart = activeStartTask
+        activeStartTask = nil
+        pendingStart?.cancel()
+
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        recordingElapsed = 0
+        recordingStartedAt = nil
+        isRecording = false
+        handsFreeOn = false
+        menuBar.updateIcon(isRecording: false, handsFreeOn: false)
+        activeRecordingMode = nil
+        status = mode == .handsFree ? "Hands-free dictation canceled." : "Recording canceled."
+        lastError = ""
+        overlay.hide()
+
+        Task {
+            await pendingStart?.value
+
+            if let token = activeMediaToken {
+                mediaInterruption.endInterruption(token: token)
+                activeMediaToken = nil
+            }
+
+            if let coordinator, let sessionID = currentSessionID {
+                currentSessionID = nil
+                await coordinator.cancel(sessionID: sessionID)
+            } else {
+                currentSessionID = nil
+            }
+
+            await applyDeferredRebuildIfNeeded()
         }
     }
 

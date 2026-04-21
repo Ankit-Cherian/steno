@@ -5,8 +5,11 @@ import QuartzCore
 @MainActor
 public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var window: NSWindow?
+    private var cancelWindow: NSWindow?
     private var statusDot: NSView?
     private var textField: NSTextField?
+    private var cancelAction: (() -> Void)?
+    private var cancelButtonVisible = false
     private var timer: Timer?
     private var listeningStartDate: Date?
     private var listeningHandsFree = false
@@ -49,6 +52,11 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     @MainActor
+    public func setCancelAction(_ action: (() -> Void)?) {
+        cancelAction = action
+    }
+
+    @MainActor
     public func show(state: OverlayState) {
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(finishHide), object: nil)
         ensureWindow()
@@ -64,36 +72,46 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             startTimer()
             animateDotColor(Self.dotBlue)
             startDotPulse()
+            if handsFree {
+                showCancelControl()
+            } else {
+                hideCancelControl()
+            }
 
         case .transcribing:
             stopTimer()
             stopDotPulse()
             updateText("Transcribing...")
             animateDotColor(.darkGray)
+            hideCancelControl()
 
         case .inserted:
             stopTimer()
             stopDotPulse()
             updateText("Inserted")
             animateDotColor(.systemGreen)
+            hideCancelControl()
 
         case .copiedOnly:
             stopTimer()
             stopDotPulse()
             updateText("Copied to clipboard")
             animateDotColor(.systemOrange)
+            hideCancelControl()
 
         case .failure(let message):
             stopTimer()
             stopDotPulse()
             updateText("Error: \(message)")
             animateDotColor(.systemRed)
+            hideCancelControl()
 
         case .noSpeechDetected:
             stopTimer()
             stopDotPulse()
             updateText("No speech detected")
             animateDotColor(.systemGray)
+            hideCancelControl()
         }
 
         centerWindowNearTop()
@@ -105,6 +123,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     public func hide() {
         stopTimer()
         stopDotPulse()
+        hideCancelControl()
         wasHidden = true
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(applyPendingTextUpdate), object: nil)
 
@@ -182,6 +201,54 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         panel.contentView = content
         self.window = panel
         self.textField = label
+        ensureCancelWindow()
+    }
+
+    @MainActor
+    private func ensureCancelWindow() {
+        if cancelWindow != nil { return }
+
+        let buttonSize: CGFloat = 24
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: buttonSize, height: buttonSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.hidesOnDeactivate = false
+        panel.isFloatingPanel = true
+        panel.backgroundColor = .clear
+        panel.level = .statusBar
+        panel.hasShadow = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: buttonSize, height: buttonSize))
+        content.wantsLayer = true
+        content.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let button = MacOverlayCancelButton(frame: content.bounds)
+        button.autoresizingMask = [.width, .height]
+        button.isBordered = false
+        button.title = ""
+        button.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))?
+            .macOverlayTinted(with: NSColor.labelColor)
+        button.imagePosition = NSControl.ImagePosition.imageOnly
+        button.contentTintColor = NSColor.labelColor
+        button.toolTip = "Cancel and discard this transcript"
+        button.setAccessibilityLabel("Cancel dictation")
+        button.wantsLayer = true
+        button.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
+        button.layer?.cornerRadius = buttonSize / 2
+        button.layer?.borderWidth = 1
+        button.layer?.borderColor = NSColor.separatorColor.cgColor
+        button.target = self
+        button.action = #selector(handleCancelButtonPressed)
+        content.addSubview(button)
+
+        panel.contentView = content
+        cancelWindow = panel
     }
 
     @MainActor
@@ -283,6 +350,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         let x = screenFrame.origin.x + (screenFrame.width - window.frame.width) / 2
         let y = screenFrame.origin.y + screenFrame.height - window.frame.height - 40
         window.setFrameOrigin(NSPoint(x: x, y: y))
+        positionCancelWindow()
     }
 
     @MainActor
@@ -307,6 +375,11 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             window.alphaValue = 1
             window.orderFrontRegardless()
         }
+
+        if cancelButtonVisible {
+            cancelWindow?.alphaValue = 1
+            cancelWindow?.orderFrontRegardless()
+        }
     }
 
     @objc
@@ -319,6 +392,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     @MainActor
     private func finishHide() {
         window?.orderOut(nil)
+        cancelWindow?.orderOut(nil)
     }
 
     @objc
@@ -338,6 +412,57 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private func handleAccessibilityDisplayOptionsDidChange() {
         guard reduceMotion else { return }
         stopDotPulse()
+    }
+
+    @MainActor
+    private func showCancelControl() {
+        ensureCancelWindow()
+        cancelButtonVisible = true
+        positionCancelWindow()
+        cancelWindow?.alphaValue = 1
+        cancelWindow?.orderFrontRegardless()
+    }
+
+    @MainActor
+    private func hideCancelControl() {
+        cancelButtonVisible = false
+        cancelWindow?.orderOut(nil)
+    }
+
+    @MainActor
+    private func positionCancelWindow() {
+        guard cancelButtonVisible, let window, let cancelWindow else { return }
+        let buttonSize = cancelWindow.frame.size
+        let origin = NSPoint(
+            x: window.frame.maxX - buttonSize.width - 8,
+            y: window.frame.origin.y + (window.frame.height - buttonSize.height) / 2
+        )
+        cancelWindow.setFrameOrigin(origin)
+    }
+
+    @objc @MainActor
+    private func handleCancelButtonPressed() {
+        hideCancelControl()
+        cancelAction?()
+    }
+}
+
+private final class MacOverlayCancelButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
+private extension NSImage {
+    func macOverlayTinted(with color: NSColor) -> NSImage {
+        let image = self.copy() as! NSImage
+        image.lockFocus()
+        color.set()
+        let rect = NSRect(origin: .zero, size: image.size)
+        rect.fill(using: .sourceAtop)
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
     }
 }
 #endif

@@ -112,22 +112,32 @@ struct RecordTab: View {
                     .frame(maxHeight: .infinity, alignment: .top)
                 }
 
-                if controller.preferences.appearance.recordHeroStyle == .ring {
-                    RingHeroView(
-                        state: heroState,
-                        theme: theme,
-                        phase: phase,
-                        reduceMotion: reduceMotion,
-                        onToggle: toggleRecord
-                    )
-                } else {
-                    PillHeroView(
-                        state: heroState,
-                        theme: theme,
-                        phase: phase,
-                        reduceMotion: reduceMotion,
-                        onToggle: toggleRecord
-                    )
+                ZStack(alignment: .topTrailing) {
+                    if controller.preferences.appearance.recordHeroStyle == .ring {
+                        RingHeroView(
+                            state: heroState,
+                            theme: theme,
+                            phase: phase,
+                            reduceMotion: reduceMotion,
+                            onToggle: toggleRecord
+                        )
+                    } else {
+                        PillHeroView(
+                            state: heroState,
+                            theme: theme,
+                            phase: phase,
+                            reduceMotion: reduceMotion,
+                            onToggle: toggleRecord
+                        )
+                    }
+
+                    if showsCancelControl {
+                        RecordingCancelButton(theme: theme) {
+                            controller.cancelActiveRecording()
+                        }
+                        .padding(.top, controller.preferences.appearance.recordHeroStyle == .ring ? 22 : 10)
+                        .padding(.trailing, controller.preferences.appearance.recordHeroStyle == .ring ? 44 : 34)
+                    }
                 }
             }
             .padding(.top, 26)
@@ -331,6 +341,15 @@ struct RecordTab: View {
         controller.toggleHandsFree()
     }
 
+    private var showsCancelControl: Bool {
+        switch controller.recordingLifecycleState {
+        case .recordingHandsFree, .recordingPressToTalk:
+            return true
+        case .idle, .transcribing:
+            return false
+        }
+    }
+
     private func keyLabel(for keyCode: UInt16) -> String? {
         switch keyCode {
         case 122: return "F1"
@@ -355,6 +374,31 @@ struct RecordTab: View {
         case 90: return "F20"
         default: return nil
         }
+    }
+}
+
+private struct RecordingCancelButton: View {
+    let theme: StenoTheme
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.textDim)
+                .frame(width: 30, height: 30)
+                .background(Color.white.opacity(theme.isLight ? 0.84 : 0.08))
+                .overlay(
+                    Circle()
+                        .stroke(theme.lineStrong, lineWidth: StenoDesign.borderThin)
+                )
+                .clipShape(Circle())
+                .contentShape(Circle())
+                .shadow(color: .black.opacity(theme.isLight ? 0.12 : 0.28), radius: 10, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Cancel dictation")
+        .help("Cancel and discard this transcript")
     }
 }
 
