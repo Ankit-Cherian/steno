@@ -5,31 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-04-21
+
+### Added
+- Added a formal release-eval workflow with repo-level `scripts/run-release-eval.sh` and `scripts/run-smoke-benchmark.sh` entrypoints.
+- Added a compatibility matrix keyed by Apple silicon chip class and unified memory so model recommendations are backed by explicit support tiers instead of generic hardware advice.
+- Added richer whisper transcript ingestion, including segment timing/confidence metadata and prompt steering assembled from language hints, app context, and hot terms.
+- Added appearance preferences for accent selection, atmosphere intensity, color mode, and Record hero style.
+- Added compact cancel controls across the redesigned in-app recorder and floating overlay surfaces.
 
 ### Changed
 - Rebuilt the macOS app shell with a custom window surface, bespoke title bar, segmented navigation, and a redesigned stage background.
-- Redesigned the Record tab around two hero styles (`pill` and `ring`), richer listening/idle states, inline level meters, and a rebuilt transcript dock.
-- Redesigned the History tab with grouped transcript rows, richer selection states, inline copy/paste actions, and a dedicated preview pane.
-- Redesigned Settings with a sidebar layout, broader full-width cards, improved permissions/engine surfaces, and a new Appearance section.
-- Added persistent appearance preferences for light/dark mode, accent selection, hero style, and atmosphere intensity.
-- Refreshed onboarding to match the redesigned shell and visual system.
-- Reworked the overlay recorder into a waveform-based floating panel with animated bars, terminal-state icons, and accent-aware styling.
-- Repo setup guidance now uses a compatibility matrix keyed by Apple silicon chip class and unified memory instead of generic “higher-end Apple Silicon” wording.
-- Whisper transcription now prefers rich JSON output, preserves segment timing/confidence metadata, and uses dynamic prompt steering built from language hints, app context, and hot terms.
-- Local cleanup now handles repair phrases like `scratch that` through candidate generation and ranking, improves acronym/proper-noun recovery for hot terms, and keeps IDE slash-command passthrough safe.
-- Benchmark reporting and validation now distinguish smoke fixtures from release-signoff runs, record hardware profile provenance, and use coordinator stop-to-insert latency for release-tier guardrails.
+- Redesigned the Record tab around `pill` and `ring` hero styles, richer listening/idle/transcribing states, inline level meters, and a rebuilt transcript dock.
+- Redesigned the History tab with grouped transcript rows, stronger selection states, inline copy/paste actions, and a dedicated preview pane.
+- Redesigned Settings with a broader card-based layout, improved permissions and engine surfaces, and a dedicated Appearance section.
+- Refreshed onboarding to match the redesigned shell and local-first product story.
+- Reworked the recording overlay into a waveform-based floating panel with animated bars, terminal-state icons, accent-aware styling, and compact cancellation.
+- Updated hardware/model setup guidance in the docs so canonical local models and recommendation tiers are explained consistently across the repo.
+- Benchmark reporting now separates smoke fixtures from release-signoff evidence, records hardware provenance, and uses coordinator stop-to-insert timing for release-tier latency gates.
 
 ### Fixed
+- Hardened prompt contamination handling so prompt-echo-like transcripts are treated as no-speech before cleanup, insertion, or history persistence.
+- Tightened local cleanup recovery and repair-aware cleanup behavior for natural self-corrections such as `scratch that`, `never mind`, `I mean`, `actually`, and conservative utterance-initial `no`.
+- Preserved literal counterexamples like `No, thanks.` and `No, maybe later.` while improving repair resolution.
+- Fixed command-line parsing so repeated `--extra-arg` values that themselves start with dashes are preserved during release-eval and VAD-backed runs.
+- Reduced release-eval latency tail issues enough for the exact `m5-pro / 64GB / large-v3-turbo` row to pass the canonical 0.2 release-signoff run.
 - Disabled broad background dragging on the custom title-bar window so Record / History / Settings tab clicks register reliably.
-- Title bar and overlay now follow the selected accent more consistently instead of falling back to a fixed blue treatment.
-- Transcript timestamps now use a 12-hour clock with `AM/PM` instead of 24-hour time.
-- The Record screen model badge now reflects the configured Whisper model path instead of hardcoding `small.en`.
-- Preference repair now re-detects local `whisper.cpp` runtime paths more reliably across local checkout/worktree layouts.
+- Improved title-bar and overlay accent behavior so the selected accent is applied consistently instead of falling back to a fixed blue treatment.
+- Switched transcript timestamps to a 12-hour `AM/PM` presentation.
+- Updated the Record surface to reflect the configured Whisper model instead of hardcoding `small.en`.
+- Improved local `whisper.cpp` path repair across checkout/worktree layouts.
 
 ### Tests
-- Added regression coverage for rich whisper JSON parsing, prompt/suppress argument forwarding, lexicon aliases and hot terms, repair-aware cleanup, phonetic candidate generation, and the new benchmark validation metrics.
-- Added coverage for Apple silicon hardware detection, compatibility-matrix matching, smoke-vs-release benchmark evidence tiers, short repair prefixes, and confidence-aware ranking.
+- Expanded benchmark and release-eval coverage for raw/pipeline/coordinator metrics, signoff thresholds, evidence tiers, timing breakdowns, and coverage-aware `not_evaluable` reporting.
+- Added regression coverage for rich whisper JSON parsing, prompt/suppress argument forwarding, prompt-echo no-speech gating, compatibility-matrix matching, repair-aware cleanup, and confidence-aware ranking.
+- Added targeted tests for repair phrases, literal-preservation counterexamples, command-line argument preservation, and compact overlay hit-testing.
 
 ## [0.1.10] - 2026-03-17
 
