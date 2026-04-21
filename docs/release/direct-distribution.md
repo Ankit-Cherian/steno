@@ -16,6 +16,8 @@ Produce a downloadable, self-contained `Steno.app` inside a DMG so users do not 
 The repo now includes:
 
 - bundled-runtime discovery in the app
+- bundled `small.en` as the always-available first-run model
+- in-app downloads for `medium.en` and `large-v3-turbo`
 - a distribution entitlements file
 - a `scripts/release-dmg.sh` script that:
   - builds an unsigned Release app

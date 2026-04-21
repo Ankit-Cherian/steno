@@ -16,6 +16,7 @@ Steno is a local-first voice-to-text app for people who want fast dictation, rel
 ## What Steno Does
 
 - High-accuracy local transcription with `whisper.cpp`
+- Bundled `small.en` for immediate first-run use, with in-app downloads for larger canonical models based on your hardware
 - App-aware insertion: direct typing where it is safe, clipboard-first behavior where terminals or LLM surfaces need it
 - Global dictation controls: `Option` hold-to-talk plus a configurable hands-free toggle key
 - Local cleanup with tone, structure, filler, and command-passthrough policies
