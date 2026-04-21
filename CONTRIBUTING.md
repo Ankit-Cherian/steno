@@ -1,27 +1,32 @@
 # Contributing to Steno
 
-Thank you for your interest in contributing to Steno. This guide will help you get started with development.
+Thanks for your interest in contributing to Steno.
 
-If you only want to run the app as a user, use [QUICKSTART.md](QUICKSTART.md) first. This document is contributor-focused.
+If you want to use the app locally, start with [QUICKSTART.md](QUICKSTART.md). This guide is for contributors working on the repo itself.
 
 ## Prerequisites
 
-Before you begin, ensure you have:
+Before you start:
 
-- macOS 13.0 or later
-- Xcode 26 or later (Swift 6.2+)
-- XcodeGen installed (`brew install xcodegen`)
-- CMake installed (`brew install cmake`)
+- macOS 13.0+
+- Xcode 26+
+- XcodeGen (`brew install xcodegen`)
+- CMake (`brew install cmake`)
+- a local `whisper.cpp` checkout built under `vendor/whisper.cpp`
+- at least one canonical Whisper model
+- the Silero VAD model if you want realistic release-eval or no-speech behavior
 
 ## First-Time Setup
 
 1. Clone the repository:
+
    ```bash
    git clone https://github.com/Ankit-Cherian/steno.git
    cd steno
    ```
 
-2. Build whisper.cpp:
+2. Build `whisper.cpp`:
+
    ```bash
    git clone https://github.com/ggerganov/whisper.cpp vendor/whisper.cpp
    cd vendor/whisper.cpp
@@ -30,173 +35,173 @@ Before you begin, ensure you have:
    cd ../..
    ```
 
-3. Download a transcription model:
+3. Download local models:
+
    ```bash
    cd vendor/whisper.cpp
    ./models/download-ggml-model.sh small.en
-   cd ../..
+   ./models/download-ggml-model.sh medium.en
+   ./models/download-ggml-model.sh large-v3-turbo
+   cd models
+   ./download-vad-model.sh silero-v6.2.0
+   cd ../../..
    ```
 
 4. Generate the local Xcode project:
+
    ```bash
    xcodegen generate
    ```
 
-5. Open your local `Steno.xcodeproj` in Xcode.
+5. Open `Steno.xcodeproj`, set your Apple Developer Team in Signing & Capabilities, and run the app locally.
 
-6. In Xcode, set your own Apple Developer Team in Signing & Capabilities.
+## Daily Development Loop
 
-7. Build and run (Cmd+R).
+For normal code changes, the expected validation path is:
+
+```bash
+cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+swift test --package-path StenoKit
+xcodegen generate
+xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+```
+
+Use that as the default “done” bar for substantial work.
+
+## Release-Eval and Benchmark Workflow
+
+Steno has two distinct benchmark paths.
+
+### Smoke benchmark
+
+Use this to confirm the repo-level benchmark machinery is still healthy:
+
+```bash
+cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+scripts/run-smoke-benchmark.sh
+```
+
+This is a fast fixture path. It is not release evidence.
+
+### Full release signoff
+
+Use this when you need a measured verdict for one exact hardware/model row:
+
+```bash
+cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+STENO_WHISPER_CLI=/absolute/path/to/whisper-cli \
+STENO_WHISPER_MODEL=/absolute/path/to/ggml-large-v3-turbo.bin \
+STENO_VAD_MODEL=/absolute/path/to/ggml-silero-v6.2.0.bin \
+STENO_LIBRISPEECH_ROOT=/absolute/path/to/librispeech_test_clean \
+scripts/run-release-eval.sh
+```
+
+Important boundaries:
+
+- smoke fixtures are preflight only
+- release signoff is row-specific
+- `not_evaluable` metrics should not be presented as real passes or real failures
+- generated release bundles under `research/benchmarks/generated/` are ignored local artifacts, not tracked source files
+
+For the detailed workflow, see [docs/release/release-eval.md](docs/release/release-eval.md).
 
 ## Code Style
 
-Steno follows strict conventions to maintain code quality and consistency.
+### Swift 6 concurrency
 
-### Swift 6 Strict Concurrency
-
-- All types must be `Sendable`
 - Use actors for mutable shared state
 - Mark UI code with `@MainActor`
-- Avoid `@unchecked Sendable` unless absolutely necessary (e.g., bridging to C callbacks)
-- All domain models must be `Sendable + Codable + Equatable` value types
+- Prefer `Sendable` value types for domain models
+- Avoid `@unchecked Sendable` unless bridging constraints force it
 
-### Design System
+### UI and design-system rules
 
-- **Never hardcode fonts, shadows, spacing, or colors**
-- Use `StenoDesign` tokens for all UI elements:
-  - Typography: `StenoDesign.heading1()`, `StenoDesign.body()`, etc.
-  - Shadows: `.shadowStyle(.sm)`, `.shadowStyle(.md)`, `.shadowStyle(.lg)`
-  - Spacing: `StenoDesign.spacingXs`, `StenoDesign.spacingSm`, etc.
-  - Colors: `StenoDesign.adaptive(light:dark:)` for light/dark mode support
-- Use component helpers from `DesignSystem.swift` (e.g., `CopyButtonView`, `PressableButtonStyle`)
+- Do not hardcode fonts, shadows, spacing, or colors when `StenoDesign`/theme tokens already exist
+- Respect `accessibilityReduceMotion`
+- Add accessibility labels to interactive elements
+- Follow the existing 0.2 visual system instead of reintroducing older default-control styling
 
-### Accessibility
+### General engineering rules
 
-- Add `.accessibilityLabel()` to all interactive elements
-- Use `.accessibilityAddTraits(.isHeader)` on section headers
-- Use `.accessibilityHint()` for complex interactions
-- Check `@Environment(\.accessibilityReduceMotion)` for all animations
-- In AppKit code, use `NSWorkspace.shared.accessibilityDisplayShouldReduceMotion`
+- No `print()` debugging in committed code
+- No force unwraps unless there is a very narrow, well-justified boundary
+- Prefer protocol-first design for reusable services
+- Keep generated state out of git unless the repo explicitly tracks it
 
-### Animation Conventions
+## Testing Notes
 
-Every animation must respect Reduce Motion:
+Steno uses Swift Testing, not XCTest.
 
-```swift
-@Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-// Conditional animation
-.animation(reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationNormal), value: state)
-
-// Conditional transition
-.transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
-
-// Conditional withAnimation
-withAnimation(reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationNormal)) {
-    // state changes
-}
-```
-
-### General Guidelines
-
-- No force unwraps (`as!`, `try!`) — handle errors explicitly
-- No singletons (`static let shared`) — use dependency injection
-- No `print()` statements — use structured logging if needed
-- Protocol-first design: define protocols in `StenoKit/Sources/StenoKit/Protocols/`, implementations in `Services/`
-- Test doubles go in `Sources/` (not `Tests/`) for reusability
-
-## Testing
-
-Steno uses Swift Testing (not XCTest) with tests in `StenoKit/Tests/`.
-
-Run all tests:
+Run the full package suite:
 
 ```bash
-cd StenoKit
-CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
-SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
-swift test
+cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+swift test --package-path StenoKit
 ```
 
-Run a single test by function name:
+Run one test by name:
 
 ```bash
-cd StenoKit
-CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
-SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
-swift test --filter sessionCoordinatorLocalFallbackOnPrimaryFailure
+cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+swift test --package-path StenoKit --filter overlayHitTestingReturnsInteractiveButtonForNestedContent
 ```
 
-When adding new features:
+When adding behavior:
 
-- Write tests for business logic in `StenoKit/Tests/`
-- Use protocol-based test doubles (see `Sources/StenoKitTestSupport/Adapters.swift` and `InsertionTransports.swift`)
-- No UI tests — SwiftUI views are tested manually
+- prefer regression tests first
+- keep literal-preservation counterexamples near aggressive cleanup logic
+- distinguish raw-ASR problems from cleanup problems before patching
 
 ## XcodeGen Workflow
 
-The Xcode project is generated from `project.yml`. `Steno.xcodeproj` is intentionally untracked in git and should be generated locally when needed.
+`Steno.xcodeproj` is generated from `project.yml`.
 
-After modifying `project.yml` or adding/removing Swift files in `Steno/`:
+Whenever you:
+
+- add or remove files under `Steno/`
+- change project configuration
+- modify signing/resource settings in `project.yml`
+
+rerun:
 
 ```bash
 xcodegen generate
 ```
 
-## Code Signing & TCC Permissions
+Do not commit generated Xcode project churn unless the repo policy changes to explicitly track it again.
 
-Code signing must remain stable across builds. Changing the `DEVELOPMENT_TEAM` or code signing identity invalidates macOS TCC (Transparency, Consent, and Control) permissions, requiring users to re-grant Microphone, Accessibility, and Input Monitoring access.
+## Code Signing and TCC
 
-Tracked source uses contributor-first signing defaults (in `project.yml`):
-- No fixed `DEVELOPMENT_TEAM` value is committed
-- `CODE_SIGN_STYLE: Automatic`
-- `CODE_SIGN_IDENTITY: Apple Development`
+Do not commit personal signing settings.
 
-Maintainers should keep their personal Team ID in local Xcode settings (or local xcconfig), not in committed source.
+Keep these local:
 
-Maintainer release-signing flow:
-1. Open `Steno.xcodeproj` -> target `Steno` -> Signing & Capabilities.
-2. Set `Team` to your Apple Developer account team.
-3. Keep `Bundle Identifier` unique to your account if required by your signing setup.
-4. Build/archive from your local machine; do not commit team-specific signing changes.
+- `DEVELOPMENT_TEAM`
+- personal provisioning profiles
+- personal signing identities
 
-Do not change signing settings without understanding TCC implications.
+Changing those in tracked source can invalidate user TCC permissions and force re-grants for:
+
+- Microphone
+- Accessibility
+- Input Monitoring
 
 ## Pull Request Checklist
 
-Before submitting a PR:
+Before opening a PR:
 
-- [ ] All code builds without warnings
-- [ ] Tests pass (`swift test` in `StenoKit/`)
-- [ ] UI uses `StenoDesign` tokens (no hardcoded fonts/shadows/spacing)
-- [ ] Accessibility labels added to all interactive elements
-- [ ] Animations respect `accessibilityReduceMotion`
-- [ ] No force unwraps, no singletons, no `print()` statements
-- [ ] `xcodegen generate` run locally after `project.yml` or app source layout changes
-- [ ] No generated `Steno.xcodeproj` files staged in the PR
-- [ ] Code follows Swift 6 strict concurrency rules
-- [ ] Commit messages are clear and concise
+- [ ] `swift test --package-path StenoKit` passes
+- [ ] `xcodegen generate` succeeds
+- [ ] `xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` succeeds
+- [ ] benchmark-facing changes were validated with the correct smoke or release path
+- [ ] public docs reflect current measured truth, not stale thread context
+- [ ] no generated benchmark bundles are staged
+- [ ] no generated Xcode project churn is staged unintentionally
+- [ ] commit history keeps one concern per commit
 
+## Where to Look Next
 
-## Architecture Deep-Dive
-
-Key architectural concepts:
-
-- Two-layer structure (`StenoKit/` pure Swift package + `Steno/` app target)
-- Session lifecycle and recording state machine
-- Hotkey mechanism (CGEventTap for function keys, NSEvent for Option key)
-- Insertion chain (target-aware routing)
-- Local cleanup pipeline with fallback behavior
-- Media interruption (token-based pause/resume)
-  - Playback-state trust rule: only trust playback-state evidence when now-playing metadata corroborates it (`playbackRate` present or `nowPlaying == true`), and confirm weak-positive signals before pausing media.
-- Concurrency model (actors vs @MainActor)
-
-## Getting Help
-
-If you encounter issues or have questions:
-
-- Review existing code for patterns
-- Open a GitHub Issue for bugs or feature requests
-- For security reports, follow `SECURITY.md`
-
-We appreciate your contributions to Steno.
+- Repo overview: [README.md](README.md)
+- Fast user setup: [QUICKSTART.md](QUICKSTART.md)
+- Core package overview: [StenoKit/README.md](StenoKit/README.md)
+- Release-eval guide: [docs/release/release-eval.md](docs/release/release-eval.md)
