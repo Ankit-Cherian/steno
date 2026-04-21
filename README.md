@@ -156,7 +156,7 @@ For the benchmark and signoff workflow details, see [docs/release/release-eval.m
 
 - Setup and contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Fast local run instructions: [QUICKSTART.md](QUICKSTART.md)
-- Internal 0.2 release truth: [docs/release/v0.2.0-release-brief.md](docs/release/v0.2.0-release-brief.md)
+- Detailed 0.2 release brief: [docs/release/v0.2.0-release-brief.md](docs/release/v0.2.0-release-brief.md)
 - Direct-download DMG workflow: [docs/release/direct-distribution.md](docs/release/direct-distribution.md)
 - Core package overview: [StenoKit/README.md](StenoKit/README.md)
 
