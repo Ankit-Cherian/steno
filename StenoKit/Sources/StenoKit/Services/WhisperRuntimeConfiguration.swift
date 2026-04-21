@@ -18,6 +18,15 @@ public enum WhisperRuntimeConfiguration {
             return env
         }
 
+        // Bundled release helpers should rely on relative rpaths inside the app
+        // bundle, not on DYLD_* variables that may be ignored under hardened runtime.
+        let pathComponents = URL(fileURLWithPath: whisperCLIPath).pathComponents
+        if let contentsIndex = pathComponents.lastIndex(of: "Contents"),
+           contentsIndex + 1 < pathComponents.count,
+           ["Helpers", "MacOS"].contains(pathComponents[contentsIndex + 1]) {
+            return env
+        }
+
         let libSearchPaths = dynamicLibrarySearchPaths(
             whisperCLIPath: whisperCLIPath,
             modelPath: modelPath,

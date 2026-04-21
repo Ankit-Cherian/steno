@@ -17,9 +17,11 @@ Environment:
   STENO_BUNDLED_WHISPER_ROOT     Optional. Root of a built whisper.cpp checkout.
                                  Default: auto-detect local vendor roots.
   STENO_BUNDLED_MODEL_PATH       Optional. Canonical model file to bundle.
-                                 Default: prefer large-v3-turbo, then medium.en, small.en, base.en.
+                                 Default: prefer small.en, then base.en, medium.en, large-v3-turbo.
   STENO_BUNDLED_VAD_MODEL_PATH   Optional. VAD model path.
                                  Default: derive ggml-silero-v6.2.0.bin next to the chosen model.
+  STENO_RELEASE_ALLOW_DIRTY      Optional. Set to 1 to bypass the clean-worktree
+                                 guard while iterating on the packaging script.
 
 Examples:
   scripts/release-dmg.sh
@@ -77,6 +79,9 @@ STAGING_DIR="$DIST_DIR/dmg-stage"
 APP_NAME="Steno"
 APP_VOLUME_NAME="Steno"
 DIST_ENTITLEMENTS="$REPO_ROOT/Steno/StenoDistribution.entitlements"
+FRAMEWORKS_SUBDIR="Contents/Frameworks"
+HELPERS_SUBDIR="Contents/Helpers"
+MODELS_SUBDIR="Contents/Resources/WhisperModels"
 
 mkdir -p "$DIST_DIR"
 rm -rf "$DERIVED_DATA" "$UNSIGNED_APP" "$STAGING_DIR"
@@ -136,10 +141,10 @@ detect_model_path() {
 
   local root="$1"
   local models=(
-    "$root/models/ggml-large-v3-turbo.bin"
-    "$root/models/ggml-medium.en.bin"
     "$root/models/ggml-small.en.bin"
     "$root/models/ggml-base.en.bin"
+    "$root/models/ggml-medium.en.bin"
+    "$root/models/ggml-large-v3-turbo.bin"
   )
 
   local model
@@ -165,6 +170,16 @@ detect_vad_path() {
   echo "$model_dir/ggml-silero-v6.2.0.bin"
 }
 
+require_clean_worktree() {
+  if [[ "${STENO_RELEASE_ALLOW_DIRTY:-0}" == "1" ]]; then
+    return
+  fi
+
+  local status
+  status="$(git -C "$REPO_ROOT" status --porcelain)"
+  [[ -z "$status" ]] || die "Working tree must be clean before packaging. Commit or stash changes first."
+}
+
 remove_rpaths() {
   local binary="$1"
   local path
@@ -176,42 +191,41 @@ remove_rpaths() {
 add_rpath() {
   local binary="$1"
   local path="$2"
-  install_name_tool -add_rpath "$path" "$binary" 2>/dev/null || true
+  install_name_tool -add_rpath "$path" "$binary" || die "Failed adding rpath $path to $binary"
 }
 
 patch_runtime_rpaths() {
-  local runtime_root="$1"
-  local cli="$runtime_root/build/bin/whisper-cli"
-  local whisper_dylib="$runtime_root/build/src/libwhisper.1.8.3.dylib"
-  local ggml="$runtime_root/build/ggml/src/libggml.0.9.6.dylib"
-  local ggml_cpu="$runtime_root/build/ggml/src/libggml-cpu.0.9.6.dylib"
-  local ggml_blas="$runtime_root/build/ggml/src/ggml-blas/libggml-blas.0.9.6.dylib"
-  local ggml_metal="$runtime_root/build/ggml/src/ggml-metal/libggml-metal.0.9.6.dylib"
+  local app_path="$1"
+  local helper="$app_path/$HELPERS_SUBDIR/whisper-cli"
+  local frameworks_dir="$app_path/$FRAMEWORKS_SUBDIR"
 
-  remove_rpaths "$cli"
-  add_rpath "$cli" "@executable_path/../src"
-  add_rpath "$cli" "@executable_path/../ggml/src"
-  add_rpath "$cli" "@executable_path/../ggml/src/ggml-blas"
-  add_rpath "$cli" "@executable_path/../ggml/src/ggml-metal"
+  require_file "$helper" "Bundled whisper helper"
+  remove_rpaths "$helper"
+  add_rpath "$helper" "@executable_path/../Frameworks"
 
-  remove_rpaths "$whisper_dylib"
-  add_rpath "$whisper_dylib" "@loader_path/../ggml/src"
-  add_rpath "$whisper_dylib" "@loader_path/../ggml/src/ggml-blas"
-  add_rpath "$whisper_dylib" "@loader_path/../ggml/src/ggml-metal"
+  local dylib
+  local dylib_count=0
+  while IFS= read -r -d '' dylib; do
+    dylib_count=$((dylib_count + 1))
+    remove_rpaths "$dylib"
+    add_rpath "$dylib" "@loader_path"
+  done < <(find "$frameworks_dir" -maxdepth 1 -type f -name '*.dylib' -print0)
 
-  remove_rpaths "$ggml"
-  add_rpath "$ggml" "@loader_path"
-  add_rpath "$ggml" "@loader_path/ggml-blas"
-  add_rpath "$ggml" "@loader_path/ggml-metal"
+  [[ "$dylib_count" -gt 0 ]] || die "No regular dylibs found in $frameworks_dir to patch."
+}
 
-  remove_rpaths "$ggml_cpu"
-  add_rpath "$ggml_cpu" "@loader_path"
+copy_matching_entries() {
+  local src_dir="$1"
+  local pattern="$2"
+  local dest_dir="$3"
+  local matches=()
+  local file
+  while IFS= read -r -d '' file; do
+    matches+=("$file")
+  done < <(find "$src_dir" -maxdepth 1 \( -type f -o -type l \) -name "$pattern" -print0)
 
-  remove_rpaths "$ggml_blas"
-  add_rpath "$ggml_blas" "@loader_path/.."
-
-  remove_rpaths "$ggml_metal"
-  add_rpath "$ggml_metal" "@loader_path/.."
+  [[ "${#matches[@]}" -gt 0 ]] || die "No matches for $pattern in $src_dir"
+  rsync -a "${matches[@]}" "$dest_dir/"
 }
 
 copy_runtime() {
@@ -219,40 +233,31 @@ copy_runtime() {
   local model_path="$2"
   local vad_path="$3"
   local app_path="$4"
-  local runtime_root="$app_path/Contents/Resources/Runtime/whisper.cpp"
+  local helpers_dir="$app_path/$HELPERS_SUBDIR"
+  local frameworks_dir="$app_path/$FRAMEWORKS_SUBDIR"
+  local models_dir="$app_path/$MODELS_SUBDIR"
 
-  mkdir -p \
-    "$runtime_root/build/bin" \
-    "$runtime_root/build/src" \
-    "$runtime_root/build/ggml/src" \
-    "$runtime_root/build/ggml/src/ggml-blas" \
-    "$runtime_root/build/ggml/src/ggml-metal" \
-    "$runtime_root/models"
+  mkdir -p "$helpers_dir" "$frameworks_dir" "$models_dir"
 
-  ditto "$whisper_root/build/bin/whisper-cli" "$runtime_root/build/bin/whisper-cli"
+  rsync -a "$whisper_root/build/bin/whisper-cli" "$helpers_dir/"
+  copy_matching_entries "$whisper_root/build/src" "libwhisper*.dylib" "$frameworks_dir"
+  copy_matching_entries "$whisper_root/build/ggml/src" "libggml*.dylib" "$frameworks_dir"
+  copy_matching_entries "$whisper_root/build/ggml/src/ggml-blas" "libggml-blas*.dylib" "$frameworks_dir"
+  copy_matching_entries "$whisper_root/build/ggml/src/ggml-metal" "libggml-metal*.dylib" "$frameworks_dir"
 
-  while IFS= read -r -d '' file; do
-    ditto "$file" "$runtime_root/build/src/$(basename "$file")"
-  done < <(find "$whisper_root/build/src" -maxdepth 1 -type f -name 'libwhisper*.dylib' -print0)
-
-  while IFS= read -r -d '' file; do
-    ditto "$file" "$runtime_root/build/ggml/src/$(basename "$file")"
-  done < <(find "$whisper_root/build/ggml/src" -maxdepth 1 -type f -name 'libggml*.dylib' -print0)
-
-  while IFS= read -r -d '' file; do
-    ditto "$file" "$runtime_root/build/ggml/src/ggml-blas/$(basename "$file")"
-  done < <(find "$whisper_root/build/ggml/src/ggml-blas" -maxdepth 1 -type f -name 'libggml-blas*.dylib' -print0)
-
-  while IFS= read -r -d '' file; do
-    ditto "$file" "$runtime_root/build/ggml/src/ggml-metal/$(basename "$file")"
-  done < <(find "$whisper_root/build/ggml/src/ggml-metal" -maxdepth 1 -type f -name 'libggml-metal*.dylib' -print0)
-
-  ditto "$model_path" "$runtime_root/models/$(basename "$model_path")"
+  ditto "$model_path" "$models_dir/$(basename "$model_path")"
   if [[ -f "$vad_path" ]]; then
-    ditto "$vad_path" "$runtime_root/models/$(basename "$vad_path")"
+    ditto "$vad_path" "$models_dir/$(basename "$vad_path")"
   fi
 
-  patch_runtime_rpaths "$runtime_root"
+  require_file "$frameworks_dir/libwhisper.1.dylib" "Bundled libwhisper soname"
+  require_file "$frameworks_dir/libggml.0.dylib" "Bundled libggml soname"
+  require_file "$frameworks_dir/libggml-cpu.0.dylib" "Bundled libggml-cpu soname"
+  require_file "$frameworks_dir/libggml-base.0.dylib" "Bundled libggml-base soname"
+  require_file "$frameworks_dir/libggml-blas.0.dylib" "Bundled libggml-blas soname"
+  require_file "$frameworks_dir/libggml-metal.0.dylib" "Bundled libggml-metal soname"
+
+  patch_runtime_rpaths "$app_path"
 }
 
 is_macho() {
@@ -270,6 +275,19 @@ sign_nested_code() {
   done < <(find "$app_path/Contents" -type f -print0)
 }
 
+smoke_test_bundled_runtime() {
+  local app_path="$1"
+  local helper="$app_path/$HELPERS_SUBDIR/whisper-cli"
+  local smoke_log="$DIST_DIR/bundled-whisper-smoke.log"
+
+  require_file "$helper" "Bundled whisper helper"
+
+  if ! env -i HOME="$HOME" PATH="/usr/bin:/bin" "$helper" --help >"$smoke_log" 2>&1; then
+    cat "$smoke_log" >&2 || true
+    die "Bundled whisper helper failed to launch. See $smoke_log"
+  fi
+}
+
 create_dmg() {
   local app_path="$1"
   local output_path="$2"
@@ -284,6 +302,8 @@ create_dmg() {
     -ov \
     -format UDZO \
     "$output_path"
+
+  hdiutil verify "$output_path"
 }
 
 IDENTITY="$(detect_identity)"
@@ -299,6 +319,7 @@ if [[ -n "$VAD_PATH" ]]; then
   require_file "$VAD_PATH" "Bundled VAD model"
 fi
 require_file "$DIST_ENTITLEMENTS" "Distribution entitlements"
+require_clean_worktree
 
 if [[ "$SKIP_NOTARIZE" -eq 0 ]] && [[ -z "$NOTARY_PROFILE" ]]; then
   die "STENO_NOTARY_PROFILE is required unless --skip-notarize is used."
@@ -343,6 +364,9 @@ echo "==> validate signed app"
 codesign --verify --deep --strict --verbose=2 "$UNSIGNED_APP"
 codesign -dvvv --entitlements :- "$UNSIGNED_APP" >/dev/null
 
+echo "==> bundled runtime smoke test"
+smoke_test_bundled_runtime "$UNSIGNED_APP"
+
 APP_VERSION="$(defaults read "$UNSIGNED_APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "0.2.0")"
 DMG_PATH="$DIST_DIR/Steno-${APP_VERSION}.dmg"
 rm -f "$DMG_PATH"
@@ -358,7 +382,20 @@ if [[ "$SKIP_NOTARIZE" -eq 1 ]]; then
 fi
 
 echo "==> notarize DMG"
-xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+NOTARY_SUBMISSION_JSON="$DIST_DIR/notary-submit.json"
+NOTARY_LOG_JSON="$DIST_DIR/notary-log.json"
+NOTARY_SUBMISSION_JSON_RAW="$(xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json)"
+printf '%s\n' "$NOTARY_SUBMISSION_JSON_RAW" > "$NOTARY_SUBMISSION_JSON"
+NOTARY_SUBMISSION_ID="$(python3 - <<'PY' "$NOTARY_SUBMISSION_JSON"
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+print(payload["id"])
+PY
+)"
+xcrun notarytool log "$NOTARY_SUBMISSION_ID" "$NOTARY_LOG_JSON" --keychain-profile "$NOTARY_PROFILE"
 
 echo "==> staple ticket"
 xcrun stapler staple "$DMG_PATH"

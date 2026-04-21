@@ -18,7 +18,7 @@ Use the smoke path when you want fast confidence that the benchmark pipeline, re
 Run:
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 scripts/run-smoke-benchmark.sh
 ```
 
@@ -42,7 +42,7 @@ Use the release path when you want a real measured verdict for one exact hardwar
 Run:
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 STENO_WHISPER_CLI=/absolute/path/to/whisper-cli \
 STENO_WHISPER_MODEL=/absolute/path/to/ggml-large-v3-turbo.bin \
 STENO_VAD_MODEL=/absolute/path/to/ggml-silero-v6.2.0.bin \
@@ -79,18 +79,18 @@ The script will derive `STENO_VAD_MODEL` from the selected model directory if yo
 ### Smoke only
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 scripts/run-release-eval.sh --smoke-only
 ```
 
 ### Full release signoff on the current local setup
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
-STENO_WHISPER_CLI=/Users/ankitcherian/Desktop/LocalProjects/Steno/vendor/whisper.cpp/build/bin/whisper-cli \
-STENO_WHISPER_MODEL=/Users/ankitcherian/Desktop/LocalProjects/Steno/vendor/whisper.cpp/models/ggml-large-v3-turbo.bin \
-STENO_VAD_MODEL=/Users/ankitcherian/Desktop/LocalProjects/Steno/vendor/whisper.cpp/models/ggml-silero-v6.2.0.bin \
-STENO_LIBRISPEECH_ROOT=/Users/ankitcherian/Desktop/LocalProjects/Steno/research/benchmarks/data/librispeech_test_clean \
+cd /path/to/steno
+STENO_WHISPER_CLI=/path/to/whisper-cli \
+STENO_WHISPER_MODEL=/path/to/ggml-large-v3-turbo.bin \
+STENO_VAD_MODEL=/path/to/ggml-silero-v6.2.0.bin \
+STENO_LIBRISPEECH_ROOT=/path/to/librispeech_test_clean \
 scripts/run-release-eval.sh
 ```
 
@@ -100,9 +100,9 @@ Release-eval bundles are written under:
 
 `research/benchmarks/generated/release-signoff-YYYY-MM-DD-HOST-CHIP-MEMORYgb-MODEL/`
 
-The current canonical 0.2 candidate bundle is:
+The current canonical 0.2 candidate bundle in this repo is:
 
-`/Users/ankitcherian/Desktop/LocalProjects/Steno-next/research/benchmarks/generated/release-signoff-2026-04-21-macbook-pro-m5-pro-64gb-large-v3-turbo`
+`research/benchmarks/generated/release-signoff-2026-04-21-macbook-pro-m5-pro-64gb-large-v3-turbo`
 
 Inside it:
 

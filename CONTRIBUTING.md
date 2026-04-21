@@ -60,7 +60,7 @@ Before you start:
 For normal code changes, the expected validation path is:
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 swift test --package-path StenoKit
 xcodegen generate
 xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
@@ -77,7 +77,7 @@ Steno has two distinct benchmark paths.
 Use this to confirm the repo-level benchmark machinery is still healthy:
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 scripts/run-smoke-benchmark.sh
 ```
 
@@ -88,7 +88,7 @@ This is a fast fixture path. It is not release evidence.
 Use this when you need a measured verdict for one exact hardware/model row:
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 STENO_WHISPER_CLI=/absolute/path/to/whisper-cli \
 STENO_WHISPER_MODEL=/absolute/path/to/ggml-large-v3-turbo.bin \
 STENO_VAD_MODEL=/absolute/path/to/ggml-silero-v6.2.0.bin \
@@ -137,14 +137,14 @@ Steno uses Swift Testing, not XCTest.
 Run the full package suite:
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 swift test --package-path StenoKit
 ```
 
 Run one test by name:
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 swift test --package-path StenoKit --filter overlayHitTestingReturnsInteractiveButtonForNestedContent
 ```
 

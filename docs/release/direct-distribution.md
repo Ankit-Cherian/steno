@@ -28,7 +28,7 @@ The repo now includes:
 ## Main script
 
 ```bash
-cd /Users/ankitcherian/Desktop/LocalProjects/Steno-next
+cd /path/to/steno
 scripts/release-dmg.sh
 ```
 
@@ -62,9 +62,11 @@ Instead, the release script copies a local runtime into the app bundle from a de
 - one selected canonical model
 - the VAD model
 
-They are copied into:
+They are copied into standard macOS bundle locations:
 
-`Steno.app/Contents/Resources/Runtime/whisper.cpp`
+- helper CLI: `Steno.app/Contents/Helpers/whisper-cli`
+- dylibs: `Steno.app/Contents/Frameworks/`
+- model files: `Steno.app/Contents/Resources/WhisperModels/`
 
 The app now prefers that bundled runtime automatically on first launch when it exists.
 
@@ -72,10 +74,10 @@ The app now prefers that bundled runtime automatically on first launch when it e
 
 By default, the script prefers the first locally available canonical model in this order:
 
-1. `ggml-large-v3-turbo.bin`
-2. `ggml-medium.en.bin`
-3. `ggml-small.en.bin`
-4. `ggml-base.en.bin`
+1. `ggml-small.en.bin`
+2. `ggml-base.en.bin`
+3. `ggml-medium.en.bin`
+4. `ggml-large-v3-turbo.bin`
 
 You can override this explicitly:
 
