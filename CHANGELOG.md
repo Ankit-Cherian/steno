@@ -23,7 +23,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Redesigned Settings with a broader card-based layout, improved permissions and engine surfaces, and a dedicated Appearance section.
 - Refreshed onboarding to match the redesigned shell and local-first product story.
 - Reworked the recording overlay into a waveform-based floating panel with animated bars, terminal-state icons, accent-aware styling, and compact cancellation.
-- Refreshed the macOS app icon to the new beige-primary 0.2 brand.
+- Refreshed the macOS app icon to the new app logo.
 - Updated hardware/model setup guidance in the docs so canonical local models and recommendation tiers are explained consistently across the repo.
 - Benchmark reporting now separates smoke fixtures from release-signoff evidence, records hardware provenance, and uses coordinator stop-to-insert timing for release-tier latency gates.
 
