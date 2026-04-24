@@ -178,7 +178,7 @@ Do not commit personal signing settings.
 
 Keep these local:
 
-- `DEVELOPMENT_TEAM`
+- Apple Developer Team identifiers
 - personal provisioning profiles
 - personal signing identities
 

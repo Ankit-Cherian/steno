@@ -100,13 +100,9 @@ Steno is not distribution-ready yet in a few important ways:
 
 That is correct for local dev, but not for a public downloadable app.
 
-### 2. Current machine only has an Apple Development identity installed
+### 2. Dry-run signing is development-only
 
-Local signing identity check currently shows only:
-
-- `Apple Development: ankitcherian@outlook.com (72FXF6VDRC)`
-
-So before building a public DMG, you need to create/install a **Developer ID Application** certificate in Keychain.
+Apple Development identities were available locally for dry-run packaging, but the final public build requires a **Developer ID Application** certificate and notarization profile.
 
 ### 3. Entitlements need a distribution-safe path
 
