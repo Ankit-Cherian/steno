@@ -38,11 +38,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Switched transcript timestamps to a 12-hour `AM/PM` presentation.
 - Updated the Record surface to reflect the configured Whisper model instead of hardcoding `small.en`.
 - Improved local `whisper.cpp` path repair across checkout/worktree layouts.
+- Prevented disabled Launch at login from showing a warning on cold launch when no ServiceManagement change was requested.
+- Preserved valid custom `whisper-cli` and Whisper model paths when the optional VAD model is missing.
 
 ### Tests
 - Expanded benchmark and release-eval coverage for raw/pipeline/coordinator metrics, signoff thresholds, evidence tiers, timing breakdowns, and coverage-aware `not_evaluable` reporting.
 - Added regression coverage for rich whisper JSON parsing, prompt/suppress argument forwarding, prompt-echo no-speech gating, compatibility-matrix matching, repair-aware cleanup, and confidence-aware ranking.
 - Added targeted tests for repair phrases, literal-preservation counterexamples, command-line argument preservation, and compact overlay hit-testing.
+- Added regression coverage for launch-at-login mutation decisions and custom runtime path repair with a missing VAD model.
 
 ## [0.1.10] - 2026-03-17
 

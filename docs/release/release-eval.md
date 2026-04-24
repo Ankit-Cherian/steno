@@ -102,7 +102,7 @@ Release-eval bundles are written under:
 
 The current canonical 0.2 candidate bundle in this repo is:
 
-`research/benchmarks/generated/release-signoff-2026-04-21-macbook-pro-m5-pro-64gb-large-v3-turbo`
+`research/benchmarks/generated/release-signoff-2026-04-23-macbook-pro-m5-pro-64gb-large-v3-turbo`
 
 Inside it:
 

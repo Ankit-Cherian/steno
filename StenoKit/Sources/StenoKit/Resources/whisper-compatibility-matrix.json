@@ -207,7 +207,7 @@
     "qualityTier": "recommended",
     "p90BudgetMS": 1100,
     "p99BudgetMS": 1200,
-    "notes": "Validated on the 2026-04-20 release-signoff benchmark for 64GB M5 Pro Macs."
+    "notes": "Validated on the 2026-04-23 release-signoff benchmark for 64GB M5 Pro Macs."
   },
   {
     "chipClass": "m5-pro",
