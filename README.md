@@ -35,11 +35,22 @@ Exact measured facts from that bundle:
 
 - Validated row: `m5-pro / 64GB / large-v3-turbo`
 - Canonical release-eval result: `pass`
-- Raw WER -> cleaned WER: `0.2236842105 -> 0.0921052632`
-- Raw CER -> cleaned CER: `0.2335423197 -> 0.0877742947`
-- Coordinator latency: `p50 1049 ms`, `p90 1060 ms`, `p99 1114 ms`
 - Not evaluable gate: `commandPassthroughAccuracy`
 - Manual Mac sanity: `pending`
+
+| Metric | Raw ASR | After Steno cleanup | Improvement |
+|---|---:|---:|---:|
+| Word error rate (WER) | `22.37%` | `9.21%` | `13.16` percentage points lower, `59%` relative error reduction |
+| Character error rate (CER) | `23.35%` | `8.78%` | `14.58` percentage points lower, `62%` relative error reduction |
+
+Coordinator stop-to-insert latency on the same row: `p50 1049 ms`, `p90 1060 ms`, `p99 1114 ms`.
+
+How to read this:
+
+- WER and CER are error rates, so lower is better.
+- The percentage-point drop shows the direct before/after change; relative error reduction shows how much of the raw ASR error Steno removed.
+- Raw ASR is the local `whisper.cpp` transcript before Steno cleanup; cleaned output is the local post-processing result used for insertion/history.
+- These are release-eval corpus numbers for the exact hardware/model row above, not a universal claim for every Mac or every microphone condition.
 
 Important boundaries:
 

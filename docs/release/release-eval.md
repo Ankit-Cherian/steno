@@ -120,6 +120,34 @@ The most important files are:
 
 If older typo-path or double-dash bundles exist from prior runs, treat them as historical only. The newest canonical host/chip/memory/model bundle should be the truth source for public release claims.
 
+## Reporting WER and CER improvements
+
+Release docs should make improvement claims easy to verify without turning them into marketing shorthand.
+
+Use this shape:
+
+| Metric | Raw ASR | After Steno cleanup | Improvement |
+|---|---:|---:|---:|
+| WER | baseline error rate | cleaned error rate | absolute percentage-point drop and relative error reduction |
+| CER | baseline error rate | cleaned error rate | absolute percentage-point drop and relative error reduction |
+
+Rules:
+
+- WER and CER are error rates, so lower is better.
+- WER is the primary ASR metric for English dictation because it measures substitutions, insertions, and deletions at the word level.
+- CER is useful as a companion metric because it shows spelling/character-level cleanup that WER can hide or over-penalize.
+- Always name the baseline. For Steno 0.2 release docs, baseline means raw local `whisper.cpp` output before Steno cleanup.
+- Show absolute drop in percentage points and relative error reduction. Example: `22.37% -> 9.21%` is `13.16` percentage points lower and a `59%` relative WER reduction.
+- Keep corpus, hardware, model, and normalization boundaries visible near the table.
+- Do not describe WER/CER as universal product accuracy, and do not compare against other systems unless the same corpus, normalization policy, and hardware scope are used.
+- Pair accuracy metrics with latency for dictation UX. A lower WER is less useful if stop-to-insert latency no longer feels interactive.
+
+Formula reference:
+
+- `WER = (substitutions + insertions + deletions) / reference words`
+- `CER = (character substitutions + insertions + deletions) / reference characters`
+- `relative error reduction = (raw error rate - cleaned error rate) / raw error rate`
+
 ## Compatibility-matrix policy
 
 The compatibility matrix lives at:
