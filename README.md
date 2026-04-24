@@ -29,16 +29,17 @@ Steno is a local-first voice-to-text app for people who want fast dictation, rel
 
 The current 0.2 candidate has a fresh canonical release-eval bundle rooted at:
 
-`research/benchmarks/generated/release-signoff-2026-04-21-macbook-pro-m5-pro-64gb-large-v3-turbo`
+`research/benchmarks/generated/release-signoff-2026-04-23-macbook-pro-m5-pro-64gb-large-v3-turbo`
 
 Exact measured facts from that bundle:
 
 - Validated row: `m5-pro / 64GB / large-v3-turbo`
 - Canonical release-eval result: `pass`
-- Raw WER -> cleaned WER: `0.2237 -> 0.0921`
-- Raw CER -> cleaned CER: `0.2335 -> 0.0878`
-- Coordinator latency: `p50 1051 ms`, `p90 1072 ms`, `p99 1121 ms`
+- Raw WER -> cleaned WER: `0.2236842105 -> 0.0921052632`
+- Raw CER -> cleaned CER: `0.2335423197 -> 0.0877742947`
+- Coordinator latency: `p50 1049 ms`, `p90 1060 ms`, `p99 1114 ms`
 - Not evaluable gate: `commandPassthroughAccuracy`
+- Manual Mac sanity: `pending`
 
 Important boundaries:
 
