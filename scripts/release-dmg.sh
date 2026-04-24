@@ -306,6 +306,20 @@ create_dmg() {
   hdiutil verify "$output_path"
 }
 
+sign_dmg() {
+  local dmg_path="$1"
+  local identity="$2"
+  local identifier="$3"
+
+  codesign --force \
+    --sign "$identity" \
+    --timestamp \
+    -i "$identifier" \
+    "$dmg_path"
+  codesign --verify --verbose=2 "$dmg_path"
+  codesign -dvvv "$dmg_path" >/dev/null
+}
+
 IDENTITY="$(detect_identity)"
 WHISPER_ROOT="$(detect_whisper_root)"
 MODEL_PATH="$(detect_model_path "$WHISPER_ROOT")"
@@ -368,14 +382,19 @@ echo "==> bundled runtime smoke test"
 smoke_test_bundled_runtime "$UNSIGNED_APP"
 
 APP_VERSION="$(defaults read "$UNSIGNED_APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "0.2.0")"
+APP_BUNDLE_ID="$(defaults read "$UNSIGNED_APP/Contents/Info" CFBundleIdentifier 2>/dev/null || echo "io.stenoapp.steno")"
+DMG_SIGNING_IDENTIFIER="${APP_BUNDLE_ID}.dmg"
 DMG_PATH="$DIST_DIR/Steno-${APP_VERSION}.dmg"
 rm -f "$DMG_PATH"
 
 echo "==> create DMG"
 create_dmg "$UNSIGNED_APP" "$DMG_PATH"
 
+echo "==> sign DMG"
+sign_dmg "$DMG_PATH" "$IDENTITY" "$DMG_SIGNING_IDENTIFIER"
+
 if [[ "$SKIP_NOTARIZE" -eq 1 ]]; then
-  echo "DMG created without notarization:"
+  echo "Signed DMG created without notarization:"
   echo "  App: $UNSIGNED_APP"
   echo "  DMG: $DMG_PATH"
   exit 0

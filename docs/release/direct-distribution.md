@@ -23,7 +23,7 @@ The repo now includes:
   - builds an unsigned Release app
   - injects a bundled `whisper.cpp` runtime and model into the app bundle
   - patches runtime rpaths for the bundled layout
-  - signs the app
+  - signs the app and DMG with Developer ID Application signing
   - creates a DMG
   - optionally notarizes and staples the DMG
 
@@ -121,6 +121,7 @@ with a real `Developer ID Application` certificate available.
 After a real run:
 
 - `codesign --verify --deep --strict --verbose=2 build/distribution/Steno.app`
+- `codesign --verify --verbose=2 build/distribution/Steno-0.2.0.dmg`
 - `xcrun stapler validate build/distribution/Steno-0.2.0.dmg`
 - `spctl -a -vv -t open --context context:primary-signature build/distribution/Steno-0.2.0.dmg`
 
