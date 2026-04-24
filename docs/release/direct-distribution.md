@@ -94,7 +94,7 @@ STENO_BUNDLED_MODEL_PATH=/absolute/path/to/ggml-small.en.bin scripts/release-dmg
 If you only want to test the packaging pipeline:
 
 ```bash
-STENO_DIST_SIGN_IDENTITY="Apple Development: your@email.com (TEAMID)" \
+STENO_DIST_SIGN_IDENTITY="<local development signing identity>" \
 scripts/release-dmg.sh --skip-notarize
 ```
 
@@ -126,9 +126,8 @@ After a real run:
 
 ## Current blocker
 
-As of the current repo state, the packaging mechanics are working, but a fully public notarized DMG is still blocked by local Apple-account setup:
+As of the current repo state, the packaging mechanics are working, but a fully public notarized DMG still requires distribution signing setup:
 
-- the machine currently only has an `Apple Development` signing identity installed
 - a `Developer ID Application` certificate still needs to be installed
 - a `notarytool` keychain profile still needs to be configured
 
