@@ -15,11 +15,27 @@ enum LaunchAtLoginServiceError: Error, LocalizedError {
 @MainActor
 final class LaunchAtLoginService {
     func setEnabled(_ enabled: Bool) throws {
+        let service = SMAppService.mainApp
+
         do {
             if enabled {
-                try SMAppService.mainApp.register()
+                switch service.status {
+                case .enabled, .requiresApproval:
+                    return
+                case .notRegistered, .notFound:
+                    try service.register()
+                @unknown default:
+                    try service.register()
+                }
             } else {
-                try SMAppService.mainApp.unregister()
+                switch service.status {
+                case .notRegistered, .notFound:
+                    return
+                case .enabled, .requiresApproval:
+                    try service.unregister()
+                @unknown default:
+                    try service.unregister()
+                }
             }
         } catch {
             throw LaunchAtLoginServiceError.failed(underlying: error)

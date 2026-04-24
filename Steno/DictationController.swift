@@ -45,6 +45,7 @@ final class DictationController: ObservableObject {
     private var activeMediaToken: MediaInterruptionToken?
     private var activeStartTask: Task<Void, Never>?
     private var pendingRuntimeRebuild = false
+    private var launchAtLoginServicePreference = AppPreferences.default.general.launchAtLoginEnabled
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
     private var terminationTask: Task<Void, Never>?
@@ -172,6 +173,8 @@ final class DictationController: ObservableObject {
         loaded.normalize()
 
         applyPreferencesLocally(loaded)
+        launchAtLoginServicePreference = loaded.general.launchAtLoginEnabled
+        launchAtLoginWarning = ""
         refreshPermissionStatuses()
         validateWhisperPaths()
         await rebuildRuntime()
@@ -188,6 +191,10 @@ final class DictationController: ObservableObject {
         Task {
             await preferencesStore.save(snapshot)
             await MainActor.run {
+                applyLaunchAtLoginPreference(
+                    requestedPreference: snapshot.general.launchAtLoginEnabled,
+                    userInitiated: true
+                )
                 status = "Settings saved."
             }
             await rebuildRuntimeOrDefer()
@@ -202,6 +209,10 @@ final class DictationController: ObservableObject {
         Task {
             await preferencesStore.save(snapshot)
             await MainActor.run {
+                applyLaunchAtLoginPreference(
+                    requestedPreference: snapshot.general.launchAtLoginEnabled,
+                    userInitiated: true
+                )
                 status = "Settings saved."
             }
             await rebuildRuntimeOrDefer()
@@ -734,14 +745,32 @@ final class DictationController: ObservableObject {
             fallbackCleanupEngine: RuleBasedCleanupEngine()
         )
 
-        do {
-            try launchAtLoginService.setEnabled(snapshot.general.launchAtLoginEnabled)
-            launchAtLoginWarning = ""
-        } catch {
-            launchAtLoginWarning = error.localizedDescription
-        }
-
         status = "Running local transcription + local cleanup."
+    }
+
+    private func applyLaunchAtLoginPreference(requestedPreference: Bool, userInitiated: Bool) {
+        let decision = LaunchAtLoginMutationPolicy.decision(
+            currentPreference: launchAtLoginServicePreference,
+            requestedPreference: requestedPreference,
+            userInitiated: userInitiated
+        )
+
+        switch decision {
+        case .skip:
+            launchAtLoginWarning = ""
+        case .setEnabled(let enabled):
+            do {
+                try launchAtLoginService.setEnabled(enabled)
+                launchAtLoginServicePreference = enabled
+                launchAtLoginWarning = ""
+            } catch {
+                launchAtLoginWarning = LaunchAtLoginMutationPolicy.warningMessage(
+                    requestedPreference: requestedPreference,
+                    userInitiated: userInitiated,
+                    errorDescription: error.localizedDescription
+                ) ?? ""
+            }
+        }
     }
 
     private func fallbackWarningText(from outcome: CleanupOutcome?) -> String? {
