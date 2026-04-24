@@ -47,6 +47,38 @@ func syncedVADModelPathPreservesCustomPath() {
     )
 }
 
+@Test("path repair preserves custom CLI and model when only VAD is missing")
+func pathRepairPreservesValidCustomRuntimeWithoutVAD() {
+    let original = WhisperRuntimePathSelection(
+        whisperCLIPath: "/custom/bin/whisper-cli",
+        modelPath: "/custom/models/ggml-large-v3-turbo.bin",
+        vadModelPath: "/custom/models/missing-vad.bin"
+    )
+    let bundled = WhisperRuntimePathCandidates(
+        whisperCLIPath: "/bundle/Helpers/whisper-cli",
+        modelPath: "/bundle/Models/ggml-small.en.bin",
+        vadModelPath: "/bundle/Models/ggml-silero-v6.2.0.bin"
+    )
+    let existingPaths: Set<String> = [
+        original.whisperCLIPath,
+        original.modelPath,
+        bundled.whisperCLIPath,
+        bundled.modelPath,
+        bundled.vadModelPath!
+    ]
+
+    let repaired = WhisperRuntimePathRepair.repairedSelection(
+        current: original,
+        bundled: bundled,
+        vendor: nil,
+        fileExists: existingPaths.contains
+    )
+
+    #expect(repaired.whisperCLIPath == original.whisperCLIPath)
+    #expect(repaired.modelPath == original.modelPath)
+    #expect(repaired.vadModelPath == original.vadModelPath)
+}
+
 @Test("additionalArguments always include thread count and suppress-nst")
 func additionalArgumentsAlwaysIncludeSuppressNST() {
     let args = WhisperRuntimeConfiguration.additionalArguments(
