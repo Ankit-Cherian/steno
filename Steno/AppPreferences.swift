@@ -104,46 +104,34 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         mutating func repairPathsIfNeeded() {
             let fileManager = FileManager.default
-            let cliExists = fileManager.fileExists(atPath: whisperCLIPath)
-            let modelExists = fileManager.fileExists(atPath: modelPath)
-            let vadExists = fileManager.fileExists(atPath: vadModelPath)
-
-            guard !(cliExists && modelExists && (!vadEnabled || vadExists)) else {
-                return
+            let bundledRuntime = BundledWhisperRuntime.resolvedPaths(bundle: .main, fileManager: fileManager)
+            let vendorRuntime = Self.detectedVendorRoot().map { vendorRoot in
+                WhisperRuntimePathCandidates(
+                    whisperCLIPath: vendorRoot.appendingPathComponent("build/bin/whisper-cli").path,
+                    modelPath: vendorRoot.appendingPathComponent("models/ggml-small.en.bin").path,
+                    vadModelPath: vendorRoot.appendingPathComponent("models/ggml-silero-v6.2.0.bin").path
+                )
             }
+            let repaired = WhisperRuntimePathRepair.repairedSelection(
+                current: .init(
+                    whisperCLIPath: whisperCLIPath,
+                    modelPath: modelPath,
+                    vadModelPath: vadModelPath
+                ),
+                bundled: bundledRuntime.map {
+                    WhisperRuntimePathCandidates(
+                        whisperCLIPath: $0.whisperCLIPath,
+                        modelPath: $0.modelPath,
+                        vadModelPath: $0.vadModelPath
+                    )
+                },
+                vendor: vendorRuntime,
+                fileExists: fileManager.fileExists(atPath:)
+            )
 
-            if let bundledRuntime = BundledWhisperRuntime.resolvedPaths(bundle: .main, fileManager: fileManager) {
-                whisperCLIPath = bundledRuntime.whisperCLIPath
-                modelPath = bundledRuntime.modelPath
-                if let bundledVAD = bundledRuntime.vadModelPath {
-                    vadModelPath = bundledVAD
-                } else {
-                    vadModelPath = WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: modelPath)
-                }
-                return
-            }
-
-            guard let vendorRoot = Self.detectedVendorRoot() else {
-                return
-            }
-
-            let repairedCLI = vendorRoot.appendingPathComponent("build/bin/whisper-cli").path
-            let repairedModel = vendorRoot.appendingPathComponent("models/ggml-small.en.bin").path
-            let repairedVAD = vendorRoot.appendingPathComponent("models/ggml-silero-v6.2.0.bin").path
-
-            if fileManager.fileExists(atPath: repairedCLI) {
-                whisperCLIPath = repairedCLI
-            }
-
-            if fileManager.fileExists(atPath: repairedModel) {
-                modelPath = repairedModel
-            }
-
-            if fileManager.fileExists(atPath: repairedVAD) {
-                vadModelPath = repairedVAD
-            } else if fileManager.fileExists(atPath: modelPath) {
-                vadModelPath = WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: modelPath)
-            }
+            whisperCLIPath = repaired.whisperCLIPath
+            modelPath = repaired.modelPath
+            vadModelPath = repaired.vadModelPath
         }
 
         private static func detectedVendorRoot() -> URL? {
