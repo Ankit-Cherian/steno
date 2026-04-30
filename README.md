@@ -6,6 +6,14 @@ Steno is a local-first voice-to-text app for people who want fast dictation, rel
 
 [![Swift Tests](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml)
 
+## Download
+
+Download the current macOS release:
+
+[Download Steno-0.2.0.dmg](https://github.com/Ankit-Cherian/steno/releases/download/v0.2.0/Steno-0.2.0.dmg)
+
+Open the DMG, drag Steno to Applications, then launch Steno from Applications. Source setup is only needed if you want to build or contribute to the app.
+
 ## Why 0.2 Matters
 
 - Full macOS redesign across the app shell, Record, History, Settings, onboarding, and the floating overlay.
@@ -39,59 +47,18 @@ Key results:
 
 ## Screenshots
 
-Representative 0.2 redesign screenshots:
+Representative 0.2 screenshots:
 
 <table>
   <tr>
-    <td><img src="assets/record.png" alt="Record tab in the redesigned 0.2 shell" width="400"></td>
-    <td><img src="assets/history.png" alt="History tab in the redesigned 0.2 shell" width="400"></td>
-  </tr>
-  <tr>
-    <td><img src="assets/settings-top.png" alt="Top portion of redesigned settings" width="400"></td>
-    <td><img src="assets/settings-bottom.png" alt="Lower portion of redesigned settings" width="400"></td>
+    <td><img src="assets/record.png" alt="Record tab in Steno 0.2" width="500"></td>
+    <td><img src="assets/settings.png" alt="Settings appearance tab in Steno 0.2" width="500"></td>
   </tr>
 </table>
 
-## Quick Setup
+## Developer Setup
 
-If you want the fastest path to a local run, use [QUICKSTART.md](QUICKSTART.md). The short version:
-
-1. Clone the repository:
-
-   ```bash
-   git clone https://github.com/Ankit-Cherian/steno.git
-   cd steno
-   ```
-
-2. Build `whisper.cpp` locally:
-
-   ```bash
-   git clone https://github.com/ggerganov/whisper.cpp vendor/whisper.cpp
-   cd vendor/whisper.cpp
-   git checkout v1.8.3
-   cmake -B build && cmake --build build --config Release
-   cd ../..
-   ```
-
-3. Download at least one canonical model, plus the VAD model:
-
-   ```bash
-   cd vendor/whisper.cpp
-   ./models/download-ggml-model.sh small.en
-   ./models/download-ggml-model.sh medium.en
-   ./models/download-ggml-model.sh large-v3-turbo
-   cd models
-   ./download-vad-model.sh silero-v6.2.0
-   cd ../../..
-   ```
-
-4. Generate the local Xcode project and run:
-
-   ```bash
-   xcodegen generate
-   ```
-
-   Then open `Steno.xcodeproj`, set your Apple Developer Team in Signing & Capabilities, and run the `Steno` scheme.
+For source builds, use [QUICKSTART.md](QUICKSTART.md). Local development expects Xcode, XcodeGen, a local `whisper.cpp` runtime, and downloaded model files.
 
 ### Model guidance
 
