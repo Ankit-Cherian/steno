@@ -8,11 +8,11 @@ Steno is a local-first voice-to-text app for people who want fast dictation, rel
 
 ## Download
 
-Download Steno from GitHub Releases:
+Download Steno v0.2.0:
 
-[GitHub Releases](https://github.com/Ankit-Cherian/steno/releases)
+[Download Steno-0.2.0.dmg](https://github.com/Ankit-Cherian/steno/releases/download/v0.2.0/Steno-0.2.0.dmg)
 
-The v0.2.0 DMG will appear there once the release is published. Open the DMG, drag Steno to Applications, then launch Steno from Applications. Source setup is only needed if you want to build or contribute to the app.
+Open the DMG, drag Steno to Applications, then launch Steno from Applications. Source setup is only needed if you want to build or contribute to the app.
 
 ## Why 0.2 Matters
 
