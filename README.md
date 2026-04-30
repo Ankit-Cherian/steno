@@ -25,39 +25,17 @@ Steno is a local-first voice-to-text app for people who want fast dictation, rel
 - VoiceOver-aware controls and reduced-motion-aware animation behavior
 - Floating recording overlay with waveform motion, terminal-state icons, and compact cancel controls
 
-## Validated Release Evidence
+## Release Validation
 
-The current 0.2 candidate has a fresh canonical release-eval bundle rooted at:
+The current 0.2 candidate passed the April 23 release evaluation on an M5 Pro MacBook Pro with 64GB memory using the Large V3 Turbo model.
 
-`research/benchmarks/generated/release-signoff-2026-04-23-macbook-pro-m5-pro-64gb-large-v3-turbo`
+Key results:
 
-Exact measured facts from that bundle:
-
-- Validated row: `m5-pro / 64GB / large-v3-turbo`
-- Canonical release-eval result: `pass`
-- Not evaluable gate: `commandPassthroughAccuracy`
-- Manual Mac sanity: `pending`
-
-| Metric | Raw ASR | After Steno cleanup | Improvement |
-|---|---:|---:|---:|
-| Word error rate (WER) | `22.37%` | `9.21%` | `13.16` percentage points lower, `59%` relative error reduction |
-| Character error rate (CER) | `23.35%` | `8.78%` | `14.58` percentage points lower, `62%` relative error reduction |
-
-Coordinator stop-to-insert latency on the same row: `p50 1049 ms`, `p90 1060 ms`, `p99 1114 ms`.
-
-How to read this:
-
-- WER and CER are error rates, so lower is better.
-- The percentage-point drop shows the direct before/after change; relative error reduction shows how much of the raw ASR error Steno removed.
-- Raw ASR is the local `whisper.cpp` transcript before Steno cleanup; cleaned output is the local post-processing result used for insertion/history.
-- These are release-eval corpus numbers for the exact hardware/model row above, not a universal claim for every Mac or every microphone condition.
-
-Important boundaries:
-
-- This validates the exact row above, not every Pro or Max configuration.
-- Smoke fixtures are preflight checks, not release evidence.
-- Manual macOS sanity is still tracked separately from the blocking metric gate.
-- Command passthrough is still conservative in public claims because the canonical corpus does not yet preserve a raw leading slash through the raw benchmark pass.
+- Cleaned WER: 9.21%
+- Cleaned CER: 8.78%
+- Coordinator latency: 1049ms p50, 1060ms p90, 1114ms p99
+- Status: passed
+- Manual Mac sanity checklist: pending
 
 ## Screenshots
 
@@ -158,7 +136,7 @@ scripts/run-release-eval.sh
 Useful notes:
 
 - `scripts/run-release-eval.sh --smoke-only` runs only the package tests plus the smoke fixture benchmark.
-- Full release eval writes ignored local bundles under `research/benchmarks/generated/`.
+- Full release eval writes local audit artifacts that stay out of git.
 - Smoke and release evidence are intentionally separate.
 - The release report also records `not_evaluable` gates when the corpus did not honestly exercise a metric.
 

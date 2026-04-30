@@ -101,7 +101,7 @@ Important boundaries:
 - smoke fixtures are preflight only
 - release signoff is row-specific
 - `not_evaluable` metrics should not be presented as real passes or real failures
-- generated release bundles under `research/benchmarks/generated/` are ignored local artifacts, not tracked source files
+- generated release outputs are local audit artifacts, not tracked source files
 
 For the detailed workflow, see [docs/release/release-eval.md](docs/release/release-eval.md).
 

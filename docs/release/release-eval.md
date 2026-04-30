@@ -94,31 +94,9 @@ STENO_LIBRISPEECH_ROOT=/path/to/librispeech_test_clean \
 scripts/run-release-eval.sh
 ```
 
-## Canonical artifact roots
+## Release Output Boundary
 
-Release-eval bundles are written under:
-
-`research/benchmarks/generated/release-signoff-YYYY-MM-DD-HOST-CHIP-MEMORYgb-MODEL/`
-
-The current canonical 0.2 candidate bundle in this repo is:
-
-`research/benchmarks/generated/release-signoff-2026-04-23-macbook-pro-m5-pro-64gb-large-v3-turbo`
-
-Inside it:
-
-- `smoke/` contains the smoke fixture artifacts
-- `release/` contains the real release-signoff artifacts
-
-The most important files are:
-
-- `release/release_eval_summary.json`
-- `release/release_eval_report.md`
-- `release/results/raw_engine.json`
-- `release/results/steno_pipeline.json`
-- `release/results/mac_sanity.json`
-- `release/REPORT.md`
-
-If older typo-path or double-dash bundles exist from prior runs, treat them as historical only. The newest canonical host/chip/memory/model bundle should be the truth source for public release claims.
+Full release-eval runs create local audit artifacts for verification. Keep those outputs out of git, and publish summarized metrics instead of local artifact paths.
 
 ## Reporting WER and CER improvements
 
