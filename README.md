@@ -8,11 +8,11 @@ Steno is a local-first voice-to-text app for people who want fast dictation, rel
 
 ## Download
 
-Download the current macOS release:
+Download Steno from GitHub Releases:
 
-[Download Steno-0.2.0.dmg](https://github.com/Ankit-Cherian/steno/releases/download/v0.2.0/Steno-0.2.0.dmg)
+[GitHub Releases](https://github.com/Ankit-Cherian/steno/releases)
 
-Open the DMG, drag Steno to Applications, then launch Steno from Applications. Source setup is only needed if you want to build or contribute to the app.
+The v0.2.0 DMG will appear there once the release is published. Open the DMG, drag Steno to Applications, then launch Steno from Applications. Source setup is only needed if you want to build or contribute to the app.
 
 ## Why 0.2 Matters
 
@@ -47,12 +47,10 @@ Key results:
 
 ## Screenshots
 
-Representative 0.2 screenshots:
-
 <table>
   <tr>
-    <td><img src="assets/record.png" alt="Record tab in Steno 0.2" width="500"></td>
-    <td><img src="assets/settings.png" alt="Settings appearance tab in Steno 0.2" width="500"></td>
+    <td><img src="assets/record.png" alt="Record tab in Steno 0.2" width="620"></td>
+    <td><img src="assets/settings.png" alt="Settings appearance tab in Steno 0.2" width="620"></td>
   </tr>
 </table>
 
