@@ -288,6 +288,38 @@ smoke_test_bundled_runtime() {
   fi
 }
 
+scan_distribution_hygiene() {
+  local app_path="$1"
+  local patterns=()
+  local pattern
+
+  patterns+=("$HOME" "$REPO_ROOT")
+  [[ -n "${STENO_BUNDLED_WHISPER_ROOT:-}" ]] && patterns+=("$STENO_BUNDLED_WHISPER_ROOT")
+  [[ -n "${STENO_BUNDLED_MODEL_PATH:-}" ]] && patterns+=("$STENO_BUNDLED_MODEL_PATH")
+  [[ -n "${STENO_BUNDLED_VAD_MODEL_PATH:-}" ]] && patterns+=("$STENO_BUNDLED_VAD_MODEL_PATH")
+
+  local repo_leaf
+  repo_leaf="$(basename "$REPO_ROOT")"
+  if [[ "$repo_leaf" != "$APP_NAME" ]]; then
+    patterns+=("$repo_leaf")
+  fi
+  patterns+=("Desktop/LocalProjects")
+
+  local leaked=0
+  local file
+  while IFS= read -r -d '' file; do
+    for pattern in "${patterns[@]}"; do
+      if [[ -n "$pattern" ]] && strings -a "$file" | grep -Fq -- "$pattern"; then
+        echo "Error: local build path leaked in bundle file: ${file#$app_path/}" >&2
+        leaked=1
+        break
+      fi
+    done
+  done < <(find "$app_path/Contents" -type f -print0)
+
+  [[ "$leaked" -eq 0 ]] || die "Distribution hygiene scan failed. Rebuild bundled runtime with prefix-mapped source paths."
+}
+
 create_dmg() {
   local app_path="$1"
   local output_path="$2"
@@ -380,6 +412,9 @@ codesign -dvvv --entitlements :- "$UNSIGNED_APP" >/dev/null
 
 echo "==> bundled runtime smoke test"
 smoke_test_bundled_runtime "$UNSIGNED_APP"
+
+echo "==> distribution hygiene scan"
+scan_distribution_hygiene "$UNSIGNED_APP"
 
 APP_VERSION="$(defaults read "$UNSIGNED_APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "0.2.0")"
 APP_BUNDLE_ID="$(defaults read "$UNSIGNED_APP/Contents/Info" CFBundleIdentifier 2>/dev/null || echo "io.stenoapp.steno")"
