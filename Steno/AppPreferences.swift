@@ -146,6 +146,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 cwd.appendingPathComponent("../Steno/vendor/whisper.cpp", isDirectory: true)
             ]
 
+            #if DEBUG
             let localProjects = home.appendingPathComponent("Desktop/LocalProjects", isDirectory: true)
             if let projectDirs = try? fileManager.contentsOfDirectory(
                 at: localProjects,
@@ -156,6 +157,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
                     $0.appendingPathComponent("vendor/whisper.cpp", isDirectory: true)
                 })
             }
+            #endif
 
             return candidates.first { candidate in
                 fileManager.fileExists(atPath: candidate.appendingPathComponent("build/bin/whisper-cli").path)
