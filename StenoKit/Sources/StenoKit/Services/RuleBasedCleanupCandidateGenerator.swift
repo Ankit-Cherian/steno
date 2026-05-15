@@ -223,8 +223,10 @@ public struct RuleBasedCleanupCandidateGenerator: Sendable {
     ) -> [SeedVariant] {
         let base = SeedVariant(text: raw.text, edits: [], rulePathID: "literal")
         let repairs = repairVariants(from: raw.text)
+        let spokenSymbols = spokenSymbolVariants(from: raw.text)
         var variants: [SeedVariant] = [base]
         variants.append(contentsOf: repairs)
+        variants.append(contentsOf: spokenSymbols)
 
         var expanded: [SeedVariant] = variants
         for variant in variants {
@@ -272,6 +274,263 @@ public struct RuleBasedCleanupCandidateGenerator: Sendable {
         }
 
         return candidates
+    }
+
+    private func spokenSymbolVariants(from text: String) -> [SeedVariant] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        guard trimmed.hasPrefix("/") == false else { return [] }
+        guard looksLikeLiteralSymbolInstruction(text) == false else { return [] }
+
+        let spans = tokenSpans(in: text)
+        guard !spans.isEmpty else { return [] }
+
+        var pieces: [String] = []
+        var edits: [TranscriptEdit] = []
+        var index = 0
+        var changed = false
+
+        while index < spans.count {
+            if let match = spokenSymbolMatch(in: spans, at: index) {
+                let atStart = pieces.isEmpty
+                guard shouldApplySpokenSymbolMatch(match, in: spans, at: index, atStart: atStart) else {
+                    appendWord(spans[index].text, to: &pieces)
+                    index += 1
+                    continue
+                }
+
+                switch match.spacing {
+                case .word:
+                    appendWord(match.text, to: &pieces)
+                case .punctuation:
+                    appendPunctuation(match.text, to: &pieces)
+                case .opening:
+                    appendOpening(match.text, to: &pieces)
+                case .closing:
+                    appendClosing(match.text, to: &pieces)
+                case .prefix:
+                    guard atStart else {
+                        appendWord(spans[index].text, to: &pieces)
+                        index += 1
+                        continue
+                    }
+                    appendPrefix(match.text, to: &pieces)
+                }
+                edits.append(.init(kind: match.kind, from: match.phrase, to: match.text))
+                index += match.length
+                changed = true
+            } else {
+                appendWord(spans[index].text, to: &pieces)
+                index += 1
+            }
+        }
+
+        guard changed else { return [] }
+        let transformed = pieces.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard transformed != trimmed else { return [] }
+        guard isSafeSpokenSymbolCandidate(transformed) else { return [] }
+
+        return [
+            SeedVariant(
+                text: transformed,
+                edits: edits,
+                rulePathID: "spoken-symbols"
+            )
+        ]
+    }
+
+    private enum SymbolSpacing {
+        case word
+        case punctuation
+        case opening
+        case closing
+        case prefix
+    }
+
+    private struct SpokenSymbolMatch {
+        var phrase: String
+        var text: String
+        var length: Int
+        var spacing: SymbolSpacing
+        var kind: TranscriptEdit.Kind
+    }
+
+    private func spokenSymbolMatch(in spans: [TokenSpan], at index: Int) -> SpokenSymbolMatch? {
+        func matches(_ words: [String]) -> Bool {
+            guard index + words.count <= spans.count else { return false }
+            for offset in words.indices {
+                guard normalize(spans[index + offset].text) == words[offset] else {
+                    return false
+                }
+            }
+            return true
+        }
+
+        let specs: [(words: [String], text: String, spacing: SymbolSpacing, kind: TranscriptEdit.Kind)] = [
+            (["question", "mark"], "?", .punctuation, .punctuation),
+            (["exclamation", "point"], "!", .punctuation, .punctuation),
+            (["exclamation", "mark"], "!", .punctuation, .punctuation),
+            (["open", "paren"], "(", .opening, .punctuation),
+            (["open", "parenthesis"], "(", .opening, .punctuation),
+            (["left", "paren"], "(", .opening, .punctuation),
+            (["left", "parenthesis"], "(", .opening, .punctuation),
+            (["close", "paren"], ")", .closing, .punctuation),
+            (["close", "parenthesis"], ")", .closing, .punctuation),
+            (["right", "paren"], ")", .closing, .punctuation),
+            (["right", "parenthesis"], ")", .closing, .punctuation),
+            (["forward", "slash"], "/", .prefix, .commandTransform),
+            (["at", "sign"], "@", .prefix, .commandTransform),
+            (["comma"], ",", .punctuation, .punctuation),
+            (["period"], ".", .punctuation, .punctuation),
+            (["backtick"], "`", .punctuation, .punctuation),
+            (["slash"], "/", .prefix, .commandTransform),
+        ]
+
+        for spec in specs where matches(spec.words) {
+            return SpokenSymbolMatch(
+                phrase: spec.words.joined(separator: " "),
+                text: spec.text,
+                length: spec.words.count,
+                spacing: spec.spacing,
+                kind: spec.kind
+            )
+        }
+
+        return nil
+    }
+
+    private func shouldApplySpokenSymbolMatch(
+        _ match: SpokenSymbolMatch,
+        in spans: [TokenSpan],
+        at index: Int,
+        atStart: Bool
+    ) -> Bool {
+        if match.spacing == .prefix {
+            return atStart && isCommandPrefixContext(match, in: spans, at: index)
+        }
+
+        return isNounLikeSymbolReference(match, in: spans, at: index) == false
+    }
+
+    private func isNounLikeSymbolReference(
+        _ match: SpokenSymbolMatch,
+        in spans: [TokenSpan],
+        at index: Int
+    ) -> Bool {
+        let previous = normalizedWord(in: spans, at: index - 1)
+        if let previous, ["a", "an", "the"].contains(previous) {
+            return true
+        }
+
+        let next = normalizedWord(in: spans, at: index + match.length)
+        if let next, ["of", "key", "keys", "button", "word", "words", "phrase", "phrases", "character", "characters", "symbol", "symbols"].contains(next) {
+            return true
+        }
+
+        return false
+    }
+
+    private func isCommandPrefixContext(
+        _ match: SpokenSymbolMatch,
+        in spans: [TokenSpan],
+        at index: Int
+    ) -> Bool {
+        let remaining = spans.dropFirst(index + match.length).map { normalize($0.text) }
+        guard remaining.isEmpty == false else { return false }
+        guard remaining.count <= 3 else { return false }
+        guard ["a", "an", "the"].contains(remaining[0]) == false else { return false }
+
+        let proseSignals: Set<String> = [
+            "am", "is", "are", "was", "were", "be", "being", "been",
+            "mentioned", "discussed", "yesterday", "today", "meeting"
+        ]
+        return remaining.dropFirst().allSatisfy { proseSignals.contains($0) == false }
+    }
+
+    private func normalizedWord(in spans: [TokenSpan], at index: Int) -> String? {
+        guard spans.indices.contains(index) else { return nil }
+        return normalize(spans[index].text)
+    }
+
+    private func isSafeSpokenSymbolCandidate(_ text: String) -> Bool {
+        guard tokenSpans(in: text).isEmpty == false else { return false }
+        guard text.range(of: #"^[,.!?)]"#, options: .regularExpression) == nil else { return false }
+        guard text.range(of: #"(,,|\.\.|\?\?|!!)"#, options: .regularExpression) == nil else { return false }
+        guard text.hasSuffix(",") == false else { return false }
+        guard text.hasSuffix("(") == false else { return false }
+        guard text.filter({ $0 == "`" }).count.isMultiple(of: 2) else { return false }
+        return hasBalancedParentheses(text)
+    }
+
+    private func hasBalancedParentheses(_ text: String) -> Bool {
+        var depth = 0
+        for character in text {
+            if character == "(" {
+                depth += 1
+            } else if character == ")" {
+                depth -= 1
+                if depth < 0 { return false }
+            }
+        }
+        return depth == 0
+    }
+
+    private func looksLikeLiteralSymbolInstruction(_ text: String) -> Bool {
+        let normalized = normalize(text)
+        guard !normalized.isEmpty else { return false }
+
+        let words = tokenSpans(in: text).map { normalize($0.text) }
+        if words.indices.contains(where: { index in
+            index + 1 < words.count && words[index] == "spell" && words[index + 1] == "out"
+        }) {
+            return true
+        }
+
+        if words.contains(where: { $0 == "literal" || $0 == "literally" }) {
+            let instructionCues = ["write", "type", "say", "spell"]
+            if words.contains(where: { instructionCues.contains($0) }) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func appendWord(_ word: String, to pieces: inout [String]) {
+        if pieces.isEmpty {
+            pieces.append(word)
+        } else if shouldAttachNextWord(after: pieces.last) {
+            pieces.append(word)
+        } else {
+            pieces.append(" \(word)")
+        }
+    }
+
+    private func shouldAttachNextWord(after piece: String?) -> Bool {
+        guard let piece else { return false }
+        return piece == "("
+            || piece == "`"
+            || piece == "/"
+            || piece == "@"
+    }
+
+    private func appendPunctuation(_ mark: String, to pieces: inout [String]) {
+        pieces.append(mark)
+    }
+
+    private func appendOpening(_ mark: String, to pieces: inout [String]) {
+        if !pieces.isEmpty, shouldAttachNextWord(after: pieces.last) == false {
+            pieces.append(" ")
+        }
+        pieces.append(mark)
+    }
+
+    private func appendClosing(_ mark: String, to pieces: inout [String]) {
+        pieces.append(mark)
+    }
+
+    private func appendPrefix(_ mark: String, to pieces: inout [String]) {
+        pieces.append(mark)
     }
 
     private func looksLikeLiteralInstruction(prefix: String, suffix: String) -> Bool {

@@ -243,7 +243,7 @@ func sessionCoordinatorForwardsTranscriptionContext() async throws {
     await lexicon.upsert(
         term: "TURSO",
         preferred: "TURSO",
-        scope: .app(bundleID: "com.todesktop.230313mzl4w4u92"),
+        scope: .app(bundleID: "com.example.editor"),
         aliases: ["terso", "ter so"]
     )
 
@@ -258,8 +258,8 @@ func sessionCoordinatorForwardsTranscriptionContext() async throws {
     )
 
     let appContext = AppContext(
-        bundleIdentifier: "com.todesktop.230313mzl4w4u92",
-        appName: "Cursor",
+        bundleIdentifier: "com.example.editor",
+        appName: "EditorPro",
         isIDE: true
     )
     let sessionID = try await coordinator.startPressToTalk(appContext: appContext)

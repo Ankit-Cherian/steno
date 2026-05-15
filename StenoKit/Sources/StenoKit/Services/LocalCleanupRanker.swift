@@ -159,6 +159,16 @@ public struct LocalCleanupRanker: Sendable {
             score -= 0.2
         }
 
+        let punctuationEdits = candidate.appliedEdits.filter { $0.kind == .punctuation }.count
+        if punctuationEdits > 0 {
+            score += min(0.75, Double(punctuationEdits) * 0.60)
+        }
+
+        let commandTransforms = candidate.appliedEdits.filter { $0.kind == .commandTransform }.count
+        if commandTransforms > 0, startsWithSpokenCommandSymbol(rawText) {
+            score += min(0.75, Double(commandTransforms) * 0.65)
+        }
+
         if isContextualYouKnowRemoved(rawText: rawText, candidate: candidate) {
             score += 0.15
         }
@@ -292,6 +302,13 @@ public struct LocalCleanupRanker: Sendable {
 
     private func repairMarkersPresent(in text: String) -> Bool {
         RepairMarkerMatcher.containsRepairMarker(in: text)
+    }
+
+    private func startsWithSpokenCommandSymbol(_ text: String) -> Bool {
+        let normalized = normalize(text)
+        return normalized.hasPrefix("slash ")
+            || normalized.hasPrefix("forward slash ")
+            || normalized.hasPrefix("at sign ")
     }
 
     private func confidenceAdjustment(raw: RawTranscript, candidate: CleanupCandidate) -> Double {

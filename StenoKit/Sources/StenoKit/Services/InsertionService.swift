@@ -13,7 +13,6 @@ public enum AutoPasteOutcome: Sendable, Equatable {
 public struct InsertionService: InsertionServiceProtocol, Sendable {
     private static let terminalClipboardFirstBundleIDs: Set<String> = [
         "dev.warp.warp-stable",
-        "com.openai.codex",
         "com.apple.terminal",
         "com.googlecode.iterm2"
     ]
