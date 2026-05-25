@@ -4,8 +4,9 @@ public struct LocalCleanupRanker: Sendable {
     public init() {}
 
     private static let removableYouKnowRegex: NSRegularExpression = {
-        let protected = "a|an|the|this|that|these|those|i|you|he|she|it|we|they|me|him|her|us|them|my|your|his|its|our|their|what|when|where|which|who|whom|whose|why|how|if"
-        let pattern = "(?i)(?:\\s|^)you know(?=\\s(?!(?:\(protected))\\b)|[,.!?]|$)"
+        let protected = "a|an|the|this|that|these|those|i|you|he|she|it|we|they|me|him|her|us|them|my|your|his|its|our|their|what|when|where|which|who|whom|whose|why|how|if|about|in"
+        let protectedPrefix = #"(?<!\blet)(?<!\bas)(?<!\beverything)(?<!\bdo)"#
+        let pattern = "(?i)\(protectedPrefix)(?:\\s|^)you know(?=\\s(?!(?:\(protected))\\b)|[,.!?]|$)"
         return try! NSRegularExpression(pattern: pattern)
     }()
 
@@ -197,8 +198,11 @@ public struct LocalCleanupRanker: Sendable {
         if text.contains("  ") {
             score -= 0.2
         }
-        if text.contains(",.") || text.contains("..") {
+        if text.contains(",.") || text.contains(".,") || text.contains(",?") || text.contains("..") {
             score -= 0.2
+        }
+        if text.range(of: #"[.!?]\s+[a-z]"#, options: .regularExpression) != nil {
+            score -= 0.15
         }
 
         return clamp(score)

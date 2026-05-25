@@ -56,7 +56,7 @@ func balancedPolicyRemovesInterjectionalLike() async throws {
         fillerPolicy: .balanced
     )
 
-    #expect(cleaned.text == "we should head out now.")
+    #expect(cleaned.text == "We should head out now.")
     #expect(cleaned.removedFillers == ["like"])
     #expect(cleaned.text.hasPrefix(",") == false)
     #expect(cleaned.edits.contains(where: { $0.kind == .fillerRemoval && $0.from.caseInsensitiveCompare("like") == .orderedSame }))
@@ -85,6 +85,108 @@ func balancedPolicyRemovesPunctuatedUmAndUh() async throws {
     #expect(cleaned.removedFillers == ["um", "uh"])
     #expect(cleaned.text.hasPrefix(",") == false)
     #expect(cleaned.text.contains(",,") == false)
+}
+
+@Test("Balanced filler cleanup preserves normal commas before pronouns")
+func balancedPolicyPreservesNormalCommasBeforePronouns() async throws {
+    let examples = [
+        "my Mac, it keeps the capture hot.",
+        "programmatically, you can wire this through the coordinator.",
+        "the code, he said, was ready.",
+        "open it, that tab has the trace.",
+    ]
+
+    for example in examples {
+        let cleaned = try await runLocalCleanup(text: example, fillerPolicy: .balanced)
+
+        #expect(cleaned.text == example)
+        #expect(cleaned.removedFillers.isEmpty)
+    }
+}
+
+@Test("Balanced candidate generation does not emit aggressive filler removals")
+func balancedCandidateGenerationDoesNotEmitAggressiveFillerRemovals() async throws {
+    let candidates = try await runGeneratedCandidates(
+        text: "i mean this is basically ready.",
+        fillerPolicy: .balanced
+    )
+
+    #expect(candidates.allSatisfy { candidate in
+        candidate.removedFillers.contains { filler in
+            filler == "i mean" || filler == "basically"
+        } == false
+    })
+}
+
+@Test("Aggressive candidate generation may emit aggressive filler removals")
+func aggressiveCandidateGenerationMayEmitAggressiveFillerRemovals() async throws {
+    let candidates = try await runGeneratedCandidates(
+        text: "i mean this is basically ready.",
+        fillerPolicy: .aggressive
+    )
+
+    #expect(candidates.contains { candidate in
+        candidate.removedFillers.contains("i mean")
+            || candidate.removedFillers.contains("basically")
+    })
+}
+
+@Test("Balanced cleanup does not select aggressive filler removals")
+func balancedCleanupDoesNotSelectAggressiveFillerRemovals() async throws {
+    let cleaned = try await runLocalCleanup(
+        text: "i mean this is basically ready.",
+        fillerPolicy: .balanced
+    )
+
+    #expect(cleaned.text == "i mean this is basically ready.")
+    #expect(cleaned.removedFillers.isEmpty)
+}
+
+@Test("Balanced filler removal capitalizes a sentence after leading filler removal")
+func balancedFillerRemovalCapitalizesSentenceAfterLeadingFillerRemoval() async throws {
+    let cleaned = try await runLocalCleanup(
+        text: "um this should start clean.",
+        fillerPolicy: .balanced
+    )
+
+    #expect(cleaned.text == "This should start clean.")
+    #expect(cleaned.removedFillers == ["um"])
+}
+
+@Test("Balanced filler removal cleans sentence-boundary punctuation artifacts")
+func balancedFillerRemovalCleansSentenceBoundaryPunctuationArtifacts() async throws {
+    let cleaned = try await runLocalCleanup(
+        text: "This is. um, okay.",
+        fillerPolicy: .balanced
+    )
+
+    #expect(cleaned.text == "This is. Okay.")
+    #expect(cleaned.text.contains(".,") == false)
+    #expect(cleaned.removedFillers == ["um"])
+}
+
+@Test("Balanced filler removal avoids double spaces after comma-surrounded filler")
+func balancedFillerRemovalAvoidsDoubleSpacesAfterCommaSurroundedFiller() async throws {
+    let cleaned = try await runLocalCleanup(
+        text: "Make it clear, you know, make it useful.",
+        fillerPolicy: .balanced
+    )
+
+    #expect(cleaned.text == "Make it clear, make it useful.")
+    #expect(cleaned.text.contains("  ") == false)
+    #expect(cleaned.removedFillers == ["you know"])
+}
+
+@Test("Balanced filler removal avoids comma-question punctuation artifacts")
+func balancedFillerRemovalAvoidsCommaQuestionPunctuationArtifacts() async throws {
+    let cleaned = try await runLocalCleanup(
+        text: "Wait, um? Are we ready.",
+        fillerPolicy: .balanced
+    )
+
+    #expect(cleaned.text == "Wait? Are we ready.")
+    #expect(cleaned.text.contains(",?") == false)
+    #expect(cleaned.removedFillers == ["um"])
 }
 
 @Test("Balanced filler policy preserves you know before determiner")
@@ -171,9 +273,52 @@ func balancedPolicyRemovesUmButPreservesContextualYouKnow() async throws {
     #expect(cleaned.edits.contains(where: { $0.kind == .fillerRemoval && $0.from.caseInsensitiveCompare("you know") == .orderedSame }) == false)
 }
 
+@Test("Balanced filler policy preserves fixed phrases around you know")
+func balancedPolicyPreservesFixedPhrasesAroundYouKnow() async throws {
+    let examples = [
+        "I'll let you know.",
+        "As you know, this is risky.",
+        "Everything you know about this matters.",
+        "Everything you know in that file matters.",
+        "Do you know?",
+    ]
+
+    for example in examples {
+        let cleaned = try await runLocalCleanup(text: example, fillerPolicy: .balanced)
+
+        #expect(cleaned.text == example)
+        #expect(cleaned.removedFillers.isEmpty)
+        #expect(cleaned.edits.contains(where: { $0.kind == .fillerRemoval && $0.from.caseInsensitiveCompare("you know") == .orderedSame }) == false)
+    }
+}
+
+@Test("Cleanup does not apply dangerous common-word lexicon entries in ordinary prose")
+func cleanupDoesNotApplyDangerousCommonWordLexiconEntriesInOrdinaryProse() async throws {
+    let lexicon = PersonalLexicon(entries: [
+        .init(term: "cloud", preferred: "Nimbus", scope: .global)
+    ])
+    let examples = [
+        "stored in the cloud",
+        "cloud storage",
+        "upload it to the cloud",
+    ]
+
+    for example in examples {
+        let cleaned = try await runLocalCleanup(
+            text: example,
+            fillerPolicy: .balanced,
+            lexicon: lexicon
+        )
+
+        #expect(cleaned.text == example)
+        #expect(cleaned.edits.contains(where: { $0.kind == .lexiconCorrection }) == false)
+    }
+}
+
 private func runLocalCleanup(
     text: String,
-    fillerPolicy: FillerPolicy
+    fillerPolicy: FillerPolicy,
+    lexicon: PersonalLexicon = PersonalLexicon(entries: [])
 ) async throws -> CleanTranscript {
     let engine = RuleBasedCleanupEngine()
     let profile = StyleProfile(
@@ -185,6 +330,26 @@ private func runLocalCleanup(
     )
 
     return try await engine.cleanup(
+        raw: RawTranscript(text: text),
+        profile: profile,
+        lexicon: lexicon
+    )
+}
+
+private func runGeneratedCandidates(
+    text: String,
+    fillerPolicy: FillerPolicy
+) async throws -> [CleanupCandidate] {
+    let generator = RuleBasedCleanupCandidateGenerator()
+    let profile = StyleProfile(
+        name: "Candidate Fixture",
+        tone: .natural,
+        structureMode: .natural,
+        fillerPolicy: fillerPolicy,
+        commandPolicy: .passthrough
+    )
+
+    return try await generator.generateCandidates(
         raw: RawTranscript(text: text),
         profile: profile,
         lexicon: PersonalLexicon(entries: [])

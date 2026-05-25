@@ -46,6 +46,36 @@ func lexiconAliasesAndHotTerms() async throws {
     #expect(hotTerms == ["TURSO", "StenoKit"])
 }
 
+@Test("Lexicon skips dangerous common-word literal replacements")
+func lexiconSkipsDangerousCommonWordLiteralReplacements() async throws {
+    let service = PersonalLexiconService()
+    await service.upsert(term: "cloud", preferred: "Nimbus", scope: .global)
+
+    let examples = [
+        "stored in the cloud",
+        "cloud storage",
+        "upload it to the cloud",
+    ]
+
+    for example in examples {
+        let result = await service.applyWithEdits(to: example, appContext: nil)
+
+        #expect(result.text == example)
+        #expect(result.edits.isEmpty)
+    }
+}
+
+@Test("Lexicon hot terms skip dangerous common-word mappings")
+func lexiconHotTermsSkipDangerousCommonWordMappings() async throws {
+    let service = PersonalLexiconService()
+    await service.upsert(term: "cloud", preferred: "Nimbus", scope: .global)
+    await service.upsert(term: "stenoh", preferred: "Steno", scope: .global)
+
+    let hotTerms = await service.hotTerms(for: nil, limit: 4)
+
+    #expect(hotTerms == ["Steno"])
+}
+
 @Test("LexiconEntry decodes legacy payloads without aliases")
 func lexiconEntryDecodesLegacyPayloadWithoutAliases() throws {
     let data = Data(#"{"term":"stenoh","preferred":"Steno","scope":{"global":{}}}"#.utf8)

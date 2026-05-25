@@ -256,6 +256,31 @@ func pipelineValidationFailsOnPunctuationAndNoSpeech() {
     }
 }
 
+@Test("Pipeline validation fails release-quality thresholds when filler coverage is empty")
+func pipelineValidationFailsWhenFillerCoverageIsEmpty() {
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0,
+        cerDelta: 0.0,
+        regressed: 0,
+        fillerSamples: 0
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        maxUnintendedRewriteRate: 0.0
+    )
+
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected empty filler coverage validation failure.")
+    } catch PipelineValidationError.missingMetric(let name) {
+        #expect(name == "fillerImpact.samplesWithFillerRemovals")
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+}
+
 @Test("Pipeline validation rejects release thresholds for smoke fixture evidence tier")
 func pipelineValidationRejectsReleaseThresholdsForSmokeFixture() {
     let pipeline = makePipelineOutput(
@@ -320,8 +345,8 @@ func pipelineValidationUsesCompatibilityMatrixLatencyBudgets() {
     }
 }
 
-@Test("Pipeline validation skips command passthrough threshold when coverage is zero")
-func pipelineValidationSkipsCommandThresholdWithoutCoverage() throws {
+@Test("Pipeline validation fails command passthrough threshold when coverage is zero")
+func pipelineValidationFailsCommandThresholdWithoutCoverage() {
     let pipeline = makePipelineOutput(
         werDelta: 0.0,
         cerDelta: 0.0,
@@ -345,7 +370,14 @@ func pipelineValidationSkipsCommandThresholdWithoutCoverage() throws {
         maxP99LatencyMS: 1_200
     )
 
-    try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected command passthrough coverage validation failure.")
+    } catch PipelineValidationError.missingMetric(let name) {
+        #expect(name == "commandPassthroughCoverageRate")
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
 }
 
 private func makePipelineOutput(
@@ -363,7 +395,8 @@ private func makePipelineOutput(
     noSpeechFalseInsertRate: Double? = 0.0,
     p50LatencyMS: Double? = 650,
     p90LatencyMS: Double? = 700,
-    p99LatencyMS: Double? = 1_100
+    p99LatencyMS: Double? = 1_100,
+    fillerSamples: Int = 1
 ) -> PipelineOutput {
     let summary = PipelineAggregate(
         totalSamples: 1,
@@ -396,13 +429,13 @@ private func makePipelineOutput(
             referenceMatchAccuracy: nil
         ),
         fillerImpact: .init(
-            samplesWithFillerRemovals: 0,
-            totalRemovedFillers: 0,
-            rawWEROnFillerSamples: nil,
-            cleanedWEROnFillerSamples: nil,
-            deltaWEROnFillerSamples: nil,
+            samplesWithFillerRemovals: fillerSamples,
+            totalRemovedFillers: fillerSamples,
+            rawWEROnFillerSamples: fillerSamples > 0 ? 0.1 : nil,
+            cleanedWEROnFillerSamples: fillerSamples > 0 ? 0.1 : nil,
+            deltaWEROnFillerSamples: fillerSamples > 0 ? 0.0 : nil,
             improved: 0,
-            unchanged: 0,
+            unchanged: fillerSamples,
             regressed: 0
         )
     )

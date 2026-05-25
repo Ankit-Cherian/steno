@@ -70,6 +70,20 @@ enum RepairMarkerMatcher {
         "must",
     ]
 
+    private static let quantityLeadTokens: Set<String> = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+    ]
+
     static func firstMatch(in text: String) -> Match? {
         let fullRange = NSRange(text.startIndex..., in: text)
 
@@ -84,6 +98,14 @@ enum RepairMarkerMatcher {
             let suffix = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
 
             if spec.marker == "no", shouldInterpretLeadingNoAsRepair(prefix: prefix, suffix: suffix) == false {
+                continue
+            }
+
+            if spec.marker == "actually", shouldInterpretActuallyAsRepair(prefix: prefix, suffix: suffix) == false {
+                continue
+            }
+
+            if spec.marker == "i mean", shouldInterpretIMeanAsRepair(suffix: suffix) == false {
                 continue
             }
 
@@ -103,12 +125,39 @@ enum RepairMarkerMatcher {
         let tokens = normalizedWords(in: suffix)
         guard let firstToken = tokens.first else { return false }
         guard !blockedNoLeadTokens.contains(firstToken) else { return false }
+        guard firstToken.hasPrefix("i'") == false else { return false }
+        guard !declarativeSecondTokens.contains(firstToken) else { return false }
+        guard !quantityLeadTokens.contains(firstToken) else { return false }
+        guard Int(firstToken) == nil else { return false }
 
         if tokens.count > 1, declarativeSecondTokens.contains(tokens[1]) {
             return false
         }
 
         return true
+    }
+
+    private static func shouldInterpretActuallyAsRepair(prefix: String, suffix: String) -> Bool {
+        guard prefix.isEmpty == false else { return false }
+        guard startsWithRepairSeparator(suffix) else { return false }
+
+        let tokens = normalizedWords(in: suffix)
+        guard let firstToken = tokens.first else { return false }
+        let ordinaryContinuationTokens = blockedNoLeadTokens
+            .union(declarativeSecondTokens)
+            .union(["how", "what", "when", "where", "why", "think", "thought"])
+        return ordinaryContinuationTokens.contains(firstToken) == false
+    }
+
+    private static func shouldInterpretIMeanAsRepair(suffix: String) -> Bool {
+        startsWithRepairSeparator(suffix)
+    }
+
+    private static func startsWithRepairSeparator(_ text: String) -> Bool {
+        guard let first = text.trimmingCharacters(in: .whitespacesAndNewlines).first else {
+            return false
+        }
+        return first == "," || first == "." || first == "!" || first == "?"
     }
 
     private static func normalizedWords(in text: String) -> [String] {
@@ -173,32 +222,26 @@ public struct RuleBasedCleanupCandidateGenerator: Sendable {
     private func profileVariants(from base: StyleProfile) -> [(String, StyleProfile)] {
         var variants: [(String, StyleProfile)] = []
 
-        let minimal = StyleProfile(
-            name: "\(base.name)-minimal",
-            tone: base.tone,
-            structureMode: base.structureMode,
-            fillerPolicy: .minimal,
-            commandPolicy: base.commandPolicy
-        )
-        variants.append(("profile-minimal", minimal))
+        let allowedPolicies: [FillerPolicy]
+        switch base.fillerPolicy {
+        case .minimal:
+            allowedPolicies = [.minimal]
+        case .balanced:
+            allowedPolicies = [.minimal, .balanced]
+        case .aggressive:
+            allowedPolicies = [.minimal, .balanced, .aggressive]
+        }
 
-        let balanced = StyleProfile(
-            name: "\(base.name)-balanced",
-            tone: base.tone,
-            structureMode: base.structureMode,
-            fillerPolicy: .balanced,
-            commandPolicy: base.commandPolicy
-        )
-        variants.append(("profile-balanced", balanced))
-
-        let aggressive = StyleProfile(
-            name: "\(base.name)-aggressive",
-            tone: base.tone,
-            structureMode: base.structureMode,
-            fillerPolicy: .aggressive,
-            commandPolicy: base.commandPolicy
-        )
-        variants.append(("profile-aggressive", aggressive))
+        for policy in allowedPolicies {
+            let variant = StyleProfile(
+                name: "\(base.name)-\(policy.rawValue)",
+                tone: base.tone,
+                structureMode: base.structureMode,
+                fillerPolicy: policy,
+                commandPolicy: base.commandPolicy
+            )
+            variants.append(("profile-\(policy.rawValue)", variant))
+        }
 
         return variants
     }
@@ -242,6 +285,8 @@ public struct RuleBasedCleanupCandidateGenerator: Sendable {
         let prefix = String(text[..<match.range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
         let suffix = String(text[match.range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !suffix.isEmpty else { return [] }
+        guard RepairMarkerMatcher.containsRepairMarker(in: prefix) == false else { return [] }
+        guard RepairMarkerMatcher.containsRepairMarker(in: suffix) == false else { return [] }
         guard !looksLikeLiteralInstruction(prefix: prefix, suffix: suffix) else { return [] }
 
         let prefixTokens = tokenSpans(in: prefix)

@@ -153,12 +153,56 @@ func cleanupPreservesNoMaybeLaterStatement() async throws {
     #expect(cleaned.edits.contains(where: { $0.kind == .repairResolution }) == false)
 }
 
+@Test("Cleanup preserves leading no negation questions and quantities")
+func cleanupPreservesLeadingNoNegationQuestionsAndQuantities() async throws {
+    let examples = [
+        "No, I've got it.",
+        "No, did you see it?",
+        "No, two is enough.",
+        "No, thanks.",
+        "No, maybe later.",
+    ]
+
+    for example in examples {
+        let cleaned = try await runRepairCleanup(example)
+
+        #expect(cleaned.text == example)
+        #expect(cleaned.edits.contains(where: { $0.kind == .repairResolution }) == false)
+    }
+}
+
 @Test("Cleanup resolves contextual actually repairs when Whisper shifts punctuation")
 func cleanupResolvesContextualActuallyRepairWithPunctuationDrift() async throws {
     let cleaned = try await runRepairCleanup("Send it to Bob, actually. Jane Smith.")
 
     #expect(cleaned.text == "Send it to Jane Smith.")
     #expect(cleaned.edits.contains(where: { $0.kind == .repairResolution }))
+}
+
+@Test("Cleanup preserves ordinary actually uses")
+func cleanupPreservesOrdinaryActuallyUses() async throws {
+    let examples = [
+        "panda, actually",
+        "how to actually add it",
+        "actually wrote the code",
+        "actually, I think this works",
+    ]
+
+    for example in examples {
+        let cleaned = try await runRepairCleanup(example)
+
+        #expect(cleaned.text == example)
+        #expect(cleaned.edits.contains(where: { $0.kind == .repairResolution }) == false)
+    }
+}
+
+@Test("Cleanup preserves uncertain multi-marker repairs instead of producing malformed text")
+func cleanupPreservesUncertainMultiMarkerRepairs() async throws {
+    let raw = "Keep the heading. Never mind. Sorry, erase that. Don't change the heading."
+    let cleaned = try await runRepairCleanup(raw)
+
+    #expect(cleaned.text == raw)
+    #expect(cleaned.edits.contains(where: { $0.kind == .repairResolution }) == false)
 }
 
 @Test("Cleanup preserves literal never mind phrases")

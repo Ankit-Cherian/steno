@@ -810,7 +810,11 @@ public enum BenchmarkRunner {
         guard trimmed.isEmpty == false else { return false }
         let patterns = [
             #"^[,;:!?]"#,
+            #"\s{2,}"#,
             #"\s+[,.!?]"#,
+            #",\s*[!?]"#,
+            #"\.\s*,"#,
+            #"[.!?]\s+[a-z]"#,
             #"[!?]{2,}"#,
             #",\s*$"#,
         ]

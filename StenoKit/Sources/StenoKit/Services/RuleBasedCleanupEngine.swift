@@ -91,8 +91,9 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     }()
 
     private static let contextualYouKnowRegex: NSRegularExpression = {
-        let protected = "a|an|the|this|that|these|those|i|you|he|she|it|we|they|me|him|her|us|them|my|your|his|its|our|their|what|when|where|which|who|whom|whose|why|how|if"
-        let pattern = "(?i)(?:\\s|^)you know(?=\\s(?!(?:\(protected))\\b)|[,.!?]|$)"
+        let protected = "a|an|the|this|that|these|those|i|you|he|she|it|we|they|me|him|her|us|them|my|your|his|its|our|their|what|when|where|which|who|whom|whose|why|how|if|about|in"
+        let protectedPrefix = #"(?<!\blet)(?<!\bas)(?<!\beverything)(?<!\bdo)"#
+        let pattern = "(?i)\(protectedPrefix)(?:\\s|^)you know(?=\\s(?!(?:\(protected))\\b)|[,.!?]|$)"
         return try! NSRegularExpression(pattern: pattern)
     }()
 
@@ -176,8 +177,13 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             edits.append(TranscriptEdit(kind: .fillerRemoval, from: "like", to: ""))
         }
 
+        guard removed.isEmpty == false else {
+            return (text, removed, edits)
+        }
+
         updated = collapseWhitespace(updated)
         updated = cleanupFillerPunctuation(updated)
+        updated = normalizeSentenceStarts(updated)
         return (updated, removed, edits)
     }
 
@@ -223,6 +229,9 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         for entry in lexicon.entries {
             for variant in lexiconVariants(for: entry) {
                 if variant.caseInsensitiveCompare(entry.preferred) == .orderedSame {
+                    continue
+                }
+                if LexiconSafety.shouldSkipLiteralReplacement(entry: entry, variant: variant) {
                     continue
                 }
                 let escaped = NSRegularExpression.escapedPattern(for: variant)
@@ -305,9 +314,41 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             withTemplate: ", "
         )
 
-        return withoutDuplicateCommas
+        let withoutCommaQuestion = withoutDuplicateCommas
+            .replacingOccurrences(of: #",\s*([!?])"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #",\s*\."#, with: ".", options: .regularExpression)
+            .replacingOccurrences(of: #"([.!?])\s*,\s*"#, with: "$1 ", options: .regularExpression)
+
+        let tightened = withoutCommaQuestion
             .replacingOccurrences(of: #",\s+(this|that|it|we|you|they|he|she|i)\b"#, with: " $1", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+([,.!?])"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+
+        return tightened
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func normalizeSentenceStarts(_ text: String) -> String {
+        var result = ""
+        var shouldCapitalize = true
+
+        for character in text {
+            if shouldCapitalize, character.isLetter {
+                result.append(String(character).uppercased())
+                shouldCapitalize = false
+                continue
+            }
+
+            result.append(character)
+
+            if character == "." || character == "!" || character == "?" {
+                shouldCapitalize = true
+            } else if character.isWhitespace == false {
+                shouldCapitalize = false
+            }
+        }
+
+        return result
     }
 
     private func lexiconVariants(for entry: LexiconEntry) -> [String] {
