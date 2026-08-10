@@ -9,6 +9,8 @@ Steno now has two very different benchmark paths:
 
 This document exists so contributors do not blur those two together.
 
+> **Evidence boundary for v0.3:** Existing 0.2/0.2.1 release-eval results, including the May 15, 2026 corpus work and the previously measured `m5-pro / 64GB / large-v3-turbo` row, are historical evidence. They do not establish the planned v0.3 candidate. Any v0.3 accuracy, latency, compatibility, or release-signoff claim needs a fresh run with receipts tied to the final v0.3 commit and declared corpus.
+
 ## Smoke fixture vs release signoff
 
 ### Smoke fixture
@@ -59,6 +61,8 @@ This path runs:
 5. report validation
 6. `xcodegen generate`
 7. `xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`
+
+The unsigned build is an automated compile check. It does not sign, notarize, staple, install, launch, or publish an app, and it does not replace the manual macOS checklist.
 
 ## Required environment variables
 
@@ -114,7 +118,7 @@ Rules:
 - WER and CER are error rates, so lower is better.
 - WER is the primary ASR metric for English dictation because it measures substitutions, insertions, and deletions at the word level.
 - CER is useful as a companion metric because it shows spelling/character-level cleanup that WER can hide or over-penalize.
-- Always name the baseline. For Steno 0.2 release docs, baseline means raw local `whisper.cpp` output before Steno cleanup.
+- Always name the baseline. In the historical Steno 0.2/0.2.1 release evidence, baseline means raw local `whisper.cpp` output before Steno cleanup. A v0.3 report must restate its own baseline and corpus rather than inheriting that wording.
 - Show absolute drop in percentage points and relative error reduction. Example: `22.37% -> 9.21%` is `13.16` percentage points lower and a `59%` relative WER reduction.
 - Keep corpus, hardware, model, and normalization boundaries visible near the table.
 - Do not describe WER/CER as universal product accuracy, and do not compare against other systems unless the same corpus, normalization policy, and hardware scope are used.
@@ -138,16 +142,18 @@ Rules:
 - `allowed-warning` means the model is still a recommendation or supported configuration, but it does **not** yet have exact release validation for that row
 - release-eval evidence is row-specific, not universal
 
-That means:
+For the historical 0.2/0.2.1 evidence, that means:
 
-- it is fair to say the exact `m5-pro / 64GB / large-v3-turbo` row is validated
+- it is fair to say the exact `m5-pro / 64GB / large-v3-turbo` row was validated by that named run
 - it is **not** fair to say “large-v3-turbo is validated on all high-end Apple silicon Macs”
+
+Do not carry that row forward as a current v0.3 validation without a fresh receipt tied to the v0.3 commit.
 
 ## Interpreting `not_evaluable` gates
 
 Some metrics are only valid if the corpus honestly exercised the behavior.
 
-Current example:
+Historical corpus example:
 
 - `commandPassthroughAccuracy` can be `not_evaluable` if the raw benchmark pass never preserved a leading slash and therefore never truly exercised the command-passthrough contract.
 
@@ -168,19 +174,26 @@ This lets the repo distinguish:
 
 For public release notes and README copy:
 
-- it is fair to say the exact benchmark row passed
+- it is fair to say an exact benchmark row passed only when the named run and commit are included
 - it is also fair to say manual macOS sanity remains a separate checklist when it is still `pending`
+
+### Automated proof vs pending manual proof
+
+Automated package tests, hosted macOS tests, report validation, zero-regression validation, and an unsigned Xcode build prove only the code paths and artifacts they exercise. They do not prove live microphone capture, exact-app media interruption and resume behavior, insertion into real target apps, installed-app behavior, UI/VoiceOver quality, signing/notarization, or macOS 13 compatibility.
+
+For the planned v0.3 candidate, those manual and distribution checks remain pending until separately performed and recorded. Updating this document is not a release-signoff run.
 
 ## Safe wording boundaries
 
 Safe:
 
-- “The exact `m5-pro / 64GB / large-v3-turbo` row passed the canonical release-signoff run.”
+- “The exact `m5-pro / 64GB / large-v3-turbo` row passed the named historical 0.2/0.2.1 release-signoff run.”
 - “Smoke fixtures are preflight checks, not release evidence.”
-- “Command passthrough is still `not_evaluable` on the current canonical corpus.”
+- “Command passthrough was `not_evaluable` on the named historical corpus.”
 
 Not safe:
 
 - “All Pro/Max Macs are validated.”
 - “Release eval proves microphone behavior everywhere.”
 - “Command passthrough is fully benchmark-validated.”
+- “The historical May 15, 2026 results validate the v0.3 candidate.”

@@ -1,10 +1,25 @@
-# Steno Mac Distribution Research
+# Steno Mac Distribution Research (Historical)
 
 Date: 2026-04-21
 
-## Recommendation
+> **Status:** This is the dated research that informed Steno’s direct-distribution design. It is not the current release checklist. The repository now contains a distribution entitlements path and `scripts/release-dmg.sh`; current operating instructions live in `docs/release/direct-distribution.md`.
 
-For Steno, the best next shipping path is:
+## v0.3 preparation update
+
+The planned v0.3 packaging path now:
+
+- targets Apple silicon on macOS 13 or later
+- builds the pinned `whisper.cpp` revision `764482c3175d9c3bc6089c1ec84df7d1b9537d83` with Xcode command-line tools, XcodeGen, and CMake
+- uses `vendor/whisper.cpp/build-steno` for the canonical runtime build
+- bundles `whisper-cli`, required dylibs, a Whisper model, the Silero VAD model, and `steno-whisper-runtime`
+- keeps the retained helper private to the app process through inherited pipes, with no HTTP or other network listener
+- preserves the CLI fallback and includes Steno and third-party license notices
+
+This preparation has not performed or established Developer ID signing, notarization, stapling, a public DMG, release hosting, download-link correctness, installed-app behavior, manual microphone/media/UI/VoiceOver checks, or a macOS 13 compatibility run.
+
+## Original recommendation
+
+This research concluded that Steno’s best next shipping path was:
 
 1. **Direct distribution outside the Mac App Store**
 2. **Signed with a `Developer ID Application` certificate**
@@ -14,7 +29,7 @@ For Steno, the best next shipping path is:
 
 That is the cleanest path to a real downloadable Mac app without requiring users to install Xcode, clone the repo, or run setup commands locally.
 
-## Why this is the right path
+## Original rationale
 
 ### 1. Mac App Store is a poor fit for Steno
 
@@ -68,9 +83,9 @@ After the first downloadable build is working, the best upgrade path is likely:
 
 This is a better sequence than trying to do “downloadable app + auto-update framework + notarization + release hosting” all at once.
 
-## Apple-account implications
+## Historical Apple-account requirements
 
-Your Apple Developer account is exactly what unlocks the right path here.
+The proposed public distribution path required an Apple Developer account.
 
 What you need from it:
 
@@ -87,39 +102,41 @@ What you need from it:
 - save credentials with `xcrun notarytool store-credentials ...`
 - use those credentials for scripted notarization
 
-## Current repo-specific blockers
+## Historical repo-specific blockers
 
-Steno is not distribution-ready yet in a few important ways:
+The observations in this section describe the repository on 2026-04-21. The dedicated distribution entitlements file and packaging script have since been implemented; consult the current distribution guide before acting on any item below.
 
-### 1. Current signing is still development-only
+At the time, Steno was not distribution-ready in a few important ways:
 
-`project.yml` currently uses:
+### 1. Signing was development-only
+
+`project.yml` then used:
 
 - `CODE_SIGN_STYLE: Automatic`
 - `CODE_SIGN_IDENTITY: Apple Development`
 
-That is correct for local dev, but not for a public downloadable app.
+That was correct for local development, but not for a public downloadable app.
 
-### 2. Dry-run signing is development-only
+### 2. Dry-run signing was development-only
 
 Apple Development identities were available locally for dry-run packaging, but the final public build requires a **Developer ID Application** certificate and notarization profile.
 
-### 3. Entitlements need a distribution-safe path
+### 3. Entitlements needed a distribution-safe path
 
-Current entitlements include:
+The development entitlements then included:
 
 - `com.apple.security.cs.allow-dyld-environment-variables`
 - `com.apple.security.device.audio-input`
 
 The microphone entitlement is expected.
 
-The DYLD entitlement is a strong sign that the current entitlements file is still tuned for local runtime/development convenience. The release build should use a **separate distribution entitlements path** instead of blindly reusing the dev entitlements file.
+The DYLD entitlement was a strong sign that the entitlements file was tuned for local runtime/development convenience. The recommendation was to use a **separate distribution entitlements path** instead of blindly reusing the development entitlements file. That path now exists; its release-time signing and notarization still require fresh verification.
 
-## Recommended implementation shape
+## Original recommended implementation shape
 
 ### Build outputs
 
-Add a distribution workflow that produces:
+The research proposed a distribution workflow that would produce:
 
 1. archived app
 2. exported signed `.app`
@@ -127,7 +144,9 @@ Add a distribution workflow that produces:
 4. notarized `.dmg`
 5. stapled `.dmg`
 
-### Repo changes I would recommend
+### Original repo recommendations
+
+These steps are retained as historical design context. Several are now implemented; they are not evidence that a signed or notarized artifact exists.
 
 1. Add a dedicated distribution entitlements file
 2. Add a release/distribution build path in `project.yml` or a distribution script that overrides the dev identity/settings
@@ -143,7 +162,7 @@ Add a distribution workflow that produces:
 
 ### DMG
 
-Best choice for Steno now.
+The research’s preferred choice for Steno’s first direct-distribution artifact.
 
 Pros:
 
@@ -183,7 +202,7 @@ Use only if you later need:
 
 ## Sparkle recommendation
 
-Sparkle is the right likely future update framework, but **not the first thing to do**.
+The research identified Sparkle as the likely future update framework, but **not the first thing to do**.
 
 Why it still matters:
 
@@ -196,7 +215,7 @@ Why it should wait:
 - first you need one good signed, notarized, manually downloadable artifact
 - then you can layer in Sparkle cleanly
 
-## Recommended decision
+## Historical recommended decision
 
 If the goal is “make Steno feel like a real native Mac app people can just download,” the best answer is:
 
@@ -207,7 +226,9 @@ Then:
 - use GitHub Releases for hosting first
 - add Sparkle later for updates
 
-## Suggested next implementation order
+## Original suggested implementation order
+
+This sequence is historical. For v0.3, use the current guide and record fresh automated, signing/notarization, installation, and manual acceptance receipts separately.
 
 1. Create/install `Developer ID Application` certificate
 2. Add distribution-specific entitlements/signing path

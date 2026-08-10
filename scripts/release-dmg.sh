@@ -602,7 +602,10 @@ smoke_test_bundled_runtime "$UNSIGNED_APP"
 echo "==> distribution hygiene scan"
 scan_distribution_hygiene "$UNSIGNED_APP"
 
-APP_VERSION="$(defaults read "$UNSIGNED_APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "0.2.0")"
+if ! APP_VERSION="$(defaults read "$UNSIGNED_APP/Contents/Info" CFBundleShortVersionString 2>/dev/null)"; then
+  die "Built app is missing CFBundleShortVersionString."
+fi
+[[ -n "$APP_VERSION" ]] || die "Built app has an empty CFBundleShortVersionString."
 APP_BUNDLE_ID="$(defaults read "$UNSIGNED_APP/Contents/Info" CFBundleIdentifier 2>/dev/null || echo "io.stenoapp.steno")"
 DMG_SIGNING_IDENTIFIER="${APP_BUNDLE_ID}.dmg"
 DMG_PATH="$DIST_DIR/Steno-${APP_VERSION}.dmg"
