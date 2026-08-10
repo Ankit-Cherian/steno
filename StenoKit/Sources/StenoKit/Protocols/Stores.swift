@@ -32,6 +32,11 @@ public protocol HistoryStoreProtocol: Sendable {
     func pasteLast() async throws -> TranscriptEntry?
 }
 
+/// Persists privacy-preserving per-session usage metrics without transcript text.
+public protocol UsageAnalyticsRecording: Sendable {
+    func record(event: UsageEvent) async throws
+}
+
 /// Orchestrates text insertion using an ordered chain of transports with target-aware reordering.
 public protocol InsertionServiceProtocol: Sendable {
     /// Inserts the given text into the target application using the configured transport chain.
