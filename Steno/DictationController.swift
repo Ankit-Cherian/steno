@@ -176,7 +176,7 @@ final class DictationController: ObservableObject {
                 await coordinator.cancel(sessionID: sessionID)
             }
             if let mediaToken {
-                mediaInterruption.endInterruption(token: mediaToken)
+                await mediaInterruption.endInterruption(token: mediaToken)
             }
         }
     }
@@ -649,7 +649,7 @@ final class DictationController: ObservableObject {
                 }
 
                 if let ownedMediaToken {
-                    mediaInterruption.endInterruption(token: ownedMediaToken)
+                    await mediaInterruption.endInterruption(token: ownedMediaToken)
                 }
 
                 if !Task.isCancelled,
@@ -667,7 +667,7 @@ final class DictationController: ObservableObject {
                 }
 
                 if let ownedMediaToken {
-                    mediaInterruption.endInterruption(token: ownedMediaToken)
+                    await mediaInterruption.endInterruption(token: ownedMediaToken)
                 }
 
                 await markStartFailed(error: error, generation: generation)
@@ -713,7 +713,7 @@ final class DictationController: ObservableObject {
             }
 
             if let mediaToken {
-                mediaInterruption.endInterruption(token: mediaToken)
+                await mediaInterruption.endInterruption(token: mediaToken)
             }
 
             guard !Task.isCancelled, !isTearingDown else {
@@ -776,7 +776,7 @@ final class DictationController: ObservableObject {
 
             guard let coordinator, let sessionID else {
                 if let mediaToken {
-                    mediaInterruption.endInterruption(token: mediaToken)
+                    await mediaInterruption.endInterruption(token: mediaToken)
                 }
                 if !isTearingDown, completionTaskID == taskID {
                     recordingStateMachine.markTranscriptionFailed()
@@ -794,7 +794,7 @@ final class DictationController: ObservableObject {
             do {
                 try await coordinator.endPressToTalkCapture(sessionID: sessionID)
                 if let mediaToken {
-                    mediaInterruption.endInterruption(token: mediaToken)
+                    await mediaInterruption.endInterruption(token: mediaToken)
                     releasedMedia = true
                 }
 
@@ -847,7 +847,7 @@ final class DictationController: ObservableObject {
             } catch {
                 await coordinator.cancel(sessionID: sessionID)
                 if let mediaToken, !releasedMedia {
-                    mediaInterruption.endInterruption(token: mediaToken)
+                    await mediaInterruption.endInterruption(token: mediaToken)
                 }
 
                 if !Task.isCancelled,

@@ -299,8 +299,8 @@ public enum BenchmarkRunner {
                 .init(id: "hotkey_hands_free_toggle", title: "Hands-free global key toggles recording start/stop"),
                 .init(id: "insertion_editor_target", title: "Insertion succeeds in a standard text editor target"),
                 .init(id: "insertion_terminal_target", title: "Terminal target prefers clipboard paste strategy and inserts text"),
-                .init(id: "media_known_playing", title: "Active or likely playback pauses on dictation start and resumes on end"),
-                .init(id: "media_unknown_state_safe", title: "Unknown playback state sends no play/pause key event"),
+                .init(id: "media_known_playing", title: "Targeted Pause stops active media and targeted Play resumes only verified-paused apps"),
+                .init(id: "media_unknown_state_safe", title: "Unknown playback state never sends Play and cannot start paused media"),
             ]
         )
     }

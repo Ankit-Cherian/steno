@@ -565,8 +565,7 @@ private func assertEventOrder(_ first: String, before second: String, in events:
     #expect(firstIndex < secondIndex)
 }
 
-@MainActor
-private final class LifecycleEventLog {
+private actor LifecycleEventLog {
     private var events: [String] = []
 
     func append(_ event: String) {
@@ -705,8 +704,8 @@ private final class FakeMediaInterruptionService: MediaInterruptionService {
         return MediaInterruptionToken()
     }
 
-    func endInterruption(token: MediaInterruptionToken) {
-        events.append("media.release")
+    func endInterruption(token: MediaInterruptionToken) async {
+        await events.append("media.release")
     }
 }
 
