@@ -68,16 +68,18 @@ public protocol OverlayPresenter: AnyObject {
 /// prevent paused media from being started accidentally. Runs on MainActor.
 @MainActor
 public protocol MediaInterruptionService: AnyObject {
-    /// Sends targeted Pause requests and returns a custody token when the
-    /// exact application pause is verified, or when exact-app verification
-    /// can safely be deferred until capture release.
+    /// Sends targeted Pause requests and returns a custody token when an
+    /// application that was verifiably producing audio accepts the pause.
     ///
-    /// A deferred token cannot authorize Play until release independently
-    /// verifies the original application's active-to-silent transition.
-    /// Returns `nil` if no media pause can be safely tracked.
+    /// Custody is tracked per application and defaults to deferred: observed
+    /// silence upgrades it to verified whenever that becomes observable, but
+    /// output teardown routinely lags an accepted pause by longer than any
+    /// bounded verification window. Deferred custody is dropped without a Play
+    /// if the application's process lineage breaks or fresh evidence shows it
+    /// producing audio again. Returns `nil` if no media pause can be tracked.
     func beginInterruption() async -> MediaInterruptionToken?
 
     /// Releases an interruption token and, after the final valid token, resumes
-    /// only the exact media applications whose pause transition was verified.
+    /// only the exact media applications whose custody is still held.
     func endInterruption(token: MediaInterruptionToken) async
 }

@@ -182,9 +182,11 @@ private final class FakeAudioOutputMonitor: AudioOutputMonitoring {
 private final class MediaSnapshotGate {
     private(set) var waitCount = 0
     private var continuations: [CheckedContinuation<Void, Never>] = []
+    private var isPermanentlyOpen = false
 
     func wait() async {
         waitCount += 1
+        guard !isPermanentlyOpen else { return }
         await withCheckedContinuation { continuation in
             continuations.append(continuation)
         }
@@ -196,6 +198,11 @@ private final class MediaSnapshotGate {
         for continuation in pending {
             continuation.resume()
         }
+    }
+
+    func openPermanently() {
+        isPermanentlyOpen = true
+        open()
     }
 }
 
@@ -206,6 +213,7 @@ private actor MediaSleepGate {
         continuation: CheckedContinuation<Void, Never>
     )] = []
     private(set) var waitCount = 0
+    private var isPermanentlyOpen = false
 
     func wait() async {
         waitCount += 1
@@ -214,16 +222,21 @@ private actor MediaSleepGate {
         for waiter in readyWaiters {
             waiter.continuation.resume()
         }
+        guard !isPermanentlyOpen else { return }
         await withCheckedContinuation { continuation in
             continuations.append(continuation)
         }
     }
 
-    func waitUntilCount(_ minimumCount: Int) async {
-        guard waitCount < minimumCount else { return }
-        await withCheckedContinuation { continuation in
-            countWaiters.append((minimumCount, continuation))
+    func waitUntilCount(
+        _ minimumCount: Int,
+        timeoutMilliseconds: Int
+    ) async -> Bool {
+        for _ in 0..<timeoutMilliseconds {
+            if waitCount >= minimumCount { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000)
         }
+        return waitCount >= minimumCount
     }
 
     func open() {
@@ -231,6 +244,16 @@ private actor MediaSleepGate {
         continuations.removeAll()
         for continuation in pending {
             continuation.resume()
+        }
+    }
+
+    func openPermanently() {
+        isPermanentlyOpen = true
+        open()
+        let pendingCountWaiters = countWaiters
+        countWaiters.removeAll()
+        for waiter in pendingCountWaiters {
+            waiter.continuation.resume()
         }
     }
 }
@@ -256,13 +279,25 @@ private actor MediaDelayRecorder {
 @MainActor
 private func waitUntil(
     _ predicate: @escaping @MainActor () -> Bool,
-    attempts: Int = 1_000
+    timeoutMilliseconds: Int = 1_000
 ) async {
-    for _ in 0..<attempts {
+    for _ in 0..<timeoutMilliseconds {
         if predicate() { return }
-        await Task.yield()
+        try? await Task.sleep(nanoseconds: 1_000_000)
     }
     Issue.record("Timed out waiting for test condition.")
+}
+
+@MainActor
+private func waitUntilSatisfied(
+    _ predicate: @escaping @MainActor () -> Bool,
+    timeoutMilliseconds: Int = 1_000
+) async -> Bool {
+    for _ in 0..<timeoutMilliseconds {
+        if predicate() { return true }
+        try? await Task.sleep(nanoseconds: 1_000_000)
+    }
+    return predicate()
 }
 
 @MainActor
@@ -371,6 +406,48 @@ func verifiedActivePlaybackReceivesSemanticPause() async {
     #expect(token != nil)
     #expect(driver.commands == [.pause])
     #expect(driver.destinations == [.observedApplications(["com.example.player"])])
+}
+
+@MainActor
+@Test("Initial Pause rejects a producer that exited after the audio snapshot")
+func initialPauseRejectsProducerThatExitedAfterAudioSnapshot() async {
+    let originalProducer = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts",
+        processStartTimeMicroseconds: 100
+    )
+    let bridge = FakeMediaRemoteBridge()
+    bridge.nowPlayingPlaybackRateValue = 1
+    let audioOutputMonitor = FakeAudioOutputMonitor()
+    audioOutputMonitor.observation = MediaAudioOutputObservation(
+        targets: [originalProducer],
+        unresolvedProcessCount: 0
+    )
+    let driver = MacMediaInterruptionDriver(
+        bridge: bridge,
+        playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
+        audioOutputMonitor: audioOutputMonitor,
+        applicationResolver: AudioProcessApplicationResolver(
+            processPath: { _ in nil },
+            bundleIdentifierAtURL: { _ in nil },
+            processStartTimeMicroseconds: { _ in nil }
+        )
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0]
+    )
+
+    let token = await service.beginInterruption()
+    if let token {
+        await service.endInterruption(token: token)
+    }
+
+    #expect(token == nil)
+    #expect(
+        bridge.targetedCommands.isEmpty,
+        "A stale Core Audio producer must be rejected before bundle-targeted Pause dispatch."
+    )
 }
 
 @MainActor
@@ -595,6 +672,432 @@ func unavailableCoreAudioNeverRetriesSpeculativePause() async {
     #expect(driver.snapshotCallCount == 1)
     #expect(driver.commands.isEmpty)
     #expect(driver.destinations.isEmpty)
+}
+
+@MainActor
+@Test("Begin returns custody without waiting for the verification ladder")
+func beginReturnsCustodyWithoutWaitingForVerificationLadder() async {
+    let podcastsOutput = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts"
+    )
+    let laggingOpenStream = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput]
+    )
+    let verificationGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: laggingOpenStream, count: 6)
+    )
+    // Park the ladder inside its first verification pass.
+    driver.snapshotGates[2] = verificationGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0]
+    )
+
+    let probe = CompletionProbe()
+    let begin = Task { @MainActor in
+        let token = await service.beginInterruption()
+        probe.didComplete = true
+        return token
+    }
+
+    await waitUntil { verificationGate.waitCount == 1 }
+    #expect(driver.commands == [.pause])
+    // Custody exists as soon as the app-targeted Pause is accepted, so the caller
+    // is released while the opportunistic ladder keeps running.
+    await waitUntil { probe.didComplete }
+
+    verificationGate.open()
+    guard let token = await begin.value else {
+        Issue.record("An accepted Pause of a verified-active application must yield custody.")
+        return
+    }
+    await service.endInterruption(token: token)
+    #expect(driver.commands.contains(.play))
+}
+
+@MainActor
+@Test("A stuck any-application playing signal cannot orphan an accepted Pause")
+func stuckAnyApplicationPlayingSignalCannotOrphanAcceptedPause() async {
+    let podcastsOutput = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts"
+    )
+    // The any-application playing bit stays true long after real silence, pinning
+    // detection at likelyPlaying for the entire capture.
+    let stuckWeakPositive = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: stuckWeakPositive, count: 4)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0]
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("A stuck weak-positive signal must not discard an accepted exact-app Pause.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.last == .play)
+    #expect(driver.destinations.last == .observedApplications(["com.apple.podcasts"]))
+}
+
+@MainActor
+@Test("Core Audio teardown slower than the whole verification ladder still resumes at release")
+func laggingCoreAudioTeardownBeyondVerificationLadderResumesAtRelease() async {
+    let podcastsOutput = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts",
+        processStartTimeMicroseconds: 1_000
+    )
+    let audible = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput]
+    )
+    // The output stream stays open while the application is already silent; teardown
+    // can lag far past the last verification pass.
+    let silentWithOpenOutputStream = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .unknown,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [audible] + Array(repeating: silentWithOpenOutputStream, count: 6)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: MacMediaInterruptionService.defaultVerificationDelays
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Pending custody must survive a teardown slower than the delay ladder.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.last == .play)
+    #expect(driver.verifiedDestinations.last?.expectedProcessTargets == [podcastsOutput])
+}
+
+@MainActor
+@Test("A paused elected session cannot veto pausing another active application")
+func pausedElectedSessionDoesNotShadowSecondActiveApplication() async {
+    let electedChromeSession = MediaPlaybackTarget(
+        processID: 91,
+        bundleIdentifier: "com.google.Chrome"
+    )
+    let podcastsOutput = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts"
+    )
+    // Chrome owns the elected session with a paused tab while Podcasts is audible.
+    let electedSessionPaused = makeSnapshot(
+        target: electedChromeSession,
+        contentIdentifier: "chrome-item",
+        detection: .notPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [electedSessionPaused, confirmedSilentSnapshotWithoutTarget]
+    )
+    let service = makeService(driver: driver)
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(driver.destinations == [.observedApplications(["com.apple.podcasts"])])
+    #expect(!driver.commands.contains(.play))
+}
+
+@MainActor
+@Test("Unknown detection with clean Core Audio evidence pauses and resumes the active app")
+func unknownDetectionWithCleanCoreAudioEvidencePausesActiveApplication() async {
+    let podcastsOutput = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts"
+    )
+    // Lockdown-degraded probes resolve to unknown while Core Audio observation
+    // stays clean and unambiguous.
+    let unknownButAudible = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .unknown,
+        isPlaying: nil,
+        playbackState: nil,
+        activeAudioOutputs: [podcastsOutput]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            unknownButAudible,
+            confirmedSilentSnapshotWithoutTarget,
+            confirmedSilentSnapshotWithoutTarget,
+        ]
+    )
+    let service = makeService(driver: driver)
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Clean Core Audio evidence must authorize an exact-app Pause.")
+        return
+    }
+    #expect(driver.destinations == [.observedApplications(["com.apple.podcasts"])])
+
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands == [.pause, .play])
+}
+
+@MainActor
+@Test("A transient unresolved output process narrows rather than cancels interruption")
+func transientUnresolvedOutputProcessNarrowsPauseDestination() async {
+    let podcastsOutput = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts"
+    )
+    // A short-lived system output process cannot be resolved to an app bundle.
+    let audibleBesideUnresolvedProcess = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput],
+        unresolvedAudioOutputCount: 1
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            audibleBesideUnresolvedProcess,
+            confirmedSilentSnapshotWithoutTarget,
+            confirmedSilentSnapshotWithoutTarget,
+        ]
+    )
+    let service = makeService(driver: driver)
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("A resolved active app must stay a Pause target beside an unresolved process.")
+        return
+    }
+    #expect(driver.destinations == [.observedApplications(["com.apple.podcasts"])])
+
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands == [.pause, .play])
+}
+
+@MainActor
+@Test("A cancelled owner after an accepted initial Pause compensates with exact-lineage Play")
+func cancelledOwnerAfterAcceptedInitialPauseCompensatesWithPlay() async {
+    let replacementOutput = MediaAudioOutputTarget(
+        processID: primaryAudioOutput.processID + 1,
+        applicationBundleIdentifier: primaryAudioOutput.applicationBundleIdentifier
+    )
+    let activeReplacement = makeSnapshot(
+        target: MediaPlaybackTarget(
+            processID: primaryTarget.processID + 1,
+            bundleIdentifier: primaryTarget.bundleIdentifier
+        ),
+        contentIdentifier: "item-2",
+        detection: .playing,
+        isPlaying: true,
+        playbackState: 1,
+        activeAudioOutputs: [replacementOutput]
+    )
+    let pauseDispatchGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [confirmedPlayingSnapshot, activeReplacement, activeReplacement]
+    )
+    driver.sendGates[1] = pauseDispatchGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0]
+    )
+
+    let begin = Task { @MainActor in await service.beginInterruption() }
+    await waitUntil { pauseDispatchGate.waitCount == 1 }
+    #expect(driver.commands == [.pause])
+    begin.cancel()
+    await Task.yield()
+    #expect(!driver.commands.contains(.play))
+    pauseDispatchGate.open()
+
+    #expect(await begin.value == nil)
+    await waitUntil { driver.commands == [.pause, .play] }
+    #expect(driver.verifiedCommands == [.pause, .play])
+    #expect(
+        driver.verifiedDestinations == [
+            VerifiedMediaResumeDestination(
+                applicationBundleIdentifiers: [primaryAudioOutput.applicationBundleIdentifier],
+                expectedProcessTargets: [primaryAudioOutput]
+            ),
+            VerifiedMediaResumeDestination(
+                applicationBundleIdentifiers: [primaryAudioOutput.applicationBundleIdentifier],
+                expectedProcessTargets: [primaryAudioOutput]
+            ),
+        ]
+    )
+}
+
+@MainActor
+@Test("Cancelling a completed begin preserves the returned owner's custody")
+func cancellingCompletedBeginPreservesReturnedCustody() async {
+    let verificationGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [confirmedPlayingSnapshot, confirmedPausedSnapshot]
+    )
+    driver.snapshotGates[2] = verificationGate
+    let service = makeService(driver: driver)
+
+    let begin = Task { @MainActor in
+        await service.beginInterruption()
+    }
+    await waitUntil { verificationGate.waitCount == 1 }
+    guard let token = await begin.value else {
+        verificationGate.open()
+        Issue.record("Accepted pending custody should be returned before verification completes.")
+        return
+    }
+
+    // Cancellation is not retroactive once begin has completed. The returned
+    // token remains a real owner until its consumer releases it explicitly.
+    begin.cancel()
+    await Task.yield()
+    #expect(driver.commands == [.pause])
+
+    let release = Task { @MainActor in
+        await service.endInterruption(token: token)
+    }
+    await Task.yield()
+    #expect(driver.commands == [.pause])
+    verificationGate.open()
+
+    await release.value
+    #expect(driver.commands == [.pause, .play])
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.verifiedDestinations.last?.expectedProcessTargets == [primaryAudioOutput])
+}
+
+@MainActor
+@Test("Cancellation at the published-custody handoff releases exactly once")
+func cancellationAtPublishedCustodyHandoffReleasesExactlyOnce() async {
+    let custodyReturnGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [confirmedPlayingSnapshot, confirmedPausedSnapshot]
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0],
+        beforePublishedCustodyReturn: {
+            if custodyReturnGate.waitCount == 0 {
+                await custodyReturnGate.wait()
+            }
+        }
+    )
+
+    let begin = Task { @MainActor in
+        await service.beginInterruption()
+    }
+    await waitUntil { custodyReturnGate.waitCount == 1 }
+    #expect(driver.commands == [.pause])
+
+    begin.cancel()
+    custodyReturnGate.open()
+
+    #expect(await begin.value == nil)
+    await waitUntil { driver.commands == [.pause, .play] }
+    #expect(driver.commands == [.pause, .play])
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.verifiedDestinations.last?.expectedProcessTargets == [primaryAudioOutput])
+}
+
+@MainActor
+@Test("A replacement owner prevents compensation from a cancelled Pause transition")
+func replacementOwnerPreventsCancelledPauseCompensation() async {
+    let replacementOutput = MediaAudioOutputTarget(
+        processID: primaryAudioOutput.processID + 1,
+        applicationBundleIdentifier: primaryAudioOutput.applicationBundleIdentifier
+    )
+    let activeReplacement = makeSnapshot(
+        target: MediaPlaybackTarget(
+            processID: primaryTarget.processID + 1,
+            bundleIdentifier: primaryTarget.bundleIdentifier
+        ),
+        contentIdentifier: "item-2",
+        detection: .playing,
+        isPlaying: true,
+        playbackState: 1,
+        activeAudioOutputs: [replacementOutput]
+    )
+    let pauseDispatchGate = MediaSnapshotGate()
+    let verificationGate = MediaSnapshotGate()
+    let cancellationProbe = CompletionProbe()
+    let finalizationProbe = CompletionProbe()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [confirmedPlayingSnapshot, activeReplacement]
+    )
+    driver.sendGates[1] = pauseDispatchGate
+    driver.snapshotGates[2] = verificationGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0],
+        afterPauseTransitionCancellation: {
+            cancellationProbe.didComplete = true
+        },
+        afterPauseTransitionFinalization: {
+            finalizationProbe.didComplete = true
+        }
+    )
+
+    let cancelledBegin = Task { @MainActor in
+        await service.beginInterruption()
+    }
+    await waitUntil { pauseDispatchGate.waitCount == 1 }
+    cancelledBegin.cancel()
+    await waitUntil { cancellationProbe.didComplete }
+
+    let replacementBegin = Task { @MainActor in
+        await service.beginInterruption()
+    }
+    pauseDispatchGate.open()
+    await waitUntil { verificationGate.waitCount == 1 }
+
+    #expect(await cancelledBegin.value == nil)
+    guard let replacementToken = await replacementBegin.value else {
+        verificationGate.open()
+        Issue.record("The replacement owner should receive accepted pending custody.")
+        return
+    }
+    #expect(driver.commands == [.pause])
+
+    verificationGate.open()
+    await waitUntil { finalizationProbe.didComplete }
+
+    #expect(driver.commands == [.pause])
+    #expect(!driver.commands.contains(.play))
+    await service.endInterruption(token: replacementToken)
+    #expect(driver.commands == [.pause])
 }
 
 @MainActor
@@ -961,7 +1464,7 @@ func partialPauseAcceptanceOwnsOnlyAcceptedVerifiedApplication() async {
 }
 
 @MainActor
-@Test("Partial immediate Pause verification creates no resume ownership")
+@Test("Partial immediate Pause verification keeps per-application custody")
 func partialImmediatePauseVerificationCreatesNoResumeOwnership() async {
     let alpha = MediaAudioOutputTarget(
         processID: 10,
@@ -993,7 +1496,10 @@ func partialImmediatePauseVerificationCreatesNoResumeOwnership() async {
 
     let token = await service.beginInterruption()
 
-    #expect(token == nil)
+    #expect(
+        token != nil,
+        "Alpha verified and Beta stayed pending; partial verification is partial ownership."
+    )
     #expect(driver.commands == [.pause, .pause])
     #expect(
         driver.destinations == [
@@ -1001,9 +1507,16 @@ func partialImmediatePauseVerificationCreatesNoResumeOwnership() async {
             .observedApplications(["com.example.Beta"]),
         ]
     )
-    #expect(driver.verifiedCommands == [.pause])
+    #expect(driver.verifiedCommands == [.pause, .pause])
     #expect(
         driver.verifiedDestinations == [
+            VerifiedMediaResumeDestination(
+                applicationBundleIdentifiers: [
+                    "com.example.Alpha",
+                    "com.example.Beta",
+                ],
+                expectedProcessTargets: [alpha, beta]
+            ),
             VerifiedMediaResumeDestination(
                 applicationBundleIdentifiers: ["com.example.Beta"],
                 expectedProcessTargets: [beta]
@@ -1127,7 +1640,7 @@ func activeAudioPIDLookupFailureCountsAsUnresolvedOwnership() {
 }
 
 @MainActor
-@Test("A later silent snapshot cannot retroactively authorize an unresolved Pause")
+@Test("A later silent snapshot is never consumed to retroactively verify a Pause")
 func laterSilenceCannotAuthorizeUnresolvedPause() async {
     let unresolvedSnapshot = makeSnapshot(
         target: nil,
@@ -1144,13 +1657,14 @@ func laterSilenceCannotAuthorizeUnresolvedPause() async {
 
     let token = await service.beginInterruption()
 
-    #expect(token == nil)
+    #expect(token != nil, "Ambiguous verification evidence keeps custody pending until release.")
     #expect(driver.commands == [.pause])
+    #expect(!driver.commands.contains(.play))
     #expect(driver.snapshotCallCount == 2)
 }
 
 @MainActor
-@Test("An unresolved Pause creates no resume ownership or Play")
+@Test("Lost Core Audio observation retains pending custody without an early Play")
 func unresolvedPauseCreatesNoResumeOwnershipOrPlay() async {
     let unresolvedSnapshot = makeSnapshot(
         target: nil,
@@ -1167,8 +1681,9 @@ func unresolvedPauseCreatesNoResumeOwnershipOrPlay() async {
 
     let token = await service.beginInterruption()
 
-    #expect(token == nil)
+    #expect(token != nil, "Unavailable observation is not evidence that custody was lost.")
     #expect(driver.commands == [.pause])
+    #expect(!driver.commands.contains(.play))
 }
 
 @MainActor
@@ -1195,11 +1710,21 @@ func productionPauseVerificationWindowNeverCompensatesWithPlay() async {
         }
     )
 
-    let token = await service.beginInterruption()
+    guard let token = await service.beginInterruption() else {
+        Issue.record("An accepted Pause of a verified-active application takes custody immediately.")
+        return
+    }
 
-    #expect(token == nil)
+    // The opportunistic ladder keeps observing while the capture stays open.
+    // Confirmed exact-app playing evidence contradicts custody pass by pass,
+    // and no pass may compensate with Play while the owner remains.
+    await waitUntil { driver.snapshotCallCount == 6 }
     #expect(await delayRecorder.values() == productionVerificationDelays)
     #expect(driver.commands == Array(repeating: .pause, count: 5))
+    #expect(!driver.commands.contains(.play))
+
+    // Custody was contradicted and dropped, so release must not Play either.
+    await service.endInterruption(token: token)
     #expect(!driver.commands.contains(.play))
 }
 
@@ -1231,6 +1756,9 @@ func productionPauseVerificationUsesFullWindowBeforeReleaseProof() async {
         return
     }
 
+    // Custody is handed back immediately; the full production window is still
+    // consumed by the ladder while the capture stays open.
+    await waitUntil { driver.snapshotCallCount == 6 }
     #expect(await delayRecorder.values() == MacMediaInterruptionService.defaultVerificationDelays)
     #expect(driver.commands == Array(repeating: .pause, count: 5))
 
@@ -1418,7 +1946,7 @@ func laggingMultiProcessPauseRejectsReplacementProducer() async {
 }
 
 @MainActor
-@Test("Repeated unknown exact-app snapshots never authorize Play")
+@Test("Repeated ambiguous exact-app snapshots resume at release under preserved lineage")
 func repeatedUnknownExactAppSnapshotsDoNotAuthorizePlay() async {
     let podcastsOutput = MediaAudioOutputTarget(
         processID: 63_508,
@@ -1460,12 +1988,15 @@ func repeatedUnknownExactAppSnapshotsDoNotAuthorizePlay() async {
 
     await service.endInterruption(token: token)
 
-    #expect(driver.commands == [.pause, .pause])
-    #expect(!driver.commands.contains(.play))
+    #expect(driver.commands == [.pause, .pause, .play])
+    #expect(
+        driver.destinations.last == .observedApplications(["com.apple.podcasts"]),
+        "Resume must stay bound to the exact application Steno paused."
+    )
 }
 
 @MainActor
-@Test("Lagging exact-app Pause verification never resumes when release evidence drifts")
+@Test("Lagging exact-app Pause resumes at release despite drifting elected-session evidence")
 func laggingExactAppPauseVerificationDoesNotResumeWithoutReleaseProof() async {
     let podcastsOutput = MediaAudioOutputTarget(
         processID: 63_508,
@@ -1515,12 +2046,14 @@ func laggingExactAppPauseVerificationDoesNotResumeWithoutReleaseProof() async {
 
     #expect(driver.commands == [.pause, .pause])
     await service.endInterruption(token: token)
-    #expect(driver.commands == [.pause, .pause])
-    #expect(!driver.commands.contains(.play))
+    #expect(
+        driver.commands == [.pause, .pause, .play],
+        "Elected-session playback-state drift is not per-app evidence and cannot strand a pause."
+    )
 }
 
 @MainActor
-@Test("Pending release rejects a replacement process with the same bundle identifier")
+@Test("Pending release ignores an elected-session replacement process")
 func pendingReleaseRejectsReplacementProcess() async {
     let playingWithTarget = makeSnapshot(
         detection: .likelyPlaying,
@@ -1564,12 +2097,13 @@ func pendingReleaseRejectsReplacementProcess() async {
 
     await service.endInterruption(token: token)
 
-    #expect(driver.commands == [.pause, .pause])
-    #expect(!driver.commands.contains(.play))
+    // The elected session naming a different process is not Core Audio evidence,
+    // so custody survives and the exact producer is resumed once.
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
 }
 
 @MainActor
-@Test("Pending release rejects a silent replacement process with the same bundle identifier")
+@Test("Pending release ignores a silent elected-session replacement process")
 func pendingReleaseRejectsSilentReplacementProcess() async {
     let playingWithTarget = makeSnapshot(
         detection: .likelyPlaying,
@@ -1613,8 +2147,9 @@ func pendingReleaseRejectsSilentReplacementProcess() async {
 
     await service.endInterruption(token: token)
 
-    #expect(driver.commands == [.pause, .pause])
-    #expect(!driver.commands.contains(.play))
+    // The elected session naming a different process is not Core Audio evidence,
+    // so custody survives and the exact producer is resumed once.
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
 }
 
 @MainActor
@@ -1661,7 +2196,7 @@ func pendingReleaseRejectsStaleTargetWithReplacementOutput() async {
 }
 
 @MainActor
-@Test("Pending release rejects disappearance of a previously known target")
+@Test("Pending release accepts Core Audio teardown when the elected session disappears")
 func pendingReleaseRejectsKnownTargetDisappearance() async {
     let ambiguousOriginal = makeSnapshot(
         detection: .unknown,
@@ -1688,12 +2223,14 @@ func pendingReleaseRejectsKnownTargetDisappearance() async {
 
     await service.endInterruption(token: token)
 
-    #expect(driver.commands == [.pause])
-    #expect(!driver.commands.contains(.play))
+    #expect(
+        driver.commands == [.pause, .play],
+        "Observed output teardown verifies the pause even when the elected session vanishes."
+    )
 }
 
 @MainActor
-@Test("Immediate Pause verification rejects a same-bundle replacement target")
+@Test("Immediate Pause verification ignores an elected-session replacement process")
 func immediatePauseVerificationRejectsReplacementTarget() async {
     let replacementTarget = MediaPlaybackTarget(
         processID: primaryTarget.processID + 1,
@@ -1711,11 +2248,16 @@ func immediatePauseVerificationRejectsReplacementTarget() async {
     )
     let service = makeService(driver: driver)
 
-    let token = await service.beginInterruption()
-
-    #expect(token == nil)
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Elected-session identity is advisory and must not discard custody.")
+        return
+    }
     #expect(driver.commands == [.pause])
-    #expect(!driver.commands.contains(.play))
+    #expect(!driver.commands.contains(.play), "No Play may be emitted while capture is open.")
+
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
 }
 
 @MainActor
@@ -1745,7 +2287,7 @@ func immediatePauseVerificationRejectsStaleTargetWithReplacementOutput() async {
 }
 
 @MainActor
-@Test("Immediate Pause verification rejects disappearance of a previously known target")
+@Test("Immediate Pause verification accepts teardown when the elected session disappears")
 func immediatePauseVerificationRejectsKnownTargetDisappearance() async {
     let targetDisappeared = makeSnapshot(
         target: nil,
@@ -1756,19 +2298,23 @@ func immediatePauseVerificationRejectsKnownTargetDisappearance() async {
         activeAudioOutputs: []
     )
     let driver = FakeMediaInterruptionDriver(
-        snapshots: [confirmedPlayingSnapshot, targetDisappeared]
+        snapshots: [confirmedPlayingSnapshot, targetDisappeared, targetDisappeared]
     )
     let service = makeService(driver: driver)
 
-    let token = await service.beginInterruption()
-
-    #expect(token == nil)
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Observed output teardown must verify the pause on its own evidence.")
+        return
+    }
     #expect(driver.commands == [.pause])
-    #expect(!driver.commands.contains(.play))
+
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands == [.pause, .play])
 }
 
 @MainActor
-@Test("Immediate Pause verification rejects loss of known content identity")
+@Test("Immediate Pause verification ignores loss of elected content identity")
 func immediatePauseVerificationRejectsKnownContentDisappearance() async {
     let contentDisappeared = makeSnapshot(
         target: primaryTarget,
@@ -1783,11 +2329,16 @@ func immediatePauseVerificationRejectsKnownContentDisappearance() async {
     )
     let service = makeService(driver: driver)
 
-    let token = await service.beginInterruption()
-
-    #expect(token == nil)
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Elected-session identity is advisory and must not discard custody.")
+        return
+    }
     #expect(driver.commands == [.pause])
-    #expect(!driver.commands.contains(.play))
+    #expect(!driver.commands.contains(.play), "No Play may be emitted while capture is open.")
+
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
 }
 
 @MainActor
@@ -1809,14 +2360,31 @@ func strongNegativeTargetRejectsActiveSameBundleSibling() async {
         playbackState: 2,
         activeAudioOutputs: [siblingOutput]
     )
+    let replacementSibling = MediaAudioOutputTarget(
+        processID: siblingOutput.processID + 1,
+        applicationBundleIdentifier: siblingOutput.applicationBundleIdentifier
+    )
+    let siblingWasReplaced = makeSnapshot(
+        detection: .notPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [replacementSibling]
+    )
     let driver = FakeMediaInterruptionDriver(
-        snapshots: [before, targetPausedWhileSiblingRemainsActive]
+        snapshots: [before, targetPausedWhileSiblingRemainsActive, siblingWasReplaced]
     )
     let service = makeService(driver: driver)
 
-    let token = await service.beginInterruption()
+    guard let token = await service.beginInterruption() else {
+        Issue.record("An accepted Pause of a verified-active app keeps custody pending.")
+        return
+    }
+    #expect(driver.commands == [.pause])
 
-    #expect(token == nil)
+    // Custody is pending rather than verified, so release re-checks the lineage and
+    // discards ownership once the surviving producer is replaced.
+    await service.endInterruption(token: token)
+
     #expect(driver.commands == [.pause])
     #expect(!driver.commands.contains(.play))
 }
@@ -1896,7 +2464,14 @@ func pauseVerificationDoesNotRetryAgainstReplacementProcess() async {
         driver.commands == [.pause],
         "A replaced process must not receive a bundle-scoped retry Pause."
     )
-    #expect(driver.verifiedDestinations.isEmpty)
+    #expect(
+        driver.verifiedDestinations == [
+            VerifiedMediaResumeDestination(
+                applicationBundleIdentifiers: [primaryAudioOutput.applicationBundleIdentifier],
+                expectedProcessTargets: [primaryAudioOutput]
+            ),
+        ]
+    )
     #expect(!driver.commands.contains(.play))
 }
 
@@ -2584,8 +3159,8 @@ func endingRapidRestartDuringPendingRePauseFinalizesExactlyOnce() async {
 }
 
 @MainActor
-@Test("Cancelled pending begin restores only after release proves silence")
-func cancelledPendingBeginRestoresOnlyAfterReleaseProof() async {
+@Test("Pending owner release restores only after release proves silence")
+func pendingOwnerReleaseRestoresOnlyAfterReleaseProof() async {
     let podcastsOutput = MediaAudioOutputTarget(
         processID: 63_508,
         applicationBundleIdentifier: "com.apple.podcasts"
@@ -2620,18 +3195,34 @@ func cancelledPendingBeginRestoresOnlyAfterReleaseProof() async {
         verificationDelays: [0, 0]
     )
 
-    let begin = Task { @MainActor in await service.beginInterruption() }
+    let completion = CompletionProbe()
+    let begin = Task { @MainActor in
+        let token = await service.beginInterruption()
+        completion.didComplete = true
+        return token
+    }
     await waitUntil { verificationGate.waitCount == 1 }
-    begin.cancel()
-    verificationGate.open()
+    await waitUntil { completion.didComplete }
+    guard completion.didComplete, let token = await begin.value else {
+        verificationGate.open()
+        _ = await begin.value
+        Issue.record("Pending custody should be returned before verification completes.")
+        return
+    }
 
-    #expect(await begin.value == nil)
+    let release = Task { @MainActor in
+        await service.endInterruption(token: token)
+    }
+    await Task.yield()
+    #expect(driver.commands == [.pause])
+    verificationGate.open()
+    await release.value
     await waitUntil { driver.commands == [.pause, .play] }
     #expect(driver.commands == [.pause, .play])
 }
 
 @MainActor
-@Test("Unknown playback before targeted Pause never creates resume ownership")
+@Test("Unknown playback with active output takes pending custody without an early Play")
 func unknownPlaybackBeforePauseNeverCreatesResumeOwnership() async {
     let podcastsOutput = MediaAudioOutputTarget(
         processID: 63_508,
@@ -2652,13 +3243,13 @@ func unknownPlaybackBeforePauseNeverCreatesResumeOwnership() async {
 
     let token = await service.beginInterruption()
 
-    #expect(token == nil)
-    #expect(driver.commands.isEmpty)
+    #expect(token != nil)
+    #expect(driver.commands == [.pause])
     #expect(!driver.commands.contains(.play))
 }
 
 @MainActor
-@Test("Unknown playback before capture never sends a media command")
+@Test("Unknown playback before capture pauses the exact observed application")
 func unknownPlaybackBeforeCaptureNeverSendsMediaCommand() async {
     let unknownWithExactAudioOutput = makeSnapshot(
         target: nil,
@@ -2675,8 +3266,9 @@ func unknownPlaybackBeforeCaptureNeverSendsMediaCommand() async {
 
     let token = await service.beginInterruption()
 
-    #expect(token == nil)
-    #expect(driver.commands.isEmpty)
+    #expect(token != nil)
+    #expect(driver.destinations == [.observedApplications(["com.example.player"])])
+    #expect(!driver.commands.contains(.play))
 }
 
 @MainActor
@@ -2773,8 +3365,8 @@ func concurrentBeginJoinsPauseTransition() async {
 }
 
 @MainActor
-@Test("Cancellation after Pause restores verified media exactly once")
-func cancelledVerifiedPauseRestoresMediaExactlyOnce() async {
+@Test("Releasing custody after Pause restores verified media exactly once")
+func releasedVerifiedPauseRestoresMediaExactlyOnce() async {
     let verificationGate = MediaSnapshotGate()
     let driver = FakeMediaInterruptionDriver(
         snapshots: [confirmedPlayingSnapshot, confirmedPausedSnapshot]
@@ -2782,22 +3374,37 @@ func cancelledVerifiedPauseRestoresMediaExactlyOnce() async {
     driver.snapshotGates[2] = verificationGate
     let service = makeService(driver: driver)
 
-    let begin = Task { @MainActor in await service.beginInterruption() }
+    let completion = CompletionProbe()
+    let begin = Task { @MainActor in
+        let token = await service.beginInterruption()
+        completion.didComplete = true
+        return token
+    }
     await waitUntil { verificationGate.waitCount == 1 }
     #expect(driver.commands == [.pause])
+    await waitUntil { completion.didComplete }
+    guard completion.didComplete, let token = await begin.value else {
+        verificationGate.open()
+        _ = await begin.value
+        Issue.record("Verified custody should be returned before verification completes.")
+        return
+    }
 
-    begin.cancel()
+    let release = Task { @MainActor in
+        await service.endInterruption(token: token)
+    }
     await Task.yield()
+    #expect(driver.commands == [.pause])
     verificationGate.open()
 
-    #expect(await begin.value == nil)
+    await release.value
     await waitUntil { driver.commands == [.pause, .play] }
     #expect(driver.commands == [.pause, .play])
 }
 
 @MainActor
-@Test("Cancellation waits for a delayed accepted Pause effect and restores once")
-func cancelledAcceptedPauseWithDelayedEffectRestoresMediaOnce() async {
+@Test("Releasing custody waits for a delayed accepted Pause effect and restores once")
+func releasedAcceptedPauseWithDelayedEffectRestoresMediaOnce() async {
     let laggingPausedSnapshot = makeSnapshot(
         detection: .unknown,
         isPlaying: false,
@@ -2820,28 +3427,224 @@ func cancelledAcceptedPauseWithDelayedEffectRestoresMediaOnce() async {
         verificationDelays: [0, 0, 0]
     )
 
-    let begin = Task { @MainActor in await service.beginInterruption() }
+    let completion = CompletionProbe()
+    let begin = Task { @MainActor in
+        let token = await service.beginInterruption()
+        completion.didComplete = true
+        return token
+    }
     await waitUntil { firstVerificationGate.waitCount == 1 }
     #expect(driver.commands == [.pause])
+    await waitUntil { completion.didComplete }
+    guard completion.didComplete, let token = await begin.value else {
+        firstVerificationGate.open()
+        _ = await begin.value
+        Issue.record("Pending custody should be returned before delayed verification completes.")
+        return
+    }
 
-    begin.cancel()
+    let release = Task { @MainActor in
+        await service.endInterruption(token: token)
+    }
     await Task.yield()
     #expect(!driver.commands.contains(.play))
     firstVerificationGate.open()
 
-    #expect(await begin.value == nil)
+    await release.value
     await waitUntil { driver.commands.last == .play }
     #expect(driver.commands.filter { $0 == .play }.count == 1)
     #expect(driver.commands.last == .play)
+    #expect(driver.verifiedDestinations.last?.expectedProcessTargets == [primaryAudioOutput])
+}
+
+@MainActor
+@Test("Release preserves the accepted-Pause settling window")
+func releasePreservesAcceptedPauseSettlingWindow() async {
+    let sleepGate = MediaSleepGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            confirmedPlayingSnapshot,
+            confirmedPlayingSnapshot,
+            confirmedPausedSnapshot,
+        ]
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [80_000_000, 120_000_000],
+        sleep: { _ in
+            await sleepGate.wait()
+        }
+    )
+
+    let beginProbe = CompletionProbe()
+    let begin = Task { @MainActor in
+        let token = await service.beginInterruption()
+        beginProbe.didComplete = true
+        return token
+    }
+    let reachedFirstSleep = await sleepGate.waitUntilCount(
+        1,
+        timeoutMilliseconds: 1_000
+    )
+    let beginCompleted = await waitUntilSatisfied { beginProbe.didComplete }
+    guard reachedFirstSleep, beginCompleted else {
+        begin.cancel()
+        await sleepGate.openPermanently()
+        if let token = await begin.value {
+            await service.endInterruption(token: token)
+        }
+        Issue.record(
+            "Initial custody and the first verification sleep must both become observable."
+        )
+        return
+    }
+    guard let token = await begin.value else {
+        await sleepGate.openPermanently()
+        Issue.record("An accepted Pause should publish custody before verification completes.")
+        return
+    }
+
+    let releaseProbe = CompletionProbe()
+    let release = Task { @MainActor in
+        releaseProbe.didStart = true
+        await service.endInterruption(token: token)
+        releaseProbe.didComplete = true
+    }
+    await waitUntil { releaseProbe.didStart }
+
+    #expect(!releaseProbe.didComplete)
+    #expect(driver.commands == [.pause])
+
+    await sleepGate.open()
+    let reachedSecondSleep = await sleepGate.waitUntilCount(
+        2,
+        timeoutMilliseconds: 1_000
+    )
+    #expect(
+        reachedSecondSleep,
+        "Release must preserve every remaining verification delay before adjudicating custody."
+    )
+    guard reachedSecondSleep else {
+        await sleepGate.openPermanently()
+        await release.value
+        return
+    }
+
+    #expect(!releaseProbe.didComplete)
+    #expect(driver.commands == [.pause])
+    await sleepGate.open()
+
+    await release.value
+    #expect(releaseProbe.didComplete)
+    #expect(driver.commands == [.pause, .play])
+    #expect(driver.commands.filter { $0 == .pause }.count == 1)
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.verifiedDestinations.last?.expectedProcessTargets == [primaryAudioOutput])
+}
+
+@MainActor
+@Test("A new owner restores Pause retries during release drain")
+func newOwnerRestoresPauseRetriesDuringReleaseDrain() async {
+    let sleepGate = MediaSleepGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            confirmedPlayingSnapshot,
+            confirmedPlayingSnapshot,
+            confirmedPausedSnapshot,
+        ]
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [80_000_000, 120_000_000],
+        sleep: { _ in
+            await sleepGate.wait()
+        }
+    )
+
+    let beginProbe = CompletionProbe()
+    let begin = Task { @MainActor in
+        let token = await service.beginInterruption()
+        beginProbe.didComplete = true
+        return token
+    }
+    let reachedFirstSleep = await sleepGate.waitUntilCount(
+        1,
+        timeoutMilliseconds: 1_000
+    )
+    let beginCompleted = await waitUntilSatisfied { beginProbe.didComplete }
+    guard reachedFirstSleep, beginCompleted else {
+        begin.cancel()
+        await sleepGate.openPermanently()
+        if let token = await begin.value {
+            await service.endInterruption(token: token)
+        }
+        Issue.record(
+            "Initial custody and the first verification sleep must both become observable."
+        )
+        return
+    }
+    guard let firstToken = await begin.value else {
+        await sleepGate.openPermanently()
+        Issue.record("Expected initial pending custody.")
+        return
+    }
+
+    let firstReleaseProbe = CompletionProbe()
+    let firstRelease = Task { @MainActor in
+        firstReleaseProbe.didStart = true
+        await service.endInterruption(token: firstToken)
+        firstReleaseProbe.didComplete = true
+    }
+    await waitUntil { firstReleaseProbe.didStart }
+
+    guard let secondToken = await service.beginInterruption() else {
+        await sleepGate.openPermanently()
+        await firstRelease.value
+        Issue.record("A new capture should inherit pending custody during release drain.")
+        return
+    }
+
+    await sleepGate.open()
+    let reachedSecondSleep = await sleepGate.waitUntilCount(
+        2,
+        timeoutMilliseconds: 1_000
+    )
+    #expect(
+        reachedSecondSleep,
+        "The release drain should preserve the second configured verification delay."
+    )
+    guard reachedSecondSleep else {
+        await sleepGate.openPermanently()
+        await firstRelease.value
+        await service.endInterruption(token: secondToken)
+        return
+    }
+
+    #expect(!firstReleaseProbe.didComplete)
+    #expect(
+        driver.commands == [.pause, .pause],
+        "Once a new owner joins, strong same-lineage playback should authorize a targeted retry Pause."
+    )
+    await sleepGate.open()
+
+    await firstRelease.value
+    #expect(firstReleaseProbe.didComplete)
+    #expect(driver.commands == [.pause, .pause])
+
+    await service.endInterruption(token: secondToken)
+    #expect(driver.commands == [.pause, .pause, .play])
+    #expect(driver.verifiedDestinations.last?.expectedProcessTargets == [primaryAudioOutput])
 }
 
 @MainActor
 @Test("Cancellation during the accepted-Pause delay cannot bypass verification")
 func cancellationDuringAcceptedPauseDelayWaitsForVerification() async {
     let sleepGate = MediaSleepGate()
+    let pauseDispatchGate = MediaSnapshotGate()
     let driver = FakeMediaInterruptionDriver(
         snapshots: [confirmedPlayingSnapshot, confirmedPausedSnapshot]
     )
+    driver.sendGates[1] = pauseDispatchGate
     let service = MacMediaInterruptionService(
         driver: driver,
         verificationDelays: [80_000_000],
@@ -2853,11 +3656,36 @@ func cancellationDuringAcceptedPauseDelayWaitsForVerification() async {
     let begin = Task { @MainActor in
         await service.beginInterruption()
     }
-    await sleepGate.waitUntilCount(1)
+    // Cancel while the Pause dispatch is still in flight, before custody has
+    // been published and the token handed back.
+    let reachedPauseDispatch = await waitUntilSatisfied {
+        pauseDispatchGate.waitCount == 1
+    }
+    guard reachedPauseDispatch else {
+        begin.cancel()
+        pauseDispatchGate.openPermanently()
+        await sleepGate.openPermanently()
+        _ = await begin.value
+        Issue.record("Cancellation must rendezvous with the in-flight Pause dispatch.")
+        return
+    }
     begin.cancel()
-    await sleepGate.open()
+    await Task.yield()
+    pauseDispatchGate.openPermanently()
 
-    await sleepGate.waitUntilCount(2)
+    // The cancelled transition still pays its full verification delay before
+    // any restoring command can be considered.
+    let reachedVerificationSleep = await sleepGate.waitUntilCount(
+        1,
+        timeoutMilliseconds: 1_000
+    )
+    guard reachedVerificationSleep else {
+        pauseDispatchGate.openPermanently()
+        await sleepGate.openPermanently()
+        _ = await begin.value
+        Issue.record("Cancellation must enter the accepted-Pause verification delay.")
+        return
+    }
     #expect(driver.commands == [.pause])
     await sleepGate.open()
 
@@ -3216,10 +4044,20 @@ func inFlightResumeRejectsReplacementBeforeRePause() async {
     resumeGate.open()
     await firstEnd.value
 
-    #expect(await secondBegin.value == nil)
+    guard let secondToken = await secondBegin.value else {
+        Issue.record("A fresh snapshot showing active output should start a new interruption.")
+        return
+    }
     #expect(
-        driver.commands == [.pause, .play],
-        "Stale in-flight lineage must not Pause or later Play a replacement process."
+        driver.commands == [.pause, .play, .pause],
+        "Stale in-flight lineage must not emit a lineage command for a replacement process."
+    )
+
+    await service.endInterruption(token: secondToken)
+
+    #expect(
+        driver.verifiedDestinations.last?.expectedProcessTargets == [replacementOutput],
+        "Ownership must bind the freshly observed process, never the replaced one."
     )
 }
 
@@ -4272,7 +5110,7 @@ func boundedResumeLineagePendingReleaseRejectsActiveOutput() async {
 }
 
 @MainActor
-@Test("Bounded resume lineage rejects a silent same-bundle replacement after re-Pause")
+@Test("Bounded resume lineage ignores a silent elected-session replacement after re-Pause")
 func boundedResumeLineageRejectsSilentReplacementAfterRePause() async {
     let unavailable = makeSnapshot(
         detection: .unknown,
@@ -4315,7 +5153,9 @@ func boundedResumeLineageRejectsSilentReplacementAfterRePause() async {
 
     let secondToken = await service.beginInterruption()
 
-    #expect(secondToken == nil)
+    // A fresh snapshot with active output is a legitimate new interruption; the
+    // elected session's process identity does not gate it.
+    #expect(secondToken != nil)
     #expect(driver.commands == [.pause, .play, .pause])
 }
 
@@ -4520,6 +5360,97 @@ func cancelledBoundedLineageRePauseRestoresAcceptedAppOnce() async {
     await waitUntil { driver.commands == [.pause, .play, .pause, .play] }
     #expect(driver.commands == [.pause, .play, .pause, .play])
     #expect(driver.snapshotCallCount >= 7)
+}
+
+@MainActor
+@Test("A replacement owner prevents compensation from a cancelled bounded re-Pause")
+func replacementOwnerPreventsCancelledBoundedRePauseCompensation() async {
+    let unavailable = makeSnapshot(
+        detection: .unknown,
+        isPlaying: nil,
+        playbackState: nil,
+        activeAudioOutputs: nil
+    )
+    let replacementTarget = MediaPlaybackTarget(
+        processID: primaryTarget.processID + 1,
+        bundleIdentifier: primaryTarget.bundleIdentifier
+    )
+    let replacementOutput = MediaAudioOutputTarget(
+        processID: primaryAudioOutput.processID + 1,
+        applicationBundleIdentifier: primaryAudioOutput.applicationBundleIdentifier
+    )
+    let activeReplacement = makeSnapshot(
+        target: replacementTarget,
+        contentIdentifier: "item-2",
+        detection: .playing,
+        isPlaying: true,
+        playbackState: 1,
+        activeAudioOutputs: [replacementOutput]
+    )
+    let repauseGate = MediaSnapshotGate()
+    let verificationGate = MediaSnapshotGate()
+    let cancellationProbe = CompletionProbe()
+    let finalizationProbe = CompletionProbe()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            confirmedPlayingSnapshot,
+            confirmedPausedSnapshot,
+            unavailable,
+            confirmedPlayingSnapshot,
+            activeReplacement,
+        ]
+    )
+    driver.sendGates[3] = repauseGate
+    driver.snapshotGates[5] = verificationGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0],
+        resumeVerificationDelays: [0],
+        resumeLineageGraceDuration: 3,
+        now: { 100 },
+        afterPauseTransitionCancellation: {
+            cancellationProbe.didComplete = true
+        },
+        afterPauseTransitionFinalization: {
+            if driver.commands.filter({ $0 == .pause }).count >= 2 {
+                finalizationProbe.didComplete = true
+            }
+        }
+    )
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected verified interruption ownership.")
+        return
+    }
+    await service.endInterruption(token: firstToken)
+
+    let cancelledBegin = Task { @MainActor in
+        await service.beginInterruption()
+    }
+    await waitUntil { repauseGate.waitCount == 1 }
+    cancelledBegin.cancel()
+    await waitUntil { cancellationProbe.didComplete }
+
+    let replacementBegin = Task { @MainActor in
+        await service.beginInterruption()
+    }
+    repauseGate.open()
+    await waitUntil { verificationGate.waitCount == 1 }
+
+    #expect(await cancelledBegin.value == nil)
+    guard let replacementToken = await replacementBegin.value else {
+        verificationGate.open()
+        Issue.record("The replacement owner should receive accepted bounded custody.")
+        return
+    }
+    #expect(driver.commands == [.pause, .play, .pause])
+
+    verificationGate.open()
+    await waitUntil { finalizationProbe.didComplete }
+
+    #expect(driver.commands == [.pause, .play, .pause])
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    await service.endInterruption(token: replacementToken)
+    #expect(driver.commands == [.pause, .play, .pause])
 }
 
 @MainActor
@@ -5057,33 +5988,329 @@ func preCancelledBeginCannotJoinPendingCustody() async {
 }
 
 @MainActor
-@Test("Targeted MediaRemote command uses synchronous acceptance without a callback")
-func targetedMediaRemoteCommandUsesSynchronousAcceptance() async {
-    let acceptedBridge = MediaRemoteBridge(
-        frameworkPath: "/does/not/exist",
-        sendCommandOverride: { command, applicationBundleIdentifier in
-            #expect(command == .pause)
-            #expect(applicationBundleIdentifier == "com.example.player")
-            return true
-        }
+@Test("An elected session process outside the Core Audio domain never breaks custody")
+func electedSessionProcessOutsideCoreAudioDomainKeepsCustody() async {
+    let rendererOutput = MediaAudioOutputTarget(
+        processID: 200,
+        applicationBundleIdentifier: "com.google.Chrome"
     )
-    let rejectedBridge = MediaRemoteBridge(
-        frameworkPath: "/does/not/exist",
-        sendCommandOverride: { _, _ in false }
+    // The elected now-playing session reports Chrome's main process while Core
+    // Audio reports the renderer helper. They are different processes by
+    // construction, so the mismatch is not evidence about custody.
+    let chromeIsActive = makeSnapshot(
+        target: MediaPlaybackTarget(
+            processID: 100,
+            bundleIdentifier: "com.google.Chrome"
+        ),
+        contentIdentifier: "video-1",
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [rendererOutput]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: chromeIsActive, count: 6)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0]
     )
 
+    guard let token = await service.beginInterruption() else {
+        Issue.record("A split-process application must still take custody of its accepted Pause.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
     #expect(
-        await acceptedBridge.send(
+        driver.verifiedDestinations.last?.expectedProcessTargets == [rendererOutput],
+        "Resume must bind the Core Audio producer, not the elected session process."
+    )
+}
+
+@MainActor
+@Test("Content drift under a preserved Core Audio producer never breaks custody")
+func contentDriftUnderPreservedProducerKeepsCustody() async {
+    let producerOutput = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts"
+    )
+    let electedSession = MediaPlaybackTarget(
+        processID: 63_508,
+        bundleIdentifier: "com.apple.podcasts"
+    )
+    let before = makeSnapshot(
+        target: electedSession,
+        contentIdentifier: "episode-1",
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [producerOutput]
+    )
+    // The elected session advances to the next item while the exact same Core
+    // Audio producer stays open. Elected content is advisory only.
+    let contentDrifted = makeSnapshot(
+        target: electedSession,
+        contentIdentifier: "episode-2",
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [producerOutput]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [before] + Array(repeating: contentDrifted, count: 5)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0]
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Elected content drift must not discard custody of a preserved producer.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+}
+
+@MainActor
+@Test("Teardown observed after the ladder but before release verifies custody")
+func teardownAfterLadderBeforeReleaseVerifiesCustody() async {
+    let podcastsOutput = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts"
+    )
+    let openStream = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput]
+    )
+    // Core Audio teardown outlasts the whole verification ladder but lands
+    // before capture release, so pending custody upgrades to verified.
+    let tornDown = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: []
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [openStream, openStream, openStream, tornDown]
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0]
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("An accepted Pause with lagging teardown must hold pending custody.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(
+        driver.verifiedDestinations.last?.expectedProcessTargets == [podcastsOutput]
+    )
+}
+
+@MainActor
+@Test("A silent stream holder that rejects the Pause creates no custody and no compensation")
+func silentStreamHolderRejectingPauseCreatesNoCustody() async {
+    let silentStreamHolder = MediaAudioOutputTarget(
+        processID: 4_242,
+        applicationBundleIdentifier: "com.example.silent-stream-holder"
+    )
+    // An application can hold an open, silent output stream without any media
+    // session. Core Audio reports it as active output, so it reaches the
+    // destination, but it has no session to accept a semantic Pause.
+    let holderIsActiveOutput = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [silentStreamHolder]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: holderIsActiveOutput, count: 3)
+    )
+    driver.acceptedApplicationsBySend = [[]]
+    let service = MacMediaInterruptionService(driver: driver, verificationDelays: [0])
+
+    let token = await service.beginInterruption()
+
+    #expect(token == nil, "A rejected Pause must not create custody.")
+    #expect(driver.commands == [.pause], "Nothing was accepted, so nothing needs compensating.")
+    #expect(!driver.commands.contains(.play))
+}
+
+@MainActor
+@Test("Releasing an owner holding uncontradicted custody resumes exactly once")
+func releasedOwnerHoldingUncontradictedCustodyResumesExactlyOnce() async {
+    let podcastsOutput = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts"
+    )
+    // Output teardown lags the accepted Pause, so custody stays pending and
+    // uncontradicted for the whole window. The owner releases mid-verification.
+    let laggingOpenStream = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput]
+    )
+    let verificationGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: laggingOpenStream, count: 5)
+    )
+    driver.snapshotGates[2] = verificationGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0]
+    )
+
+    let completion = CompletionProbe()
+    let begin = Task { @MainActor in
+        let token = await service.beginInterruption()
+        completion.didComplete = true
+        return token
+    }
+    await waitUntil { verificationGate.waitCount == 1 }
+    #expect(driver.commands == [.pause])
+    await waitUntil { completion.didComplete }
+    guard completion.didComplete, let token = await begin.value else {
+        verificationGate.open()
+        _ = await begin.value
+        Issue.record("Pending custody should be returned before verification completes.")
+        return
+    }
+
+    let release = Task { @MainActor in
+        await service.endInterruption(token: token)
+    }
+    await Task.yield()
+    #expect(!driver.commands.contains(.play))
+    verificationGate.open()
+
+    await release.value
+    await waitUntil { driver.commands.contains(.play) }
+
+    // The accepted Pause resolves through the release path. It must not also be
+    // compensated, which would emit a second Play to the same application.
+    #expect(
+        driver.commands.filter { $0 == .play }.count == 1,
+        "An accepted Pause must resolve with exactly one Play, never a duplicate."
+    )
+    #expect(
+        driver.verifiedDestinations.last?.expectedProcessTargets == [podcastsOutput]
+    )
+}
+
+@MainActor
+private func makeCommandBridge(
+    timeout: DispatchTimeInterval = .milliseconds(250),
+    dispatch: @escaping @MainActor (
+        SemanticMediaCommand,
+        String,
+        @escaping @Sendable (UInt32) -> Void
+    ) -> Bool
+) -> MediaRemoteBridge {
+    MediaRemoteBridge(
+        frameworkPath: "/does/not/exist",
+        probeRunner: MediaRemoteAsyncProbeRunner(
+            timeout: timeout,
+            timeoutQueue: DispatchQueue(label: "StenoTests.MediaRemote.CommandTimeout")
+        ),
+        sendCommandOverride: dispatch
+    )
+}
+
+@MainActor
+@Test("Targeted media command acceptance requires a zero-error callback")
+func targetedMediaCommandAcceptanceRequiresZeroErrorCallback() async {
+    let bridge = makeCommandBridge { command, applicationBundleIdentifier, acknowledge in
+        #expect(command == .pause)
+        #expect(applicationBundleIdentifier == "com.example.player")
+        acknowledge(0)
+        return true
+    }
+
+    #expect(
+        await bridge.send(
             .pause,
             toApplicationBundleIdentifier: "com.example.player"
         )
     )
+}
+
+@MainActor
+@Test("A nonzero command callback error is not acceptance")
+func nonzeroCommandCallbackErrorIsNotAcceptance() async {
+    let bridge = makeCommandBridge { _, _, acknowledge in
+        // A running application without a registered now-playing session reports
+        // error 1 even though the dispatch itself claims success.
+        acknowledge(1)
+        return true
+    }
+
     #expect(
-        !(await rejectedBridge.send(
+        !(await bridge.send(
             .pause,
             toApplicationBundleIdentifier: "com.example.player"
         ))
     )
+}
+
+@MainActor
+@Test("A command callback that never arrives is not acceptance")
+func absentCommandCallbackIsNotAcceptance() async {
+    let bridge = makeCommandBridge(timeout: .milliseconds(20)) { _, _, _ in
+        // Dispatch claims success synchronously and never acknowledges.
+        true
+    }
+
+    #expect(
+        !(await bridge.send(
+            .pause,
+            toApplicationBundleIdentifier: "com.example.player"
+        ))
+    )
+}
+
+@MainActor
+@Test("A rejected synchronous dispatch is not acceptance")
+func rejectedSynchronousDispatchIsNotAcceptance() async {
+    let bridge = makeCommandBridge(timeout: .milliseconds(20)) { _, _, _ in false }
+
+    #expect(
+        !(await bridge.send(
+            .pause,
+            toApplicationBundleIdentifier: "com.example.player"
+        ))
+    )
+}
+
+@MainActor
+@Test("An empty application identifier is never dispatched")
+func emptyApplicationIdentifierIsNeverDispatched() async {
+    var dispatchCount = 0
+    let bridge = makeCommandBridge(timeout: .milliseconds(20)) { _, _, acknowledge in
+        dispatchCount += 1
+        acknowledge(0)
+        return true
+    }
+
+    #expect(!(await bridge.send(.pause, toApplicationBundleIdentifier: "")))
+    #expect(dispatchCount == 0)
 }
 
 @Test("MediaRemote probe runner ignores callbacks after timeout")
