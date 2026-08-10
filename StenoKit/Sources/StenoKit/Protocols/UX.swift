@@ -16,7 +16,7 @@ public enum OverlayState: Sendable, Equatable {
     case noSpeechDetected
 }
 
-/// An opaque token ensuring media is only resumed if it was actually paused.
+/// An opaque token used to coalesce overlapping media interruptions.
 public struct MediaInterruptionToken: Sendable, Equatable {
     public let id: UUID
 
@@ -62,18 +62,19 @@ public protocol OverlayPresenter: AnyObject {
     func hide()
 }
 
-/// Pauses and resumes system media playback during recording sessions.
+/// Pauses and safely resumes system media playback during recording sessions.
 ///
-/// Uses a token-based system to prevent spurious resume. Runs on MainActor.
+/// Uses verified ownership tokens to coalesce overlapping interruptions and
+/// prevent paused media from being started accidentally. Runs on MainActor.
 @MainActor
 public protocol MediaInterruptionService: AnyObject {
-    /// Pauses any active media playback and returns a token for resuming later.
+    /// Sends targeted Pause requests and returns an ownership token only when
+    /// active playback was confirmed and the pause transition was verified.
     ///
     /// Returns `nil` if no media was paused (e.g., nothing was playing).
     func beginInterruption() async -> MediaInterruptionToken?
 
-    /// Resumes media playback using the given token.
-    ///
-    /// Only resumes if the token matches an active interruption.
-    func endInterruption(token: MediaInterruptionToken)
+    /// Releases an interruption token and, after the final valid token, resumes
+    /// only the exact media applications whose pause transition was verified.
+    func endInterruption(token: MediaInterruptionToken) async
 }
