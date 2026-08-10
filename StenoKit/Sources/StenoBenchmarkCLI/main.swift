@@ -6,6 +6,8 @@ enum CLIError: Error, LocalizedError {
     case usage(String)
     case missingArgument(String)
     case invalidValue(argument: String, value: String)
+    case retainedBenchmarkFailed
+    case retainedAcceptanceFailed([WarmRuntimeAcceptanceFailure])
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +17,10 @@ enum CLIError: Error, LocalizedError {
             return "Missing required argument: --\(name)"
         case .invalidValue(let argument, let value):
             return "Invalid value for --\(argument): \(value)"
+        case .retainedBenchmarkFailed:
+            return "The retained-runtime benchmark failed before producing aggregate evidence."
+        case .retainedAcceptanceFailed(let failures):
+            return "The retained-runtime benchmark was rejected: \(failures.map(\.rawValue).joined(separator: ", "))."
         }
     }
 }
@@ -67,6 +73,8 @@ enum StenoBenchmarkCLI {
             try validatePipeline(command)
         case "run-all":
             try await runAll(command)
+        case "compare-retained":
+            try await compareRetained(command)
         case "help", "--help", "-h":
             printHelp()
         default:
@@ -338,6 +346,116 @@ enum StenoBenchmarkCLI {
         print("- Report: \(reportOutputPath)")
     }
 
+    private static func compareRetained(_ command: ParsedCommand) async throws {
+        let manifestPath = try command.required("manifest")
+        let outputPath = try command.required("output")
+        let whisperCLIPath = try command.required("whisper-cli")
+        let helperPath = try command.required("helper")
+        let modelPath = try command.required("model")
+        let threads = try parseOptionalInt(command.optional("threads"), argument: "threads") ?? 6
+        let comparisonIterations = try parseOptionalInt(
+            command.optional("comparison-iterations"),
+            argument: "comparison-iterations"
+        ) ?? 9
+        let resourceIterations = try parseOptionalInt(
+            command.optional("iterations"),
+            argument: "iterations"
+        ) ?? 100
+        let resourceCheckpointInterval = try parseOptionalInt(
+            command.optional("resource-checkpoint-interval"),
+            argument: "resource-checkpoint-interval"
+        ) ?? 25
+        let coordinatorIterations = try parseOptionalInt(
+            command.optional("coordinator-iterations"),
+            argument: "coordinator-iterations"
+        ) ?? comparisonIterations
+        let repeatabilityIterations = try parseOptionalInt(
+            command.optional("repeatability-iterations"),
+            argument: "repeatability-iterations"
+        ) ?? 20
+        let beamSize = try parseOptionalInt(command.optional("beam-size"), argument: "beam-size") ?? 5
+        let bestOf = try parseOptionalInt(command.optional("best-of"), argument: "best-of") ?? 5
+        let cancellationDelayMS = try parseOptionalInt(
+            command.optional("cancellation-delay-ms"),
+            argument: "cancellation-delay-ms"
+        ) ?? 10
+        let idleSampleSeconds = try parseOptionalDouble(
+            command.optional("idle-sample-seconds"),
+            argument: "idle-sample-seconds"
+        ) ?? 2
+        guard idleSampleSeconds > 0 else {
+            throw CLIError.invalidValue(
+                argument: "idle-sample-seconds",
+                value: command.optional("idle-sample-seconds") ?? ""
+            )
+        }
+
+        let manifest = try BenchmarkIO.loadManifest(at: manifestPath)
+        let artifact: WarmRuntimeBenchmarkArtifact
+        do {
+            artifact = try await WarmRuntimeBenchmarkRunner.run(
+                manifest: manifest,
+                configuration: WarmRuntimeBenchmarkConfiguration(
+                    manifestPath: manifestPath,
+                    whisperCLIPath: whisperCLIPath,
+                    helperPath: helperPath,
+                    modelPath: modelPath,
+                    vadModelPath: command.optional("vad-model"),
+                    switchModelPath: command.optional("switch-model"),
+                    switchVADModelPath: command.optional("switch-vad-model"),
+                    threads: threads,
+                    language: command.optional("language") ?? "en",
+                    suppressNonSpeechTokens: command.optional("suppress-nst") != nil,
+                    suppressRegex: command.optional("suppress-regex"),
+                    beamSize: beamSize,
+                    bestOf: bestOf,
+                    comparisonIterations: comparisonIterations,
+                    resourceIterations: resourceIterations,
+                    resourceCheckpointInterval: resourceCheckpointInterval,
+                    coordinatorIterations: coordinatorIterations,
+                    repeatabilityIterations: repeatabilityIterations,
+                    cancellationDelayMS: cancellationDelayMS,
+                    idleSampleSeconds: idleSampleSeconds,
+                    profile: try parseProfile(command),
+                    lexicon: try parseLexicon(command)
+                )
+            )
+        } catch {
+            throw CLIError.retainedBenchmarkFailed
+        }
+        let data = try WarmRuntimeArtifactEncoder.encode(artifact)
+        let outputURL = URL(fileURLWithPath: outputPath)
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: outputURL, options: .atomic)
+
+        let acceptance = WarmRuntimeAcceptanceValidator.validate(artifact)
+        guard acceptance.accepted else {
+            throw CLIError.retainedAcceptanceFailed(acceptance.failures)
+        }
+
+        print("Matched retained-runtime benchmark complete.")
+        print(
+            "- ASR mean: CLI=\(formatDecimal(artifact.cli.meanMS))ms, warm=\(formatDecimal(artifact.retainedWarm.meanMS))ms, reduction=\(formatDecimal(artifact.warmImprovement.meanReductionPercent))%"
+        )
+        if let proxy = artifact.coordinatorProxy {
+            print(
+                "- Stop-to-insert proxy p50: CLI=\(formatDecimal(proxy.cli.stopToInsertionCompletion.p50MS))ms, warm=\(formatDecimal(proxy.retainedWarm.stopToInsertionCompletion.p50MS))ms"
+            )
+        }
+        print("- Contract parity: \(artifact.parity.allContractsMatch ? "pass" : "fail")")
+        if let repeatability = artifact.retainedRepeatability {
+            print(
+                "- Identical-audio rich variants: \(repeatability.distinctRichContractVariantCount) across \(repeatability.repetitions) repetitions"
+            )
+        }
+        let listenerStatus = artifact.networkListenersObserved.map { $0 ? "yes" : "no" } ?? "probe unavailable"
+        print("- Network listener observed: \(listenerStatus)")
+        print("- Acceptance gate: pass")
+    }
+
     private static func parseProfile(_ command: ParsedCommand) throws -> StyleProfile {
         let profileName = command.optional("profile-name") ?? "benchmark-local"
         let tone = try parseEnum(
@@ -500,6 +618,35 @@ enum StenoBenchmarkCLI {
             [--extra-arg <arg>] (repeatable)
             [--default-language <code>]
             [--latency-iterations <int>]
+            [--lexicon <path>]
+            [--profile-name <name>]
+            [--tone natural|professional|concise|friendly|technical]
+            [--structure-mode natural|paragraph|bullets|email|command]
+            [--filler-policy minimal|balanced|aggressive]
+            [--command-policy passthrough|transform]
+
+          compare-retained
+            --manifest <path>
+            --output <aggregate-json-path>
+            --whisper-cli <path>
+            --helper <path>
+            --model <path>
+            [--vad-model <path>]
+            [--threads <int>] (default: 6)
+            [--language <code>] (default: en)
+            [--comparison-iterations <int>] (default: 9)
+            [--iterations <int>] (resource run total, minimum/default: 100)
+            [--resource-checkpoint-interval <int>] (default: 25)
+            [--coordinator-iterations <int>] (default: comparison iterations)
+            [--repeatability-iterations <int>] (default: 20 identical retained requests)
+            [--beam-size <int>] (default: 5)
+            [--best-of <int>] (default: 5)
+            [--suppress-nst]
+            [--suppress-regex <regex>]
+            [--idle-sample-seconds <double>] (default: 2)
+            [--cancellation-delay-ms <int>] (default: 10)
+            [--switch-model <path>]
+            [--switch-vad-model <path>]
             [--lexicon <path>]
             [--profile-name <name>]
             [--tone natural|professional|concise|friendly|technical]
