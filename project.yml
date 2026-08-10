@@ -31,3 +31,20 @@ targets:
     dependencies:
       - package: StenoKit
         product: StenoKit
+    scheme:
+      testTargets:
+        - StenoTests
+  StenoTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: StenoTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.stenoapp.steno.tests
+        SWIFT_VERSION: 6.0
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Steno.app/Contents/MacOS/Steno"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: Steno
