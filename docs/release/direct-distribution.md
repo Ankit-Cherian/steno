@@ -20,12 +20,14 @@ The repo now includes:
 - in-app downloads for `medium.en` and `large-v3-turbo`
 - a distribution entitlements file
 - a `scripts/release-dmg.sh` script that:
+  - builds the audited Apple-silicon `whisper.cpp` runtime targeting macOS 13
   - builds an unsigned Release app
   - injects a bundled `whisper.cpp` runtime and model into the app bundle
   - patches runtime rpaths for the bundled layout
   - signs the app and DMG with Developer ID Application signing
   - creates a DMG
   - optionally notarizes and staples the DMG
+  - includes Steno and third-party license notices
 
 ## Main script
 
@@ -60,6 +62,7 @@ The downloadable build does not commit giant binaries into git.
 Instead, the release script copies a local runtime into the app bundle from a detected or specified `whisper.cpp` checkout:
 
 - `whisper-cli`
+- `steno-whisper-runtime`, a private inherited-pipe helper with no listener
 - required `libwhisper` / `libggml*` dylibs
 - one selected canonical model
 - the VAD model
@@ -67,10 +70,20 @@ Instead, the release script copies a local runtime into the app bundle from a de
 They are copied into standard macOS bundle locations:
 
 - helper CLI: `Steno.app/Contents/Helpers/whisper-cli`
+- retained helper: `Steno.app/Contents/Helpers/steno-whisper-runtime`
 - dylibs: `Steno.app/Contents/Frameworks/`
 - model files: `Steno.app/Contents/Resources/WhisperModels/`
 
 The app now prefers that bundled runtime automatically on first launch when it exists.
+
+The release script uses `vendor/whisper.cpp/build-steno` by default. Override the build directory only when validating another canonical build:
+
+```bash
+STENO_BUNDLED_WHISPER_BUILD_DIR=/absolute/path/to/build-steno \
+scripts/release-dmg.sh
+```
+
+Packaging fails closed if the audited source revision is not clean, a runtime binary requires newer than macOS 13, the runtime is not Apple-silicon-only, a dependency is missing, or the retained helper imports listener-related network symbols.
 
 ## Choosing the bundled model
 

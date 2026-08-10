@@ -8,9 +8,9 @@ Steno is a local-first voice-to-text app for people who want fast dictation, rel
 
 ## Download
 
-Download Steno v0.2.0:
+Download Steno v0.2.1:
 
-[Download Steno-0.2.0.dmg](https://github.com/Ankit-Cherian/steno/releases/download/v0.2.0/Steno-0.2.0.dmg)
+[Download Steno-0.2.1.dmg](https://github.com/Ankit-Cherian/steno/releases/download/v0.2.1/Steno-0.2.1.dmg)
 
 Open the DMG, drag Steno to Applications, then launch Steno from Applications. Source setup is only needed if you want to build or contribute to the app.
 
@@ -25,7 +25,7 @@ Open the DMG, drag Steno to Applications, then launch Steno from Applications. S
 
 - High-accuracy local transcription with `whisper.cpp`
 - Bundled `small.en` for immediate first-run use, with in-app downloads for larger canonical models based on your hardware
-- App-aware insertion: direct typing where it is safe, clipboard-first behavior where terminals or LLM surfaces need it
+- App-aware insertion: direct typing where it is safe, clipboard-first behavior where paste-sensitive targets need it
 - Global dictation controls: `Option` hold-to-talk plus a configurable hands-free toggle key
 - Local cleanup with tone, structure, filler, and command-passthrough policies
 - Personal lexicon corrections, app-specific overrides, and text shortcuts
@@ -35,13 +35,13 @@ Open the DMG, drag Steno to Applications, then launch Steno from Applications. S
 
 ## Release Validation
 
-The current 0.2 candidate passed the April 23 release evaluation on an M5 Pro MacBook Pro with 64GB memory using the Large V3 Turbo model.
+The current v0.2.1 candidate passed the May 15 release evaluation on an M5 Pro MacBook Pro with 64GB memory using the Large V3 Turbo model.
 
 Key results:
 
-- Cleaned WER: 9.21%
-- Cleaned CER: 8.78%
-- Coordinator latency: 1049ms p50, 1060ms p90, 1114ms p99
+- Cleaned WER: 10.53%
+- Cleaned CER: 10.03%
+- Coordinator latency: 1058ms p50, 1098ms p90, 1122ms p99
 - Status: passed
 - Manual Mac sanity checklist: pending
 

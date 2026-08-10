@@ -18,7 +18,7 @@ struct ContentView: View {
     @State private var keyMonitor: Any?
 
     private var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.1"
     }
 
     var body: some View {

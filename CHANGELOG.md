@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-05-15
+
+### Changed
+- Added local spoken-symbol cleanup for common dictated punctuation and code-like phrases such as `comma`, `period`, `question mark`, `open paren`, `backtick`, `slash`, `forward slash`, and `at sign`.
+- Improved cleanup ranking so safe punctuation and prefix-symbol candidates win over the raw transcript when the utterance is clearly a dictated symbol phrase.
+
+### Fixed
+- Preserved literal and prose uses of spoken symbol words, including phrases like `Write slash command literally`, `the comma key`, `it ended with a question mark`, and ambiguous standalone `comma` utterances.
+- Kept raw slash commands unchanged for command-passthrough contexts.
+
+### Tests
+- Added regression coverage for dictated punctuation, paired symbols, prefix symbols, literal instructions, prose counterexamples, ambiguous symbol words, repeated paired symbols, and raw slash commands.
+- Re-ran the May 15 release-signoff evaluation for the `m5-pro / 64GB / large-v3-turbo` row with passing cleanup, latency, and build gates.
+
 ## [0.2.0] - 2026-04-21
 
 ### Added
@@ -150,7 +164,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Preserved unknown-state safety behavior so playback control is skipped when media state is not trustworthy.
 
 ### Removed
-- OpenAI cleanup integration (`OpenAICleanupEngine`) and remote cleanup wiring (`RemoteCleanupEngine`).
+- Remote cleanup integration and related cleanup wiring.
 - Cloud budget and model-tier plumbing (`BudgetGuard`, cloud cleanup decision types, and cloud-only tests).
 
 ### Breaking for StenoKit Consumers
