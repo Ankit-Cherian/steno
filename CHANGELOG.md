@@ -5,19 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.1] - 2026-05-15
+## [Unreleased]
+
+_Planned version: 0.3.0._
+
+### Added
+- Added Insights with a six-month activity calendar and private, on-device summaries for words, known recording time, estimated speaking speed, completed sessions, streaks, and frequently used applications. The per-session metadata is stored separately from transcript history and contains no transcript text or audio.
+- Added a retained local Whisper context that communicates with a bundled helper over inherited process pipes, without opening a network listener.
 
 ### Changed
-- Added local spoken-symbol cleanup for common dictated punctuation and code-like phrases such as `comma`, `period`, `question mark`, `open paren`, `backtick`, `slash`, `forward slash`, and `at sign`.
-- Improved cleanup ranking so safe punctuation and prefix-symbol candidates win over the raw transcript when the utterance is clearly a dictated symbol phrase.
+- Retained transcription falls back to the existing local `whisper-cli` path when the helper is unavailable, fails, is cancelled, or must be reloaded after model, VAD, runtime, sleep/wake, or memory-state changes.
+- Media interruption now sends semantic Pause and Play commands only to the exact application and process lineage that Steno verified was producing audio. Ambiguous ownership fails closed, and Steno never uses a global play/pause toggle fallback.
+- Local cleanup is conservative by default: ambiguous phrases such as `question mark`, `open paren`, and `slash command` remain literal. Repair handling, punctuation preservation, and user lexicon replacements avoid inferring dictated-symbol intent; only explicitly selected Aggressive cleanup performs narrow filler removal.
+- Benchmark results now carry reproducible input and runtime identity, including manifest, model, VAD, lexicon, and executable provenance.
+- Direct-distribution builds package the retained-runtime helper and validate its local `whisper.cpp` dependency set alongside the app.
 
 ### Fixed
-- Preserved literal and prose uses of spoken symbol words, including phrases like `Write slash command literally`, `the comma key`, `it ended with a question mark`, and ambiguous standalone `comma` utterances.
-- Kept raw slash commands unchanged for command-passthrough contexts.
+- Hardened capture start, cancellation, overlap, rapid restart, and shutdown so stale asynchronous work cannot resume media or modify a newer dictation session.
+- Improved session teardown and insertion ownership so recording resources close promptly and completed text is inserted or persisted at most once through the active session.
+- Kept media that was already paused unchanged and resumed only media that Steno itself verified it paused.
 
 ### Tests
-- Added regression coverage for dictated punctuation, paired symbols, prefix symbols, literal instructions, prose counterexamples, ambiguous symbol words, repeated paired symbols, and raw slash commands.
-- Re-ran the May 15 release-signoff evaluation for the `m5-pro / 64GB / large-v3-turbo` row with passing cleanup, latency, and build gates.
+- Expanded automated package and hosted macOS coverage for retained-runtime lifecycle and fallback behavior, exact-process media ownership, cancellation and rapid-restart races, conservative cleanup, insertion ownership, helper packaging, and dependency validation.
+
+### Compatibility
+- Version 0.3.0 supports Apple silicon Macs running macOS 13 or later. Intel Macs and earlier macOS versions are not supported.
 
 ## [0.2.0] - 2026-04-21
 

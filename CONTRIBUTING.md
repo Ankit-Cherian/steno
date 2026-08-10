@@ -8,13 +8,14 @@ If you want to use the app locally, start with [QUICKSTART.md](QUICKSTART.md). T
 
 Before you start:
 
+- an Apple silicon Mac
 - macOS 13.0+
 - Xcode 26+
 - XcodeGen (`brew install xcodegen`)
 - CMake (`brew install cmake`)
-- a local `whisper.cpp` checkout built under `vendor/whisper.cpp`
+- a local `whisper.cpp` checkout at the pinned revision, built under `vendor/whisper.cpp/build-steno`
 - at least one canonical Whisper model
-- the Silero VAD model if you want realistic release-eval or no-speech behavior
+- the Silero VAD model for the canonical app and release-eval configuration
 
 ## First-Time Setup
 
@@ -35,7 +36,7 @@ Before you start:
    scripts/build-whisper-runtime-helper.sh
    ```
 
-   This canonical build disables host-specific CPU tuning, BLAS, RPC, and the example server, while retaining Accelerate and Metal. It produces an Apple-silicon runtime that targets the app's macOS 13 deployment target.
+   This canonical build disables host-specific CPU tuning, BLAS, RPC, CURL, and the Whisper server while retaining Accelerate and Metal. It produces arm64 `whisper-cli` and `steno-whisper-runtime` binaries under `vendor/whisper.cpp/build-steno/bin/` for the app's macOS 13 deployment target.
 
 3. Download local models:
 
@@ -68,7 +69,23 @@ xcodegen generate
 xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
 ```
 
-Use that as the default “done” bar for substantial work.
+Use that as the default automated “done” bar for substantial work. It does not prove live microphone capture, supported-player media interruption, insertion into real applications, UI appearance, VoiceOver behavior, an installed app bundle, or macOS 13 compatibility; run and report those checks separately when the change requires them.
+
+## Planned 0.3 Architecture Boundaries
+
+### Retained Whisper runtime
+
+`steno-whisper-runtime` is a private child process that keeps a compatible Whisper model context loaded between dictations. It communicates over inherited pipes and must not expose an HTTP server or other network listener. The first request loads the model; changes to model, VAD path, or another load identity invalidate that context and make the next request reload it. Cancellation, shutdown, sleep/wake recovery, memory pressure, and helper failure must release or invalidate retained resources safely. `WhisperCLITranscriptionEngine` remains the per-request fallback.
+
+### Insights privacy and persistence
+
+Insights is the fourth primary app tab. Its local ledger records per-session aggregate metadata—timestamps, application identifiers, word and duration counts with provenance, cleanup counts, and insertion outcomes—not transcript text or audio. It persists independently of transcript history, so deleting History content does not delete aggregate usage totals. Keep migrations, corruption recovery, and UI copy honest about exact versus estimated metrics.
+
+### Media and cleanup safety
+
+Media interruption must fail closed. Pause and Play are semantic, application-targeted commands, and resume ownership is valid only for the exact application/process lineage Steno verified that it paused. Do not add a global play/pause toggle fallback.
+
+Default cleanup must preserve ambiguous dictated language. Phrases such as `like`, `you know`, `question mark`, `open paren`, and `slash command` stay literal instead of being automatically converted or removed; only the aggressive filler policy performs narrow filler removal. Keep repairs, punctuation, lexicon corrections, and command passthrough covered by preservation counterexamples.
 
 ## Release-Eval and Benchmark Workflow
 
@@ -123,7 +140,7 @@ For the self-contained DMG distribution path, see [docs/release/direct-distribut
 - Do not hardcode fonts, shadows, spacing, or colors when `StenoDesign`/theme tokens already exist
 - Respect `accessibilityReduceMotion`
 - Add accessibility labels to interactive elements
-- Follow the existing 0.2 visual system instead of reintroducing older default-control styling
+- Follow the existing Steno visual system instead of reintroducing older default-control styling
 
 ### General engineering rules
 
@@ -148,6 +165,13 @@ Run one test by name:
 ```bash
 cd /path/to/steno
 swift test --package-path StenoKit --filter overlayHitTestingReturnsInteractiveButtonForNestedContent
+```
+
+Run the hosted macOS test target after generating the project:
+
+```bash
+xcodegen generate
+xcodebuild test -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
 ```
 
 When adding behavior:
@@ -190,18 +214,23 @@ Changing those in tracked source can invalidate user TCC permissions and force r
 - Accessibility
 - Input Monitoring
 
+Local Xcode runs require selecting an Apple Developer Team. Automated package tests and unsigned command-line builds do not. Public distribution additionally requires the maintainer's Developer ID signing identity, hardened runtime configuration, notarization credentials, and stapling/verification workflow. Do not treat an unsigned build as distribution proof; signing and notarization are separate release actions.
+
 ## Pull Request Checklist
 
 Before opening a PR:
 
 - [ ] `swift test --package-path StenoKit` passes
 - [ ] `xcodegen generate` succeeds
+- [ ] `xcodebuild test -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` succeeds
 - [ ] `xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` succeeds
 - [ ] benchmark-facing changes were validated with the correct smoke or release path
 - [ ] public docs reflect current measured truth, not stale thread context
 - [ ] no generated benchmark bundles are staged
 - [ ] no generated Xcode project churn is staged unintentionally
 - [ ] commit history keeps one concern per commit
+- [ ] any required live microphone, media-player, insertion, UI, VoiceOver, installed-app, and macOS 13 checks are reported separately instead of inferred from automated tests
+- [ ] distribution work, when in scope, has separate signing and notarization evidence
 
 ## Where to Look Next
 

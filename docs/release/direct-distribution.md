@@ -2,6 +2,8 @@
 
 This document covers the repo’s direct-distribution path for Steno outside the Mac App Store.
 
+> **v0.3 preparation status:** The repository contains the packaging mechanics described below, including the retained local runtime helper. This preparation does not produce a public release: no Developer ID signing, notarization, stapling, upload, download-link change, installed-app check, or manual macOS acceptance run is claimed here.
+
 ## Goal
 
 Produce a downloadable, self-contained `Steno.app` inside a DMG so users do not need to:
@@ -29,6 +31,8 @@ The repo now includes:
   - optionally notarizes and staples the DMG
   - includes Steno and third-party license notices
 
+The retained helper communicates only through inherited standard-input and standard-output pipes. It does not open an HTTP server or any other network listener. The app keeps the CLI path as a fallback when retained runtime startup or recovery fails.
+
 ## Main script
 
 ```bash
@@ -36,9 +40,26 @@ cd /path/to/steno
 scripts/release-dmg.sh
 ```
 
-## Required Apple-side prerequisites
+## Build and release prerequisites
 
-Before a real public release can be notarized, the machine needs:
+The supported distribution target is Apple silicon on macOS 13 or later. A packaging machine needs:
+
+- Xcode and its command-line tools
+- XcodeGen
+- CMake
+- the local `vendor/whisper.cpp` checkout at audited revision `764482c3175d9c3bc6089c1ec84df7d1b9537d83`
+- a successful canonical runtime build in `vendor/whisper.cpp/build-steno`
+- the selected Whisper model and Silero VAD model
+
+The helper and CLI can be built with:
+
+```bash
+scripts/build-whisper-runtime-helper.sh
+```
+
+That script verifies the pinned `whisper.cpp` revision and produces the Apple-silicon, macOS-13-targeted runtime in `build-steno`.
+
+For a signed, notarized public artifact, the machine additionally needs:
 
 - a **Developer ID Application** certificate installed in Keychain
 - a saved `notarytool` keychain profile
@@ -131,18 +152,32 @@ with a real `Developer ID Application` certificate available.
 
 ## Validation checklist
 
-After a real run:
+### Automated packaging checks
+
+The script checks the runtime architecture and deployment target, required dependencies, helper listener symbols, bundle contents, rpaths, and included Steno and third-party license notices. Those checks establish packaging properties only; they do not establish signing, notarization, installation, launch, microphone, media-interruption, insertion, UI, VoiceOver, or OS-compatibility behavior.
+
+After a real signed run, validate the exact generated artifact (substitute the version produced by the script):
 
 - `codesign --verify --deep --strict --verbose=2 build/distribution/Steno.app`
-- `codesign --verify --verbose=2 build/distribution/Steno-0.2.0.dmg`
-- `xcrun stapler validate build/distribution/Steno-0.2.0.dmg`
-- `spctl -a -vv -t open --context context:primary-signature build/distribution/Steno-0.2.0.dmg`
+- `codesign --verify --verbose=2 build/distribution/Steno-<version>.dmg`
+- `xcrun stapler validate build/distribution/Steno-<version>.dmg`
+- `spctl -a -vv -t open --context context:primary-signature build/distribution/Steno-<version>.dmg`
+
+### Pending release and manual proof
+
+Before calling a v0.3 artifact releasable, separately complete and record:
+
+- Developer ID signing, notarization, stapling, and Gatekeeper validation
+- installation and first-launch checks from the produced DMG on supported Apple-silicon Macs
+- the release checklist’s microphone, media interruption, insertion, settings, history, Insights, UI, and accessibility checks
+- a macOS 13 compatibility run
+- release hosting and download-link verification
 
 ## Current blocker
 
-As of the current repo state, the packaging mechanics are working, but a fully public notarized DMG still requires distribution signing setup:
+For the planned v0.3 candidate, the packaging path exists, but a public notarized DMG is not established by this preparation. Release time still requires verified credentials and fresh receipts:
 
-- a `Developer ID Application` certificate still needs to be installed
-- a `notarytool` keychain profile still needs to be configured
+- an available `Developer ID Application` certificate must be verified
+- an available `notarytool` keychain profile must be verified
 
-Once those exist, `scripts/release-dmg.sh` is intended to be the end-to-end path.
+Once those exist, `scripts/release-dmg.sh` is intended to be the end-to-end packaging path. This document does not claim that a v0.3 DMG has been signed, notarized, uploaded, or made available for download.
