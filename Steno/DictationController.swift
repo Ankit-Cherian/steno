@@ -16,10 +16,31 @@ protocol DictationSessionCoordinating: Sendable {
 
 extension SessionCoordinator: DictationSessionCoordinating {}
 
+protocol UsageAnalyticsStoreServicing: UsageAnalyticsRecording {
+    func recoverCorruptArchiveIfNeeded() async throws -> URL?
+    func reconcileHistory(
+        legacyURL: URL?,
+        currentEntries: [TranscriptEntry]
+    ) async throws -> String?
+    func snapshot(
+        now: Date,
+        calendar: Calendar,
+        months: Int
+    ) async throws -> UsageAnalyticsSnapshot
+}
+
+extension UsageAnalyticsStore: UsageAnalyticsStoreServicing {}
+
 struct DictationLifecycleDiagnostics: Equatable {
     let hasActiveStartTask: Bool
     let isCleanupInProgress: Bool
     let hasPendingRuntimeRebuild: Bool
+}
+
+private struct UsageAnalyticsRefreshRequest {
+    var now: Date
+    var calendar: Calendar
+    var forceHistoryReconciliation: Bool
 }
 
 @MainActor
@@ -41,10 +62,16 @@ final class DictationController: ObservableObject {
     @Published var hasBootstrapped = false
     @Published var activeModelDownloadID: WhisperModelID?
     @Published var modelDownloadMessage: String = ""
+    @Published var usageAnalyticsSnapshot: UsageAnalyticsSnapshot = .empty
+    @Published var usageAnalyticsError: String = ""
+    @Published var usageAnalyticsWriteWarning: String = ""
+    @Published var isLoadingUsageAnalytics = false
 
     private let captureService = MacAudioCaptureService()
-    private let clipboardService = MacClipboardService()
+    private let clipboardService: MacClipboardService
     private let historyStore: HistoryStore
+    private let usageAnalyticsStore: any UsageAnalyticsStoreServicing
+    private let legacyHistoryURL: URL
     private let hotkey: any HotkeyService
     private let overlay: WaveformOverlayPresenter
     private let mediaInterruption: MediaInterruptionService
@@ -75,24 +102,34 @@ final class DictationController: ObservableObject {
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
     private var terminationTask: Task<Void, Never>?
+    private var hasPreparedUsageAnalyticsHistory = false
+    private var usageAnalyticsMigrationWarning = ""
+    private var pendingUsageAnalyticsRefresh: UsageAnalyticsRefreshRequest?
 
     init(
         hotkey: any HotkeyService = MacHotkeyMonitor(),
+        clipboardService: MacClipboardService = MacClipboardService(),
         overlay: WaveformOverlayPresenter = WaveformOverlayPresenter(),
         mediaInterruption: MediaInterruptionService = MacMediaInterruptionService(),
         preferencesStore: AppPreferencesStore = AppPreferencesStore(),
         launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService(),
         coordinator: (any DictationSessionCoordinating)? = nil,
-        runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)? = nil
+        runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)? = nil,
+        historyStore: HistoryStore? = nil,
+        usageAnalyticsStore: (any UsageAnalyticsStoreServicing)? = nil,
+        legacyHistoryURL: URL? = nil
     ) {
         self.hotkey = hotkey
+        self.clipboardService = clipboardService
         self.overlay = overlay
         self.mediaInterruption = mediaInterruption
         self.preferencesStore = preferencesStore
         self.launchAtLoginService = launchAtLoginService
         self.coordinator = coordinator
         self.runtimeRebuildOverride = runtimeRebuildOverride
-        self.historyStore = HistoryStore(clipboardService: clipboardService)
+        self.historyStore = historyStore ?? HistoryStore(clipboardService: clipboardService)
+        self.usageAnalyticsStore = usageAnalyticsStore ?? UsageAnalyticsStore()
+        self.legacyHistoryURL = legacyHistoryURL ?? Self.defaultLegacyHistoryURL()
         self.lexiconService = PersonalLexiconService(entries: AppPreferences.default.lexiconEntries)
         self.styleProfileService = StyleProfileService(
             globalProfile: AppPreferences.default.globalStyleProfile,
@@ -249,6 +286,7 @@ final class DictationController: ObservableObject {
         validateWhisperPaths()
         await rebuildRuntime()
         await refreshHistory()
+        await refreshUsageAnalytics()
         overlay.prepareWindow()
         hasBootstrapped = true
     }
@@ -521,6 +559,7 @@ final class DictationController: ObservableObject {
                     lexicon: lexicon
                 )
                 await refreshHistory()
+                await refreshUsageAnalytics(forceHistoryReconciliation: true)
                 status = "Cleanup re-run with current rules."
                 lastError = ""
             } catch {
@@ -564,6 +603,109 @@ final class DictationController: ObservableObject {
         let all = await historyStore.recent(limit: 500)
         let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         recentEntries = all.filter { $0.createdAt >= thirtyDaysAgo }
+    }
+
+    func refreshUsageAnalytics(
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        forceHistoryReconciliation: Bool = false
+    ) async {
+        let request = UsageAnalyticsRefreshRequest(
+            now: now,
+            calendar: calendar,
+            forceHistoryReconciliation: forceHistoryReconciliation
+                || !hasPreparedUsageAnalyticsHistory
+        )
+
+        if isLoadingUsageAnalytics {
+            if var pending = pendingUsageAnalyticsRefresh {
+                pending.now = now
+                pending.calendar = calendar
+                pending.forceHistoryReconciliation = pending.forceHistoryReconciliation
+                    || request.forceHistoryReconciliation
+                pendingUsageAnalyticsRefresh = pending
+            } else {
+                pendingUsageAnalyticsRefresh = request
+            }
+            return
+        }
+
+        isLoadingUsageAnalytics = true
+        defer { isLoadingUsageAnalytics = false }
+
+        var activeRequest = request
+        while true {
+            pendingUsageAnalyticsRefresh = nil
+            await performUsageAnalyticsRefresh(activeRequest)
+            guard let pending = pendingUsageAnalyticsRefresh else { break }
+            activeRequest = pending
+        }
+    }
+
+    private func performUsageAnalyticsRefresh(
+        _ request: UsageAnalyticsRefreshRequest
+    ) async {
+        if request.forceHistoryReconciliation {
+            hasPreparedUsageAnalyticsHistory = false
+        }
+        var preparationWarnings: [String] = []
+        do {
+            if !hasPreparedUsageAnalyticsHistory {
+                let recoveredArchiveURL = try await usageAnalyticsStore
+                    .recoverCorruptArchiveIfNeeded()
+                if recoveredArchiveURL != nil {
+                    preparationWarnings.append(
+                        "A damaged usage archive was preserved, and Insights was rebuilt from available saved history."
+                    )
+                }
+
+                let currentEntries = await historyStore.recent(limit: 500)
+                let availableLegacyURL = FileManager.default.fileExists(
+                    atPath: legacyHistoryURL.path
+                ) ? legacyHistoryURL : nil
+                if let warning = try await usageAnalyticsStore.reconcileHistory(
+                    legacyURL: availableLegacyURL,
+                    currentEntries: currentEntries
+                ) {
+                    preparationWarnings.append(
+                        "Older Steno history could not be imported: \(warning)"
+                    )
+                }
+
+                usageAnalyticsMigrationWarning = preparationWarnings.joined(separator: " ")
+                hasPreparedUsageAnalyticsHistory = true
+            }
+
+            usageAnalyticsSnapshot = try await usageAnalyticsStore.snapshot(
+                now: request.now,
+                calendar: request.calendar,
+                months: 6
+            )
+            usageAnalyticsError = usageAnalyticsMigrationWarning
+        } catch {
+            if !preparationWarnings.isEmpty {
+                usageAnalyticsMigrationWarning = preparationWarnings.joined(separator: " ")
+            }
+            usageAnalyticsError = [usageAnalyticsMigrationWarning, error.localizedDescription]
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
+    }
+
+    private func refreshUsageAnalyticsSnapshot(
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) async {
+        do {
+            usageAnalyticsSnapshot = try await usageAnalyticsStore.snapshot(
+                now: now,
+                calendar: calendar,
+                months: 6
+            )
+            usageAnalyticsError = usageAnalyticsMigrationWarning
+        } catch {
+            usageAnalyticsError = error.localizedDescription
+        }
     }
 
     private func apply(transition: RecordingTransition) {
@@ -840,8 +982,19 @@ final class DictationController: ObservableObject {
                     status = "\(status) \(fallbackWarning)"
                 }
 
+                if let analyticsWarning = result.usageAnalyticsWarning {
+                    usageAnalyticsWriteWarning = analyticsWarning
+                }
+
                 dismissOverlaySoon()
                 await refreshHistory()
+                if result.usageAnalyticsWarning == nil {
+                    await refreshUsageAnalyticsSnapshot()
+                } else {
+                    // Recover the session as an estimate from transcript history
+                    // while keeping the exact-metrics warning visible.
+                    await refreshUsageAnalytics(forceHistoryReconciliation: true)
+                }
                 recordingStateMachine.markTranscriptionCompleted()
                 await applyDeferredRebuildIfNeeded()
             } catch {
@@ -963,7 +1116,8 @@ final class DictationController: ObservableObject {
             lexiconService: lexiconService,
             styleProfileService: styleProfileService,
             snippetService: snippetService,
-            fallbackCleanupEngine: RuleBasedCleanupEngine()
+            fallbackCleanupEngine: RuleBasedCleanupEngine(),
+            usageRecorder: usageAnalyticsStore
         )
 
         status = "Running local transcription + local cleanup."
@@ -1044,6 +1198,17 @@ final class DictationController: ObservableObject {
     private func applyOverlayAppearance(for appearance: AppPreferences.Appearance) {
         let theme = StenoDesign.theme(for: appearance)
         overlay.updateAccentColor(NSColor(theme.accent), glowColor: NSColor(theme.accentGlow))
+    }
+
+    private static func defaultLegacyHistoryURL() -> URL {
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return appSupport
+            .appendingPathComponent("WhisperClone", isDirectory: true)
+            .appendingPathComponent("transcript-history.json")
     }
 }
 

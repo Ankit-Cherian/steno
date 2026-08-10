@@ -5,6 +5,7 @@ import StenoKit
 enum StenoTab: String, CaseIterable {
     case record = "Record"
     case history = "History"
+    case insights = "Insights"
     case settings = "Settings"
 }
 
@@ -48,6 +49,8 @@ struct ContentView: View {
                     RecordTab()
                 case .history:
                     HistoryTab()
+                case .insights:
+                    InsightsTab()
                 case .settings:
                     SettingsView(selectedSection: $selectedSettingsSection)
                 }
