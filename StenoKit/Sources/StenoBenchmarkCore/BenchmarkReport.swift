@@ -47,8 +47,20 @@ public enum BenchmarkReportRenderer {
         markdown.append("- Samples: \(manifest.samples.count)")
         markdown.append("- Whisper model path: `\(raw.whisperConfiguration.modelPath)`")
         markdown.append("- Whisper CLI path: `\(raw.whisperConfiguration.whisperCLIPath)`")
+        markdown.append("- Whisper arguments: `\(raw.whisperConfiguration.additionalArguments.joined(separator: " "))`")
+        markdown.append("- Default language hint: `\(raw.whisperConfiguration.defaultLanguageHint ?? "none")`")
         markdown.append("- Cleanup profile: `\(pipeline.profile.name)` (`\(pipeline.profile.fillerPolicy.rawValue)`, `\(pipeline.profile.structureMode.rawValue)`)")
         markdown.append("- Lexicon entries in pipeline run: \(pipeline.lexiconEntryCount)")
+        if let identity = raw.runtime.identity {
+            markdown.append("- App commit: `\(identity.appCommitSHA ?? "unavailable")`")
+            markdown.append("- App tree: `\(identity.appTreeIsDirty.map { $0 ? "dirty" : "clean" } ?? "unavailable")`")
+            markdown.append("- Engine commit: `\(identity.engineCommitSHA ?? "unavailable")`")
+            markdown.append("- Manifest SHA-256: `\(identity.manifestSHA256 ?? "unavailable")`")
+            markdown.append("- Audio-set SHA-256: `\(identity.audioSetSHA256 ?? "unavailable")`")
+            markdown.append("- Whisper CLI SHA-256: `\(identity.whisperCLISHA256 ?? "unavailable")`")
+            markdown.append("- Model SHA-256: `\(identity.modelSHA256 ?? "unavailable")`")
+            markdown.append("- VAD model SHA-256: `\(identity.vadModelSHA256 ?? "not used or unavailable")`")
+        }
         markdown.append("")
 
         markdown.append("## Scorecard: \(rawLabel)")

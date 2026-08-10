@@ -97,9 +97,9 @@ enum StenoBenchmarkCLI {
                 whisperConfiguration: BenchmarkWhisperConfiguration(
                     whisperCLIPath: whisperCLIPath,
                     modelPath: modelPath,
-                    additionalArguments: extraArguments
-                ),
-                defaultLanguageHint: defaultLanguage
+                    additionalArguments: extraArguments,
+                    defaultLanguageHint: defaultLanguage
+                )
             )
         )
 
@@ -289,9 +289,9 @@ enum StenoBenchmarkCLI {
                 whisperConfiguration: BenchmarkWhisperConfiguration(
                     whisperCLIPath: whisperCLIPath,
                     modelPath: modelPath,
-                    additionalArguments: extraArguments
-                ),
-                defaultLanguageHint: defaultLanguage
+                    additionalArguments: extraArguments,
+                    defaultLanguageHint: defaultLanguage
+                )
             )
         )
         try BenchmarkIO.saveRawOutput(rawOutput, to: rawOutputPath)
