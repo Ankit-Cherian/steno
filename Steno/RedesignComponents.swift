@@ -298,6 +298,8 @@ struct StenoSegmentedTabBar: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(tab.rawValue)
+                .accessibilityAddTraits(selection == tab ? [.isSelected] : [])
             }
         }
         .padding(3)
@@ -315,6 +317,8 @@ struct StenoSegmentedTabBar: View {
             return "mic"
         case .history:
             return "clock"
+        case .insights:
+            return "chart.bar.xaxis"
         case .settings:
             return "gearshape"
         }
