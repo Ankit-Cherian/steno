@@ -73,7 +73,7 @@ struct SettingsView: View {
     @State private var didLoad = false
 
     private var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.1"
     }
 
     init(selectedSection: Binding<SettingsSection> = .constant(.appearance)) {

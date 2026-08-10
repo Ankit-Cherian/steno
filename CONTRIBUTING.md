@@ -30,10 +30,12 @@ Before you start:
    ```bash
    git clone https://github.com/ggerganov/whisper.cpp vendor/whisper.cpp
    cd vendor/whisper.cpp
-   git checkout v1.8.3
-   cmake -B build && cmake --build build --config Release
+   git checkout 764482c3175d9c3bc6089c1ec84df7d1b9537d83
    cd ../..
+   scripts/build-whisper-runtime-helper.sh
    ```
+
+   This canonical build disables host-specific CPU tuning, BLAS, RPC, and the example server, while retaining Accelerate and Metal. It produces an Apple-silicon runtime that targets the app's macOS 13 deployment target.
 
 3. Download local models:
 

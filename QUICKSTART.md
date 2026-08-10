@@ -9,8 +9,10 @@ git clone https://github.com/Ankit-Cherian/steno.git
 cd steno
 git clone https://github.com/ggerganov/whisper.cpp vendor/whisper.cpp
 cd vendor/whisper.cpp
-git checkout v1.8.3
-cmake -B build && cmake --build build --config Release
+git checkout 764482c3175d9c3bc6089c1ec84df7d1b9537d83
+cd ../..
+scripts/build-whisper-runtime-helper.sh
+cd vendor/whisper.cpp
 ./models/download-ggml-model.sh small.en
 ./models/download-ggml-model.sh medium.en
 ./models/download-ggml-model.sh large-v3-turbo
@@ -21,7 +23,8 @@ cd ../../..
 
 Expected result:
 
-- `vendor/whisper.cpp/build/bin/whisper-cli` exists
+- `vendor/whisper.cpp/build-steno/bin/whisper-cli` exists
+- `vendor/whisper.cpp/build-steno/bin/steno-whisper-runtime` exists
 - at least one canonical model exists under `vendor/whisper.cpp/models/`
 - `ggml-silero-v6.2.0.bin` exists under `vendor/whisper.cpp/models/`
 
@@ -94,9 +97,9 @@ Steno remains fully local for both transcription and cleanup. There is no cloud 
   brew install cmake
   ```
 
-- `whisper-cli` missing after build
+- `whisper-cli` or `steno-whisper-runtime` missing after build
 
-  Re-run the `cmake -B build && cmake --build build --config Release` step inside `vendor/whisper.cpp`.
+  Re-run `scripts/build-whisper-runtime-helper.sh` from the Steno repository root. The script verifies the audited whisper.cpp revision and produces the Apple-silicon runtime targeting macOS 13 under `vendor/whisper.cpp/build-steno`.
 
 - Hotkeys not responding
 

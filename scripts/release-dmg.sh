@@ -16,6 +16,9 @@ Environment:
                                  xcrun notarytool store-credentials ...
   STENO_BUNDLED_WHISPER_ROOT     Optional. Root of a built whisper.cpp checkout.
                                  Default: auto-detect local vendor roots.
+  STENO_BUNDLED_WHISPER_BUILD_DIR
+                                 Optional. Canonical Steno whisper.cpp build directory.
+                                 Default: <whisper-root>/build-steno.
   STENO_BUNDLED_MODEL_PATH       Optional. Canonical model file to bundle.
                                  Default: prefer small.en, then base.en, medium.en, large-v3-turbo.
   STENO_BUNDLED_VAD_MODEL_PATH   Optional. VAD model path.
@@ -82,6 +85,9 @@ DIST_ENTITLEMENTS="$REPO_ROOT/Steno/StenoDistribution.entitlements"
 FRAMEWORKS_SUBDIR="Contents/Frameworks"
 HELPERS_SUBDIR="Contents/Helpers"
 MODELS_SUBDIR="Contents/Resources/WhisperModels"
+LEGAL_SUBDIR="Contents/Resources/Legal"
+RUNTIME_DEPLOYMENT_TARGET="13.0"
+RUNTIME_ARCHITECTURE="arm64"
 
 mkdir -p "$DIST_DIR"
 rm -rf "$DERIVED_DATA" "$UNSIGNED_APP" "$STAGING_DIR"
@@ -124,7 +130,7 @@ detect_whisper_root() {
 
   local candidate
   for candidate in "${candidates[@]}"; do
-    if [[ -x "$candidate/build/bin/whisper-cli" ]]; then
+    if [[ -f "$candidate/CMakeLists.txt" && -f "$candidate/include/whisper.h" ]]; then
       echo "$candidate"
       return
     fi
@@ -196,12 +202,17 @@ add_rpath() {
 
 patch_runtime_rpaths() {
   local app_path="$1"
-  local helper="$app_path/$HELPERS_SUBDIR/whisper-cli"
   local frameworks_dir="$app_path/$FRAMEWORKS_SUBDIR"
 
-  require_file "$helper" "Bundled whisper helper"
-  remove_rpaths "$helper"
-  add_rpath "$helper" "@executable_path/../Frameworks"
+  local helper
+  for helper in \
+    "$app_path/$HELPERS_SUBDIR/whisper-cli" \
+    "$app_path/$HELPERS_SUBDIR/steno-whisper-runtime"
+  do
+    require_file "$helper" "Bundled whisper helper"
+    remove_rpaths "$helper"
+    add_rpath "$helper" "@executable_path/../Frameworks"
+  done
 
   local dylib
   local dylib_count=0
@@ -230,34 +241,125 @@ copy_matching_entries() {
 
 copy_runtime() {
   local whisper_root="$1"
-  local model_path="$2"
-  local vad_path="$3"
-  local app_path="$4"
+  local whisper_build_dir="$2"
+  local model_path="$3"
+  local vad_path="$4"
+  local app_path="$5"
   local helpers_dir="$app_path/$HELPERS_SUBDIR"
   local frameworks_dir="$app_path/$FRAMEWORKS_SUBDIR"
   local models_dir="$app_path/$MODELS_SUBDIR"
+  local legal_dir="$app_path/$LEGAL_SUBDIR"
 
-  mkdir -p "$helpers_dir" "$frameworks_dir" "$models_dir"
+  mkdir -p "$helpers_dir" "$frameworks_dir" "$models_dir" "$legal_dir"
 
-  rsync -a "$whisper_root/build/bin/whisper-cli" "$helpers_dir/"
-  copy_matching_entries "$whisper_root/build/src" "libwhisper*.dylib" "$frameworks_dir"
-  copy_matching_entries "$whisper_root/build/ggml/src" "libggml*.dylib" "$frameworks_dir"
-  copy_matching_entries "$whisper_root/build/ggml/src/ggml-blas" "libggml-blas*.dylib" "$frameworks_dir"
-  copy_matching_entries "$whisper_root/build/ggml/src/ggml-metal" "libggml-metal*.dylib" "$frameworks_dir"
+  rsync -a "$whisper_build_dir/bin/whisper-cli" "$helpers_dir/"
+  rsync -a "$whisper_build_dir/bin/steno-whisper-runtime" "$helpers_dir/"
+  copy_matching_entries "$whisper_build_dir/src" "libwhisper*.dylib" "$frameworks_dir"
+  copy_matching_entries "$whisper_build_dir/ggml/src" "libggml*.dylib" "$frameworks_dir"
+  copy_matching_entries "$whisper_build_dir/ggml/src/ggml-metal" "libggml-metal*.dylib" "$frameworks_dir"
 
   ditto "$model_path" "$models_dir/$(basename "$model_path")"
   if [[ -f "$vad_path" ]]; then
     ditto "$vad_path" "$models_dir/$(basename "$vad_path")"
   fi
+  ditto "$REPO_ROOT/LICENSE" "$legal_dir/Steno-LICENSE.txt"
+  ditto "$REPO_ROOT/THIRD_PARTY_NOTICES.md" "$legal_dir/THIRD_PARTY_NOTICES.md"
 
   require_file "$frameworks_dir/libwhisper.1.dylib" "Bundled libwhisper soname"
   require_file "$frameworks_dir/libggml.0.dylib" "Bundled libggml soname"
   require_file "$frameworks_dir/libggml-cpu.0.dylib" "Bundled libggml-cpu soname"
   require_file "$frameworks_dir/libggml-base.0.dylib" "Bundled libggml-base soname"
-  require_file "$frameworks_dir/libggml-blas.0.dylib" "Bundled libggml-blas soname"
   require_file "$frameworks_dir/libggml-metal.0.dylib" "Bundled libggml-metal soname"
+  require_file "$legal_dir/Steno-LICENSE.txt" "Bundled Steno license"
+  require_file "$legal_dir/THIRD_PARTY_NOTICES.md" "Bundled third-party notices"
 
   patch_runtime_rpaths "$app_path"
+}
+
+version_is_at_most() {
+  local actual="$1"
+  local maximum="$2"
+  awk -v actual="$actual" -v maximum="$maximum" 'BEGIN {
+    split(actual, a, "."); split(maximum, b, ".");
+    for (i = 1; i <= 3; i++) {
+      av = (a[i] == "" ? 0 : a[i]) + 0;
+      bv = (b[i] == "" ? 0 : b[i]) + 0;
+      if (av < bv) exit 0;
+      if (av > bv) exit 1;
+    }
+    exit 0;
+  }'
+}
+
+validate_runtime_macho() {
+  local binary="$1"
+  is_macho "$binary" || die "Expected Mach-O runtime file: $binary"
+
+  local architectures
+  architectures="$(lipo -archs "$binary")"
+  [[ "$architectures" == "$RUNTIME_ARCHITECTURE" ]] \
+    || die "Expected $RUNTIME_ARCHITECTURE-only runtime, found '$architectures' in $binary."
+
+  local found_minos=0
+  local minos
+  while IFS= read -r minos; do
+    [[ -n "$minos" ]] || continue
+    found_minos=1
+    version_is_at_most "$minos" "$RUNTIME_DEPLOYMENT_TARGET" \
+      || die "$binary requires macOS $minos, above $RUNTIME_DEPLOYMENT_TARGET."
+  done < <(vtool -show-build "$binary" | awk '$1 == "minos" { print $2 }')
+  [[ "$found_minos" -eq 1 ]] || die "Could not read a deployment target from $binary."
+}
+
+validate_main_app_architecture() {
+  local executable="$1"
+  is_macho "$executable" || die "Expected a Mach-O app executable: $executable"
+
+  local architectures
+  architectures="$(lipo -archs "$executable")"
+  case " $architectures " in
+    *" $RUNTIME_ARCHITECTURE "*) ;;
+    *) die "App executable does not contain required $RUNTIME_ARCHITECTURE architecture." ;;
+  esac
+}
+
+validate_runtime_bundle() {
+  local app_path="$1"
+  local frameworks_dir="$app_path/$FRAMEWORKS_SUBDIR"
+  local retained_helper="$app_path/$HELPERS_SUBDIR/steno-whisper-runtime"
+  validate_main_app_architecture "$app_path/Contents/MacOS/Steno"
+  local runtime_files=(
+    "$app_path/$HELPERS_SUBDIR/whisper-cli"
+    "$retained_helper"
+  )
+  local file
+  while IFS= read -r -d '' file; do
+    runtime_files+=("$file")
+  done < <(find "$frameworks_dir" -maxdepth 1 -type f -name '*.dylib' -print0)
+
+  for file in "${runtime_files[@]}"; do
+    validate_runtime_macho "$file"
+    local dependency
+    while IFS= read -r dependency; do
+      case "$dependency" in
+        @rpath/libwhisper*.dylib|@rpath/libggml*.dylib)
+          require_file "$frameworks_dir/$(basename "$dependency")" "Runtime dependency"
+          ;;
+        /usr/lib/*|/System/Library/*)
+          ;;
+        *)
+          die "Bundled runtime contains an unapproved dependency: $(basename "$dependency")"
+          ;;
+      esac
+    done < <(otool -L "$file" | tail -n +2 | awk '{ print $1 }')
+  done
+
+  if otool -L "${runtime_files[@]}" | grep -Eq 'libggml-(blas|rpc)'; then
+    die "Bundled runtime unexpectedly depends on BLAS or RPC backends."
+  fi
+  if nm -u "$retained_helper" | grep -Eq ' U _?(socket|bind|listen|accept|connect)(\$|$)'; then
+    die "Retained runtime unexpectedly imports a network-listener symbol."
+  fi
 }
 
 is_macho() {
@@ -275,17 +377,90 @@ sign_nested_code() {
   done < <(find "$app_path/Contents" -type f -print0)
 }
 
+create_silence_wav() {
+  local output="$1"
+  # One second of mono 16 kHz signed 16-bit PCM. The fixture is generated in
+  # the private distribution workspace so packaging never depends on research data.
+  printf 'RIFF\x24\x7d\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\x3e\x00\x00\x00\x7d\x00\x00\x02\x00\x10\x00data\x00\x7d\x00\x00' >"$output"
+  dd if=/dev/zero bs=32000 count=1 >>"$output" 2>/dev/null
+  [[ "$(wc -c <"$output" | tr -d ' ')" -eq 32044 ]] \
+    || die "Unable to create the bundled-runtime silence fixture."
+}
+
 smoke_test_bundled_runtime() {
   local app_path="$1"
   local helper="$app_path/$HELPERS_SUBDIR/whisper-cli"
+  local retained_helper="$app_path/$HELPERS_SUBDIR/steno-whisper-runtime"
   local smoke_log="$DIST_DIR/bundled-whisper-smoke.log"
+  local models_dir="$app_path/$MODELS_SUBDIR"
+  local model
+  local vad_model="$models_dir/ggml-silero-v6.2.0.bin"
+  local fixture
+  local smoke_dir
 
   require_file "$helper" "Bundled whisper helper"
+  require_file "$retained_helper" "Bundled retained whisper helper"
+  model="$(find "$models_dir" -maxdepth 1 -type f -name 'ggml-*.bin' ! -name 'ggml-silero-*.bin' -print -quit)"
+  require_file "$model" "Bundled Whisper model"
+
+  smoke_dir="$(mktemp -d "$DIST_DIR/runtime-smoke.XXXXXX")"
+  fixture="$smoke_dir/silence.wav"
+  create_silence_wav "$fixture"
 
   if ! env -i HOME="$HOME" PATH="/usr/bin:/bin" "$helper" --help >"$smoke_log" 2>&1; then
     cat "$smoke_log" >&2 || true
     die "Bundled whisper helper failed to launch. See $smoke_log"
   fi
+
+  set +e
+  env -i HOME="$HOME" PATH="/usr/bin:/bin" "$retained_helper" --protocol-version 0 >>"$smoke_log" 2>&1
+  local retained_status=$?
+  set -e
+  if [[ "$retained_status" -ne 64 ]]; then
+    cat "$smoke_log" >&2 || true
+    die "Bundled retained whisper helper failed to launch. See $smoke_log"
+  fi
+
+  local inference_args=(
+    -m "$model"
+    -f "$fixture"
+    -l en
+    -t 1
+    --suppress-nst
+    -oj
+    -of "$smoke_dir/result"
+  )
+  if [[ -f "$vad_model" ]]; then
+    inference_args+=(--vad --vad-model "$vad_model")
+  fi
+  if ! env -i HOME="$HOME" PATH="/usr/bin:/bin" \
+    "$helper" "${inference_args[@]}" >/dev/null 2>&1; then
+    rm -rf "$smoke_dir"
+    die "Bundled Whisper model/VAD inference smoke test failed."
+  fi
+  if [[ ! -s "$smoke_dir/result.json" ]]; then
+    rm -rf "$smoke_dir"
+    die "Bundled Whisper model/VAD inference smoke test produced no rich output."
+  fi
+
+  local retained_smoke_environment=(
+    "STENO_TEST_RETAINED_HELPER=$retained_helper"
+    "STENO_TEST_WHISPER_CLI=$helper"
+    "STENO_TEST_WHISPER_MODEL=$model"
+    "STENO_TEST_WHISPER_AUDIO=$fixture"
+    "STENO_TEST_WHISPER_EXPECT_EMPTY=1"
+    "STENO_TEST_WHISPER_REPETITIONS=1"
+  )
+  if [[ -f "$vad_model" ]]; then
+    retained_smoke_environment+=("STENO_TEST_WHISPER_VAD=$vad_model")
+  fi
+  if ! env "${retained_smoke_environment[@]}" \
+    xcrun swift test --package-path "$REPO_ROOT/StenoKit" \
+      --filter retainedProcessRuntimeMatchesCLIContract >>"$smoke_log" 2>&1; then
+    rm -rf "$smoke_dir"
+    die "Bundled retained-runtime framed inference smoke test failed. See $smoke_log"
+  fi
+  rm -rf "$smoke_dir"
 }
 
 scan_distribution_hygiene() {
@@ -297,6 +472,7 @@ scan_distribution_hygiene() {
   [[ -n "${STENO_BUNDLED_WHISPER_ROOT:-}" ]] && patterns+=("$STENO_BUNDLED_WHISPER_ROOT")
   [[ -n "${STENO_BUNDLED_MODEL_PATH:-}" ]] && patterns+=("$STENO_BUNDLED_MODEL_PATH")
   [[ -n "${STENO_BUNDLED_VAD_MODEL_PATH:-}" ]] && patterns+=("$STENO_BUNDLED_VAD_MODEL_PATH")
+  [[ -n "${STENO_BUNDLED_WHISPER_BUILD_DIR:-}" ]] && patterns+=("$STENO_BUNDLED_WHISPER_BUILD_DIR")
 
   local repo_leaf
   repo_leaf="$(basename "$REPO_ROOT")"
@@ -354,18 +530,25 @@ sign_dmg() {
 
 IDENTITY="$(detect_identity)"
 WHISPER_ROOT="$(detect_whisper_root)"
+WHISPER_BUILD_DIR="${STENO_BUNDLED_WHISPER_BUILD_DIR:-$WHISPER_ROOT/build-steno}"
 MODEL_PATH="$(detect_model_path "$WHISPER_ROOT")"
 VAD_PATH="$(detect_vad_path "$MODEL_PATH")"
 NOTARY_PROFILE="${STENO_NOTARY_PROFILE:-}"
 
 require_dir "$WHISPER_ROOT" "STENO_BUNDLED_WHISPER_ROOT"
-require_file "$WHISPER_ROOT/build/bin/whisper-cli" "Bundled whisper-cli"
 require_file "$MODEL_PATH" "Bundled model"
 if [[ -n "$VAD_PATH" ]]; then
   require_file "$VAD_PATH" "Bundled VAD model"
 fi
 require_file "$DIST_ENTITLEMENTS" "Distribution entitlements"
 require_clean_worktree
+
+echo "==> build retained whisper helper"
+STENO_WHISPER_ROOT="$WHISPER_ROOT" \
+STENO_WHISPER_BUILD_DIR="$WHISPER_BUILD_DIR" \
+  "$REPO_ROOT/scripts/build-whisper-runtime-helper.sh" >/dev/null
+require_file "$WHISPER_BUILD_DIR/bin/whisper-cli" "Bundled whisper-cli"
+require_file "$WHISPER_BUILD_DIR/bin/steno-whisper-runtime" "Bundled retained whisper helper"
 
 if [[ "$SKIP_NOTARIZE" -eq 0 ]] && [[ -z "$NOTARY_PROFILE" ]]; then
   die "STENO_NOTARY_PROFILE is required unless --skip-notarize is used."
@@ -393,7 +576,10 @@ require_dir "$APP_SOURCE" "Built Release app"
 
 echo "==> prepare app bundle"
 ditto "$APP_SOURCE" "$UNSIGNED_APP"
-copy_runtime "$WHISPER_ROOT" "$MODEL_PATH" "$VAD_PATH" "$UNSIGNED_APP"
+copy_runtime "$WHISPER_ROOT" "$WHISPER_BUILD_DIR" "$MODEL_PATH" "$VAD_PATH" "$UNSIGNED_APP"
+
+echo "==> validate bundled runtime compatibility"
+validate_runtime_bundle "$UNSIGNED_APP"
 
 echo "==> sign bundled runtime"
 sign_nested_code "$UNSIGNED_APP" "$IDENTITY"
