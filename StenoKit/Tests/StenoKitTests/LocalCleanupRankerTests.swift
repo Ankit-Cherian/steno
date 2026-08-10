@@ -139,9 +139,55 @@ func rankerPrefersPreservingContextualYouKnow() {
     #expect(best.rulePathID == "preserved")
 }
 
-@Test("Ranker prefers valid filler cleanup over raw pass through")
-func rankerPrefersValidYouKnowCleanup() {
-    let raw = "Um the report was you know solid and everyone agreed with the findings."
+@Test("Balanced ranker refuses punctuation-delimited multiword filler inference")
+func balancedRankerRefusesDelimitedMultiwordFillerInference() {
+    let raw = "We need to, you know, think about this."
+    let profile = StyleProfile(
+        name: "Ranker",
+        tone: .natural,
+        structureMode: .natural,
+        fillerPolicy: .balanced,
+        commandPolicy: .passthrough
+    )
+
+    let preserved = CleanupCandidate(
+        text: raw,
+        appliedEdits: [],
+        removedFillers: [],
+        rulePathID: "preserved"
+    )
+    let cleaned = CleanupCandidate(
+        text: "We need to think about this.",
+        appliedEdits: [.init(kind: .fillerRemoval, from: "you know", to: "")],
+        removedFillers: ["you know"],
+        rulePathID: "safe-balanced-removal"
+    )
+
+    let ranker = LocalCleanupRanker()
+    let preservedScore = ranker.scoreCandidate(
+        rawText: raw,
+        candidate: preserved,
+        profile: profile
+    )
+    let cleanedScore = ranker.scoreCandidate(
+        rawText: raw,
+        candidate: cleaned,
+        profile: profile
+    )
+    let best = ranker.bestCandidate(
+        rawText: raw,
+        candidates: [preserved, cleaned],
+        profile: profile
+    )
+
+    #expect(preservedScore.semanticPreservationScore > cleanedScore.semanticPreservationScore)
+    #expect(preservedScore.totalScore > cleanedScore.totalScore)
+    #expect(best.rulePathID == "preserved")
+}
+
+@Test("Balanced ranker prefers raw text over ambiguous filler cleanup")
+func balancedRankerPrefersRawOverAmbiguousFillerCleanup() {
+    let raw = "Um the report was strong, you know."
     let profile = StyleProfile(
         name: "Ranker",
         tone: .natural,
@@ -157,7 +203,7 @@ func rankerPrefersValidYouKnowCleanup() {
         rulePathID: "raw-pass-through"
     )
     let cleaned = CleanupCandidate(
-        text: "the report was solid and everyone agreed with the findings.",
+        text: "the report was strong.",
         appliedEdits: [
             .init(kind: .fillerRemoval, from: "um", to: ""),
             .init(kind: .fillerRemoval, from: "you know", to: "")
@@ -183,13 +229,13 @@ func rankerPrefersValidYouKnowCleanup() {
         profile: profile
     )
 
-    #expect(cleanedScore.totalScore > rawScore.totalScore)
-    #expect(best.rulePathID == "cleaned")
+    #expect(rawScore.totalScore > cleanedScore.totalScore)
+    #expect(best.rulePathID == "raw-pass-through")
 }
 
-@Test("Ranker prefers standalone you know cleanup over raw pass through")
-func rankerPrefersStandaloneYouKnowCleanup() {
-    let raw = "The team was ready you know."
+@Test("Balanced ranker preserves punctuation-delimited you know")
+func balancedRankerPreservesDelimitedYouKnow() {
+    let raw = "The team was ready, you know."
     let profile = StyleProfile(
         name: "Ranker",
         tone: .natural,
@@ -228,8 +274,8 @@ func rankerPrefersStandaloneYouKnowCleanup() {
         profile: profile
     )
 
-    #expect(cleanedScore.totalScore > rawScore.totalScore)
-    #expect(best.rulePathID == "cleaned")
+    #expect(rawScore.totalScore > cleanedScore.totalScore)
+    #expect(best.rulePathID == "raw-pass-through")
 }
 
 @Test("Candidate generator emits deterministic, deduplicated candidate set")
@@ -251,7 +297,10 @@ func candidateGeneratorDeterministicDeduped() async throws {
     #expect(first == second)
     #expect(first.isEmpty == false)
     #expect(first.first?.rulePathID == "raw-pass-through")
-    #expect(first.contains(where: { !$0.removedFillers.isEmpty }))
+    #expect(first.allSatisfy { candidate in
+        candidate.removedFillers.isEmpty
+            && candidate.appliedEdits.contains(where: { $0.kind == .fillerRemoval }) == false
+    })
 
     let uniqueTexts = Set(first.map(\.text))
     #expect(uniqueTexts.count == first.count)

@@ -119,7 +119,7 @@ func pipelineRunComputesExpectedSummaries() async {
     #expect(output.summary.improved == 1)
     #expect(output.summary.regressed == 0)
     #expect(output.summary.lexicon.totalAppliedEdits == 1)
-    #expect(output.summary.fillerImpact.samplesWithFillerRemovals == 1)
+    #expect(output.summary.fillerImpact.samplesWithFillerRemovals == 0)
 }
 
 @Test("Pipeline run computes term recovery repair resolution and rewrite metrics")
@@ -131,7 +131,7 @@ func pipelineRunComputesAdvancedQualityMetrics() async {
                 id: "sample-1",
                 dataset: "fixture",
                 audioPath: "audio.wav",
-                referenceText: "send it to Jane and ping TURSO",
+                referenceText: "I said TURSO",
                 intentLabels: [.repair]
             )
         ]
@@ -164,8 +164,8 @@ func pipelineRunComputesAdvancedQualityMetrics() async {
                 id: "sample-1",
                 dataset: "fixture",
                 audioPath: "audio.wav",
-                referenceText: "send it to Jane and ping TURSO",
-                hypothesisText: "send it to John scratch that Jane and ping terso",
+                referenceText: "I said TURSO",
+                hypothesisText: "I said John, I mean, Terso",
                 languageHint: "en",
                 status: .success,
                 errorMessage: nil,
@@ -201,6 +201,133 @@ func pipelineRunComputesAdvancedQualityMetrics() async {
     #expect(output.summary.unintendedRewriteRate == 0)
     #expect(output.summary.p90LatencyMS == nil)
     #expect(output.summary.p99LatencyMS == nil)
+}
+
+@Test("Pipeline run flags punctuation whitespace and sentence casing artifacts")
+func pipelineRunFlagsPunctuationWhitespaceAndSentenceCasingArtifacts() async {
+    let samples: [BenchmarkSample] = [
+        .init(id: "double-space", dataset: "artifact", audioPath: "double.wav", referenceText: "hello world"),
+        .init(id: "comma-question", dataset: "artifact", audioPath: "comma-question.wav", referenceText: "hello?"),
+        .init(id: "period-comma", dataset: "artifact", audioPath: "period-comma.wav", referenceText: "hello."),
+        .init(id: "lowercase-boundary", dataset: "artifact", audioPath: "lowercase.wav", referenceText: "Hello. World"),
+        .init(id: "clean", dataset: "artifact", audioPath: "clean.wav", referenceText: "Hello world"),
+    ]
+    let manifest = BenchmarkManifest(
+        benchmarkName: "Artifact Fixture",
+        samples: samples
+    )
+    let rawOutput = RawEngineOutput(
+        benchmarkName: "Artifact Fixture",
+        manifestSchemaVersion: manifest.schemaVersion,
+        normalizationPolicy: manifest.scoring.normalization,
+        whisperConfiguration: .init(
+            whisperCLIPath: "/tmp/whisper-cli",
+            modelPath: "/tmp/model.bin"
+        ),
+        summary: .init(
+            totalSamples: samples.count,
+            succeeded: samples.count,
+            failed: 0,
+            failureRate: 0,
+            wer: 0,
+            cer: 0,
+            meanLatencyMS: 100,
+            p50LatencyMS: 100,
+            p90LatencyMS: 100,
+            p99LatencyMS: 100,
+            meanRTF: 0.5
+        ),
+        datasetBreakdown: [:],
+        samples: [
+            .init(
+                id: "double-space",
+                dataset: "artifact",
+                audioPath: "double.wav",
+                referenceText: "hello world",
+                hypothesisText: "hello  world",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 100,
+                audioDurationMS: 200,
+                rtf: 0.5,
+                metrics: nil
+            ),
+            .init(
+                id: "comma-question",
+                dataset: "artifact",
+                audioPath: "comma-question.wav",
+                referenceText: "hello?",
+                hypothesisText: "hello,?",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 100,
+                audioDurationMS: 200,
+                rtf: 0.5,
+                metrics: nil
+            ),
+            .init(
+                id: "period-comma",
+                dataset: "artifact",
+                audioPath: "period-comma.wav",
+                referenceText: "hello.",
+                hypothesisText: "hello.,",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 100,
+                audioDurationMS: 200,
+                rtf: 0.5,
+                metrics: nil
+            ),
+            .init(
+                id: "lowercase-boundary",
+                dataset: "artifact",
+                audioPath: "lowercase.wav",
+                referenceText: "Hello. World",
+                hypothesisText: "Hello. world",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 100,
+                audioDurationMS: 200,
+                rtf: 0.5,
+                metrics: nil
+            ),
+            .init(
+                id: "clean",
+                dataset: "artifact",
+                audioPath: "clean.wav",
+                referenceText: "Hello world",
+                hypothesisText: "Hello world",
+                languageHint: "en",
+                status: .success,
+                errorMessage: nil,
+                elapsedMS: 100,
+                audioDurationMS: 200,
+                rtf: 0.5,
+                metrics: nil
+            ),
+        ]
+    )
+
+    let output = await BenchmarkRunner.runPipeline(
+        manifest: manifest,
+        rawOutput: rawOutput,
+        configuration: .init(
+            profile: .init(
+                name: "artifact-fixture",
+                tone: .natural,
+                structureMode: .natural,
+                fillerPolicy: .minimal,
+                commandPolicy: .passthrough
+            ),
+            lexicon: .init(entries: [])
+        )
+    )
+
+    #expect(output.summary.punctuationArtifactRate == 0.8)
 }
 
 @Test("Pipeline run does not count command passthrough failures as unintended rewrites")
@@ -465,7 +592,7 @@ func pipelineRunSeparatesRepairDetectionFromExactMatch() async {
                 dataset: "repair-intent",
                 audioPath: "repair.wav",
                 referenceText: "Call Jane",
-                hypothesisText: "Call Bob delete that gene",
+                hypothesisText: "Call Bob, delete that, Gene",
                 languageHint: "en",
                 status: .success,
                 errorMessage: nil,
@@ -751,7 +878,7 @@ func releaseSignoffPipelineComputesExtendedMetrics() async throws {
                 dataset: "targeted",
                 audioPath: "repair.wav",
                 referenceText: "send it to Jane",
-                hypothesisText: "send it to John scratch that Jane",
+                hypothesisText: "send it to John, scratch that, Jane",
                 languageHint: "en",
                 status: .success,
                 errorMessage: nil,

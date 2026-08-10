@@ -50,7 +50,7 @@ public actor StyleProfileService {
                 name: "Remote Desktop",
                 tone: .concise,
                 structureMode: .paragraph,
-                fillerPolicy: .aggressive,
+                fillerPolicy: .balanced,
                 commandPolicy: .transform
             )
         }

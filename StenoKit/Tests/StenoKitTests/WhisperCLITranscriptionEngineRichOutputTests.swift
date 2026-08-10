@@ -164,14 +164,14 @@ func whisperCLITranscriptionEnginePassesPromptAndSuppressRegex() async throws {
         audioURL: audioURL,
         request: .init(
             languageHints: ["en-US"],
-            appContext: AppContext(bundleIdentifier: "com.todesktop.230313mzl4w4u92", appName: "Cursor", isIDE: true),
+            appContext: AppContext(bundleIdentifier: "com.example.editor", appName: "EditorPro", isIDE: true),
             hotTerms: ["TURSO", "StenoKit"]
         )
     )
 
     #expect(result.text.contains("--prompt"))
     #expect(result.text.contains("Terms: TURSO, StenoKit"))
-    #expect(!result.text.contains("App: Cursor"))
+    #expect(!result.text.contains("App: EditorPro"))
     #expect(result.text.contains("--suppress-regex"))
     #expect(result.text.contains(#"\[(?:MUSIC|NOISE)\]"#))
 }
