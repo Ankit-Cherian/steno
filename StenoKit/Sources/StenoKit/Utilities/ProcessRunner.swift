@@ -56,7 +56,6 @@ public enum ProcessRunner {
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProcessExecutionResult, Error>) in
-                state.prepare(continuation: continuation)
                 process.terminationHandler = { _ in
                     // Disable streaming handlers first, then drain remaining bytes.
                     outputPipe?.fileHandleForReading.readabilityHandler = nil
@@ -78,9 +77,20 @@ public enum ProcessRunner {
                     )
                 }
 
+                guard state.prepareToLaunch(continuation: continuation) else {
+                    process.terminationHandler = nil
+                    outputPipe?.fileHandleForReading.readabilityHandler = nil
+                    errorPipe?.fileHandleForReading.readabilityHandler = nil
+                    return
+                }
+
                 do {
                     try process.run()
+                    state.didLaunch()
                 } catch {
+                    process.terminationHandler = nil
+                    outputPipe?.fileHandleForReading.readabilityHandler = nil
+                    errorPipe?.fileHandleForReading.readabilityHandler = nil
                     state.fail(error)
                 }
             }
@@ -110,20 +120,48 @@ private final class PipeAccumulator: @unchecked Sendable {
 }
 
 private final class ProcessRunState: @unchecked Sendable {
+    private enum LaunchState: Equatable {
+        case notStarted
+        case launching
+        case running
+    }
+
     private let lock = NSLock()
     private let process: Process
     private var continuation: CheckedContinuation<ProcessExecutionResult, Error>?
     private var hasFinished = false
     private var wasCancelled = false
+    private var launchState: LaunchState = .notStarted
 
     init(process: Process) {
         self.process = process
     }
 
-    func prepare(continuation: CheckedContinuation<ProcessExecutionResult, Error>) {
+    func prepareToLaunch(
+        continuation: CheckedContinuation<ProcessExecutionResult, Error>
+    ) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
+        guard !hasFinished, !wasCancelled else {
+            hasFinished = true
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return false
+        }
         self.continuation = continuation
+        launchState = .launching
+        lock.unlock()
+        return true
+    }
+
+    func didLaunch() {
+        lock.lock()
+        launchState = .running
+        let shouldTerminate = wasCancelled && !hasFinished
+        lock.unlock()
+
+        if shouldTerminate {
+            terminateAndEscalate()
+        }
     }
 
     func finish(terminationStatus: Int32, standardOutput: Data, standardError: Data) {
@@ -161,37 +199,35 @@ private final class ProcessRunState: @unchecked Sendable {
         }
         hasFinished = true
         self.continuation = nil
+        let cancelled = wasCancelled
         lock.unlock()
         // Resume outside lock. See withTaskCancellationHandler lock guidance.
-        continuation.resume(throwing: error)
+        continuation.resume(throwing: cancelled ? CancellationError() : error)
     }
 
     func cancel() {
         lock.lock()
         wasCancelled = true
-        let shouldResume = !hasFinished && !process.isRunning
-        let continuation = shouldResume ? self.continuation : nil
-        if shouldResume {
-            hasFinished = true
-            self.continuation = nil
-        }
+        let shouldTerminate = !hasFinished && launchState == .running
         lock.unlock()
 
-        if process.isRunning {
-            process.terminate() // SIGTERM
-            // Escalate to SIGKILL after 3 seconds if the subprocess ignores SIGTERM.
-            let pid = process.processIdentifier
-            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [self] in
-                guard pid > 0,
-                      self.process.isRunning,
-                      self.process.processIdentifier == pid else {
-                    return
-                }
-                kill(pid, SIGKILL)
+        if shouldTerminate {
+            terminateAndEscalate()
+        }
+    }
+
+    private func terminateAndEscalate() {
+        guard process.isRunning else { return }
+        process.terminate() // SIGTERM
+        // Escalate to SIGKILL after 3 seconds if the subprocess ignores SIGTERM.
+        let pid = process.processIdentifier
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [self] in
+            guard pid > 0,
+                  self.process.isRunning,
+                  self.process.processIdentifier == pid else {
+                return
             }
-        } else if let continuation {
-            // Resume outside lock. See withTaskCancellationHandler lock guidance.
-            continuation.resume(throwing: CancellationError())
+            kill(pid, SIGKILL)
         }
     }
 }

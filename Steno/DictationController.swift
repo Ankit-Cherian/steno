@@ -12,9 +12,16 @@ protocol DictationSessionCoordinating: Sendable {
     ) async throws -> InsertResult
     func cancel(sessionID: SessionID) async
     func setHandsFreeEnabled(_ enabled: Bool) async
+    func unloadTranscriptionRuntime() async
+    func shutdown() async
 }
 
 extension SessionCoordinator: DictationSessionCoordinating {}
+
+extension DictationSessionCoordinating {
+    func unloadTranscriptionRuntime() async {}
+    func shutdown() async {}
+}
 
 protocol UsageAnalyticsStoreServicing: UsageAnalyticsRecording {
     func recoverCorruptArchiveIfNeeded() async throws -> URL?
@@ -96,12 +103,22 @@ final class DictationController: ObservableObject {
     private var cleanupTask: Task<Void, Never>?
     private var completionTask: Task<Void, Never>?
     private var completionTaskID: UUID?
+    private var completionTasks: [UUID: Task<Void, Never>] = [:]
     private var isTearingDown = false
+    private var isRuntimeUnloadingForSystemEvent = false
+    private var pendingMemoryPressureRuntimeUnload = false
     private var pendingRuntimeRebuild = false
+    private var runtimeRebuildGeneration: UInt64 = 0
+    private var activeRuntimeRebuilds = 0
+    private var runtimeRebuildWaiters: [CheckedContinuation<Void, Never>] = []
     private var launchAtLoginServicePreference = AppPreferences.default.general.launchAtLoginEnabled
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
     private var terminationTask: Task<Void, Never>?
+    private var shutdownTask: Task<Void, Never>?
+    private var workspaceSleepObserver: NSObjectProtocol?
+    private var workspaceWakeObserver: NSObjectProtocol?
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var hasPreparedUsageAnalyticsHistory = false
     private var usageAnalyticsMigrationWarning = ""
     private var pendingUsageAnalyticsRefresh: UsageAnalyticsRefreshRequest?
@@ -164,6 +181,37 @@ final class DictationController: ObservableObject {
         hotkey.start()
         menuBar.setup(controller: self)
 
+        workspaceSleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.unloadRetainedRuntimeForSystemEvent()
+            }
+        }
+        workspaceWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.unloadRetainedRuntimeForSystemEvent()
+            }
+        }
+
+        let memoryPressureSource = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .main
+        )
+        memoryPressureSource.setEventHandler { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.requestRetainedRuntimeUnloadForMemoryPressure()
+            }
+        }
+        memoryPressureSource.activate()
+        self.memoryPressureSource = memoryPressureSource
+
         terminationTask = Task { @MainActor [weak self] in
             let notifications = NotificationCenter.default
                 .notifications(named: NSApplication.willTerminateNotification)
@@ -180,20 +228,35 @@ final class DictationController: ObservableObject {
     /// hides the overlay, and invalidates timers. Triggered by willTerminateNotification.
     @MainActor
     func teardown() {
-        guard !isTearingDown else { return }
+        guard shutdownTask == nil else { return }
         isTearingDown = true
+        pendingMemoryPressureRuntimeUnload = false
+        runtimeRebuildGeneration &+= 1
         terminationTask?.cancel()
         terminationTask = nil
+        if let workspaceSleepObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceSleepObserver)
+            self.workspaceSleepObserver = nil
+        }
+        if let workspaceWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceWakeObserver)
+            self.workspaceWakeObserver = nil
+        }
+        memoryPressureSource?.cancel()
+        memoryPressureSource = nil
         hotkey.stop()
         overlay.hide()
         sessionCleanupStartGate.reset()
         let pendingCleanup = cleanupTask
         cleanupTask = nil
         pendingCleanup?.cancel()
-        let pendingCompletion = completionTask
+        let pendingCompletions = Array(completionTasks.values)
+        completionTasks.removeAll()
         completionTask = nil
         completionTaskID = nil
-        pendingCompletion?.cancel()
+        for completion in pendingCompletions {
+            completion.cancel()
+        }
         activeSessionGeneration = nil
         let pendingStart = activeStartTask
         activeStartTask = nil
@@ -202,20 +265,31 @@ final class DictationController: ObservableObject {
         activeMediaToken = nil
         let sessionID = currentSessionID
         currentSessionID = nil
+        let coordinator = self.coordinator
+        self.coordinator = nil
         recordingTimer?.invalidate()
         recordingTimer = nil
 
-        Task {
+        shutdownTask = Task {
             await pendingCleanup?.value
             await pendingStart?.value
-            await pendingCompletion?.value
+            for completion in pendingCompletions {
+                await completion.value
+            }
             if let coordinator, let sessionID {
                 await coordinator.cancel(sessionID: sessionID)
             }
             if let mediaToken {
                 await mediaInterruption.endInterruption(token: mediaToken)
             }
+            await waitForRuntimeRebuilds()
+            await coordinator?.shutdown()
         }
+    }
+
+    func teardownAndWait() async {
+        teardown()
+        await shutdownTask?.value
     }
 
     var menuBarIconName: String {
@@ -240,6 +314,14 @@ final class DictationController: ObservableObject {
         _ replacement: any DictationSessionCoordinating
     ) {
         coordinator = replacement
+    }
+
+    func unloadRuntimeForLifecycleTesting() async {
+        await unloadRetainedRuntimeForSystemEvent()
+    }
+
+    func unloadRuntimeForMemoryPressureTesting() async {
+        await requestRetainedRuntimeUnloadForMemoryPressure()
     }
     #endif
 
@@ -716,6 +798,8 @@ final class DictationController: ObservableObject {
             stopSession(mode: mode)
         case .cancel(let mode):
             cancelSession(mode: mode)
+        case .cancelTranscription:
+            cancelTranscription()
         case .ignore(let reason):
             status = reason
         }
@@ -723,6 +807,11 @@ final class DictationController: ObservableObject {
 
     private func startSession(mode: RecordingMode) {
         guard !isTearingDown else { return }
+        guard !isRuntimeUnloadingForSystemEvent else {
+            recordingStateMachine.markTranscriptionFailed()
+            status = "Runtime is releasing memory. Try again in a moment."
+            return
+        }
         guard let coordinator else {
             status = "Runtime not ready yet."
             recordingStateMachine.markTranscriptionFailed()
@@ -876,6 +965,7 @@ final class DictationController: ObservableObject {
                 apply(transition: transition)
             }
             cleanupTask = nil
+            await applyDeferredMemoryPressureUnloadIfNeeded()
         }
     }
 
@@ -896,7 +986,7 @@ final class DictationController: ObservableObject {
 
         let taskID = UUID()
         completionTaskID = taskID
-        completionTask = Task {
+        let task = Task {
             // Wait for startSession's Task to finish so currentSessionID
             // and activeMediaToken are guaranteed to be set (or errored out).
             await pendingStart?.value
@@ -906,7 +996,7 @@ final class DictationController: ObservableObject {
                   let generation,
                   activeSessionGeneration == generation
             else {
-                finishCompletionTask(id: taskID)
+                await finishCompletionTask(id: taskID)
                 return
             }
 
@@ -924,7 +1014,7 @@ final class DictationController: ObservableObject {
                     recordingStateMachine.markTranscriptionFailed()
                     status = "No active recording session."
                 }
-                finishCompletionTask(id: taskID)
+                await finishCompletionTask(id: taskID)
                 return
             }
 
@@ -950,9 +1040,19 @@ final class DictationController: ObservableObject {
                     sessionID: sessionID,
                     languageHints: ["en-US"]
                 )
-                try Task.checkCancellation()
-                guard !isTearingDown, completionTaskID == taskID else {
+                let insertionCommitted = result.status == .inserted || result.status == .copiedOnly
+                let acceptsCancelledCommit = Task.isCancelled
+                    && insertionCommitted
+                    && recordingStateMachine.state == .idle
+                if Task.isCancelled && !acceptsCancelledCommit {
                     throw CancellationError()
+                }
+                guard !isTearingDown,
+                      completionTaskID == taskID,
+                      acceptsCancelledCommit || recordingStateMachine.state == .transcribing
+                else {
+                    await finishCompletionTask(id: taskID)
+                    return
                 }
 
                 switch result.status {
@@ -995,7 +1095,19 @@ final class DictationController: ObservableObject {
                     // while keeping the exact-metrics warning visible.
                     await refreshUsageAnalytics(forceHistoryReconciliation: true)
                 }
-                recordingStateMachine.markTranscriptionCompleted()
+                let stillOwnsLifecycle = acceptsCancelledCommit
+                    ? recordingStateMachine.state == .idle
+                    : !Task.isCancelled && recordingStateMachine.state == .transcribing
+                guard !isTearingDown,
+                      completionTaskID == taskID,
+                      stillOwnsLifecycle
+                else {
+                    await finishCompletionTask(id: taskID)
+                    return
+                }
+                if recordingStateMachine.state == .transcribing {
+                    recordingStateMachine.markTranscriptionCompleted()
+                }
                 await applyDeferredRebuildIfNeeded()
             } catch {
                 await coordinator.cancel(sessionID: sessionID)
@@ -1015,7 +1127,23 @@ final class DictationController: ObservableObject {
                     await applyDeferredRebuildIfNeeded()
                 }
             }
-            finishCompletionTask(id: taskID)
+            await finishCompletionTask(id: taskID)
+        }
+        completionTask = task
+        completionTasks[taskID] = task
+    }
+
+    private func cancelTranscription() {
+        let pendingCompletion = completionTask
+        pendingCompletion?.cancel()
+        status = "Transcription canceled."
+        lastError = ""
+        overlay.hide()
+
+        Task {
+            await pendingCompletion?.value
+            guard !isTearingDown else { return }
+            await applyDeferredRebuildIfNeeded()
         }
     }
 
@@ -1037,15 +1165,19 @@ final class DictationController: ObservableObject {
         overlay.show(state: .failure(message: error.localizedDescription))
         dismissOverlaySoon()
         await applyDeferredRebuildIfNeeded()
+        await applyDeferredMemoryPressureUnloadIfNeeded()
         if !isTearingDown, activeSessionGeneration == nil, !isRecording {
             status = "Failed to start"
         }
     }
 
-    private func finishCompletionTask(id: UUID) {
-        guard completionTaskID == id else { return }
-        completionTask = nil
-        completionTaskID = nil
+    private func finishCompletionTask(id: UUID) async {
+        completionTasks.removeValue(forKey: id)
+        if completionTaskID == id {
+            completionTask = nil
+            completionTaskID = nil
+        }
+        await applyDeferredMemoryPressureUnloadIfNeeded()
     }
 
     private func dismissOverlaySoon() {
@@ -1064,6 +1196,7 @@ final class DictationController: ObservableObject {
     }
 
     private func rebuildRuntimeOrDefer() async {
+        guard !isTearingDown else { return }
         // Cancellation returns the state machine to idle before its async capture
         // cleanup completes, so idle alone is not a safe rebuild boundary.
         if recordingStateMachine.state == .idle,
@@ -1075,8 +1208,10 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func applyDeferredRebuildIfNeeded() async {
-        guard pendingRuntimeRebuild,
+    private func applyDeferredRebuildIfNeeded(allowDuringSystemEvent: Bool = false) async {
+        guard !isTearingDown,
+              (!isRuntimeUnloadingForSystemEvent || allowDuringSystemEvent),
+              pendingRuntimeRebuild,
               recordingStateMachine.state == .idle,
               !sessionCleanupStartGate.isCleanupInProgress
         else { return }
@@ -1085,8 +1220,25 @@ final class DictationController: ObservableObject {
     }
 
     private func rebuildRuntime() async {
+        guard !isTearingDown else { return }
+        activeRuntimeRebuilds += 1
+        defer { finishRuntimeRebuild() }
+        runtimeRebuildGeneration &+= 1
+        let rebuildGeneration = runtimeRebuildGeneration
+        let previousCoordinator = coordinator
+        coordinator = nil
+        await previousCoordinator?.shutdown()
+        guard !isTearingDown, runtimeRebuildGeneration == rebuildGeneration else {
+            return
+        }
+
         if let runtimeRebuildOverride {
-            coordinator = await runtimeRebuildOverride()
+            let replacement = await runtimeRebuildOverride()
+            guard !isTearingDown, runtimeRebuildGeneration == rebuildGeneration else {
+                await replacement?.shutdown()
+                return
+            }
+            coordinator = replacement
             status = "Running local transcription + local cleanup."
             return
         }
@@ -1121,6 +1273,62 @@ final class DictationController: ObservableObject {
         )
 
         status = "Running local transcription + local cleanup."
+    }
+
+    private func waitForRuntimeRebuilds() async {
+        guard activeRuntimeRebuilds > 0 else { return }
+        await withCheckedContinuation { continuation in
+            runtimeRebuildWaiters.append(continuation)
+        }
+    }
+
+    private func finishRuntimeRebuild() {
+        activeRuntimeRebuilds -= 1
+        guard activeRuntimeRebuilds == 0 else { return }
+        let waiters = runtimeRebuildWaiters
+        runtimeRebuildWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private func unloadRetainedRuntimeForSystemEvent() async {
+        guard !isTearingDown, !isRuntimeUnloadingForSystemEvent else { return }
+        isRuntimeUnloadingForSystemEvent = true
+        defer { isRuntimeUnloadingForSystemEvent = false }
+        if recordingStateMachine.state != .idle {
+            cancelActiveRecording()
+        }
+        await cleanupTask?.value
+        let pendingCompletions = Array(completionTasks.values)
+        for completion in pendingCompletions {
+            await completion.value
+        }
+        await waitForRuntimeRebuilds()
+        await coordinator?.unloadTranscriptionRuntime()
+        await applyDeferredRebuildIfNeeded(allowDuringSystemEvent: true)
+    }
+
+    private func requestRetainedRuntimeUnloadForMemoryPressure() async {
+        guard !isTearingDown else { return }
+        pendingMemoryPressureRuntimeUnload = true
+        await applyDeferredMemoryPressureUnloadIfNeeded()
+    }
+
+    private func applyDeferredMemoryPressureUnloadIfNeeded() async {
+        guard pendingMemoryPressureRuntimeUnload,
+              !isTearingDown,
+              !isRuntimeUnloadingForSystemEvent,
+              recordingStateMachine.state == .idle,
+              activeStartTask == nil,
+              !sessionCleanupStartGate.isCleanupInProgress,
+              completionTasks.isEmpty
+        else {
+            return
+        }
+
+        pendingMemoryPressureRuntimeUnload = false
+        await unloadRetainedRuntimeForSystemEvent()
     }
 
     private func applyLaunchAtLoginPreference(requestedPreference: Bool, userInitiated: Bool) {
@@ -1271,8 +1479,7 @@ private struct DictationRuntimeFactory {
         SnippetService(snippets: snapshot.snippets)
     }
 
-    func makeTranscriptionEngine() -> WhisperCLITranscriptionEngine {
-        let whisperCLIPath = URL(fileURLWithPath: snapshot.dictation.whisperCLIPath)
+    func makeTranscriptionEngine() -> any TranscriptionEngine {
         let modelPath = URL(fileURLWithPath: snapshot.dictation.modelPath)
         let extraArgs = WhisperRuntimeConfiguration.additionalArguments(
             threadCount: snapshot.dictation.threadCount,
@@ -1280,12 +1487,42 @@ private struct DictationRuntimeFactory {
             vadModelPath: snapshot.dictation.vadModelPath
         )
 
-        return WhisperCLITranscriptionEngine(
+        let retainedPaths = WhisperRuntimeConfiguration.retainedRuntimePaths(
+            relativeTo: snapshot.dictation.whisperCLIPath
+        )
+        let fallbackCLIPath = retainedPaths?.whisperCLIPath ?? snapshot.dictation.whisperCLIPath
+        let fallback = WhisperCLITranscriptionEngine(
             config: .init(
-                whisperCLIPath: whisperCLIPath,
+                whisperCLIPath: URL(fileURLWithPath: fallbackCLIPath),
                 modelPath: modelPath,
                 additionalArguments: extraArgs
             )
+        )
+
+        guard let retainedPaths else {
+            return fallback
+        }
+
+        let configuredVADPath = snapshot.dictation.vadModelPath
+        let vadModelPath: URL? = if snapshot.dictation.vadEnabled,
+                                   FileManager.default.fileExists(atPath: configuredVADPath) {
+            URL(fileURLWithPath: configuredVADPath)
+        } else {
+            nil
+        }
+
+        return RetainedWhisperTranscriptionEngine(
+            configuration: RetainedWhisperTranscriptionConfiguration(
+                helperExecutableURL: URL(fileURLWithPath: retainedPaths.helperPath),
+                modelPath: modelPath,
+                threadCount: snapshot.dictation.threadCount,
+                vadModelPath: vadModelPath,
+                suppressNonSpeechTokens: true,
+                suppressRegex: nil,
+                beamSize: 5,
+                bestOf: 5
+            ),
+            fallback: fallback
         )
     }
 

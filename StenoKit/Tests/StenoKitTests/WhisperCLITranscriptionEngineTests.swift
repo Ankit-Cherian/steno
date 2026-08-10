@@ -153,6 +153,25 @@ func whisperCLITranscriptionEngineCancellationEscalation() async throws {
     }
 }
 
+@Test("ProcessRunner cancellation before launch returns without orphaning a continuation")
+func processRunnerPreLaunchCancellationReturnsPromptly() async throws {
+    let task = Task {
+        try await ProcessRunner.run(executableURL: URL(fileURLWithPath: "/usr/bin/true"))
+    }
+    task.cancel()
+
+    do {
+        _ = try await awaitTaskValue(task, timeoutNanoseconds: 1_000_000_000)
+        Issue.record("Expected pre-launch cancellation to throw.")
+    } catch is CancellationError {
+        // Expected.
+    } catch is TaskValueTimeoutError {
+        Issue.record("Pre-launch cancellation leaked its continuation.")
+    } catch {
+        Issue.record("Expected CancellationError, got: \(error)")
+    }
+}
+
 private struct TaskValueTimeoutError: Error {}
 
 private func awaitTaskValue<T>(

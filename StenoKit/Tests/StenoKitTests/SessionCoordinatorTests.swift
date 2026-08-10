@@ -63,6 +63,209 @@ private actor BlockingEndCaptureService: AudioCaptureService {
     }
 }
 
+private actor BlockingBeginCaptureService: AudioCaptureService {
+    private var beginContinuation: CheckedContinuation<Void, Never>?
+    private var beginStarted = false
+    private var cancelledCount = 0
+
+    func beginCapture(sessionID: SessionID) async throws {
+        _ = sessionID
+        beginStarted = true
+        await withCheckedContinuation { continuation in
+            beginContinuation = continuation
+        }
+    }
+
+    func endCapture(sessionID: SessionID) async throws -> URL {
+        _ = sessionID
+        throw CancellationError()
+    }
+
+    func cancelCapture(sessionID: SessionID) async {
+        _ = sessionID
+        cancelledCount += 1
+    }
+
+    func hasStartedBeginning() -> Bool {
+        beginStarted
+    }
+
+    func releaseBegin() {
+        beginContinuation?.resume()
+        beginContinuation = nil
+    }
+
+    func cancellationCount() -> Int {
+        cancelledCount
+    }
+}
+
+private actor CancellationIgnoringTranscriptionGate {
+    private var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        started = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func hasStarted() -> Bool {
+        started
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor LifecycleTrackingTranscriptionEngine: TranscriptionEngine {
+    private var shutdownCount = 0
+    private var unloadCount = 0
+
+    func transcribe(audioURL: URL, request: TranscriptionRequest) async throws -> RawTranscript {
+        _ = audioURL
+        _ = request
+        return RawTranscript(text: "unused")
+    }
+
+    func shutdown() async {
+        shutdownCount += 1
+    }
+
+    func unloadRetainedResources() async {
+        unloadCount += 1
+    }
+
+    func counts() -> (shutdowns: Int, unloads: Int) {
+        (shutdownCount, unloadCount)
+    }
+}
+
+private actor BlockingShutdownTranscriptionEngine: TranscriptionEngine {
+    private var shutdownCount = 0
+    private var shutdownStarted = false
+    private var shutdownContinuation: CheckedContinuation<Void, Never>?
+
+    func transcribe(audioURL: URL, request: TranscriptionRequest) async throws -> RawTranscript {
+        _ = audioURL
+        _ = request
+        return RawTranscript(text: "unused")
+    }
+
+    func shutdown() async {
+        shutdownCount += 1
+        shutdownStarted = true
+        await withCheckedContinuation { continuation in
+            shutdownContinuation = continuation
+        }
+    }
+
+    func hasStartedShutdown() -> Bool {
+        shutdownStarted
+    }
+
+    func releaseShutdown() {
+        shutdownContinuation?.resume()
+        shutdownContinuation = nil
+    }
+
+    func count() -> Int {
+        shutdownCount
+    }
+}
+
+private actor CompletionFlag {
+    private var completed = false
+
+    func markCompleted() {
+        completed = true
+    }
+
+    func value() -> Bool {
+        completed
+    }
+}
+
+private actor GatedInsertionState {
+    private var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var sideEffects = 0
+
+    func wait() async {
+        started = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func hasStarted() -> Bool {
+        started
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func recordSideEffect() {
+        sideEffects += 1
+    }
+
+    func sideEffectCount() -> Int {
+        sideEffects
+    }
+}
+
+private actor CommittedInsertionState {
+    private var committed = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func commitAndWait() async {
+        committed = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func hasCommitted() -> Bool {
+        committed
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private struct GatedCancellationAwareInsertionTransport: InsertionTransport {
+    let method: InsertionMethod = .direct
+    let state: GatedInsertionState
+
+    func insert(text: String, target: AppContext) async throws {
+        _ = text
+        _ = target
+        await state.wait()
+        try Task.checkCancellation()
+        await state.recordSideEffect()
+    }
+}
+
+private actor UsageEventCounter: UsageAnalyticsRecording {
+    private var count = 0
+
+    func record(event: UsageEvent) async throws {
+        _ = event
+        count += 1
+    }
+
+    func value() -> Int {
+        count
+    }
+}
+
 @Test("SessionCoordinator marks localSuccess when primary cleanup succeeds")
 func sessionCoordinatorLocalSuccessOutcome() async throws {
     let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
@@ -432,4 +635,274 @@ func sessionCoordinatorCancelDuringCaptureEndPreventsCompletion() async throws {
     } catch SessionCoordinatorError.sessionNotFound {
         // Expected: no captured session survives cancellation.
     }
+}
+
+@Test("Cancellation after capture close cannot insert, persist, or leak temporary audio")
+func sessionCoordinatorCancellationAfterCaptureCloseHasNoSideEffects() async throws {
+    let audioURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("audio-\(UUID().uuidString).wav")
+    try Data().write(to: audioURL)
+    let gate = CancellationIgnoringTranscriptionGate()
+    let insertionRecorder = InsertRecorder()
+    let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("history-tests", isDirectory: true)
+        .appendingPathComponent("history-\(UUID().uuidString).json")
+    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let coordinator = SessionCoordinator(
+        captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
+        transcriptionEngine: StaticTranscriptionEngine { _, _ in
+            await gate.wait()
+            return RawTranscript(text: "must never insert")
+        },
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: InsertionService(
+            transports: [
+                ClosureInsertionTransport(method: .direct) { text, _ in
+                    await insertionRecorder.record(text)
+                }
+            ]
+        ),
+        historyStore: history,
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+    try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+    let completion = Task {
+        try await coordinator.completePressToTalk(sessionID: sessionID)
+    }
+    while !(await gate.hasStarted()) {
+        await Task.yield()
+    }
+
+    completion.cancel()
+    await coordinator.cancel(sessionID: sessionID)
+    await gate.release()
+
+    do {
+        _ = try await completion.value
+        Issue.record("A cancelled completion must not return an insertion result.")
+    } catch is CancellationError {
+        // Expected even when the transcription engine ignores cancellation.
+    }
+    #expect(await insertionRecorder.latest() == nil)
+    #expect(await history.recent(limit: 1).isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: audioURL.path))
+}
+
+@Test("SessionCoordinator unloads and shuts down retained transcription resources")
+func sessionCoordinatorReleasesTranscriptionResources() async throws {
+    let audioURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("audio-\(UUID().uuidString).wav")
+    try Data().write(to: audioURL)
+    let engine = LifecycleTrackingTranscriptionEngine()
+    let coordinator = SessionCoordinator(
+        captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
+        transcriptionEngine: engine,
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: InsertionService(transports: []),
+        historyStore: HistoryStore(
+            storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("history-tests", isDirectory: true)
+                .appendingPathComponent("history-\(UUID().uuidString).json"),
+            clipboardService: MemoryClipboardService()
+        ),
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+    try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+    await coordinator.unloadTranscriptionRuntime()
+    #expect((await engine.counts()).unloads == 1)
+    #expect(!FileManager.default.fileExists(atPath: audioURL.path))
+
+    await coordinator.shutdown()
+    await coordinator.shutdown()
+    #expect((await engine.counts()).shutdowns == 1)
+}
+
+@Test("Runtime unload wins a capture-start race without registering a ghost session")
+func sessionCoordinatorRejectsCaptureThatFinishesDuringRuntimeUnload() async throws {
+    let capture = BlockingBeginCaptureService()
+    let engine = LifecycleTrackingTranscriptionEngine()
+    let coordinator = SessionCoordinator(
+        captureService: capture,
+        transcriptionEngine: engine,
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: InsertionService(transports: []),
+        historyStore: HistoryStore(
+            storageURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("history-\(UUID().uuidString).json"),
+            clipboardService: MemoryClipboardService()
+        ),
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let starting = Task {
+        try await coordinator.startPressToTalk(appContext: .unknown)
+    }
+    while !(await capture.hasStartedBeginning()) {
+        await Task.yield()
+    }
+
+    await coordinator.unloadTranscriptionRuntime()
+    await capture.releaseBegin()
+
+    do {
+        _ = try await starting.value
+        Issue.record("A capture that crosses runtime unload must not become active.")
+    } catch SessionCoordinatorError.runtimeUnavailable {
+        // Expected: the lifecycle generation changed while capture start was suspended.
+    }
+    #expect(await capture.cancellationCount() == 1)
+    #expect((await engine.counts()).unloads == 1)
+}
+
+@Test("Concurrent shutdown callers all await the same coordinator teardown")
+func sessionCoordinatorConcurrentShutdownCallersAwaitCompletion() async throws {
+    let engine = BlockingShutdownTranscriptionEngine()
+    let coordinator = SessionCoordinator(
+        captureService: StubAudioCaptureService(queuedAudioURLs: []),
+        transcriptionEngine: engine,
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: InsertionService(transports: []),
+        historyStore: HistoryStore(
+            storageURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("history-\(UUID().uuidString).json"),
+            clipboardService: MemoryClipboardService()
+        ),
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let first = Task { await coordinator.shutdown() }
+    while !(await engine.hasStartedShutdown()) {
+        await Task.yield()
+    }
+    let secondCompleted = CompletionFlag()
+    let second = Task {
+        await coordinator.shutdown()
+        await secondCompleted.markCompleted()
+    }
+    for _ in 0..<20 {
+        await Task.yield()
+    }
+    #expect(await secondCompleted.value() == false)
+
+    await engine.releaseShutdown()
+    await first.value
+    await second.value
+    #expect(await secondCompleted.value())
+    #expect(await engine.count() == 1)
+}
+
+@Test("Cancellation during insertion cannot fall through, persist, or record usage")
+func sessionCoordinatorCancellationDuringInsertionHasNoLaterSideEffects() async throws {
+    let audioURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("audio-\(UUID().uuidString).wav")
+    try Data().write(to: audioURL)
+    let insertionState = GatedInsertionState()
+    let fallbackRecorder = InsertRecorder()
+    let usageCounter = UsageEventCounter()
+    let history = HistoryStore(
+        storageURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("history-\(UUID().uuidString).json"),
+        clipboardService: MemoryClipboardService()
+    )
+    let coordinator = SessionCoordinator(
+        captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
+        transcriptionEngine: StaticTranscriptionEngine { _, _ in
+            RawTranscript(text: "must not insert")
+        },
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: InsertionService(
+            transports: [
+                GatedCancellationAwareInsertionTransport(state: insertionState),
+                ClosureInsertionTransport(method: .clipboardPaste) { text, _ in
+                    await fallbackRecorder.record(text)
+                },
+            ]
+        ),
+        historyStore: history,
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService(),
+        usageRecorder: usageCounter
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+    try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+    let completion = Task {
+        try await coordinator.completePressToTalk(sessionID: sessionID)
+    }
+    while !(await insertionState.hasStarted()) {
+        await Task.yield()
+    }
+
+    completion.cancel()
+    await coordinator.cancel(sessionID: sessionID)
+    await insertionState.release()
+
+    do {
+        _ = try await completion.value
+        Issue.record("Cancellation during insertion must reject completion.")
+    } catch is CancellationError {
+        // Expected: no insertion fallback, history, or analytics may follow.
+    }
+    #expect(await insertionState.sideEffectCount() == 0)
+    #expect(await fallbackRecorder.latest() == nil)
+    #expect(await history.recent(limit: 1).isEmpty)
+    #expect(await usageCounter.value() == 0)
+    #expect(!FileManager.default.fileExists(atPath: audioURL.path))
+}
+
+@Test("Cancellation after insertion commit completes and persists exactly once")
+func sessionCoordinatorCancellationAfterInsertionCommitCompletes() async throws {
+    let audioURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("audio-\(UUID().uuidString).wav")
+    try Data().write(to: audioURL)
+    let insertionState = CommittedInsertionState()
+    let history = HistoryStore(
+        storageURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("history-\(UUID().uuidString).json"),
+        clipboardService: MemoryClipboardService()
+    )
+    let coordinator = SessionCoordinator(
+        captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
+        transcriptionEngine: StaticTranscriptionEngine { _, _ in
+            RawTranscript(text: "complete text")
+        },
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: InsertionService(
+            transports: [
+                ClosureInsertionTransport(method: .direct) { _, _ in
+                    await insertionState.commitAndWait()
+                }
+            ]
+        ),
+        historyStore: history,
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+    try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+    let completion = Task {
+        try await coordinator.completePressToTalk(sessionID: sessionID)
+    }
+    while !(await insertionState.hasCommitted()) {
+        await Task.yield()
+    }
+
+    completion.cancel()
+    await coordinator.cancel(sessionID: sessionID)
+    await insertionState.release()
+
+    let result = try await completion.value
+    #expect(result.status == .inserted)
+    #expect(result.insertedText == "Complete text")
+    #expect((await history.recent(limit: 10)).count == 1)
+    #expect(!FileManager.default.fileExists(atPath: audioURL.path))
 }

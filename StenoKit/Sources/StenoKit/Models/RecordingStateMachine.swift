@@ -16,6 +16,7 @@ public enum RecordingTransition: Sendable, Equatable {
     case start(mode: RecordingMode)
     case stop(mode: RecordingMode)
     case cancel(mode: RecordingMode)
+    case cancelTranscription
     case ignore(reason: String)
 }
 
@@ -80,7 +81,8 @@ public struct RecordingStateMachine: Sendable, Equatable {
         case .idle:
             return .ignore(reason: "No active recording to cancel.")
         case .transcribing:
-            return .ignore(reason: "Cannot cancel after recording has stopped.")
+            state = .idle
+            return .cancelTranscription
         }
     }
 

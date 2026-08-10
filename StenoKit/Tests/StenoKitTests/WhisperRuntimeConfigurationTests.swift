@@ -1,6 +1,55 @@
 import Testing
 @testable import StenoKit
 
+@Test("retainedHelperPath resolves only the fixed sibling helper")
+func retainedHelperPathUsesFixedSibling() {
+    let executable = "/bundle/Contents/Helpers/steno-whisper-runtime"
+    #expect(
+        WhisperRuntimeConfiguration.retainedHelperPath(
+            relativeTo: "/bundle/Contents/Helpers/whisper-cli",
+            isExecutableFile: { $0 == executable }
+        ) == executable
+    )
+    #expect(
+        WhisperRuntimeConfiguration.retainedHelperPath(
+            relativeTo: "/custom/whisper-cli",
+            isExecutableFile: { _ in false }
+        ) == nil
+    )
+}
+
+@Test("retainedHelperPath keeps the selected legacy CLI as fallback while using the canonical helper")
+func retainedHelperPathKeepsSelectedLegacyFallback() {
+    let selectedCLI = "/repo/vendor/whisper.cpp/build/bin/whisper-cli"
+    let canonical = "/repo/vendor/whisper.cpp/build-steno/bin/steno-whisper-runtime"
+    let legacySibling = "/repo/vendor/whisper.cpp/build/bin/steno-whisper-runtime"
+    let executablePaths: Set<String> = [selectedCLI, canonical, legacySibling]
+
+    #expect(
+        WhisperRuntimeConfiguration.retainedRuntimePaths(
+            relativeTo: selectedCLI,
+            isExecutableFile: executablePaths.contains
+        ) == RetainedWhisperRuntimePaths(
+            whisperCLIPath: selectedCLI,
+            helperPath: canonical
+        )
+    )
+}
+
+@Test("retainedHelperPath never cross-routes an explicit custom build")
+func retainedHelperPathKeepsCustomBuildAdjacent() {
+    let adjacent = "/custom/build/bin/steno-whisper-runtime"
+    let unrelatedCrossBuild = "/custom/build-steno/bin/steno-whisper-runtime"
+    let executablePaths: Set<String> = [adjacent, unrelatedCrossBuild]
+
+    #expect(
+        WhisperRuntimeConfiguration.retainedHelperPath(
+            relativeTo: "/custom/build/bin/whisper-cli",
+            isExecutableFile: executablePaths.contains
+        ) == adjacent
+    )
+}
+
 @Test("defaultVADModelPath uses the Whisper model directory")
 func defaultVADModelPathUsesModelDirectory() {
     let modelPath = "/tmp/custom-models/ggml-small.en.bin"

@@ -75,7 +75,7 @@ func recordingStateMachineCancelsPressToTalk() {
     #expect(machine.state == .idle)
 }
 
-@Test("RecordingStateMachine ignores cancel while idle or transcribing")
+@Test("RecordingStateMachine ignores idle cancel and cancels active transcription")
 func recordingStateMachineIgnoresInvalidCancel() {
     var machine = RecordingStateMachine()
 
@@ -90,10 +90,6 @@ func recordingStateMachineIgnoresInvalidCancel() {
     _ = machine.handleHandsFreeToggle()
     #expect(machine.state == .transcribing)
 
-    switch machine.handleCancel() {
-    case .ignore(let reason):
-        #expect(!reason.isEmpty)
-    default:
-        Issue.record("Expected transcribing cancel to be ignored")
-    }
+    #expect(machine.handleCancel() == .cancelTranscription)
+    #expect(machine.state == .idle)
 }

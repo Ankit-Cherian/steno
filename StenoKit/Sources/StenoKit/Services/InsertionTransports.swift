@@ -13,6 +13,7 @@ public struct ClosureInsertionTransport: InsertionTransport, Sendable {
     }
 
     public func insert(text: String, target: AppContext) async throws {
+        try Task.checkCancellation()
         try await block(text, target)
     }
 }

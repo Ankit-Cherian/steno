@@ -18,6 +18,18 @@ public protocol AudioCaptureService: Sendable {
 public protocol TranscriptionEngine: Sendable {
     /// Transcribes the audio at the given URL using dynamic request context.
     func transcribe(audioURL: URL, request: TranscriptionRequest) async throws -> RawTranscript
+
+    /// Releases retained runtime resources. Implementations without retained state
+    /// use the default no-op implementation.
+    func shutdown() async
+
+    /// Drops warm, reloadable resources without permanently shutting the engine down.
+    func unloadRetainedResources() async
+}
+
+public extension TranscriptionEngine {
+    func shutdown() async {}
+    func unloadRetainedResources() async {}
 }
 
 /// Refines raw transcripts by applying style profiles, personal lexicon corrections, and filler word policies.
@@ -47,5 +59,9 @@ public protocol InsertionTransport: Sendable {
     var method: InsertionMethod { get }
 
     /// Inserts the given text into the target application context.
+    ///
+    /// A transport must honor cancellation before its first external side effect.
+    /// After that commit point it must finish the complete insertion and return
+    /// success, so callers never observe a partially inserted transcript.
     func insert(text: String, target: AppContext) async throws
 }

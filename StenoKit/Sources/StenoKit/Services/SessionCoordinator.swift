@@ -2,11 +2,17 @@ import Foundation
 
 public enum SessionCoordinatorError: Error, LocalizedError {
     case sessionNotFound
+    case runtimeUnavailable
+    case shutDown
 
     public var errorDescription: String? {
         switch self {
         case .sessionNotFound:
             return "Session not found"
+        case .runtimeUnavailable:
+            return "The dictation runtime is temporarily unavailable"
+        case .shutDown:
+            return "The dictation runtime has shut down"
         }
     }
 }
@@ -46,6 +52,14 @@ public actor SessionCoordinator {
     private var capturedSessions: [SessionID: CapturedSession] = [:]
     private var endingSessionIDs: Set<SessionID> = []
     private var cancelledEndingSessionIDs: Set<SessionID> = []
+    private var completingSessionIDs: Set<SessionID> = []
+    private var cancelledCompletingSessionIDs: Set<SessionID> = []
+    private var isShutDown = false
+    private var isShutdownComplete = false
+    private var shutdownWaiters: [CheckedContinuation<Void, Never>] = []
+    private var isRuntimeTransitioning = false
+    private var runtimeTransitionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var runtimeLifecycleGeneration: UInt64 = 0
     private(set) var isHandsFreeEnabled: Bool = false
 
     public init(
@@ -78,8 +92,23 @@ public actor SessionCoordinator {
 
     @discardableResult
     public func startPressToTalk(appContext: AppContext) async throws -> SessionID {
+        guard !isShutDown, !isRuntimeTransitioning else {
+            throw isShutDown
+                ? SessionCoordinatorError.shutDown
+                : SessionCoordinatorError.runtimeUnavailable
+        }
+        let lifecycleGeneration = runtimeLifecycleGeneration
         let sessionID = SessionID()
         try await captureService.beginCapture(sessionID: sessionID)
+        guard !isShutDown,
+              !isRuntimeTransitioning,
+              runtimeLifecycleGeneration == lifecycleGeneration
+        else {
+            await captureService.cancelCapture(sessionID: sessionID)
+            throw isShutDown
+                ? SessionCoordinatorError.shutDown
+                : SessionCoordinatorError.runtimeUnavailable
+        }
         activeSessions[sessionID] = ActiveSession(
             appContext: appContext,
             startedAt: now(),
@@ -139,12 +168,20 @@ public actor SessionCoordinator {
         let active = captured.active
         let audioURL = captured.audioURL
         defer { try? FileManager.default.removeItem(at: audioURL) }
+        completingSessionIDs.insert(sessionID)
+        defer {
+            completingSessionIDs.remove(sessionID)
+            cancelledCompletingSessionIDs.remove(sessionID)
+        }
+        try checkCompletionOwnership(sessionID: sessionID)
         let request = TranscriptionRequest(
             languageHints: languageHints,
             appContext: active.appContext,
             hotTerms: await lexiconService.hotTerms(for: active.appContext, limit: 8)
         )
+        try checkCompletionOwnership(sessionID: sessionID)
         var rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, request: request)
+        try checkCompletionOwnership(sessionID: sessionID)
 
         if rawTranscript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return noSpeechResult()
@@ -164,9 +201,12 @@ public actor SessionCoordinator {
         // expand into a much longer block of inserted text.
         let spokenText = rawTranscript.text
         rawTranscript.text = await snippetService.apply(to: rawTranscript.text, appContext: active.appContext)
+        try checkCompletionOwnership(sessionID: sessionID)
 
         let profile = await styleProfileService.resolve(for: active.appContext)
+        try checkCompletionOwnership(sessionID: sessionID)
         let lexicon = await lexiconService.snapshot(for: active.appContext)
+        try checkCompletionOwnership(sessionID: sessionID)
 
         let cleanupResult = try await prepareCleanTranscript(
             raw: rawTranscript,
@@ -174,8 +214,13 @@ public actor SessionCoordinator {
             lexicon: lexicon,
             appContext: active.appContext
         )
+        try checkCompletionOwnership(sessionID: sessionID)
 
         var insertResult = await insertionService.insert(text: cleanupResult.transcript.text, target: active.appContext)
+        let insertionCommitted = insertResult.status == .inserted || insertResult.status == .copiedOnly
+        if !insertionCommitted {
+            try checkCompletionOwnership(sessionID: sessionID)
+        }
         insertResult.cleanupOutcome = cleanupResult.outcome
 
         let entry = TranscriptEntry(
@@ -189,6 +234,9 @@ public actor SessionCoordinator {
             insertionStatus: insertResult.status
         )
         try await historyStore.append(entry: entry)
+        if !insertionCommitted {
+            try checkCompletionOwnership(sessionID: sessionID)
+        }
 
         if let usageRecorder {
             let event = UsageEvent.live(
@@ -233,11 +281,94 @@ public actor SessionCoordinator {
         if let captured = capturedSessions.removeValue(forKey: sessionID) {
             try? FileManager.default.removeItem(at: captured.audioURL)
         }
+        if completingSessionIDs.contains(sessionID) {
+            cancelledCompletingSessionIDs.insert(sessionID)
+        }
         await captureService.cancelCapture(sessionID: sessionID)
+    }
+
+    private func checkCompletionOwnership(sessionID: SessionID) throws {
+        try Task.checkCancellation()
+        guard completingSessionIDs.contains(sessionID),
+              !cancelledCompletingSessionIDs.contains(sessionID)
+        else {
+            throw CancellationError()
+        }
     }
 
     public func setHandsFreeEnabled(_ enabled: Bool) {
         isHandsFreeEnabled = enabled
+    }
+
+    public func unloadTranscriptionRuntime() async {
+        guard !isShutDown else { return }
+        runtimeLifecycleGeneration &+= 1
+        await beginRuntimeTransition()
+        guard !isShutDown else {
+            endRuntimeTransition()
+            return
+        }
+        await cancelAllSessions()
+        await transcriptionEngine.unloadRetainedResources()
+        endRuntimeTransition()
+    }
+
+    public func shutdown() async {
+        if isShutDown {
+            guard !isShutdownComplete else { return }
+            await withCheckedContinuation { continuation in
+                shutdownWaiters.append(continuation)
+            }
+            return
+        }
+        isShutDown = true
+        runtimeLifecycleGeneration &+= 1
+        await beginRuntimeTransition()
+        await cancelAllSessions()
+        await transcriptionEngine.shutdown()
+        endRuntimeTransition()
+        isShutdownComplete = true
+        let waiters = shutdownWaiters
+        shutdownWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private func cancelAllSessions() async {
+        let activeIDs = Array(activeSessions.keys)
+        activeSessions.removeAll()
+        for captured in capturedSessions.values {
+            try? FileManager.default.removeItem(at: captured.audioURL)
+        }
+        capturedSessions.removeAll()
+        cancelledEndingSessionIDs.formUnion(endingSessionIDs)
+        cancelledCompletingSessionIDs.formUnion(completingSessionIDs)
+
+        for sessionID in activeIDs {
+            await captureService.cancelCapture(sessionID: sessionID)
+        }
+    }
+
+    private func beginRuntimeTransition() async {
+        if !isRuntimeTransitioning {
+            isRuntimeTransitioning = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            runtimeTransitionWaiters.append(continuation)
+        }
+    }
+
+    private func endRuntimeTransition() {
+        if runtimeTransitionWaiters.isEmpty {
+            isRuntimeTransitioning = false
+            return
+        }
+
+        let next = runtimeTransitionWaiters.removeFirst()
+        next.resume()
     }
 
     private func prepareCleanTranscript(
