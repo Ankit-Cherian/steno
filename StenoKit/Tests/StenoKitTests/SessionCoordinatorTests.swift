@@ -27,6 +27,42 @@ private actor TranscriptionRequestRecorder {
     }
 }
 
+private actor BlockingEndCaptureService: AudioCaptureService {
+    private let audioURL: URL
+    private var endContinuation: CheckedContinuation<Void, Never>?
+    private var endStarted = false
+
+    init(audioURL: URL) {
+        self.audioURL = audioURL
+    }
+
+    func beginCapture(sessionID: SessionID) async throws {
+        _ = sessionID
+    }
+
+    func endCapture(sessionID: SessionID) async throws -> URL {
+        _ = sessionID
+        endStarted = true
+        await withCheckedContinuation { continuation in
+            endContinuation = continuation
+        }
+        return audioURL
+    }
+
+    func cancelCapture(sessionID: SessionID) async {
+        _ = sessionID
+    }
+
+    func hasStartedEnding() -> Bool {
+        endStarted
+    }
+
+    func releaseEnd() {
+        endContinuation?.resume()
+        endContinuation = nil
+    }
+}
+
 @Test("SessionCoordinator marks localSuccess when primary cleanup succeeds")
 func sessionCoordinatorLocalSuccessOutcome() async throws {
     let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
@@ -305,4 +341,95 @@ func sessionCoordinatorCancelSkipsHistoryAndInsertion() async throws {
     let recent = await history.recent(limit: 10)
     #expect(recent.isEmpty)
     #expect(await recorder.latest() == nil)
+}
+
+@Test("SessionCoordinator can end capture before completing transcription")
+func sessionCoordinatorSplitCaptureEndAndCompletion() async throws {
+    let audioURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("audio-\(UUID().uuidString).wav")
+    try Data().write(to: audioURL)
+    let recorder = InsertRecorder()
+    let coordinator = SessionCoordinator(
+        captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
+        transcriptionEngine: StaticTranscriptionEngine { _, _ in
+            RawTranscript(text: "split lifecycle")
+        },
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: InsertionService(
+            transports: [
+                ClosureInsertionTransport(method: .direct) { text, _ in
+                    await recorder.record(text)
+                }
+            ]
+        ),
+        historyStore: HistoryStore(
+            storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("history-tests", isDirectory: true)
+                .appendingPathComponent("history-\(UUID().uuidString).json"),
+            clipboardService: MemoryClipboardService()
+        ),
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+    try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+    #expect(FileManager.default.fileExists(atPath: audioURL.path))
+
+    let result = try await coordinator.completePressToTalk(sessionID: sessionID)
+
+    #expect(result.status == .inserted)
+    #expect(await recorder.latest() == result.insertedText)
+    #expect(result.insertedText.lowercased().contains("split lifecycle"))
+    #expect(!FileManager.default.fileExists(atPath: audioURL.path))
+}
+
+@Test("Cancel during capture end deletes audio and prevents completion")
+func sessionCoordinatorCancelDuringCaptureEndPreventsCompletion() async throws {
+    let audioURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("audio-\(UUID().uuidString).wav")
+    try Data().write(to: audioURL)
+    let capture = BlockingEndCaptureService(audioURL: audioURL)
+    let coordinator = SessionCoordinator(
+        captureService: capture,
+        transcriptionEngine: StaticTranscriptionEngine { _, _ in
+            RawTranscript(text: "must not complete")
+        },
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: InsertionService(transports: []),
+        historyStore: HistoryStore(
+            storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("history-tests", isDirectory: true)
+                .appendingPathComponent("history-\(UUID().uuidString).json"),
+            clipboardService: MemoryClipboardService()
+        ),
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+    let ending = Task {
+        try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+    }
+    while !(await capture.hasStartedEnding()) {
+        await Task.yield()
+    }
+
+    await coordinator.cancel(sessionID: sessionID)
+    await capture.releaseEnd()
+
+    do {
+        try await ending.value
+        Issue.record("Cancel during end should reject the captured session.")
+    } catch is CancellationError {
+        // Expected: cancellation wins the end/cancel race.
+    }
+    #expect(!FileManager.default.fileExists(atPath: audioURL.path))
+
+    do {
+        _ = try await coordinator.completePressToTalk(sessionID: sessionID)
+        Issue.record("A canceled capture must not be available for completion.")
+    } catch SessionCoordinatorError.sessionNotFound {
+        // Expected: no captured session survives cancellation.
+    }
 }

@@ -17,6 +17,11 @@ public actor SessionCoordinator {
         var startedAt: Date
     }
 
+    private struct CapturedSession: Sendable {
+        var active: ActiveSession
+        var audioURL: URL
+    }
+
     private struct CleanupExecutionResult: Sendable {
         var transcript: CleanTranscript
         var outcome: CleanupOutcome
@@ -33,6 +38,9 @@ public actor SessionCoordinator {
     private let snippetService: SnippetService
 
     private var activeSessions: [SessionID: ActiveSession] = [:]
+    private var capturedSessions: [SessionID: CapturedSession] = [:]
+    private var endingSessionIDs: Set<SessionID> = []
+    private var cancelledEndingSessionIDs: Set<SessionID> = []
     private(set) var isHandsFreeEnabled: Bool = false
 
     public init(
@@ -66,13 +74,46 @@ public actor SessionCoordinator {
     }
 
     public func stopPressToTalk(sessionID: SessionID, languageHints: [String] = ["en-US"]) async throws -> InsertResult {
+        try await endPressToTalkCapture(sessionID: sessionID)
+        return try await completePressToTalk(
+            sessionID: sessionID,
+            languageHints: languageHints
+        )
+    }
+
+    /// Ends microphone capture without waiting for transcription or insertion.
+    public func endPressToTalkCapture(sessionID: SessionID) async throws {
         // Remove session before the first await so actor reentrancy cannot process
         // the same session twice while transcription/cleanup are in flight.
         guard let active = activeSessions.removeValue(forKey: sessionID) else {
             throw SessionCoordinatorError.sessionNotFound
         }
 
+        endingSessionIDs.insert(sessionID)
+        defer {
+            endingSessionIDs.remove(sessionID)
+            cancelledEndingSessionIDs.remove(sessionID)
+        }
+
         let audioURL = try await captureService.endCapture(sessionID: sessionID)
+        if cancelledEndingSessionIDs.contains(sessionID) {
+            try? FileManager.default.removeItem(at: audioURL)
+            throw CancellationError()
+        }
+        capturedSessions[sessionID] = CapturedSession(active: active, audioURL: audioURL)
+    }
+
+    /// Transcribes and inserts audio whose capture has already ended.
+    public func completePressToTalk(
+        sessionID: SessionID,
+        languageHints: [String] = ["en-US"]
+    ) async throws -> InsertResult {
+        guard let captured = capturedSessions.removeValue(forKey: sessionID) else {
+            throw SessionCoordinatorError.sessionNotFound
+        }
+
+        let active = captured.active
+        let audioURL = captured.audioURL
         defer { try? FileManager.default.removeItem(at: audioURL) }
         let request = TranscriptionRequest(
             languageHints: languageHints,
@@ -130,6 +171,12 @@ public actor SessionCoordinator {
 
     public func cancel(sessionID: SessionID) async {
         activeSessions.removeValue(forKey: sessionID)
+        if endingSessionIDs.contains(sessionID) {
+            cancelledEndingSessionIDs.insert(sessionID)
+        }
+        if let captured = capturedSessions.removeValue(forKey: sessionID) {
+            try? FileManager.default.removeItem(at: captured.audioURL)
+        }
         await captureService.cancelCapture(sessionID: sessionID)
     }
 
