@@ -130,19 +130,22 @@ public struct InsertResult: Sendable, Codable, Equatable {
     public var insertedText: String
     public var errorMessage: String?
     public var cleanupOutcome: CleanupOutcome?
+    public var usageAnalyticsWarning: String?
 
     public init(
         status: InsertionStatus,
         method: InsertionMethod,
         insertedText: String,
         errorMessage: String? = nil,
-        cleanupOutcome: CleanupOutcome? = nil
+        cleanupOutcome: CleanupOutcome? = nil,
+        usageAnalyticsWarning: String? = nil
     ) {
         self.status = status
         self.method = method
         self.insertedText = insertedText
         self.errorMessage = errorMessage
         self.cleanupOutcome = cleanupOutcome
+        self.usageAnalyticsWarning = usageAnalyticsWarning
     }
 }
 

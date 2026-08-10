@@ -15,11 +15,13 @@ public actor SessionCoordinator {
     private struct ActiveSession: Sendable {
         var appContext: AppContext
         var startedAt: Date
+        var monotonicStartedAt: ContinuousClock.Instant
     }
 
     private struct CapturedSession: Sendable {
         var active: ActiveSession
         var audioURL: URL
+        var captureDurationMS: Int
     }
 
     private struct CleanupExecutionResult: Sendable {
@@ -36,6 +38,9 @@ public actor SessionCoordinator {
     private let lexiconService: PersonalLexiconService
     private let styleProfileService: StyleProfileService
     private let snippetService: SnippetService
+    private let usageRecorder: (any UsageAnalyticsRecording)?
+    private let now: @Sendable () -> Date
+    private let monotonicNow: @Sendable () -> ContinuousClock.Instant
 
     private var activeSessions: [SessionID: ActiveSession] = [:]
     private var capturedSessions: [SessionID: CapturedSession] = [:]
@@ -52,7 +57,10 @@ public actor SessionCoordinator {
         lexiconService: PersonalLexiconService,
         styleProfileService: StyleProfileService,
         snippetService: SnippetService = SnippetService(),
-        fallbackCleanupEngine: CleanupEngine = RuleBasedCleanupEngine()
+        fallbackCleanupEngine: CleanupEngine = RuleBasedCleanupEngine(),
+        usageRecorder: (any UsageAnalyticsRecording)? = nil,
+        now: @escaping @Sendable () -> Date = Date.init,
+        monotonicNow: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now }
     ) {
         self.captureService = captureService
         self.transcriptionEngine = transcriptionEngine
@@ -63,13 +71,20 @@ public actor SessionCoordinator {
         self.styleProfileService = styleProfileService
         self.snippetService = snippetService
         self.fallbackCleanupEngine = fallbackCleanupEngine
+        self.usageRecorder = usageRecorder
+        self.now = now
+        self.monotonicNow = monotonicNow
     }
 
     @discardableResult
     public func startPressToTalk(appContext: AppContext) async throws -> SessionID {
         let sessionID = SessionID()
         try await captureService.beginCapture(sessionID: sessionID)
-        activeSessions[sessionID] = ActiveSession(appContext: appContext, startedAt: Date())
+        activeSessions[sessionID] = ActiveSession(
+            appContext: appContext,
+            startedAt: now(),
+            monotonicStartedAt: monotonicNow()
+        )
         return sessionID
     }
 
@@ -95,12 +110,21 @@ public actor SessionCoordinator {
             cancelledEndingSessionIDs.remove(sessionID)
         }
 
+        let monotonicEndedAt = monotonicNow()
         let audioURL = try await captureService.endCapture(sessionID: sessionID)
         if cancelledEndingSessionIDs.contains(sessionID) {
             try? FileManager.default.removeItem(at: audioURL)
             throw CancellationError()
         }
-        capturedSessions[sessionID] = CapturedSession(active: active, audioURL: audioURL)
+        let captureDurationMS = Self.durationMilliseconds(
+            from: active.monotonicStartedAt,
+            to: monotonicEndedAt
+        )
+        capturedSessions[sessionID] = CapturedSession(
+            active: active,
+            audioURL: audioURL,
+            captureDurationMS: captureDurationMS
+        )
     }
 
     /// Transcribes and inserts audio whose capture has already ended.
@@ -136,6 +160,9 @@ public actor SessionCoordinator {
             rawTranscript.text = sanitizedPromptContamination
         }
 
+        // Capture what the user actually dictated before a snippet trigger can
+        // expand into a much longer block of inserted text.
+        let spokenText = rawTranscript.text
         rawTranscript.text = await snippetService.apply(to: rawTranscript.text, appContext: active.appContext)
 
         let profile = await styleProfileService.resolve(for: active.appContext)
@@ -152,6 +179,7 @@ public actor SessionCoordinator {
         insertResult.cleanupOutcome = cleanupResult.outcome
 
         let entry = TranscriptEntry(
+            createdAt: active.startedAt,
             appBundleID: active.appContext.bundleIdentifier,
             rawText: rawTranscript.text,
             cleanText: cleanupResult.transcript.text,
@@ -162,11 +190,39 @@ public actor SessionCoordinator {
         )
         try await historyStore.append(entry: entry)
 
+        if let usageRecorder {
+            let event = UsageEvent.live(
+                from: entry,
+                captureDurationMS: captured.captureDurationMS,
+                edits: cleanupResult.transcript.edits,
+                spokenText: spokenText
+            )
+            do {
+                try await usageRecorder.record(event: event)
+            } catch {
+                StenoKitDiagnostics.logger.error("Usage analytics event write failed.")
+                insertResult.usageAnalyticsWarning = "This session’s exact usage details couldn’t be saved. Insights may show an estimate."
+            }
+        }
+
         return insertResult
     }
 
     private func noSpeechResult() -> InsertResult {
         InsertResult(status: .noSpeech, method: .none, insertedText: "")
+    }
+
+    private static func durationMilliseconds(
+        from start: ContinuousClock.Instant,
+        to end: ContinuousClock.Instant
+    ) -> Int {
+        let components = start.duration(to: end).components
+        let milliseconds = (Double(components.seconds) * 1_000)
+            + (Double(components.attoseconds) / 1_000_000_000_000_000)
+        guard milliseconds.isFinite, milliseconds > 0 else { return 0 }
+        let rounded = milliseconds.rounded()
+        guard rounded < Double(Int.max) else { return Int.max }
+        return Int(rounded)
     }
 
     public func cancel(sessionID: SessionID) async {
