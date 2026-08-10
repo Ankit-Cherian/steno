@@ -177,6 +177,9 @@ public enum BenchmarkValidation {
         }
 
         if let maxUnintendedRewriteRate = thresholds.maxUnintendedRewriteRate {
+            guard pipeline.summary.fillerImpact.samplesWithFillerRemovals > 0 else {
+                throw PipelineValidationError.missingMetric(name: "fillerImpact.samplesWithFillerRemovals")
+            }
             guard let unintendedRewriteRate = pipeline.summary.unintendedRewriteRate else {
                 throw PipelineValidationError.missingMetric(name: "unintendedRewriteRate")
             }
@@ -213,19 +216,19 @@ public enum BenchmarkValidation {
         }
 
         if let minCommandPassthroughAccuracy = thresholds.minCommandPassthroughAccuracy {
-            if pipeline.summary.commandPassthroughCoverageRate == 0 {
-                // Skip the threshold when the release corpus never exercised the
-                // raw-leading-slash passthrough contract.
-            } else {
-                guard let commandPassthroughAccuracy = pipeline.summary.commandPassthroughAccuracy else {
-                    throw PipelineValidationError.missingMetric(name: "commandPassthroughAccuracy")
-                }
-                if commandPassthroughAccuracy + thresholds.epsilon < minCommandPassthroughAccuracy {
-                    throw PipelineValidationError.commandPassthroughAccuracyBelowThreshold(
-                        actual: commandPassthroughAccuracy,
-                        minRequired: minCommandPassthroughAccuracy
-                    )
-                }
+            guard let coverage = pipeline.summary.commandPassthroughCoverageRate,
+                  coverage > 0
+            else {
+                throw PipelineValidationError.missingMetric(name: "commandPassthroughCoverageRate")
+            }
+            guard let commandPassthroughAccuracy = pipeline.summary.commandPassthroughAccuracy else {
+                throw PipelineValidationError.missingMetric(name: "commandPassthroughAccuracy")
+            }
+            if commandPassthroughAccuracy + thresholds.epsilon < minCommandPassthroughAccuracy {
+                throw PipelineValidationError.commandPassthroughAccuracyBelowThreshold(
+                    actual: commandPassthroughAccuracy,
+                    minRequired: minCommandPassthroughAccuracy
+                )
             }
         }
 

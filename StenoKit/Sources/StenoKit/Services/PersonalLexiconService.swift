@@ -102,6 +102,7 @@ public actor PersonalLexiconService {
         var seen: Set<String> = []
 
         for entry in applicable {
+            guard LexiconSafety.shouldExposeHotTerm(entry) else { continue }
             let preferred = entry.preferred.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !preferred.isEmpty else { continue }
             let key = preferred.lowercased()
@@ -136,6 +137,9 @@ public actor PersonalLexiconService {
         var matchedVariant: String?
 
         for variant in entryVariants(for: entry) {
+            if LexiconSafety.shouldSkipLiteralReplacement(entry: entry, variant: variant) {
+                continue
+            }
             let replacement = replaceWholePhrase(
                 in: updated,
                 variant: variant,

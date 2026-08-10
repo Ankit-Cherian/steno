@@ -3,12 +3,6 @@ import Foundation
 public struct LocalCleanupRanker: Sendable {
     public init() {}
 
-    private static let removableYouKnowRegex: NSRegularExpression = {
-        let protected = "a|an|the|this|that|these|those|i|you|he|she|it|we|they|me|him|her|us|them|my|your|his|its|our|their|what|when|where|which|who|whom|whose|why|how|if"
-        let pattern = "(?i)(?:\\s|^)you know(?=\\s(?!(?:\(protected))\\b)|[,.!?]|$)"
-        return try! NSRegularExpression(pattern: pattern)
-    }()
-
     public func bestCandidate(
         raw: RawTranscript,
         candidates: [CleanupCandidate],
@@ -61,7 +55,11 @@ public struct LocalCleanupRanker: Sendable {
         candidate: CleanupCandidate,
         profile: StyleProfile
     ) -> CleanupRankingScore {
-        let semantic = semanticPreservationScore(rawText: raw.text, candidate: candidate)
+        let semantic = semanticPreservationScore(
+            rawText: raw.text,
+            candidate: candidate,
+            profile: profile
+        )
         let fluency = fluencyScore(text: candidate.text)
         let editPenalty = editDistancePenalty(rawText: raw.text, candidateText: candidate.text)
         let commandPenalty = commandSafetyPenalty(
@@ -100,7 +98,11 @@ public struct LocalCleanupRanker: Sendable {
         )
     }
 
-    private func semanticPreservationScore(rawText: String, candidate: CleanupCandidate) -> Double {
+    private func semanticPreservationScore(
+        rawText: String,
+        candidate: CleanupCandidate,
+        profile: StyleProfile
+    ) -> Double {
         let rawNormalized = normalize(rawText)
         let candidateNormalized = normalize(candidate.text)
 
@@ -137,39 +139,42 @@ public struct LocalCleanupRanker: Sendable {
         let candidateWords = tokenizeWords(candidateNormalized)
         if rawWords.count > candidateWords.count, !rawWords.isEmpty {
             let dropped = rawWords.count - candidateWords.count
-            let accountedFillerDrops = min(dropped, candidate.removedFillers.count)
+            let removedFillerWords = candidate.removedFillers.reduce(0) { count, filler in
+                count + tokenizeWords(normalize(filler)).count
+            }
+            let accountedFillerDrops = min(dropped, removedFillerWords)
             let nonFillerDrops = dropped - accountedFillerDrops
             if nonFillerDrops > 0 {
                 score -= min(0.4, Double(nonFillerDrops) / Double(rawWords.count))
             }
         }
 
-        let safeRemoved = candidate.removedFillers.filter { isUnambiguousFiller($0) }.count
-        if safeRemoved > 0 {
-            score += min(0.2, Double(safeRemoved) * 0.1)
+        if profile.fillerPolicy == .aggressive {
+            let optedInRemovals = candidate.removedFillers.filter { isAggressiveFiller($0) }.count
+            if optedInRemovals > 0 {
+                score += min(0.2, Double(optedInRemovals) * 0.1)
+            }
+        } else if candidate.removedFillers.isEmpty == false {
+            score -= min(0.5, Double(candidate.removedFillers.count) * 0.25)
         }
 
         let repairEdits = candidate.appliedEdits.filter { $0.kind == .repairResolution }.count
         if repairEdits > 0 {
-            score += min(0.35, Double(repairEdits) * 0.2)
-            if repairMarkersPresent(in: rawText) && !repairMarkersPresent(in: candidate.text) {
+            if repairMarkersPresent(in: rawText) {
+                score += min(0.35, Double(repairEdits) * 0.2)
+            } else {
+                score -= min(0.5, Double(repairEdits) * 0.25)
+            }
+            if repairMarkersPresent(in: rawText), !repairMarkersPresent(in: candidate.text) {
                 score += 0.15
             }
         } else if repairMarkersPresent(in: rawText) && repairMarkersPresent(in: candidate.text) {
             score -= 0.2
         }
 
-        if isContextualYouKnowRemoved(rawText: rawText, candidate: candidate) {
-            score += 0.15
-        }
-
         let lexiconEdits = candidate.appliedEdits.filter { $0.kind == .lexiconCorrection }.count
         if lexiconEdits > 0 {
             score += min(0.2, Double(lexiconEdits) * 0.08)
-        }
-
-        if isInterjectionalLikeRemoved(rawText: rawText, candidate: candidate) {
-            score += 0.15
         }
 
         return clamp(score, maxValue: 1.2)
@@ -187,8 +192,11 @@ public struct LocalCleanupRanker: Sendable {
         if text.contains("  ") {
             score -= 0.2
         }
-        if text.contains(",.") || text.contains("..") {
+        if text.contains(",.") || text.contains(".,") || text.contains(",?") || text.contains("..") {
             score -= 0.2
+        }
+        if text.range(of: #"[.!?]\s+[a-z]"#, options: .regularExpression) != nil {
+            score -= 0.15
         }
 
         return clamp(score)
@@ -241,53 +249,17 @@ public struct LocalCleanupRanker: Sendable {
         min(max(value, 0), maxValue)
     }
 
-    private func isUnambiguousFiller(_ filler: String) -> Bool {
+    private func isAggressiveFiller(_ filler: String) -> Bool {
         let normalized = filler.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let known: Set<String> = [
             "um",
             "uh",
-            "you know",
             "i mean",
             "basically",
             "sort of",
             "kind of",
         ]
         return known.contains(normalized)
-    }
-
-    private func isInterjectionalLikeRemoved(rawText: String, candidate: CleanupCandidate) -> Bool {
-        guard candidate.removedFillers.contains(where: { $0.caseInsensitiveCompare("like") == .orderedSame }) else {
-            return false
-        }
-
-        let rawHasInterjection = rawText.range(
-            of: #"(?i)(^|[.!?]\s+)like,\s+|,\s*like,\s*"#,
-            options: .regularExpression
-        ) != nil
-        guard rawHasInterjection else { return false }
-
-        let candidateStillHasInterjection = candidate.text.range(
-            of: #"(?i)(^|[.!?]\s+)like,\s+|,\s*like,\s*"#,
-            options: .regularExpression
-        ) != nil
-        return candidateStillHasInterjection == false
-    }
-
-    private func isContextualYouKnowRemoved(rawText: String, candidate: CleanupCandidate) -> Bool {
-        guard candidate.removedFillers.contains(where: { $0.caseInsensitiveCompare("you know") == .orderedSame }) else {
-            return false
-        }
-
-        let rawRange = NSRange(rawText.startIndex..., in: rawText)
-        let rawHasRemovableYouKnow = Self.removableYouKnowRegex.numberOfMatches(in: rawText, range: rawRange) > 0
-        guard rawHasRemovableYouKnow else { return false }
-
-        let candidateRange = NSRange(candidate.text.startIndex..., in: candidate.text)
-        let candidateStillHasRemovableYouKnow = Self.removableYouKnowRegex.numberOfMatches(
-            in: candidate.text,
-            range: candidateRange
-        ) > 0
-        return candidateStillHasRemovableYouKnow == false
     }
 
     private func repairMarkersPresent(in text: String) -> Bool {

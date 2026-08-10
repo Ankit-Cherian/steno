@@ -1,5 +1,107 @@
 import Foundation
 
+enum FillerLiteralContext {
+    static let clauseLeadTokens: Set<String> = [
+        "i", "you", "we", "he", "she", "they", "it", "this", "that", "these", "those",
+        "the", "a", "an", "there", "here", "please", "can", "could", "would", "should",
+        "will", "may", "might", "must", "do", "does", "did", "is", "are", "was", "were",
+        "have", "has", "had",
+    ]
+
+    private static let literalCueWords: Set<String> = [
+        "called", "caption", "contains", "defines", "dictionary", "expects", "expression", "file",
+        "game", "glossary", "identifier", "includes", "label", "list", "listed", "lists", "literal",
+        "literally", "musical", "name", "named", "note", "phrase", "quote", "quoted", "records",
+        "say", "said", "show", "song", "source", "spell", "string", "term", "text", "title",
+        "token", "transcript", "type", "typed", "value", "variable", "word", "words", "write",
+        "writes", "written", "wrote",
+    ]
+
+    private static let literalSuffixWords: Set<String> = [
+        "exactly", "intentionally", "literal", "literally", "unchanged", "verbatim",
+    ]
+
+    private static let adjacentQuoteCharacters: Set<Character> = ["\"", "`", "“", "”", "‘", "’"]
+
+    static func isProtected(prefix: String, suffix: String, matchedText: String) -> Bool {
+        let linePrefix = currentLinePrefix(in: prefix)
+        let lineSuffix = currentLineSuffix(in: suffix)
+        let prefixWords = words(in: linePrefix)
+        if prefixWords.suffix(8).contains(where: { literalCueWords.contains($0.lowercased()) }) {
+            return true
+        }
+
+        let suffixWords = words(in: lineSuffix)
+        let suffixLead = suffixWords.prefix(6).map { $0.lowercased() }
+        if suffixLead.contains(where: literalSuffixWords.contains)
+            || suffixLead.prefix(2).joined(separator: " ") == "as written"
+            || suffixLead.prefix(2).joined(separator: " ") == "as text" {
+            return true
+        }
+
+        if isInsideQuotedSpan(prefix: prefix) {
+            return true
+        }
+
+        if let last = prefix.last(where: { $0.isWhitespace == false }), adjacentQuoteCharacters.contains(last) {
+            return true
+        }
+        if let first = suffix.first(where: { $0.isWhitespace == false }), adjacentQuoteCharacters.contains(first) {
+            return true
+        }
+
+        if linePrefix.trimmingCharacters(in: .whitespaces).isEmpty == false,
+           matchedText.first?.isUppercase == true {
+            return true
+        }
+
+        if linePrefix.trimmingCharacters(in: .whitespaces).isEmpty {
+            if let first = suffixWords.first,
+               let firstCharacter = first.first,
+               firstCharacter.isUppercase,
+               clauseLeadTokens.contains(first.lowercased()) == false {
+                return true
+            }
+            if suffixWords.prefix(2).count == 2,
+               suffixWords.prefix(2).allSatisfy({ $0.first?.isUppercase == true }) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private static func words(in text: String) -> [String] {
+        text.matches(of: /[A-Za-z0-9']+/).map { String($0.output) }
+    }
+
+    private static func currentLinePrefix(in text: String) -> String {
+        guard let boundary = text.lastIndex(where: \.isNewline) else { return text }
+        return String(text[text.index(after: boundary)...])
+    }
+
+    private static func currentLineSuffix(in text: String) -> String {
+        guard let boundary = text.firstIndex(where: \.isNewline) else { return text }
+        return String(text[..<boundary])
+    }
+
+    private static func isInsideQuotedSpan(prefix: String) -> Bool {
+        let straightDoubleQuotes = prefix.filter { $0 == "\"" }.count
+        let backticks = prefix.filter { $0 == "`" }.count
+        if straightDoubleQuotes.isMultiple(of: 2) == false || backticks.isMultiple(of: 2) == false {
+            return true
+        }
+
+        if let opening = prefix.lastIndex(of: "“") {
+            return prefix.lastIndex(of: "”").map { $0 < opening } ?? true
+        }
+        if let opening = prefix.lastIndex(of: "‘") {
+            return prefix.lastIndex(of: "’").map { $0 < opening } ?? true
+        }
+        return false
+    }
+}
+
 public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     public init() {}
 
@@ -69,7 +171,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         var dict: [String: NSRegularExpression] = [:]
         for filler in fillers {
             let escaped = NSRegularExpression.escapedPattern(for: filler)
-            let pattern = "(?i)(?:\\s|^)\(escaped)(?=\\s|[,.!?]|$)"
+            let pattern = "(?i)(?:[ \\t]|^)(\(escaped))(?=[ \\t]|[,.!?]|$)"
             if let regex = try? NSRegularExpression(pattern: pattern) {
                 dict[filler] = regex
             }
@@ -82,7 +184,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         var dict: [String: NSRegularExpression] = [:]
         for filler in fillers {
             let escaped = NSRegularExpression.escapedPattern(for: filler)
-            let pattern = "(?i)(?:\\s|^)\(escaped)(?=\\s|[,.!?]|$)"
+            let pattern = "(?i)(?:[ \\t]|^)(\(escaped))(?=[ \\t]|[,.!?]|$)"
             if let regex = try? NSRegularExpression(pattern: pattern) {
                 dict[filler] = regex
             }
@@ -90,43 +192,10 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         return dict
     }()
 
-    private static let contextualYouKnowRegex: NSRegularExpression = {
-        let protected = "a|an|the|this|that|these|those|i|you|he|she|it|we|they|me|him|her|us|them|my|your|his|its|our|their|what|when|where|which|who|whom|whose|why|how|if"
-        let pattern = "(?i)(?:\\s|^)you know(?=\\s(?!(?:\(protected))\\b)|[,.!?]|$)"
-        return try! NSRegularExpression(pattern: pattern)
-    }()
-
-    private static let likePatterns: [(regex: NSRegularExpression, replacement: String)] = {
-        let specs: [(pattern: String, replacement: String)] = [
-            ("(?i)(^|[.!?]\\s+)like,\\s+", "$1"),
-            ("(?i),\\s*like,\\s*", ", ")
-        ]
-        return specs.compactMap { spec in
-            guard let regex = try? NSRegularExpression(pattern: spec.pattern) else { return nil }
-            return (regex, spec.replacement)
-        }
-    }()
-
-    private static let whitespaceRegex: NSRegularExpression = {
-        try! NSRegularExpression(pattern: "\\s+")
-    }()
-
-    private static let punctuationSpacingRegex: NSRegularExpression = {
-        try! NSRegularExpression(pattern: "\\s+([,.!?])")
-    }()
-
-    private static let leadingPunctuationRegex: NSRegularExpression = {
-        try! NSRegularExpression(pattern: #"^[,;:\s]+"#)
-    }()
-
-    private static let duplicateCommaRegex: NSRegularExpression = {
-        try! NSRegularExpression(pattern: #",\s*,+"#)
-    }()
-
     // MARK: - Filler Removal
 
     private func removeFillers(from text: String, policy: FillerPolicy) -> (text: String, removed: [String], edits: [TranscriptEdit]) {
-        guard policy != .minimal else {
+        guard policy == .aggressive else {
             return (text, [], [])
         }
 
@@ -148,36 +217,21 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             )
         }
 
-        if policy == .aggressive {
-            for filler in aggressiveFillers {
-                guard let regex = Self.aggressiveFillerRegexes[filler] else { continue }
-                applyFillerRemoval(
-                    filler,
-                    regex: regex,
-                    to: &updated,
-                    removed: &removed,
-                    edits: &edits
-                )
-            }
+        for filler in aggressiveFillers {
+            guard let regex = Self.aggressiveFillerRegexes[filler] else { continue }
+            applyFillerRemoval(
+                filler,
+                regex: regex,
+                to: &updated,
+                removed: &removed,
+                edits: &edits
+            )
         }
 
-        applyFillerRemoval(
-            "you know",
-            regex: Self.contextualYouKnowRegex,
-            to: &updated,
-            removed: &removed,
-            edits: &edits
-        )
-
-        let likeRemovals = removeInterjectionalLike(from: updated)
-        updated = likeRemovals.text
-        if likeRemovals.count > 0 {
-            removed.append(contentsOf: Array(repeating: "like", count: likeRemovals.count))
-            edits.append(TranscriptEdit(kind: .fillerRemoval, from: "like", to: ""))
+        guard removed.isEmpty == false else {
+            return (text, removed, edits)
         }
 
-        updated = collapseWhitespace(updated)
-        updated = cleanupFillerPunctuation(updated)
         return (updated, removed, edits)
     }
 
@@ -188,29 +242,126 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         removed: inout [String],
         edits: inout [TranscriptEdit]
     ) {
-        let range = NSRange(text.startIndex..., in: text)
-        let count = regex.numberOfMatches(in: text, range: range)
-        if count > 0 {
-            text = regex.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
-            removed.append(contentsOf: Array(repeating: filler, count: count))
-            edits.append(TranscriptEdit(kind: .fillerRemoval, from: filler, to: ""))
+        let source = text as NSString
+        let range = NSRange(location: 0, length: source.length)
+        let acceptedFillerRanges = regex.matches(in: text, range: range).compactMap { match -> NSRange? in
+            guard match.numberOfRanges > 1 else { return nil }
+            let fillerRange = match.range(at: 1)
+            guard fillerRange.location != NSNotFound else { return nil }
+
+            let prefix = source.substring(with: NSRange(location: 0, length: fillerRange.location))
+            let suffixStart = NSMaxRange(fillerRange)
+            let suffix = source.substring(
+                with: NSRange(location: suffixStart, length: source.length - suffixStart)
+            )
+            let matchedText = source.substring(with: fillerRange)
+            guard FillerLiteralContext.isProtected(
+                prefix: prefix,
+                suffix: suffix,
+                matchedText: matchedText
+            ) == false else {
+                return nil
+            }
+            return fillerRange
         }
+        let acceptedEdits = coalescedFillerRanges(acceptedFillerRanges, in: source).map {
+            localFillerRemovalEdit(for: $0, in: source)
+        }
+        guard acceptedEdits.isEmpty == false else { return }
+
+        let mutable = NSMutableString(string: text)
+        for (acceptedRange, replacement) in acceptedEdits.reversed() {
+            mutable.replaceCharacters(in: acceptedRange, with: replacement)
+        }
+        text = String(mutable)
+        removed.append(contentsOf: Array(repeating: filler, count: acceptedFillerRanges.count))
+        edits.append(TranscriptEdit(kind: .fillerRemoval, from: filler, to: ""))
     }
 
-    private func removeInterjectionalLike(from text: String) -> (text: String, count: Int) {
-        var updated = text
-        var removedCount = 0
+    private func coalescedFillerRanges(
+        _ ranges: [NSRange],
+        in source: NSString
+    ) -> [NSRange] {
+        guard var current = ranges.first else { return [] }
+        var result: [NSRange] = []
 
-        for item in Self.likePatterns {
-            let range = NSRange(updated.startIndex..., in: updated)
-            let count = item.regex.numberOfMatches(in: updated, range: range)
-            if count > 0 {
-                updated = item.regex.stringByReplacingMatches(in: updated, range: range, withTemplate: item.replacement)
-                removedCount += count
+        for next in ranges.dropFirst() {
+            let gapStart = NSMaxRange(current)
+            let gapLength = next.location - gapStart
+            let gapContainsOnlyLocalSeparators = gapLength >= 0
+                && (gapStart..<(gapStart + gapLength)).allSatisfy { index in
+                    let character = source.character(at: index)
+                    return character == 0x2C || isHorizontalWhitespace(character)
+                }
+
+            if gapContainsOnlyLocalSeparators {
+                current.length = NSMaxRange(next) - current.location
+            } else {
+                result.append(current)
+                current = next
             }
         }
 
-        return (updated, removedCount)
+        result.append(current)
+        return result
+    }
+
+    private func localFillerRemovalEdit(
+        for fillerRange: NSRange,
+        in source: NSString
+    ) -> (NSRange, String) {
+        var left = fillerRange.location - 1
+        while left >= 0, isHorizontalWhitespace(source.character(at: left)) {
+            left -= 1
+        }
+
+        var right = NSMaxRange(fillerRange)
+        while right < source.length, isHorizontalWhitespace(source.character(at: right)) {
+            right += 1
+        }
+
+        let leftIsComma = left >= 0 && source.character(at: left) == 0x2C
+        let rightIsComma = right < source.length && source.character(at: right) == 0x2C
+        let rightIsTerminalPunctuation = right < source.length
+            && [0x2E, 0x21, 0x3F].contains(source.character(at: right))
+
+        if leftIsComma, rightIsComma {
+            var end = right + 1
+            while end < source.length, isHorizontalWhitespace(source.character(at: end)) {
+                end += 1
+            }
+            return (NSRange(location: left, length: end - left), " ")
+        }
+
+        if leftIsComma {
+            let replacement = right >= source.length || rightIsTerminalPunctuation ? "" : " "
+            return (NSRange(location: left, length: right - left), replacement)
+        }
+
+        if rightIsComma {
+            var end = right + 1
+            while end < source.length, isHorizontalWhitespace(source.character(at: end)) {
+                end += 1
+            }
+            return (NSRange(location: fillerRange.location, length: end - fillerRange.location), "")
+        }
+
+        if right >= source.length || rightIsTerminalPunctuation {
+            var start = fillerRange.location
+            while start > 0, isHorizontalWhitespace(source.character(at: start - 1)) {
+                start -= 1
+            }
+            return (NSRange(location: start, length: right - start), "")
+        }
+
+        return (
+            NSRange(location: fillerRange.location, length: right - fillerRange.location),
+            ""
+        )
+    }
+
+    private func isHorizontalWhitespace(_ character: unichar) -> Bool {
+        character == 0x20 || character == 0x09
     }
 
     // MARK: - Lexicon
@@ -223,6 +374,9 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         for entry in lexicon.entries {
             for variant in lexiconVariants(for: entry) {
                 if variant.caseInsensitiveCompare(entry.preferred) == .orderedSame {
+                    continue
+                }
+                if LexiconSafety.shouldSkipLiteralReplacement(entry: entry, variant: variant) {
                     continue
                 }
                 let escaped = NSRegularExpression.escapedPattern(for: variant)
@@ -277,37 +431,6 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     private func capitalizedSentence(_ text: String) -> String {
         guard let first = text.first else { return text }
         return String(first).uppercased() + text.dropFirst()
-    }
-
-    private func collapseWhitespace(_ text: String) -> String {
-        let range = NSRange(text.startIndex..., in: text)
-        let collapsed = Self.whitespaceRegex.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
-        let punctuationRange = NSRange(collapsed.startIndex..., in: collapsed)
-        let tightened = Self.punctuationSpacingRegex.stringByReplacingMatches(
-            in: collapsed,
-            range: punctuationRange,
-            withTemplate: "$1"
-        )
-        return tightened.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func cleanupFillerPunctuation(_ text: String) -> String {
-        let fullRange = NSRange(text.startIndex..., in: text)
-        let withoutLeading = Self.leadingPunctuationRegex.stringByReplacingMatches(
-            in: text,
-            range: fullRange,
-            withTemplate: ""
-        )
-        let duplicateRange = NSRange(withoutLeading.startIndex..., in: withoutLeading)
-        let withoutDuplicateCommas = Self.duplicateCommaRegex.stringByReplacingMatches(
-            in: withoutLeading,
-            range: duplicateRange,
-            withTemplate: ", "
-        )
-
-        return withoutDuplicateCommas
-            .replacingOccurrences(of: #",\s+(this|that|it|we|you|they|he|she|i)\b"#, with: " $1", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func lexiconVariants(for entry: LexiconEntry) -> [String] {

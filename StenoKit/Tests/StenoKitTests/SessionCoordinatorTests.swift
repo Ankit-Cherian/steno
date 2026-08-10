@@ -132,8 +132,7 @@ func sessionCoordinatorLocalFallbackOnPrimaryFailure() async throws {
     #expect(result.cleanupOutcome?.warning == "Primary cleanup unavailable, used local fallback.")
 
     let inserted = await recorder.latest() ?? ""
-    #expect(inserted.contains("Steno"))
-    #expect(!inserted.localizedCaseInsensitiveContains("um "))
+    #expect(inserted == "Um Steno can you clean this up")
 
     let recent = await history.recent(limit: 1)
     #expect(recent.count == 1)
@@ -243,7 +242,7 @@ func sessionCoordinatorForwardsTranscriptionContext() async throws {
     await lexicon.upsert(
         term: "TURSO",
         preferred: "TURSO",
-        scope: .app(bundleID: "com.todesktop.230313mzl4w4u92"),
+        scope: .app(bundleID: "com.example.editor"),
         aliases: ["terso", "ter so"]
     )
 
@@ -258,8 +257,8 @@ func sessionCoordinatorForwardsTranscriptionContext() async throws {
     )
 
     let appContext = AppContext(
-        bundleIdentifier: "com.todesktop.230313mzl4w4u92",
-        appName: "Cursor",
+        bundleIdentifier: "com.example.editor",
+        appName: "EditorPro",
         isIDE: true
     )
     let sessionID = try await coordinator.startPressToTalk(appContext: appContext)

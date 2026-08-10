@@ -17,7 +17,7 @@ private actor MethodCallRecorder {
     }
 }
 
-@Test("InsertionService prioritizes clipboard for terminal/LLM targets")
+@Test("InsertionService prioritizes clipboard for paste-sensitive targets")
 func insertionServicePrioritizesClipboardForTerminalTargets() async {
     let recorder = MethodCallRecorder()
     let service = InsertionService(transports: [

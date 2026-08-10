@@ -121,7 +121,7 @@ func additionalArgumentsIncludePromptAndSuppressRegex() {
         threadCount: 6,
         vadEnabled: false,
         vadModelPath: "/tmp/missing-vad.bin",
-        prompt: "Language: en. App: Cursor. Terms: TURSO, StenoKit.",
+        prompt: "Language: en. App: EditorPro. Terms: TURSO, StenoKit.",
         suppressRegex: #"\[(?:MUSIC|NOISE)\]"#,
         pathExists: { _ in false }
     )
@@ -130,7 +130,7 @@ func additionalArgumentsIncludePromptAndSuppressRegex() {
         args == [
             "-t", "6",
             "--suppress-nst",
-            "--prompt", "Language: en. App: Cursor. Terms: TURSO, StenoKit.",
+            "--prompt", "Language: en. App: EditorPro. Terms: TURSO, StenoKit.",
             "--suppress-regex", #"\[(?:MUSIC|NOISE)\]"#
         ]
     )
@@ -142,8 +142,8 @@ func promptFragmentsOmitAppMetadataWhenHotTermsPresent() {
         for: TranscriptionRequest(
             languageHints: ["en-US"],
             appContext: AppContext(
-                bundleIdentifier: "com.todesktop.230313mzl4w4u92",
-                appName: "Cursor",
+                bundleIdentifier: "com.example.editor",
+                appName: "EditorPro",
                 isIDE: true
             ),
             hotTerms: ["TURSO", "StenoKit"]
@@ -164,8 +164,8 @@ func promptFragmentsKeepAppMetadataWithoutHotTerms() {
         for: TranscriptionRequest(
             languageHints: ["en-US"],
             appContext: AppContext(
-                bundleIdentifier: "com.todesktop.230313mzl4w4u92",
-                appName: "Cursor",
+                bundleIdentifier: "com.example.editor",
+                appName: "EditorPro",
                 isIDE: true
             )
         )
@@ -174,7 +174,7 @@ func promptFragmentsKeepAppMetadataWithoutHotTerms() {
     #expect(
         fragments == [
             "Language: en.",
-            "App: Cursor."
+            "App: EditorPro."
         ]
     )
 }
