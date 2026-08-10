@@ -7,7 +7,7 @@ import Foundation
 @MainActor
 public final class MacMediaInterruptionService: MediaInterruptionService {
     private static let logger = StenoKitDiagnostics.logger
-    private static let defaultVerificationDelays: [UInt64] = [
+    static let defaultVerificationDelays: [UInt64] = [
         80_000_000,
         120_000_000,
         200_000_000,
@@ -30,11 +30,13 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     private let resumeLineageGraceDuration: TimeInterval
     private let now: () -> TimeInterval
     private let sleep: @Sendable (UInt64) async -> Void
+    private let beforeInitialResumeDispatch: @MainActor @Sendable () async -> Void
     private let beforeOwnerResumeFinalization: @MainActor @Sendable () async -> Void
     private var activeInterruption: ActiveInterruption?
     private var pauseTransition: PauseTransition?
     private var resumeTransition: ResumeTransition?
     private var pendingResumeLineage: PendingResumeLineage?
+    private var pendingReleaseVerificationID: UUID?
 
     public init() {
         let bridge = MediaRemoteBridge()
@@ -50,6 +52,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         self.sleep = { nanoseconds in
             try? await Task.sleep(nanoseconds: nanoseconds)
         }
+        self.beforeInitialResumeDispatch = {}
         self.beforeOwnerResumeFinalization = {}
     }
 
@@ -60,6 +63,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         resumeLineageGraceDuration: TimeInterval = 3,
         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         sleep: @escaping @Sendable (UInt64) async -> Void = { _ in },
+        beforeInitialResumeDispatch: @escaping @MainActor @Sendable () async -> Void = {},
         beforeOwnerResumeFinalization: @escaping @MainActor @Sendable () async -> Void = {}
     ) {
         self.driver = driver
@@ -68,22 +72,22 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         self.resumeLineageGraceDuration = resumeLineageGraceDuration
         self.now = now
         self.sleep = sleep
+        self.beforeInitialResumeDispatch = beforeInitialResumeDispatch
         self.beforeOwnerResumeFinalization = beforeOwnerResumeFinalization
     }
 
     public func beginInterruption() async -> MediaInterruptionToken? {
-        if var activeInterruption {
-            let token = MediaInterruptionToken()
-            activeInterruption.tokenIDs.insert(token.id)
-            self.activeInterruption = activeInterruption
-            Self.logger.info(
-                "Media interruption joined. Active tokens: \(activeInterruption.tokenIDs.count, privacy: .public)"
-            )
-            return token
-        }
-
         let token = MediaInterruptionToken()
-        return await withTaskCancellationHandler {
+        let result: MediaInterruptionToken? = await withTaskCancellationHandler {
+            guard !Task.isCancelled else { return nil }
+            if var activeInterruption {
+                activeInterruption.tokenIDs.insert(token.id)
+                self.activeInterruption = activeInterruption
+                Self.logger.info(
+                    "Media interruption joined. Active tokens: \(activeInterruption.tokenIDs.count, privacy: .public)"
+                )
+                return token
+            }
             if resumeTransition != nil {
                 return await joinResumeTransition(with: token)
             }
@@ -96,9 +100,14 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             return await joinPauseTransition(with: token)
         } onCancel: {
             Task { @MainActor [weak self] in
-                self?.cancelPendingBegin(tokenID: token.id)
+                await self?.cancelBegin(tokenID: token.id)
             }
         }
+        if Task.isCancelled {
+            await cancelBegin(tokenID: token.id)
+            return nil
+        }
+        return result
     }
 
     public func endInterruption(token: MediaInterruptionToken) async {
@@ -129,8 +138,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             transition = current
         } else {
             let transitionID = UUID()
-            let task = Task { @MainActor [weak self] () -> MediaPauseReceipt? in
-                guard let self else { return nil }
+            let task = Task { @MainActor [weak self] () -> PauseTransitionOutcome in
+                guard let self else { return .noOwnership }
                 if let resumeLineageReceipt {
                     return await self.performResumeLineagePauseTransition(
                         id: transitionID,
@@ -147,16 +156,32 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             pauseTransition = transition
         }
 
-        let receipt = await transition.task.value
+        let outcome = await transition.task.value
         if let current = pauseTransition, current.id == transition.id {
             pauseTransition = nil
-            if let receipt {
+            switch outcome {
+            case .noOwnership:
+                break
+            case .verified(let receipt):
                 activeInterruption = ActiveInterruption(
-                    receipt: receipt,
+                    id: transition.id,
+                    custody: .verified(receipt),
                     tokenIDs: current.tokenIDs
                 )
                 Self.logger.info(
                     "Media interruption verified. Active tokens: \(current.tokenIDs.count, privacy: .public)"
+                )
+                if current.tokenIDs.isEmpty {
+                    await finishInterruptionIfUnowned()
+                }
+            case .pending(let receipt):
+                activeInterruption = ActiveInterruption(
+                    id: transition.id,
+                    custody: .pending(receipt),
+                    tokenIDs: current.tokenIDs
+                )
+                Self.logger.info(
+                    "Media interruption retained pending release verification. Active tokens: \(current.tokenIDs.count, privacy: .public)"
                 )
                 if current.tokenIDs.isEmpty {
                     await finishInterruptionIfUnowned()
@@ -175,7 +200,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         return token
     }
 
-    private func cancelPendingBegin(tokenID: UUID) {
+    private func cancelBegin(tokenID: UUID) async {
         if var transition = pauseTransition,
            transition.tokenIDs.remove(tokenID) != nil
         {
@@ -189,9 +214,17 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         {
             resumeTransition = transition
         }
+        if var activeInterruption,
+           activeInterruption.tokenIDs.remove(tokenID) != nil
+        {
+            self.activeInterruption = activeInterruption
+            if activeInterruption.tokenIDs.isEmpty {
+                await finishInterruptionIfUnowned()
+            }
+        }
     }
 
-    private func performPauseTransition(id: UUID) async -> MediaPauseReceipt? {
+    private func performPauseTransition(id: UUID) async -> PauseTransitionOutcome {
         let before = await driver.snapshot()
         guard pauseTransition?.id == id,
               pauseTransition?.tokenIDs.isEmpty == false,
@@ -200,7 +233,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             Self.logger.info(
                 "Media interruption skipped. Evidence: \(before.logValue, privacy: .public)"
             )
-            return nil
+            return .noOwnership
         }
 
         let dispatch = await driver.sendPause(to: destination)
@@ -211,18 +244,22 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         Self.logger.info(
             "Semantic media Pause attempted: accepted=\(acceptedApplications.sorted().joined(separator: ","), privacy: .public) destination=\(destination.logValue, privacy: .public) evidence=\(before.logValue, privacy: .public)"
         )
-        guard !acceptedApplications.isEmpty else { return nil }
-
+        guard !acceptedApplications.isEmpty else { return .noOwnership }
+        var pendingReceipt = PendingPauseReceipt.make(
+            before: before,
+            acceptedApplications: acceptedApplications
+        )
+        let exactRetryDestination = VerifiedMediaResumeDestination(
+            applicationBundleIdentifiers: acceptedApplications.sorted(),
+            expectedProcessTargets: before.audioOutputObservation?.targets.filter {
+                acceptedApplications.contains($0.applicationBundleIdentifier)
+            } ?? []
+        )
         for (index, delay) in verificationDelays.enumerated() {
-            await sleep(delay)
-            guard pauseTransition?.id == id,
-                  pauseTransition?.tokenIDs.isEmpty == false,
-                  !Task.isCancelled
-            else {
-                await compensateAcceptedPause(for: acceptedApplications)
-                return nil
-            }
+            await sleepAfterAcceptedPause(delay)
+            guard pauseTransition?.id == id else { return .noOwnership }
             let after = await driver.snapshot()
+            guard pauseTransition?.id == id else { return .noOwnership }
             Self.logger.info(
                 "Media Pause verification pass \(index + 1, privacy: .public): \(after.logValue, privacy: .public)"
             )
@@ -231,45 +268,88 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 among: acceptedApplications
             )
             if verifiedApplications == acceptedApplications {
-                return MediaPauseReceipt(
+                return .verified(MediaPauseReceipt(
                     resumeDestination: VerifiedMediaResumeDestination(
-                        applicationBundleIdentifiers: verifiedApplications.sorted()
+                        applicationBundleIdentifiers: verifiedApplications.sorted(),
+                        expectedProcessTargets: before.audioOutputObservation?.targets.filter {
+                            verifiedApplications.contains($0.applicationBundleIdentifier)
+                        } ?? []
                     )
-                )
+                ))
+            }
+            if var receipt = pendingReceipt {
+                if receipt.recordPreservedTransition(after)
+                    || receipt.remainsExactActiveCandidate(after)
+                {
+                    pendingReceipt = receipt
+                } else {
+                    pendingReceipt = nil
+                }
+            }
+            if pauseTransition?.tokenIDs.isEmpty != false || Task.isCancelled {
+                continue
             }
             guard index < verificationDelays.index(before: verificationDelays.endIndex),
-                  pauseTransition?.id == id,
-                  pauseTransition?.tokenIDs.isEmpty == false,
-                  !Task.isCancelled
+                  pauseTransition?.id == id
             else { continue }
             let stillActiveApplications = acceptedApplications.subtracting(verifiedApplications)
             if !stillActiveApplications.isEmpty {
+                let retryDestination = exactRetryDestination.narrowed(
+                    to: stillActiveApplications
+                )
+                guard after.preservesExactProcessLineage(retryDestination) else {
+                    continue
+                }
                 _ = await driver.sendPause(
-                    to: .observedApplications(stillActiveApplications.sorted())
+                    to: retryDestination
                 )
             }
         }
 
-        await compensateAcceptedPause(for: acceptedApplications)
+        if let pendingReceipt,
+           pendingReceipt.preservedObservationCount > 0
+        {
+            Self.logger.info(
+                "Semantic media Pause remains app-bound but Core Audio is lagging; deferring resume authorization until release."
+            )
+            return .pending(pendingReceipt)
+        }
+
         Self.logger.info(
-            "Semantic media Pause was not fully verified; accepted commands were compensated and no interruption token was created."
+            "Semantic media Pause was not fully verified; no Play command or resume ownership was authorized."
         )
-        return nil
+        return .noOwnership
     }
 
     private func performResumeLineagePauseTransition(
         id: UUID,
         receipt: MediaPauseReceipt
-    ) async -> MediaPauseReceipt? {
+    ) async -> PauseTransitionOutcome {
         guard pauseTransition?.id == id,
               pauseTransition?.tokenIDs.isEmpty == false
-        else { return nil }
+        else { return .noOwnership }
+
+        let lineageSnapshot = await driver.snapshot()
+        guard pauseTransition?.id == id,
+              pauseTransition?.tokenIDs.isEmpty == false,
+              !Task.isCancelled,
+              lineageSnapshot.detection == .playing
+                || lineageSnapshot.detection == .likelyPlaying,
+              lineageSnapshot.preservesExactProcessLineage(
+                receipt.resumeDestination
+              )
+        else {
+            Self.logger.info(
+                "Pending media resume lineage changed before re-Pause; no command was sent."
+            )
+            return .noOwnership
+        }
 
         let expectedApplications = Set(
             receipt.resumeDestination.applicationBundleIdentifiers
         )
         let dispatch = await driver.sendPause(
-            to: .observedApplications(expectedApplications.sorted())
+            to: receipt.resumeDestination
         )
         let acceptedApplications = Set(
             dispatch.acceptedApplicationBundleIdentifiers
@@ -278,90 +358,104 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             Self.logger.info(
                 "Pending media resume lineage Pause was rejected; ownership was not retained."
             )
-            return nil
+            return .noOwnership
         }
 
-        let acceptedReceipt = MediaPauseReceipt(
-            resumeDestination: VerifiedMediaResumeDestination(
-                applicationBundleIdentifiers: acceptedApplications.sorted()
-            )
+        let acceptedDestination = receipt.resumeDestination.narrowed(
+            to: acceptedApplications
         )
-        var observedStillActive = false
-        var observedReliableState = false
-
+        let acceptedReceipt = MediaPauseReceipt(resumeDestination: acceptedDestination)
+        var pendingReceipt = PendingPauseReceipt.makeForAcceptedRePause(
+            before: lineageSnapshot,
+            destination: acceptedDestination
+        )
+        var observedUnavailableEvidence = false
         for (index, delay) in verificationDelays.enumerated() {
-            await sleep(delay)
-            guard pauseTransition?.id == id,
-                  pauseTransition?.tokenIDs.isEmpty == false,
-                  !Task.isCancelled
-            else {
-                _ = await driver.sendPlay(to: acceptedReceipt.resumeDestination)
-                return nil
-            }
+            await sleepAfterAcceptedPause(delay)
+            guard pauseTransition?.id == id else { return .noOwnership }
 
             let snapshot = await driver.snapshot()
-            guard pauseTransition?.id == id,
-                  pauseTransition?.tokenIDs.isEmpty == false,
-                  !Task.isCancelled
-            else {
-                _ = await driver.sendPlay(to: acceptedReceipt.resumeDestination)
-                return nil
+            guard pauseTransition?.id == id else { return .noOwnership }
+            let hasOwner = pauseTransition?.tokenIDs.isEmpty == false
+                && !Task.isCancelled
+
+            if snapshot.confirmsPausedProcessLineage(
+                acceptedReceipt.resumeDestination
+            ) {
+                Self.logger.info(
+                    "Pending media resume lineage was re-paused and verified."
+                )
+                return .verified(acceptedReceipt)
+            }
+
+            if var candidate = pendingReceipt {
+                if candidate.recordPreservedTransition(snapshot)
+                    || candidate.remainsExactActiveCandidate(snapshot)
+                {
+                    pendingReceipt = candidate
+                } else if candidate.preservesUnavailableLineageEvidence(snapshot) {
+                    observedUnavailableEvidence = true
+                    pendingReceipt = candidate
+                } else {
+                    pendingReceipt = nil
+                }
             }
 
             if let observation = snapshot.audioOutputObservation,
                observation.unresolvedProcessCount == 0
             {
-                observedReliableState = true
                 let stillActive = acceptedApplications.intersection(
                     observation.applicationBundleIdentifiers
                 )
                 if stillActive.isEmpty {
-                    Self.logger.info(
-                        "Pending media resume lineage was re-paused and verified."
-                    )
-                    return acceptedReceipt
+                    continue
                 }
-                observedStillActive = true
-                guard index < verificationDelays.index(before: verificationDelays.endIndex)
+                guard hasOwner,
+                      index < verificationDelays.index(before: verificationDelays.endIndex)
                 else { continue }
-                _ = await driver.sendPause(
-                    to: .observedApplications(stillActive.sorted())
+                let retryDestination = acceptedReceipt.resumeDestination.narrowed(
+                    to: stillActive
                 )
-            } else if index < verificationDelays.index(before: verificationDelays.endIndex) {
+                guard snapshot.preservesExactProcessLineage(retryDestination) else {
+                    continue
+                }
                 _ = await driver.sendPause(
-                    to: .observedApplications(acceptedApplications.sorted())
+                    to: retryDestination
                 )
             }
         }
 
-        if observedStillActive {
-            _ = await driver.sendPlay(to: acceptedReceipt.resumeDestination)
+        let hasOwner = pauseTransition?.tokenIDs.isEmpty == false
+            && !Task.isCancelled
+        if hasOwner,
+           let pendingReceipt,
+           observedUnavailableEvidence || pendingReceipt.preservedObservationCount > 0
+        {
             Self.logger.info(
-                "Pending media resume lineage remained active after Pause; ownership was not retained."
+                "Media resume-lineage re-Pause remains exact but unverified; retaining pending custody until release."
             )
-            return nil
+            return .pending(pendingReceipt)
         }
-        guard !observedReliableState else { return nil }
+        if !hasOwner, pendingReceipt != nil {
+            _ = await driver.sendPlay(to: acceptedDestination)
+            Self.logger.info(
+                "Cancelled media resume-lineage re-Pause was compensated with exact-lineage Play."
+            )
+        }
 
         Self.logger.info(
-            "Pending media resume lineage re-Pause was accepted while output observation was unavailable; retaining bounded exact-app ownership."
+            "Media resume-lineage re-Pause remained unverified; no Play command was authorized."
         )
-        return acceptedReceipt
+        return .noOwnership
     }
 
-    private func compensateAcceptedPause(for applicationBundleIdentifiers: Set<String>) async {
-        guard !applicationBundleIdentifiers.isEmpty else { return }
-        let destination = VerifiedMediaResumeDestination(
-            applicationBundleIdentifiers: applicationBundleIdentifiers.sorted()
-        )
-        _ = await driver.sendPlay(to: destination)
-        for delay in resumeVerificationDelays.prefix(2) {
+    private func sleepAfterAcceptedPause(_ delay: UInt64) async {
+        await sleep(delay)
+        guard Task.isCancelled else { return }
+        let sleep = self.sleep
+        await Task.detached {
             await sleep(delay)
-            _ = await driver.sendPlay(to: destination)
-        }
-        Self.logger.info(
-            "Compensating targeted Play sent after an unverified Pause destination=\(destination.logValue, privacy: .public)"
-        )
+        }.value
     }
 
     private func joinResumeTransition(
@@ -399,16 +493,147 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         guard let currentInterruption = activeInterruption,
               currentInterruption.tokenIDs.isEmpty
         else { return }
+
+        switch currentInterruption.custody {
+        case .pending(let pendingReceipt):
+            guard pendingReleaseVerificationID != currentInterruption.id else { return }
+            pendingReleaseVerificationID = currentInterruption.id
+            await verifyPendingInterruptionAtRelease(
+                interruptionID: currentInterruption.id,
+                pendingReceipt: pendingReceipt
+            )
+            if pendingReleaseVerificationID == currentInterruption.id {
+                pendingReleaseVerificationID = nil
+            }
+            await finishInterruptionIfUnowned()
+        case .verified(let receipt):
+            activeInterruption = nil
+            await startResumeTransition(receipt: receipt)
+        }
+    }
+
+    private func verifyPendingInterruptionAtRelease(
+        interruptionID: UUID,
+        pendingReceipt: PendingPauseReceipt
+    ) async {
+        let releaseSnapshot = await driver.snapshot()
+        guard var currentInterruption = activeInterruption,
+              currentInterruption.id == interruptionID,
+              case .pending = currentInterruption.custody
+        else { return }
+
+        var refreshedPendingReceipt = pendingReceipt
+        let preservedTransition = refreshedPendingReceipt
+            .recordPreservedTransition(releaseSnapshot)
+        let verifiedApplications = pendingReceipt
+            .verifiedApplicationBundleIdentifiers(atRelease: releaseSnapshot)
+        let verifiedByStoppedOutput = verifiedApplications
+            == pendingReceipt.acceptedApplications
+        guard verifiedByStoppedOutput else {
+            if !currentInterruption.tokenIDs.isEmpty,
+               releaseSnapshot.detection == .playing
+                || releaseSnapshot.detection == .likelyPlaying
+            {
+                await repausePendingInterruption(
+                    interruptionID: interruptionID,
+                    pendingReceipt: pendingReceipt,
+                    activeSnapshot: releaseSnapshot
+                )
+                return
+            }
+            if !currentInterruption.tokenIDs.isEmpty, preservedTransition {
+                currentInterruption.custody = .pending(refreshedPendingReceipt)
+                activeInterruption = currentInterruption
+                return
+            }
+            if !currentInterruption.tokenIDs.isEmpty,
+               !pendingReceipt.preservesIdentityAndProcessLineage(releaseSnapshot)
+            {
+                activeInterruption = nil
+            }
+            Self.logger.info(
+                "Pending media Pause remained ambiguous at release; no Play command was authorized. Evidence: \(releaseSnapshot.logValue, privacy: .public)"
+            )
+            if currentInterruption.tokenIDs.isEmpty {
+                activeInterruption = nil
+            }
+            return
+        }
+
+        let receipt = MediaPauseReceipt(
+            resumeDestination: VerifiedMediaResumeDestination(
+                applicationBundleIdentifiers: verifiedApplications.sorted(),
+                expectedProcessTargets: pendingReceipt.observedTargets.sorted {
+                    $0.processID < $1.processID
+                }
+            )
+        )
+        currentInterruption.custody = .verified(receipt)
+        activeInterruption = currentInterruption
+        Self.logger.info(
+            "Pending media Pause verified at release for exact-app resume ownership."
+        )
+        if currentInterruption.tokenIDs.isEmpty {
+            await finishInterruptionIfUnowned()
+        }
+    }
+
+    private func repausePendingInterruption(
+        interruptionID: UUID,
+        pendingReceipt: PendingPauseReceipt,
+        activeSnapshot: MediaInterruptionSnapshot
+    ) async {
+        let destination = pendingReceipt.makeVerifiedReceipt().resumeDestination
+        guard activeSnapshot.preservesExactProcessLineage(destination),
+              let refreshedReceipt = pendingReceipt.refreshedForRePause(
+                before: activeSnapshot
+              )
+        else {
+            if activeInterruption?.id == interruptionID {
+                activeInterruption = nil
+            }
+            Self.logger.info(
+                "Active pending media process lineage changed before re-Pause; ownership was discarded without sending a command."
+            )
+            return
+        }
+
+        let dispatch = await driver.sendPause(to: destination)
+        guard var currentInterruption = activeInterruption,
+              currentInterruption.id == interruptionID,
+              case .pending = currentInterruption.custody
+        else { return }
+
+        let acceptedApplications = Set(
+            dispatch.acceptedApplicationBundleIdentifiers
+        ).intersection(pendingReceipt.acceptedApplications)
+        guard acceptedApplications == pendingReceipt.acceptedApplications else {
+            activeInterruption = nil
+            Self.logger.info(
+                "Active pending media could not be safely re-paused for a new capture; ownership was discarded without Play."
+            )
+            return
+        }
+
+        currentInterruption.custody = .pending(refreshedReceipt)
+        activeInterruption = currentInterruption
+        Self.logger.info(
+            "Active pending media was re-paused for a new capture without emitting Play."
+        )
+        if currentInterruption.tokenIDs.isEmpty {
+            await finishInterruptionIfUnowned()
+        }
+    }
+
+    private func startResumeTransition(receipt: MediaPauseReceipt) async {
         activeInterruption = nil
         let transitionID = UUID()
-        let receipt = currentInterruption.receipt
         let task = Task { @MainActor [weak self] () -> ResumeTransitionOutcome in
             guard let self else { return .resumed }
             return await self.performResumeTransition(id: transitionID, receipt: receipt)
         }
         let transition = ResumeTransition(
             id: transitionID,
-            receipt: receipt,
             task: task,
             joiningTokenIDs: []
         )
@@ -422,6 +647,10 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         id: UUID,
         receipt: MediaPauseReceipt
     ) async -> ResumeTransitionOutcome {
+        await beforeInitialResumeDispatch()
+        if Task.isCancelled, hasJoiningResumeTokens(id: id) {
+            return .retained(receipt)
+        }
         let destination = receipt.resumeDestination
         let initialDispatch = await driver.sendPlay(to: destination)
         var acceptedPlayApplications = Set(
@@ -450,6 +679,13 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 return await retainInterruptionDuringResumeJoin(id: id, receipt: receipt)
             }
 
+            if snapshot.confirmsResumedProcessLineage(destination) {
+                Self.logger.info(
+                    "Semantic media Play verified by exact target playback evidence destination=\(destination.logValue, privacy: .public)"
+                )
+                return .resumed
+            }
+
             if let activeApplications = snapshot.observedActiveApplicationBundleIdentifiers {
                 lastObservedActiveApplications = activeApplications
                 if expectedApplications.isSubset(of: activeApplications) {
@@ -466,11 +702,16 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 lastObservedActiveApplications ?? []
             )
             if !missingApplications.isEmpty {
-                let retryDispatch = await driver.sendPlay(
-                    to: VerifiedMediaResumeDestination(
-                        applicationBundleIdentifiers: missingApplications.sorted()
-                    )
+                let retryDestination = destination.narrowed(
+                    to: missingApplications
                 )
+                guard snapshot.preservesResumeRetryLineage(retryDestination) else {
+                    Self.logger.info(
+                        "Semantic media Play retry rejected changed process lineage; no further resume command was sent."
+                    )
+                    return .resumed
+                }
+                let retryDispatch = await driver.sendPlay(to: retryDestination)
                 acceptedPlayApplications.formUnion(
                     retryDispatch.acceptedApplicationBundleIdentifiers
                 )
@@ -485,9 +726,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             .intersection(acceptedPlayApplications)
         if !unconfirmedApplications.isEmpty {
             let pendingReceipt = MediaPauseReceipt(
-                resumeDestination: VerifiedMediaResumeDestination(
-                    applicationBundleIdentifiers: unconfirmedApplications.sorted()
-                )
+                resumeDestination: destination.narrowed(to: unconfirmedApplications)
             )
             Self.logger.info(
                 "Semantic media Play remained unverified; preserving bounded exact-app resume lineage destination=\(pendingReceipt.resumeDestination.logValue, privacy: .public)"
@@ -506,8 +745,23 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     ) async -> ResumeTransitionOutcome {
         let applications = receipt.resumeDestination.applicationBundleIdentifiers
         let expectedApplications = Set(applications)
+        guard hasJoiningResumeTokens(id: id) else { return .resumed }
+        let lineageSnapshot = await driver.snapshot()
+        guard hasJoiningResumeTokens(id: id),
+              lineageSnapshot.detection == .playing
+                || lineageSnapshot.detection == .likelyPlaying,
+              lineageSnapshot.preservesExactProcessLineage(
+                receipt.resumeDestination
+              )
+        else {
+            Self.logger.info(
+                "In-flight media resume lineage changed before re-Pause; no lineage command was sent."
+            )
+            return .resumed
+        }
+
         let initialDispatch = await driver.sendPause(
-            to: .observedApplications(applications)
+            to: receipt.resumeDestination
         )
         var acceptedPauseApplications = Set(
             initialDispatch.acceptedApplicationBundleIdentifiers
@@ -516,11 +770,48 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             "In-flight media resume was re-paused for a new dictation owner destination=\(receipt.resumeDestination.logValue, privacy: .public)"
         )
 
+        guard !acceptedPauseApplications.isEmpty else {
+            Self.logger.info(
+                "In-flight media resume re-Pause was rejected; ownership was not retained."
+            )
+            return .resumed
+        }
+        let initialAcceptedDestination = receipt.resumeDestination.narrowed(
+            to: acceptedPauseApplications
+        )
+        var pendingReceipt = PendingPauseReceipt.makeForAcceptedRePause(
+            before: lineageSnapshot,
+            destination: initialAcceptedDestination
+        )
+        var observedUnavailableEvidence = false
         for (index, delay) in verificationDelays.enumerated() {
-            await sleep(delay)
-            guard hasJoiningResumeTokens(id: id) else { break }
+            await sleepAfterAcceptedPause(delay)
             let snapshot = await driver.snapshot()
-            guard hasJoiningResumeTokens(id: id) else { break }
+            let acceptedReceipt = MediaPauseReceipt(
+                resumeDestination: receipt.resumeDestination.narrowed(
+                    to: acceptedPauseApplications
+                )
+            )
+            let hasOwner = hasJoiningResumeTokens(id: id)
+
+            if snapshot.confirmsPausedProcessLineage(
+                acceptedReceipt.resumeDestination
+            ) {
+                return .retained(acceptedReceipt)
+            }
+
+            if var candidate = pendingReceipt {
+                if candidate.recordPreservedTransition(snapshot)
+                    || candidate.remainsExactActiveCandidate(snapshot)
+                {
+                    pendingReceipt = candidate
+                } else if candidate.preservesUnavailableLineageEvidence(snapshot) {
+                    observedUnavailableEvidence = true
+                    pendingReceipt = candidate
+                } else {
+                    pendingReceipt = nil
+                }
+            }
 
             if let observation = snapshot.audioOutputObservation,
                observation.unresolvedProcessCount == 0
@@ -529,41 +820,46 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     observation.applicationBundleIdentifiers
                 )
                 if stillActive.isEmpty {
-                    guard !acceptedPauseApplications.isEmpty else {
-                        Self.logger.info(
-                            "In-flight media resume became silent without accepting re-Pause; ownership was not retained."
-                        )
-                        return .resumed
-                    }
-                    let acceptedReceipt = MediaPauseReceipt(
-                        resumeDestination: VerifiedMediaResumeDestination(
-                            applicationBundleIdentifiers: acceptedPauseApplications.sorted()
-                        )
-                    )
-                    return .retained(acceptedReceipt)
+                    continue
                 }
-                guard index < verificationDelays.index(before: verificationDelays.endIndex)
+                guard hasOwner,
+                      index < verificationDelays.index(before: verificationDelays.endIndex)
                 else { continue }
+                let retryDestination = acceptedReceipt.resumeDestination.narrowed(
+                    to: stillActive
+                )
+                guard snapshot.preservesExactProcessLineage(retryDestination) else {
+                    continue
+                }
                 let retryDispatch = await driver.sendPause(
-                    to: .observedApplications(stillActive.sorted())
+                    to: retryDestination
                 )
                 acceptedPauseApplications.formUnion(
                     Set(retryDispatch.acceptedApplicationBundleIdentifiers)
                         .intersection(stillActive)
                 )
-            } else if index < verificationDelays.index(before: verificationDelays.endIndex) {
-                let retryDispatch = await driver.sendPause(
-                    to: .observedApplications(applications)
-                )
-                acceptedPauseApplications.formUnion(
-                    Set(retryDispatch.acceptedApplicationBundleIdentifiers)
-                        .intersection(expectedApplications)
-                )
             }
         }
 
-        if !acceptedPauseApplications.isEmpty {
-            await compensateAcceptedPause(for: acceptedPauseApplications)
+        if hasJoiningResumeTokens(id: id),
+           let pendingReceipt,
+           observedUnavailableEvidence || pendingReceipt.preservedObservationCount > 0
+        {
+            Self.logger.info(
+                "In-flight media re-Pause remains exact but unverified; retaining pending custody until release."
+            )
+            return .retainedPending(pendingReceipt)
+        }
+        if !acceptedPauseApplications.isEmpty,
+           !hasJoiningResumeTokens(id: id)
+        {
+            let restorationDestination = receipt.resumeDestination.narrowed(
+                to: acceptedPauseApplications
+            )
+            _ = await driver.sendPlay(to: restorationDestination)
+            Self.logger.info(
+                "Cancelled in-flight media re-Pause was compensated with exact-lineage Play."
+            )
         }
         Self.logger.info(
             "In-flight media resume could not be verified as re-paused; ownership was not retained."
@@ -603,7 +899,17 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             )
         case .retained(let receipt):
             activeInterruption = ActiveInterruption(
-                receipt: receipt,
+                id: transition.id,
+                custody: .verified(receipt),
+                tokenIDs: transition.joiningTokenIDs
+            )
+            if transition.joiningTokenIDs.isEmpty {
+                await finishInterruptionIfUnowned()
+            }
+        case .retainedPending(let pendingReceipt):
+            activeInterruption = ActiveInterruption(
+                id: transition.id,
+                custody: .pending(pendingReceipt),
                 tokenIDs: transition.joiningTokenIDs
             )
             if transition.joiningTokenIDs.isEmpty {
@@ -613,19 +919,232 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     }
 
     private struct ActiveInterruption {
-        let receipt: MediaPauseReceipt
+        let id: UUID
+        var custody: PauseCustody
         var tokenIDs: Set<UUID>
+    }
+
+    private enum PauseCustody {
+        case pending(PendingPauseReceipt)
+        case verified(MediaPauseReceipt)
+    }
+
+    private struct PendingPauseReceipt {
+        let before: MediaInterruptionSnapshot
+        let acceptedApplications: Set<String>
+        let observedTargets: Set<MediaAudioOutputTarget>
+        var preservedSnapshot: MediaInterruptionSnapshot?
+        var preservedObservationCount: Int
+
+        static func make(
+            before: MediaInterruptionSnapshot,
+            acceptedApplications: Set<String>
+        ) -> Self? {
+            guard acceptedApplications.count == 1,
+                  before.detection == .playing || before.detection == .likelyPlaying,
+                  let observation = before.audioOutputObservation,
+                  observation.unresolvedProcessCount == 0,
+                  !observation.targets.isEmpty,
+                  observation.applicationBundleIdentifiers == acceptedApplications
+            else { return nil }
+
+            return Self(
+                before: before,
+                acceptedApplications: acceptedApplications,
+                observedTargets: Set(observation.targets),
+                preservedSnapshot: nil,
+                preservedObservationCount: 0
+            )
+        }
+
+        static func makeForAcceptedRePause(
+            before snapshot: MediaInterruptionSnapshot,
+            destination: VerifiedMediaResumeDestination
+        ) -> Self? {
+            let acceptedApplications = Set(destination.applicationBundleIdentifiers)
+            let observedTargets = Set(destination.expectedProcessTargets)
+            guard !acceptedApplications.isEmpty,
+                  !observedTargets.isEmpty,
+                  snapshot.detection == .playing || snapshot.detection == .likelyPlaying,
+                  snapshot.preservesExactProcessLineage(destination)
+            else { return nil }
+
+            let target = snapshot.target.flatMap { target in
+                acceptedApplications.contains(target.bundleIdentifier)
+                    ? target
+                    : nil
+            }
+            let narrowedSnapshot = MediaInterruptionSnapshot(
+                target: target,
+                contentIdentifier: target == nil ? nil : snapshot.contentIdentifier,
+                detection: snapshot.detection,
+                nowPlayingIsPlaying: snapshot.nowPlayingIsPlaying,
+                playbackState: snapshot.playbackState,
+                audioOutputObservation: MediaAudioOutputObservation(
+                    targets: observedTargets.sorted { $0.processID < $1.processID },
+                    unresolvedProcessCount: 0
+                )
+            )
+            return Self(
+                before: narrowedSnapshot,
+                acceptedApplications: acceptedApplications,
+                observedTargets: observedTargets,
+                preservedSnapshot: nil,
+                preservedObservationCount: 0
+            )
+        }
+
+        func refreshedForRePause(
+            before snapshot: MediaInterruptionSnapshot
+        ) -> Self? {
+            let expectedDestination = makeVerifiedReceipt().resumeDestination
+            guard snapshot.detection == .playing || snapshot.detection == .likelyPlaying,
+                  snapshot.preservesExactProcessLineage(expectedDestination)
+            else { return nil }
+
+            let target = snapshot.target.flatMap { target in
+                acceptedApplications.contains(target.bundleIdentifier)
+                    ? target
+                    : nil
+            }
+            let narrowedSnapshot = MediaInterruptionSnapshot(
+                target: target,
+                contentIdentifier: target == nil ? nil : snapshot.contentIdentifier,
+                detection: snapshot.detection,
+                nowPlayingIsPlaying: snapshot.nowPlayingIsPlaying,
+                playbackState: snapshot.playbackState,
+                audioOutputObservation: MediaAudioOutputObservation(
+                    targets: observedTargets.sorted { $0.processID < $1.processID },
+                    unresolvedProcessCount: 0
+                )
+            )
+            return Self(
+                before: narrowedSnapshot,
+                acceptedApplications: acceptedApplications,
+                observedTargets: observedTargets,
+                preservedSnapshot: nil,
+                preservedObservationCount: 0
+            )
+        }
+
+        mutating func recordPreservedTransition(
+            _ snapshot: MediaInterruptionSnapshot
+        ) -> Bool {
+            guard snapshot.detection == .unknown,
+                  snapshot.nowPlayingIsPlaying != true,
+                  snapshot.target == before.target,
+                  snapshot.contentIdentifier == before.contentIdentifier,
+                  let observation = snapshot.audioOutputObservation,
+                  observation.unresolvedProcessCount == 0,
+                  Set(observation.targets) == observedTargets
+            else { return false }
+
+            if let preservedSnapshot {
+                guard snapshot.target == preservedSnapshot.target,
+                      snapshot.contentIdentifier == preservedSnapshot.contentIdentifier,
+                      snapshot.nowPlayingIsPlaying == preservedSnapshot.nowPlayingIsPlaying,
+                      snapshot.playbackState == preservedSnapshot.playbackState,
+                      snapshot.audioOutputObservation == preservedSnapshot.audioOutputObservation
+                else { return false }
+            }
+
+            preservedSnapshot = snapshot
+            preservedObservationCount += 1
+            return true
+        }
+
+        func remainsExactActiveCandidate(
+            _ snapshot: MediaInterruptionSnapshot
+        ) -> Bool {
+            guard snapshot.detection == .playing || snapshot.detection == .likelyPlaying,
+                  snapshot.target == before.target,
+                  snapshot.contentIdentifier == before.contentIdentifier
+            else { return false }
+            return snapshot.preservesExactProcessLineage(
+                makeVerifiedReceipt().resumeDestination
+            )
+        }
+
+        func preservesUnavailableLineageEvidence(
+            _ snapshot: MediaInterruptionSnapshot
+        ) -> Bool {
+            guard snapshot.audioOutputObservation == nil,
+                  snapshot.detection != .playing,
+                  snapshot.detection != .likelyPlaying,
+                  snapshot.nowPlayingIsPlaying != true
+            else { return false }
+
+            if let target = snapshot.target,
+               acceptedApplications.contains(target.bundleIdentifier)
+            {
+                guard observedTargets.contains(where: {
+                    $0.processID == target.processID
+                        && $0.applicationBundleIdentifier == target.bundleIdentifier
+                }) else { return false }
+                if let beforeTarget = before.target, target != beforeTarget {
+                    return false
+                }
+                if let beforeContentIdentifier = before.contentIdentifier,
+                   let contentIdentifier = snapshot.contentIdentifier,
+                   contentIdentifier != beforeContentIdentifier
+                {
+                    return false
+                }
+            } else if snapshot.target == nil,
+                      let beforeContentIdentifier = before.contentIdentifier,
+                      let contentIdentifier = snapshot.contentIdentifier,
+                      contentIdentifier != beforeContentIdentifier
+            {
+                return false
+            }
+            return true
+        }
+
+        func preservesIdentityAndProcessLineage(
+            _ snapshot: MediaInterruptionSnapshot
+        ) -> Bool {
+            snapshot.target == before.target
+                && snapshot.contentIdentifier == before.contentIdentifier
+                && snapshot.preservesExactProcessLineage(
+                    makeVerifiedReceipt().resumeDestination
+                )
+        }
+
+        func makeVerifiedReceipt() -> MediaPauseReceipt {
+            MediaPauseReceipt(
+                resumeDestination: VerifiedMediaResumeDestination(
+                    applicationBundleIdentifiers: acceptedApplications.sorted(),
+                    expectedProcessTargets: observedTargets.sorted {
+                        $0.processID < $1.processID
+                    }
+                )
+            )
+        }
+
+        func verifiedApplicationBundleIdentifiers(
+            atRelease snapshot: MediaInterruptionSnapshot
+        ) -> Set<String> {
+            snapshot.confirmedPausedApplicationBundleIdentifiers(
+                from: before,
+                among: acceptedApplications
+            )
+        }
+    }
+
+    private enum PauseTransitionOutcome {
+        case noOwnership
+        case pending(PendingPauseReceipt)
+        case verified(MediaPauseReceipt)
     }
 
     private struct PauseTransition {
         let id: UUID
-        let task: Task<MediaPauseReceipt?, Never>
+        let task: Task<PauseTransitionOutcome, Never>
         var tokenIDs: Set<UUID>
     }
 
     private struct ResumeTransition {
         let id: UUID
-        let receipt: MediaPauseReceipt
         let task: Task<ResumeTransitionOutcome, Never>
         var joiningTokenIDs: Set<UUID>
     }
@@ -639,12 +1158,20 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         case resumed
         case resumedWithPendingLineage(MediaPauseReceipt)
         case retained(MediaPauseReceipt)
+        case retainedPending(PendingPauseReceipt)
     }
 }
 
 enum SemanticMediaCommand: Int32, Sendable, Equatable {
     case play = 0
     case pause = 1
+
+    var logValue: String {
+        switch self {
+        case .play: "Play"
+        case .pause: "Pause"
+        }
+    }
 }
 
 enum MediaPauseDestination: Sendable, Equatable {
@@ -664,9 +1191,33 @@ enum MediaPauseDestination: Sendable, Equatable {
 
 struct VerifiedMediaResumeDestination: Sendable, Equatable {
     let applicationBundleIdentifiers: [String]
+    let expectedProcessTargets: [MediaAudioOutputTarget]
 
-    init(applicationBundleIdentifiers: [String]) {
-        self.applicationBundleIdentifiers = Array(Set(applicationBundleIdentifiers)).sorted()
+    init(
+        applicationBundleIdentifiers: [String],
+        expectedProcessTargets: [MediaAudioOutputTarget]
+    ) {
+        let applications = Set(applicationBundleIdentifiers)
+        self.applicationBundleIdentifiers = applications.sorted()
+        self.expectedProcessTargets = Array(Set(expectedProcessTargets))
+            .filter { applications.contains($0.applicationBundleIdentifier) }
+            .sorted {
+                if $0.applicationBundleIdentifier == $1.applicationBundleIdentifier {
+                    return $0.processID < $1.processID
+                }
+                return $0.applicationBundleIdentifier < $1.applicationBundleIdentifier
+            }
+    }
+
+    func narrowed(to applicationBundleIdentifiers: Set<String>) -> Self {
+        Self(
+            applicationBundleIdentifiers: self.applicationBundleIdentifiers.filter(
+                applicationBundleIdentifiers.contains
+            ),
+            expectedProcessTargets: expectedProcessTargets.filter {
+                applicationBundleIdentifiers.contains($0.applicationBundleIdentifier)
+            }
+        )
     }
 
     var logValue: String {
@@ -682,6 +1233,18 @@ struct MediaPlaybackTarget: Sendable, Equatable {
 struct MediaAudioOutputTarget: Sendable, Equatable, Hashable {
     let processID: Int32
     let applicationBundleIdentifier: String
+
+    let processStartTimeMicroseconds: UInt64?
+
+    init(
+        processID: Int32,
+        applicationBundleIdentifier: String,
+        processStartTimeMicroseconds: UInt64? = nil
+    ) {
+        self.processID = processID
+        self.applicationBundleIdentifier = applicationBundleIdentifier
+        self.processStartTimeMicroseconds = processStartTimeMicroseconds
+    }
 }
 
 struct MediaAudioOutputObservation: Sendable, Equatable {
@@ -720,7 +1283,8 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
     let audioOutputObservation: MediaAudioOutputObservation?
 
     var pauseDestination: MediaPauseDestination? {
-        guard let audioOutputObservation,
+        guard detection == .playing || detection == .likelyPlaying,
+              let audioOutputObservation,
               audioOutputObservation.unresolvedProcessCount == 0
         else { return nil }
         let observedApplications = audioOutputObservation.applicationBundleIdentifiers.sorted()
@@ -732,18 +1296,195 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
         audioOutputObservation.map(\.applicationBundleIdentifiers)
     }
 
+    func preservesExactProcessLineage(
+        _ destination: VerifiedMediaResumeDestination
+    ) -> Bool {
+        let expectedApplications = Set(destination.applicationBundleIdentifiers)
+        let expectedTargets = Set(destination.expectedProcessTargets)
+        guard !expectedApplications.isEmpty,
+              !expectedTargets.isEmpty,
+              let observation = audioOutputObservation,
+              observation.unresolvedProcessCount == 0
+        else { return false }
+
+        let observedTargets = Set(observation.targets)
+        guard expectedTargets.isSubset(of: observedTargets) else { return false }
+        let observedExpectedApplicationTargets = Set(
+            observedTargets.filter {
+                expectedApplications.contains($0.applicationBundleIdentifier)
+            }
+        )
+        guard observedExpectedApplicationTargets == expectedTargets else { return false }
+
+        if let target,
+           expectedApplications.contains(target.bundleIdentifier)
+        {
+            return expectedTargets.contains {
+                $0.processID == target.processID
+                    && $0.applicationBundleIdentifier == target.bundleIdentifier
+            }
+        }
+        return true
+    }
+
+    func confirmsPausedProcessLineage(
+        _ destination: VerifiedMediaResumeDestination
+    ) -> Bool {
+        let expectedApplications = Set(destination.applicationBundleIdentifiers)
+        let expectedTargets = Set(destination.expectedProcessTargets)
+        if let target,
+           expectedApplications.contains(target.bundleIdentifier),
+           !expectedTargets.contains(where: {
+                $0.processID == target.processID
+                    && $0.applicationBundleIdentifier == target.bundleIdentifier
+           })
+        {
+            return false
+        }
+        guard let observation = audioOutputObservation,
+              observation.unresolvedProcessCount == 0
+        else { return false }
+
+        let activeExpectedApplicationTargets = Set(observation.targets.filter {
+            expectedApplications.contains($0.applicationBundleIdentifier)
+        })
+        guard activeExpectedApplicationTargets.isSubset(of: expectedTargets) else {
+            return false
+        }
+        if activeExpectedApplicationTargets.isEmpty {
+            guard target.map({ expectedApplications.contains($0.bundleIdentifier) }) == true
+            else { return true }
+            return detection != .playing
+                && detection != .likelyPlaying
+                && nowPlayingIsPlaying != true
+        }
+        return detection == .notPlaying
+            && preservesExactProcessLineage(destination)
+            && nowPlayingIsPlaying != true
+    }
+
+    func preservesResumeRetryLineage(
+        _ destination: VerifiedMediaResumeDestination
+    ) -> Bool {
+        let expectedApplications = Set(destination.applicationBundleIdentifiers)
+        let expectedTargets = Set(destination.expectedProcessTargets)
+        guard !expectedApplications.isEmpty,
+              !expectedTargets.isEmpty
+        else { return false }
+
+        var matchedExpectedTarget = false
+        if let target,
+           expectedApplications.contains(target.bundleIdentifier)
+        {
+            matchedExpectedTarget = expectedTargets.contains {
+                $0.processID == target.processID
+                    && $0.applicationBundleIdentifier == target.bundleIdentifier
+            }
+            guard matchedExpectedTarget else { return false }
+        }
+
+        guard let observation = audioOutputObservation else {
+            return matchedExpectedTarget
+        }
+        guard observation.unresolvedProcessCount == 0 else { return false }
+        let observedExpectedApplicationTargets = Set(
+            observation.targets.filter {
+                expectedApplications.contains($0.applicationBundleIdentifier)
+            }
+        )
+        guard observedExpectedApplicationTargets.isSubset(of: expectedTargets) else {
+            return false
+        }
+        return true
+    }
+
+    func confirmsResumedProcessLineage(
+        _ destination: VerifiedMediaResumeDestination
+    ) -> Bool {
+        let expectedApplications = Set(destination.applicationBundleIdentifiers)
+        let expectedTargets = Set(destination.expectedProcessTargets)
+        guard detection == .playing,
+              nowPlayingIsPlaying != false,
+              let target,
+              expectedApplications.contains(target.bundleIdentifier),
+              expectedTargets.contains(where: {
+                $0.processID == target.processID
+                    && $0.applicationBundleIdentifier == target.bundleIdentifier
+              })
+        else { return false }
+        return preservesResumeRetryLineage(destination)
+    }
+
     func confirmedPausedApplicationBundleIdentifiers(
         from before: MediaInterruptionSnapshot,
         among candidates: Set<String>
     ) -> Set<String> {
         guard before.audioOutputObservation?.unresolvedProcessCount == 0,
               audioOutputObservation?.unresolvedProcessCount == 0,
-              let beforeApplications = before.observedActiveApplicationBundleIdentifiers,
-              let afterApplications = observedActiveApplicationBundleIdentifiers
+              let beforeObservation = before.audioOutputObservation,
+              let afterObservation = audioOutputObservation
         else { return [] }
-        return candidates
-            .intersection(beforeApplications)
-            .subtracting(afterApplications)
+
+        let beforeTargets = Set(beforeObservation.targets)
+        let afterTargets = Set(afterObservation.targets)
+        var confirmedApplications: Set<String> = []
+
+        for candidate in candidates {
+            let originalTargets = Set(beforeTargets.filter {
+                $0.applicationBundleIdentifier == candidate
+            })
+            let currentTargets = Set(afterTargets.filter {
+                $0.applicationBundleIdentifier == candidate
+            })
+            guard !originalTargets.isEmpty,
+                  currentTargets.isSubset(of: originalTargets)
+            else { continue }
+
+            let beforeCandidateTarget = before.target.flatMap { target in
+                target.bundleIdentifier == candidate ? target : nil
+            }
+            let currentCandidateTarget = target.flatMap { target in
+                target.bundleIdentifier == candidate ? target : nil
+            }
+            if let beforeCandidateTarget,
+               before.contentIdentifier != nil,
+               (currentCandidateTarget != beforeCandidateTarget
+                    || contentIdentifier != before.contentIdentifier)
+            {
+                continue
+            }
+            if let currentCandidateTarget,
+               currentCandidateTarget != beforeCandidateTarget
+            {
+                continue
+            }
+
+            if currentTargets.isEmpty,
+               (currentCandidateTarget == nil
+                    || (detection != .playing
+                        && detection != .likelyPlaying
+                        && nowPlayingIsPlaying != true))
+            {
+                confirmedApplications.insert(candidate)
+                continue
+            }
+
+            if detection == .notPlaying,
+               nowPlayingIsPlaying != true,
+               let beforeTarget = before.target,
+               target == beforeTarget,
+               beforeTarget.bundleIdentifier == candidate,
+               currentTargets.count == 1,
+               currentTargets.contains(where: {
+                    $0.processID == beforeTarget.processID
+                        && $0.applicationBundleIdentifier == beforeTarget.bundleIdentifier
+               })
+            {
+                confirmedApplications.insert(candidate)
+            }
+        }
+
+        return confirmedApplications
     }
 
     var logValue: String {
@@ -765,6 +1506,9 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
 protocol MediaInterruptionDriving: AnyObject {
     func snapshot() async -> MediaInterruptionSnapshot
     func sendPause(to destination: MediaPauseDestination) async -> MediaCommandDispatchResult
+    func sendPause(
+        to destination: VerifiedMediaResumeDestination
+    ) async -> MediaCommandDispatchResult
     func sendPlay(to destination: VerifiedMediaResumeDestination) async -> MediaCommandDispatchResult
 }
 
@@ -1061,22 +1805,24 @@ protocol AudioOutputMonitoring: AnyObject {
 struct AudioProcessApplicationResolver {
     private let processPath: (Int32) -> String?
     private let bundleIdentifierAtURL: (URL) -> String?
+    private let processStartTimeMicrosecondsProvider: (Int32) -> UInt64?
 
     init(
         processPath: @escaping (Int32) -> String? = Self.runningProcessPath,
         bundleIdentifierAtURL: @escaping (URL) -> String? = {
             Bundle(url: $0)?.bundleIdentifier
-        }
+        },
+        processStartTimeMicroseconds: @escaping (Int32) -> UInt64? = Self.runningProcessStartTimeMicroseconds
     ) {
         self.processPath = processPath
         self.bundleIdentifierAtURL = bundleIdentifierAtURL
+        self.processStartTimeMicrosecondsProvider = processStartTimeMicroseconds
     }
 
     func applicationBundleIdentifier(
-        for processID: Int32,
-        fallback: String?
+        for processID: Int32
     ) -> String? {
-        guard let processPath = processPath(processID) else { return fallback }
+        guard let processPath = processPath(processID) else { return nil }
 
         var candidate = URL(fileURLWithPath: processPath)
         var applicationBundles: [URL] = []
@@ -1094,7 +1840,11 @@ struct AudioProcessApplicationResolver {
                 return bundleIdentifier
             }
         }
-        return fallback
+        return nil
+    }
+
+    func processStartTimeMicroseconds(for processID: Int32) -> UInt64? {
+        processStartTimeMicrosecondsProvider(processID)
     }
 
     private static func runningProcessPath(processID: Int32) -> String? {
@@ -1104,11 +1854,26 @@ struct AudioProcessApplicationResolver {
         let pathBytes = buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }
         return String(decoding: pathBytes, as: UTF8.self)
     }
+
+    private static func runningProcessStartTimeMicroseconds(processID: Int32) -> UInt64? {
+        var info = proc_bsdinfo()
+        let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+        let actualSize = withUnsafeMutablePointer(to: &info) { pointer in
+            proc_pidinfo(
+                processID,
+                PROC_PIDTBSDINFO,
+                0,
+                pointer,
+                expectedSize
+            )
+        }
+        guard actualSize == expectedSize else { return nil }
+        return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
 }
 
 struct ActiveAudioProcessRecord: Sendable, Equatable {
     let processID: Int32?
-    let fallbackBundleIdentifier: String?
 }
 
 struct ActiveAudioProcessObservationBuilder {
@@ -1128,11 +1893,10 @@ struct ActiveAudioProcessObservationBuilder {
             }
             guard processID != excludingProcessID else { continue }
             guard let applicationBundleIdentifier = applicationResolver
-                    .applicationBundleIdentifier(
-                        for: processID,
-                        fallback: process.fallbackBundleIdentifier
-                    ),
-                  !applicationBundleIdentifier.isEmpty
+                    .applicationBundleIdentifier(for: processID),
+                  !applicationBundleIdentifier.isEmpty,
+                  let processStartTimeMicroseconds = applicationResolver
+                    .processStartTimeMicroseconds(for: processID)
             else {
                 unresolvedProcessCount += 1
                 continue
@@ -1141,7 +1905,8 @@ struct ActiveAudioProcessObservationBuilder {
             targets.append(
                 MediaAudioOutputTarget(
                     processID: processID,
-                    applicationBundleIdentifier: applicationBundleIdentifier
+                    applicationBundleIdentifier: applicationBundleIdentifier,
+                    processStartTimeMicroseconds: processStartTimeMicroseconds
                 )
             )
         }
@@ -1188,16 +1953,9 @@ final class CoreAudioOutputMonitor: AudioOutputMonitoring {
             guard (try? process.isRunningOutput) == true else { continue }
             activeProcessCount += 1
 
-            let fallbackBundleIdentifier: String?
-            do {
-                fallbackBundleIdentifier = try process.bundleID
-            } catch {
-                fallbackBundleIdentifier = nil
-            }
             activeProcesses.append(
                 ActiveAudioProcessRecord(
-                    processID: try? process.pid,
-                    fallbackBundleIdentifier: fallbackBundleIdentifier
+                    processID: try? process.pid
                 )
             )
         }
@@ -1216,18 +1974,22 @@ final class CoreAudioOutputMonitor: AudioOutputMonitoring {
 
 @MainActor
 final class MacMediaInterruptionDriver: MediaInterruptionDriving {
+    private static let logger = StenoKitDiagnostics.logger
     private let bridge: any MediaRemoteBridging
     private let playbackDetector: MultiSignalMediaPlaybackStateDetector
     private let audioOutputMonitor: any AudioOutputMonitoring
+    private let applicationResolver: AudioProcessApplicationResolver
 
     init(
         bridge: any MediaRemoteBridging,
         playbackDetector: MultiSignalMediaPlaybackStateDetector,
-        audioOutputMonitor: any AudioOutputMonitoring
+        audioOutputMonitor: any AudioOutputMonitoring,
+        applicationResolver: AudioProcessApplicationResolver = AudioProcessApplicationResolver()
     ) {
         self.bridge = bridge
         self.playbackDetector = playbackDetector
         self.audioOutputMonitor = audioOutputMonitor
+        self.applicationResolver = applicationResolver
     }
 
     func snapshot() async -> MediaInterruptionSnapshot {
@@ -1267,10 +2029,58 @@ final class MacMediaInterruptionDriver: MediaInterruptionDriving {
         )
     }
 
+    func sendPause(
+        to destination: VerifiedMediaResumeDestination
+    ) async -> MediaCommandDispatchResult {
+        await sendVerified(.pause, to: destination)
+    }
+
     func sendPlay(
         to destination: VerifiedMediaResumeDestination
     ) async -> MediaCommandDispatchResult {
-        await send(.play, toApplicationBundleIdentifiers: destination.applicationBundleIdentifiers)
+        await sendVerified(.play, to: destination)
+    }
+
+    private func sendVerified(
+        _ command: SemanticMediaCommand,
+        to destination: VerifiedMediaResumeDestination
+    ) async -> MediaCommandDispatchResult {
+        let verifiedApplications = destination.applicationBundleIdentifiers.filter {
+            applicationBundleIdentifier in
+            let expectedTargets = destination.expectedProcessTargets.filter {
+                $0.applicationBundleIdentifier == applicationBundleIdentifier
+            }
+            guard !expectedTargets.isEmpty else { return false }
+            var hasSurvivingOriginalProcess = false
+            for target in expectedTargets {
+                guard let resolvedApplication = applicationResolver
+                    .applicationBundleIdentifier(for: target.processID)
+                else { continue }
+                guard resolvedApplication == applicationBundleIdentifier else {
+                    return false
+                }
+                if let expectedStartTime = target.processStartTimeMicroseconds {
+                    guard applicationResolver.processStartTimeMicroseconds(
+                        for: target.processID
+                    ) == expectedStartTime else {
+                        return false
+                    }
+                }
+                hasSurvivingOriginalProcess = true
+            }
+            return hasSurvivingOriginalProcess
+        }
+        let rejectedCount = destination.applicationBundleIdentifiers.count
+            - verifiedApplications.count
+        if rejectedCount > 0 {
+            Self.logger.info(
+                "Semantic media \(command.logValue, privacy: .public) rejected stale process lineage: rejected=\(rejectedCount, privacy: .public)."
+            )
+        }
+        return await send(
+            command,
+            toApplicationBundleIdentifiers: verifiedApplications
+        )
     }
 
     private func send(
