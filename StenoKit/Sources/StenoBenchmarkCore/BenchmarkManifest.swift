@@ -260,31 +260,37 @@ public struct BenchmarkRuntimeMetadata: Sendable, Codable {
     public var generatedAt: Date
     public var hostOSVersion: String
     public var toolVersion: String
+    public var identity: BenchmarkArtifactIdentity?
 
     public init(
         generatedAt: Date = Date(),
         hostOSVersion: String = ProcessInfo.processInfo.operatingSystemVersionString,
-        toolVersion: String = "steno-benchmark-cli/v1"
+        toolVersion: String = "steno-benchmark-cli/v2",
+        identity: BenchmarkArtifactIdentity? = nil
     ) {
         self.generatedAt = generatedAt
         self.hostOSVersion = hostOSVersion
         self.toolVersion = toolVersion
+        self.identity = identity
     }
 }
 
-public struct BenchmarkWhisperConfiguration: Sendable, Codable {
+public struct BenchmarkWhisperConfiguration: Sendable, Codable, Equatable {
     public var whisperCLIPath: String
     public var modelPath: String
     public var additionalArguments: [String]
+    public var defaultLanguageHint: String?
 
     public init(
         whisperCLIPath: String,
         modelPath: String,
-        additionalArguments: [String] = []
+        additionalArguments: [String] = [],
+        defaultLanguageHint: String? = nil
     ) {
         self.whisperCLIPath = whisperCLIPath
         self.modelPath = modelPath
         self.additionalArguments = additionalArguments
+        self.defaultLanguageHint = defaultLanguageHint
     }
 }
 
@@ -815,6 +821,7 @@ public struct PipelineOutput: Sendable, Codable {
     public var evidenceTier: BenchmarkEvidenceTier
     public var hardwareProfile: BenchmarkHardwareProfile?
     public var runtime: BenchmarkRuntimeMetadata
+    public var whisperConfiguration: BenchmarkWhisperConfiguration?
     public var profile: StyleProfile
     public var lexiconEntryCount: Int
     public var normalizationPolicy: NormalizationPolicy
@@ -827,6 +834,7 @@ public struct PipelineOutput: Sendable, Codable {
         evidenceTier: BenchmarkEvidenceTier = .smokeFixture,
         hardwareProfile: BenchmarkHardwareProfile? = nil,
         runtime: BenchmarkRuntimeMetadata = BenchmarkRuntimeMetadata(),
+        whisperConfiguration: BenchmarkWhisperConfiguration? = nil,
         profile: StyleProfile,
         lexiconEntryCount: Int,
         normalizationPolicy: NormalizationPolicy,
@@ -838,6 +846,7 @@ public struct PipelineOutput: Sendable, Codable {
         self.evidenceTier = evidenceTier
         self.hardwareProfile = hardwareProfile
         self.runtime = runtime
+        self.whisperConfiguration = whisperConfiguration
         self.profile = profile
         self.lexiconEntryCount = lexiconEntryCount
         self.normalizationPolicy = normalizationPolicy
@@ -851,6 +860,7 @@ public struct PipelineOutput: Sendable, Codable {
         case evidenceTier
         case hardwareProfile
         case runtime
+        case whisperConfiguration
         case profile
         case lexiconEntryCount
         case normalizationPolicy
@@ -865,6 +875,7 @@ public struct PipelineOutput: Sendable, Codable {
         evidenceTier = try container.decodeIfPresent(BenchmarkEvidenceTier.self, forKey: .evidenceTier) ?? .smokeFixture
         hardwareProfile = try container.decodeIfPresent(BenchmarkHardwareProfile.self, forKey: .hardwareProfile)
         runtime = try container.decodeIfPresent(BenchmarkRuntimeMetadata.self, forKey: .runtime) ?? BenchmarkRuntimeMetadata()
+        whisperConfiguration = try container.decodeIfPresent(BenchmarkWhisperConfiguration.self, forKey: .whisperConfiguration)
         profile = try container.decode(StyleProfile.self, forKey: .profile)
         lexiconEntryCount = try container.decodeIfPresent(Int.self, forKey: .lexiconEntryCount) ?? 0
         normalizationPolicy = try container.decode(NormalizationPolicy.self, forKey: .normalizationPolicy)

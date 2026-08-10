@@ -56,6 +56,8 @@ public struct PipelineValidationThresholds: Sendable {
 public enum PipelineValidationError: Error, LocalizedError {
     case missingMetric(name: String)
     case releaseSignoffRequired(actualTier: BenchmarkEvidenceTier)
+    case artifactIdentityIncomplete(missingFields: [String])
+    case artifactGeneratedFromDirtyTree
     case compatibilityMatrixUnavailable
     case compatibilityMatrixRowMissing(chipClass: AppleSiliconChipClass, memoryGB: Int, modelID: WhisperModelID)
     case werDeltaExceeded(actual: Double, maxAllowed: Double)
@@ -78,6 +80,10 @@ public enum PipelineValidationError: Error, LocalizedError {
             return "Pipeline summary is missing required metric: \(name)"
         case .releaseSignoffRequired(let actualTier):
             return "Release-signoff thresholds require evidence tier releaseSignoff, but pipeline tier was \(actualTier.rawValue)"
+        case .artifactIdentityIncomplete(let missingFields):
+            return "Release-signoff evidence is missing reproducible artifact identity: \(missingFields.joined(separator: ", "))"
+        case .artifactGeneratedFromDirtyTree:
+            return "Release-signoff evidence was generated from a dirty source tree."
         case .compatibilityMatrixUnavailable:
             return "Bundled whisper compatibility matrix is unavailable."
         case .compatibilityMatrixRowMissing(let chipClass, let memoryGB, let modelID):
@@ -117,9 +123,13 @@ public enum BenchmarkValidation {
         _ pipeline: PipelineOutput,
         thresholds: PipelineValidationThresholds
     ) throws {
-        if requiresReleaseSignoff(thresholds),
+        let releaseSignoffRequired = requiresReleaseSignoff(thresholds)
+        if releaseSignoffRequired,
            pipeline.evidenceTier != .releaseSignoff {
             throw PipelineValidationError.releaseSignoffRequired(actualTier: pipeline.evidenceTier)
+        }
+        if releaseSignoffRequired {
+            try validateArtifactIdentity(pipeline)
         }
 
         let matrixLatencyBudgets = try releaseLatencyBudgets(for: pipeline)
@@ -296,6 +306,67 @@ public enum BenchmarkValidation {
             || thresholds.maxP90RegressionRatio != nil
             || thresholds.maxP90LatencyMS != nil
             || thresholds.maxP99LatencyMS != nil
+    }
+
+    private static func validateArtifactIdentity(_ pipeline: PipelineOutput) throws {
+        guard let identity = pipeline.runtime.identity else {
+            throw PipelineValidationError.artifactIdentityIncomplete(
+                missingFields: ["runtime.identity"]
+            )
+        }
+
+        if identity.appTreeIsDirty == true {
+            throw PipelineValidationError.artifactGeneratedFromDirtyTree
+        }
+
+        var missingFields: [String] = []
+        if identity.appCommitSHA?.isEmpty != false {
+            missingFields.append("appCommitSHA")
+        }
+        if identity.appTreeIsDirty == nil {
+            missingFields.append("appTreeIsDirty")
+        }
+        if isSHA256(identity.manifestSHA256) == false {
+            missingFields.append("manifestSHA256")
+        }
+        if isSHA256(identity.audioSetSHA256) == false {
+            missingFields.append("audioSetSHA256")
+        }
+        if isSHA256(identity.whisperCLISHA256) == false {
+            missingFields.append("whisperCLISHA256")
+        }
+        if isSHA256(identity.modelSHA256) == false {
+            missingFields.append("modelSHA256")
+        }
+
+        guard let whisperConfiguration = pipeline.whisperConfiguration else {
+            missingFields.append("whisperConfiguration")
+            throw PipelineValidationError.artifactIdentityIncomplete(missingFields: missingFields)
+        }
+        if whisperConfiguration.defaultLanguageHint?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty != false {
+            missingFields.append("defaultLanguageHint")
+        }
+        if whisperConfiguration.additionalArguments.contains("--vad"),
+           isSHA256(identity.vadModelSHA256) == false {
+            missingFields.append("vadModelSHA256")
+        }
+
+        if !missingFields.isEmpty {
+            throw PipelineValidationError.artifactIdentityIncomplete(missingFields: missingFields)
+        }
+    }
+
+    private static func isSHA256(_ value: String?) -> Bool {
+        guard let value, value.count == 64 else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            ("0"..."9").contains(Character(String(scalar)))
+                || ("a"..."f").contains(Character(String(scalar)))
+                || ("A"..."F").contains(Character(String(scalar)))
+        }
     }
 
     private static func releaseLatencyBudgets(

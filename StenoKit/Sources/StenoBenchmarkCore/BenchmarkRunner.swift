@@ -15,16 +15,13 @@ public enum BenchmarkRunnerError: Error, LocalizedError {
 public struct RawRunConfiguration: Sendable {
     public var manifestPath: String
     public var whisperConfiguration: BenchmarkWhisperConfiguration
-    public var defaultLanguageHint: String?
 
     public init(
         manifestPath: String,
-        whisperConfiguration: BenchmarkWhisperConfiguration,
-        defaultLanguageHint: String? = nil
+        whisperConfiguration: BenchmarkWhisperConfiguration
     ) {
         self.manifestPath = manifestPath
         self.whisperConfiguration = whisperConfiguration
-        self.defaultLanguageHint = defaultLanguageHint
     }
 }
 
@@ -52,6 +49,13 @@ public enum BenchmarkRunner {
         manifest: BenchmarkManifest,
         configuration: RawRunConfiguration
     ) async -> RawEngineOutput {
+        let runtime = BenchmarkRuntimeMetadata(
+            identity: BenchmarkArtifactIdentity.capture(
+                manifest: manifest,
+                manifestPath: configuration.manifestPath,
+                whisperConfiguration: configuration.whisperConfiguration
+            )
+        )
         let normalizer = TextNormalizer(policy: manifest.scoring.normalization)
         let engine = WhisperCLITranscriptionEngine(
             config: .init(
@@ -69,7 +73,8 @@ public enum BenchmarkRunner {
         for sample in manifest.samples {
             let started = Date()
             let audioURL = resolveSampleAudioPath(sample.audioPath, manifestDirectory: manifestDirectory)
-            let languageHint = sample.languageHint ?? configuration.defaultLanguageHint
+            let languageHint = sample.languageHint
+                ?? configuration.whisperConfiguration.defaultLanguageHint
 
             do {
                 let raw = try await engine.transcribe(
@@ -125,6 +130,7 @@ public enum BenchmarkRunner {
             benchmarkName: manifest.benchmarkName,
             evidenceTier: manifest.evidenceTier,
             hardwareProfile: manifest.hardwareProfile,
+            runtime: runtime,
             manifestSchemaVersion: manifest.schemaVersion,
             normalizationPolicy: manifest.scoring.normalization,
             whisperConfiguration: configuration.whisperConfiguration,
@@ -276,6 +282,8 @@ public enum BenchmarkRunner {
             benchmarkName: manifest.benchmarkName,
             evidenceTier: manifest.evidenceTier,
             hardwareProfile: manifest.hardwareProfile,
+            runtime: rawOutput.runtime,
+            whisperConfiguration: rawOutput.whisperConfiguration,
             profile: configuration.profile,
             lexiconEntryCount: configuration.lexicon.entries.count,
             normalizationPolicy: manifest.scoring.normalization,

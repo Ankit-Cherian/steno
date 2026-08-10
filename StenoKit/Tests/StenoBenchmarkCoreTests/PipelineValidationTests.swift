@@ -312,6 +312,58 @@ func pipelineValidationRejectsReleaseThresholdsForSmokeFixture() {
     }
 }
 
+@Test("Pipeline validation rejects release evidence without reproducible artifact identity")
+func pipelineValidationRejectsMissingArtifactIdentity() {
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0,
+        cerDelta: 0.0,
+        regressed: 0,
+        artifactIdentity: nil
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        minTermRecallAccuracy: 1.0
+    )
+
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected missing artifact identity validation failure.")
+    } catch PipelineValidationError.artifactIdentityIncomplete(let missingFields) {
+        #expect(missingFields.contains("runtime.identity"))
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+}
+
+@Test("Pipeline validation rejects release evidence produced from a dirty tree")
+func pipelineValidationRejectsDirtyArtifactIdentity() {
+    var dirtyIdentity = validArtifactIdentity
+    dirtyIdentity.appTreeIsDirty = true
+    let pipeline = makePipelineOutput(
+        werDelta: 0.0,
+        cerDelta: 0.0,
+        regressed: 0,
+        artifactIdentity: dirtyIdentity
+    )
+    let thresholds = PipelineValidationThresholds(
+        maxWERDelta: 0.0,
+        maxCERDelta: 0.0,
+        maxRegressedSamples: 0,
+        minTermRecallAccuracy: 1.0
+    )
+
+    do {
+        try BenchmarkValidation.validatePipeline(pipeline, thresholds: thresholds)
+        Issue.record("Expected dirty artifact identity validation failure.")
+    } catch PipelineValidationError.artifactGeneratedFromDirtyTree {
+        // Expected.
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+}
+
 @Test("Pipeline validation uses compatibility-matrix latency budgets for release signoff")
 func pipelineValidationUsesCompatibilityMatrixLatencyBudgets() {
     let pipeline = makePipelineOutput(
@@ -396,7 +448,8 @@ private func makePipelineOutput(
     p50LatencyMS: Double? = 650,
     p90LatencyMS: Double? = 700,
     p99LatencyMS: Double? = 1_100,
-    fillerSamples: Int = 1
+    fillerSamples: Int = 1,
+    artifactIdentity: BenchmarkArtifactIdentity? = validArtifactIdentity
 ) -> PipelineOutput {
     let summary = PipelineAggregate(
         totalSamples: 1,
@@ -444,6 +497,13 @@ private func makePipelineOutput(
         benchmarkName: "Validation Fixture",
         evidenceTier: evidenceTier,
         hardwareProfile: .init(chipClass: .m5Pro, memoryGB: 64, modelID: .largeV3Turbo),
+        runtime: .init(identity: artifactIdentity),
+        whisperConfiguration: .init(
+            whisperCLIPath: "/tmp/whisper-cli",
+            modelPath: "/tmp/model.bin",
+            additionalArguments: ["-t", "6", "--suppress-nst", "--vad", "--vad-model", "/tmp/vad.bin"],
+            defaultLanguageHint: "en-US"
+        ),
         profile: .init(
             name: "benchmark-local",
             tone: .natural,
@@ -457,3 +517,14 @@ private func makePipelineOutput(
         samples: []
     )
 }
+
+private let validArtifactIdentity = BenchmarkArtifactIdentity(
+    appCommitSHA: "fixture-commit",
+    appTreeIsDirty: false,
+    engineCommitSHA: "fixture-engine-commit",
+    manifestSHA256: String(repeating: "1", count: 64),
+    audioSetSHA256: String(repeating: "2", count: 64),
+    whisperCLISHA256: String(repeating: "3", count: 64),
+    modelSHA256: String(repeating: "4", count: 64),
+    vadModelSHA256: String(repeating: "5", count: 64)
+)
