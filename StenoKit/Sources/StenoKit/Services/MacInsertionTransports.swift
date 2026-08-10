@@ -42,34 +42,23 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
     public init() {}
 
     public func insert(text: String, target: AppContext) async throws {
+        try Task.checkCancellation()
         guard !text.isEmpty else { return }
         guard AXIsProcessTrusted() else {
             throw MacInsertionError.accessibilityPermissionMissing
         }
 
-        await Self.activateTargetApp(target)
-
-        let preValue = Self.readFocusedElementValue()
+        try await Self.activateTargetApp(target)
+        try Task.checkCancellation()
 
         try await typeUnicode(text)
-
-        // Only verify if we could read the pre-value (AX permission + element supports it)
-        if preValue != nil {
-            try await Task.sleep(nanoseconds: 150_000_000) // 150ms
-            let postValue = Self.readFocusedElementValue()
-            if let postValue, postValue == preValue {
-                // Positive evidence: value readable and unchanged → insertion failed
-                throw MacInsertionError.attributeUpdateFailed
-            }
-            // postValue changed or became nil (element lost focus) → assume success
-        }
-        // preValue nil → can't verify, assume CGEvent delivered
     }
 
-    private static func activateTargetApp(_ target: AppContext) async {
+    private static func activateTargetApp(_ target: AppContext) async throws {
         guard target.bundleIdentifier != "unknown" else { return }
 
         for attempt in 0..<3 {
+            try Task.checkCancellation()
             let activationTriggered = await MainActor.run { () -> Bool in
                 guard let app = NSRunningApplication.runningApplications(
                     withBundleIdentifier: target.bundleIdentifier
@@ -80,7 +69,8 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
             }
 
             let delay = UInt64(150_000_000 + (50_000_000 * attempt))
-            try? await Task.sleep(nanoseconds: delay)
+            try await Task.sleep(nanoseconds: delay)
+            try Task.checkCancellation()
 
             let isFrontmost = await MainActor.run {
                 NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleIdentifier
@@ -91,58 +81,45 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
         }
     }
 
-    private static func readFocusedElementValue() -> String? {
-        let systemWide = AXUIElementCreateSystemWide()
-        var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            systemWide,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRef
-        ) == .success, let focusedRef else {
-            return nil
-        }
-        guard CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else { return nil }
-        let element = unsafeDowncast(focusedRef as AnyObject, to: AXUIElement.self)
-        var valueRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXValueAttribute as CFString,
-            &valueRef
-        ) == .success else {
-            return nil
-        }
-        return valueRef as? String
-    }
-
     private func typeUnicode(_ text: String) async throws {
-        guard let source = CGEventSource(stateID: .privateState) else {
-            throw MacInsertionError.eventSourceUnavailable
-        }
-
+        try Task.checkCancellation()
         let allCodeUnits = Array(text.utf16)
         guard !allCodeUnits.isEmpty else { return }
 
-        let chunkSize = 20
-        for offset in stride(from: 0, to: allCodeUnits.count, by: chunkSize) {
-            let end = min(offset + chunkSize, allCodeUnits.count)
-            let chunk = Array(allCodeUnits[offset..<end])
-
-            guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-                  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
+        // Spawning this detached operation is the insertion commit point. It
+        // prebuilds every event before posting the first one, then completes all
+        // chunks even if the parent task is cancelled mid-insertion.
+        try await Task.detached(priority: .userInitiated) {
+            guard let source = CGEventSource(stateID: .privateState) else {
                 throw MacInsertionError.eventSourceUnavailable
             }
 
-            // Some frameworks ignore event Unicode payloads and derive text from keycode/state.
-            // InsertionService keeps accessibility and clipboard transports as fallbacks.
-            keyDown.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-            keyUp.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-            keyDown.post(tap: stenoSyntheticEventTapLocation)
-            keyUp.post(tap: stenoSyntheticEventTapLocation)
+            let chunkSize = 20
+            var events: [(keyDown: CGEvent, keyUp: CGEvent)] = []
+            for offset in stride(from: 0, to: allCodeUnits.count, by: chunkSize) {
+                let end = min(offset + chunkSize, allCodeUnits.count)
+                let chunk = Array(allCodeUnits[offset..<end])
 
-            if end < allCodeUnits.count {
-                try await Task.sleep(nanoseconds: 10_000_000) // 10ms between chunks
+                guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                      let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
+                    throw MacInsertionError.eventSourceUnavailable
+                }
+
+                // Some frameworks ignore event Unicode payloads and derive text from keycode/state.
+                // InsertionService keeps accessibility and clipboard transports as fallbacks.
+                keyDown.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+                keyUp.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+                events.append((keyDown, keyUp))
             }
-        }
+
+            for (index, event) in events.enumerated() {
+                event.keyDown.post(tap: stenoSyntheticEventTapLocation)
+                event.keyUp.post(tap: stenoSyntheticEventTapLocation)
+                if index + 1 < events.count {
+                    usleep(10_000) // 10ms between chunks
+                }
+            }
+        }.value
     }
 }
 
@@ -153,6 +130,7 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
 
     public func insert(text: String, target: AppContext) async throws {
         _ = target
+        try Task.checkCancellation()
         guard AXIsProcessTrusted() else {
             throw MacInsertionError.accessibilityPermissionMissing
         }
@@ -174,6 +152,7 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
 
         let element = unsafeDowncast(focusedRef as AnyObject, to: AXUIElement.self)
         let composedUpdate = try composeUpdatedValue(for: element, insertion: text)
+        try Task.checkCancellation()
         let setStatus = AXUIElementSetAttributeValue(
             element,
             kAXValueAttribute as CFString,
@@ -271,6 +250,9 @@ public enum MacPasteHelper {
     }
 
     public static func activateAndPaste(target: AppContext) async -> AutoPasteOutcome {
+        guard !Task.isCancelled else {
+            return .skipped(reason: "Auto-paste canceled.")
+        }
         guard AXIsProcessTrusted() else {
             return .skipped(reason: "Accessibility permission is required for auto-paste.")
         }
@@ -286,12 +268,19 @@ public enum MacPasteHelper {
         }
 
         for attempt in 0..<2 {
+            guard !Task.isCancelled else {
+                return .skipped(reason: "Auto-paste canceled.")
+            }
             if simulateCommandV() {
                 return .attempted
             }
 
             let delay = UInt64(60_000_000 * UInt64(attempt + 1))
-            try? await Task.sleep(nanoseconds: delay)
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return .skipped(reason: "Auto-paste canceled.")
+            }
         }
 
         return .skipped(reason: "Unable to synthesize Cmd+V for auto-paste.")
@@ -303,6 +292,9 @@ public enum MacPasteHelper {
         }
 
         for attempt in 0..<3 {
+            guard !Task.isCancelled else {
+                return .focusNotAcquired
+            }
             let didFindApp = await MainActor.run { () -> Bool in
                 guard let app = NSRunningApplication.runningApplications(
                     withBundleIdentifier: target.bundleIdentifier
@@ -318,7 +310,11 @@ public enum MacPasteHelper {
             }
 
             let delay = UInt64(150_000_000 + (50_000_000 * attempt))
-            try? await Task.sleep(nanoseconds: delay)
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return .focusNotAcquired
+            }
 
             let isFrontmost = await MainActor.run {
                 NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleIdentifier
@@ -332,12 +328,14 @@ public enum MacPasteHelper {
     }
 
     public static func simulateCommandV() -> Bool {
+        guard !Task.isCancelled else { return false }
         guard let source = CGEventSource(stateID: .privateState),
               let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
         else { return false }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
+        guard !Task.isCancelled else { return false }
         keyDown.post(tap: stenoSyntheticEventTapLocation)
         keyUp.post(tap: stenoSyntheticEventTapLocation)
         return true

@@ -1,6 +1,57 @@
 import Foundation
 
+public struct RetainedWhisperRuntimePaths: Sendable, Equatable {
+    public var whisperCLIPath: String
+    public var helperPath: String
+
+    public init(whisperCLIPath: String, helperPath: String) {
+        self.whisperCLIPath = whisperCLIPath
+        self.helperPath = helperPath
+    }
+}
+
 public enum WhisperRuntimeConfiguration {
+    public static func retainedRuntimePaths(
+        relativeTo whisperCLIPath: String,
+        isExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> RetainedWhisperRuntimePaths? {
+        let cliURL = URL(fileURLWithPath: whisperCLIPath)
+        let binDirectory = cliURL.deletingLastPathComponent()
+        let buildDirectory = binDirectory.deletingLastPathComponent()
+        let checkoutDirectory = buildDirectory.deletingLastPathComponent()
+
+        if cliURL.lastPathComponent == "whisper-cli",
+           binDirectory.lastPathComponent == "bin",
+           buildDirectory.lastPathComponent == "build",
+           checkoutDirectory.lastPathComponent == "whisper.cpp" {
+            let canonicalBin = checkoutDirectory.appendingPathComponent("build-steno/bin")
+            let canonicalHelper = canonicalBin.appendingPathComponent("steno-whisper-runtime").path
+            if isExecutableFile(canonicalHelper) {
+                return RetainedWhisperRuntimePaths(
+                    whisperCLIPath: whisperCLIPath,
+                    helperPath: canonicalHelper
+                )
+            }
+        }
+
+        let adjacentHelper = binDirectory.appendingPathComponent("steno-whisper-runtime").path
+        guard isExecutableFile(adjacentHelper) else { return nil }
+        return RetainedWhisperRuntimePaths(
+            whisperCLIPath: whisperCLIPath,
+            helperPath: adjacentHelper
+        )
+    }
+
+    public static func retainedHelperPath(
+        relativeTo whisperCLIPath: String,
+        isExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> String? {
+        retainedRuntimePaths(
+            relativeTo: whisperCLIPath,
+            isExecutableFile: isExecutableFile
+        )?.helperPath
+    }
+
     public static func defaultVADModelPath(relativeTo modelPath: String) -> String {
         let modelsDir = (modelPath as NSString).deletingLastPathComponent
         return (modelsDir as NSString).appendingPathComponent("ggml-silero-v6.2.0.bin")

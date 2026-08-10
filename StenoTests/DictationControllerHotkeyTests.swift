@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Steno
@@ -225,11 +226,260 @@ func teardownCancelsInFlightTranscription() async {
     controller.teardown()
     let statusAtTeardown = controller.status
     await processingGate.open()
+    await controller.teardownAndWait()
 
     #expect(await waitForLifecycleEvent("capture.cancel", in: events))
+    #expect(await waitForLifecycleEvent("runtime.shutdown", in: events))
     try? await Task.sleep(nanoseconds: 20_000_000)
     #expect(controller.status == statusAtTeardown)
     #expect((await events.snapshot()).filter { $0 == "media.release" }.count == 1)
+    #expect((await events.snapshot()).filter { $0 == "runtime.shutdown" }.count == 1)
+}
+
+@MainActor
+@Test("Explicit cancel during transcription emits no late completion")
+func explicitCancelDuringTranscriptionEmitsNoLateCompletion() async {
+    let events = LifecycleEventLog()
+    let processingGate = LifecycleGate()
+    let controller = DictationController(
+        hotkey: FakeHotkeyService(),
+        mediaInterruption: FakeMediaInterruptionService(events: events),
+        coordinator: FakeDictationCoordinator(
+            events: events,
+            processingGate: processingGate
+        )
+    )
+
+    controller.pressToTalkStart()
+    guard await waitForLifecycleEvent("media.pause", in: events) else {
+        Issue.record("Start events: \(await events.snapshot()); status: \(controller.status)")
+        await controller.teardownAndWait()
+        return
+    }
+    controller.pressToTalkStop()
+    guard await waitForLifecycleEvent("transcription.start", in: events),
+          await waitForLifecycleEvent("media.release", in: events)
+    else {
+        Issue.record("Processing events: \(await events.snapshot()); status: \(controller.status)")
+        await controller.teardownAndWait()
+        return
+    }
+
+    controller.cancelActiveRecording()
+    let statusAtCancel = controller.status
+    await processingGate.open()
+
+    #expect(await waitForLifecycleEvent("capture.cancel", in: events))
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    #expect(controller.recordingLifecycleState == .idle)
+    #expect(controller.status == statusAtCancel)
+    #expect(controller.lastTranscript.isEmpty)
+    #expect((await events.snapshot()).filter { $0 == "media.release" }.count == 1)
+    await controller.teardownAndWait()
+}
+
+@MainActor
+@Test("System unload waits for canceled and newer completion tasks")
+func systemUnloadWaitsForAllCompletionTasks() async {
+    let events = LifecycleEventLog()
+    let oldGate = LifecycleGate()
+    let newGate = LifecycleGate()
+    let unloadCompletions = AsyncCounter()
+    let controller = DictationController(
+        hotkey: FakeHotkeyService(),
+        mediaInterruption: FakeMediaInterruptionService(events: events),
+        coordinator: FakeDictationCoordinator(
+            events: events,
+            processingGates: [oldGate, newGate]
+        )
+    )
+
+    controller.pressToTalkStart()
+    guard await waitForLifecycleEventCount("capture.ready", count: 1, in: events) else {
+        Issue.record("First start did not settle: \(await events.snapshot())")
+        await controller.teardownAndWait()
+        return
+    }
+    controller.pressToTalkStop()
+    guard await waitForLifecycleEventCount("transcription.start", count: 1, in: events) else {
+        Issue.record("First completion did not start: \(await events.snapshot())")
+        await controller.teardownAndWait()
+        return
+    }
+
+    controller.cancelActiveRecording()
+    controller.pressToTalkStart()
+    guard await waitForLifecycleEventCount("capture.ready", count: 2, in: events) else {
+        Issue.record("Rapid restart did not settle: \(await events.snapshot())")
+        await controller.teardownAndWait()
+        return
+    }
+    controller.pressToTalkStop()
+    guard await waitForLifecycleEventCount("transcription.start", count: 2, in: events) else {
+        Issue.record("Newer completion did not start: \(await events.snapshot())")
+        await controller.teardownAndWait()
+        return
+    }
+
+    let unloadTask = Task {
+        await controller.unloadRuntimeForLifecycleTesting()
+        await unloadCompletions.increment()
+    }
+    for _ in 0..<20 {
+        await Task.yield()
+    }
+    #expect(await unloadCompletions.value() == 0)
+    #expect(!(await events.snapshot()).contains("runtime.unload"))
+
+    await oldGate.open()
+    for _ in 0..<20 {
+        await Task.yield()
+    }
+    #expect(await unloadCompletions.value() == 0)
+
+    await newGate.open()
+    await unloadTask.value
+
+    let statusAfterUnload = controller.status
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    #expect(await unloadCompletions.value() == 1)
+    #expect((await events.snapshot()).filter { $0 == "runtime.unload" }.count == 1)
+    #expect(controller.status == statusAfterUnload)
+    #expect(controller.recordingLifecycleState == .idle)
+    await controller.teardownAndWait()
+}
+
+@MainActor
+@Test("Memory pressure defers runtime unload until press-to-talk finishes")
+func memoryPressureCannotReleaseMediaDuringPressToTalk() async {
+    let events = LifecycleEventLog()
+    let controller = DictationController(
+        hotkey: FakeHotkeyService(),
+        mediaInterruption: FakeMediaInterruptionService(events: events),
+        coordinator: FakeDictationCoordinator(events: events)
+    )
+
+    controller.pressToTalkStart()
+    guard await waitForLifecycleEvent("capture.ready", in: events),
+          await waitForLifecycleEvent("media.pause", in: events)
+    else {
+        Issue.record("Start did not settle: \(await events.snapshot())")
+        await controller.teardownAndWait()
+        return
+    }
+
+    await controller.unloadRuntimeForMemoryPressureTesting()
+
+    let beforeStop = await events.snapshot()
+    #expect(controller.isRecording)
+    #expect(controller.recordingLifecycleState == .recordingPressToTalk)
+    #expect(!beforeStop.contains("capture.cancel"))
+    #expect(!beforeStop.contains("media.release"))
+    #expect(!beforeStop.contains("runtime.unload"))
+
+    controller.pressToTalkStop()
+
+    #expect(await waitForLifecycleEvent("runtime.unload", in: events))
+    let afterStop = await events.snapshot()
+    #expect(!afterStop.contains("capture.cancel"))
+    assertEventOrder("capture.stop", before: "media.release", in: afterStop)
+    assertEventOrder("media.release", before: "runtime.unload", in: afterStop)
+    await controller.teardownAndWait()
+}
+
+@MainActor
+@Test("Wake notification invalidates any retained runtime that survived sleep")
+func wakeNotificationUnloadsRetainedRuntime() async {
+    let events = LifecycleEventLog()
+    let controller = DictationController(
+        hotkey: FakeHotkeyService(),
+        mediaInterruption: FakeMediaInterruptionService(events: events),
+        coordinator: FakeDictationCoordinator(events: events)
+    )
+
+    NSWorkspace.shared.notificationCenter.post(
+        name: NSWorkspace.didWakeNotification,
+        object: nil
+    )
+
+    #expect(await waitForLifecycleEvent("runtime.unload", in: events, attempts: 40))
+    await controller.teardownAndWait()
+}
+
+@MainActor
+@Test("System unload keeps a deferred settings rebuild inside the lifecycle transaction")
+func systemUnloadSerializesDeferredRuntimeRebuild() async {
+    let testDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StenoTests-\(UUID().uuidString)", isDirectory: true)
+    let events = LifecycleEventLog()
+    let processingGate = LifecycleGate()
+    let shutdownGate = LifecycleGate()
+    let unloadCompletions = AsyncCounter()
+    let rebuilds = AsyncCounter()
+    let owner = FakeDictationCoordinator(
+        events: events,
+        processingGate: processingGate,
+        shutdownGate: shutdownGate,
+        eventPrefix: "owner"
+    )
+    let replacement = FakeDictationCoordinator(events: events, eventPrefix: "replacement")
+    let controller = DictationController(
+        hotkey: FakeHotkeyService(),
+        mediaInterruption: FakeMediaInterruptionService(events: events),
+        preferencesStore: AppPreferencesStore(
+            storageURL: testDirectory.appendingPathComponent("preferences.json")
+        ),
+        coordinator: owner,
+        runtimeRebuildOverride: {
+            await rebuilds.increment()
+            return replacement
+        }
+    )
+    defer {
+        controller.teardown()
+        try? FileManager.default.removeItem(at: testDirectory)
+    }
+
+    controller.pressToTalkStart()
+    guard await waitForLifecycleEvent("owner.capture.ready", in: events) else {
+        Issue.record("Start did not settle: \(await events.snapshot())")
+        return
+    }
+    controller.pressToTalkStop()
+    guard await waitForLifecycleEvent("owner.transcription.start", in: events) else {
+        Issue.record("Completion did not begin: \(await events.snapshot())")
+        return
+    }
+
+    controller.applySettingsDraft(preferences: controller.preferences)
+    guard await waitForCondition({ controller.lifecycleDiagnostics.hasPendingRuntimeRebuild }) else {
+        Issue.record("Settings rebuild was not deferred during transcription.")
+        return
+    }
+
+    let unload = Task {
+        await controller.unloadRuntimeForLifecycleTesting()
+        await unloadCompletions.increment()
+    }
+    await processingGate.open()
+    guard await waitForLifecycleEvent("owner.runtime.shutdown", in: events) else {
+        Issue.record("Deferred rebuild did not reach owner shutdown: \(await events.snapshot())")
+        return
+    }
+
+    for _ in 0..<20 {
+        await Task.yield()
+    }
+    #expect(await unloadCompletions.value() == 0)
+
+    await shutdownGate.open()
+    await unload.value
+    #expect(await unloadCompletions.value() == 1)
+    #expect(await rebuilds.value() == 1)
+
+    controller.pressToTalkStart()
+    #expect(await waitForLifecycleEvent("replacement.capture.start", in: events))
+    #expect((await events.snapshot()).filter { $0 == "owner.capture.start" }.count == 1)
 }
 
 @MainActor
@@ -463,6 +713,118 @@ func settingsRebuildWaitsForSessionCleanup() async {
 }
 
 @MainActor
+@Test("Newest settings rebuild owns the installed runtime")
+func newestSettingsRebuildOwnsInstalledRuntime() async {
+    let testDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StenoTests-\(UUID().uuidString)", isDirectory: true)
+    let events = LifecycleEventLog()
+    let ownerShutdownGate = LifecycleGate()
+    let owner = FakeDictationCoordinator(
+        events: events,
+        shutdownGate: ownerShutdownGate,
+        eventPrefix: "owner"
+    )
+    let latest = FakeDictationCoordinator(events: events, eventPrefix: "latest")
+    let stale = FakeDictationCoordinator(events: events, eventPrefix: "stale")
+    var rebuildCount = 0
+    let controller = DictationController(
+        hotkey: FakeHotkeyService(),
+        mediaInterruption: FakeMediaInterruptionService(events: events),
+        preferencesStore: AppPreferencesStore(
+            storageURL: testDirectory.appendingPathComponent("preferences.json")
+        ),
+        coordinator: owner,
+        runtimeRebuildOverride: {
+            rebuildCount += 1
+            return rebuildCount == 1 ? latest : stale
+        }
+    )
+    defer {
+        controller.teardown()
+        try? FileManager.default.removeItem(at: testDirectory)
+    }
+
+    controller.applySettingsDraft(preferences: controller.preferences)
+    guard await waitForLifecycleEvent("owner.runtime.shutdown", in: events) else {
+        Issue.record("First rebuild did not begin owner shutdown: \(await events.snapshot())")
+        return
+    }
+
+    controller.applySettingsDraft(preferences: controller.preferences)
+    guard await waitForCondition({ rebuildCount == 1 }) else {
+        Issue.record("Newest rebuild did not install while the older shutdown was pending")
+        return
+    }
+
+    await ownerShutdownGate.open()
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    controller.pressToTalkStart()
+    #expect(await waitForAnyLifecycleEvent(
+        ["latest.capture.start", "stale.capture.start"],
+        in: events
+    ))
+
+    let snapshot = await events.snapshot()
+    #expect(rebuildCount == 1)
+    #expect(snapshot.contains("latest.capture.start"))
+    #expect(!snapshot.contains("stale.capture.start"))
+}
+
+@MainActor
+@Test("Teardown invalidates a rebuild waiting on old runtime shutdown")
+func teardownInvalidatesPendingRuntimeRebuild() async {
+    let testDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StenoTests-\(UUID().uuidString)", isDirectory: true)
+    let events = LifecycleEventLog()
+    let ownerShutdownGate = LifecycleGate()
+    let owner = FakeDictationCoordinator(
+        events: events,
+        shutdownGate: ownerShutdownGate,
+        eventPrefix: "owner"
+    )
+    let replacement = FakeDictationCoordinator(events: events, eventPrefix: "replacement")
+    var rebuildCount = 0
+    let controller = DictationController(
+        hotkey: FakeHotkeyService(),
+        mediaInterruption: FakeMediaInterruptionService(events: events),
+        preferencesStore: AppPreferencesStore(
+            storageURL: testDirectory.appendingPathComponent("preferences.json")
+        ),
+        coordinator: owner,
+        runtimeRebuildOverride: {
+            rebuildCount += 1
+            return replacement
+        }
+    )
+    defer { try? FileManager.default.removeItem(at: testDirectory) }
+
+    controller.applySettingsDraft(preferences: controller.preferences)
+    guard await waitForLifecycleEvent("owner.runtime.shutdown", in: events) else {
+        Issue.record("Rebuild did not begin owner shutdown: \(await events.snapshot())")
+        return
+    }
+
+    controller.teardown()
+    let teardownCompletions = AsyncCounter()
+    let teardownWaiter = Task {
+        await controller.teardownAndWait()
+        await teardownCompletions.increment()
+    }
+    for _ in 0..<20 {
+        await Task.yield()
+    }
+    #expect(await teardownCompletions.value() == 0)
+
+    await ownerShutdownGate.open()
+    await teardownWaiter.value
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
+    #expect(await teardownCompletions.value() == 1)
+    #expect(rebuildCount == 0)
+    #expect(!(await events.snapshot()).contains("replacement.runtime.shutdown"))
+}
+
+@MainActor
 @Test("Failed start clears its completed task ownership")
 func failedStartClearsActiveStartTask() async {
     let events = LifecycleEventLog()
@@ -619,7 +981,9 @@ private actor FakeDictationCoordinator: DictationSessionCoordinating {
     private let stopShouldFail: Bool
     private let startGate: LifecycleGate?
     private let cancelGate: LifecycleGate?
-    private let processingGate: LifecycleGate?
+    private let processingGates: [LifecycleGate]
+    private var processingGateIndex = 0
+    private let shutdownGate: LifecycleGate?
     private let eventPrefix: String?
 
     init(
@@ -630,6 +994,8 @@ private actor FakeDictationCoordinator: DictationSessionCoordinating {
         startGate: LifecycleGate? = nil,
         cancelGate: LifecycleGate? = nil,
         processingGate: LifecycleGate? = nil,
+        processingGates: [LifecycleGate] = [],
+        shutdownGate: LifecycleGate? = nil,
         eventPrefix: String? = nil
     ) {
         self.events = events
@@ -638,7 +1004,12 @@ private actor FakeDictationCoordinator: DictationSessionCoordinating {
         self.stopShouldFail = stopShouldFail
         self.startGate = startGate
         self.cancelGate = cancelGate
-        self.processingGate = processingGate
+        if processingGates.isEmpty, let processingGate {
+            self.processingGates = [processingGate]
+        } else {
+            self.processingGates = processingGates
+        }
+        self.shutdownGate = shutdownGate
         self.eventPrefix = eventPrefix
     }
 
@@ -668,8 +1039,10 @@ private actor FakeDictationCoordinator: DictationSessionCoordinating {
         languageHints: [String]
     ) async throws -> InsertResult {
         await events.append(event("transcription.start"))
-        if let processingGate {
-            await processingGate.wait()
+        if processingGateIndex < processingGates.count {
+            let gate = processingGates[processingGateIndex]
+            processingGateIndex += 1
+            await gate.wait()
         }
         return InsertResult(status: .noSpeech, method: .none, insertedText: "")
     }
@@ -683,6 +1056,17 @@ private actor FakeDictationCoordinator: DictationSessionCoordinating {
 
     func setHandsFreeEnabled(_ enabled: Bool) async {
         await events.append(event("capture.ready"))
+    }
+
+    func unloadTranscriptionRuntime() async {
+        await events.append(event("runtime.unload"))
+    }
+
+    func shutdown() async {
+        await events.append(event("runtime.shutdown"))
+        if let shutdownGate {
+            await shutdownGate.wait()
+        }
     }
 
     private func event(_ name: String) -> String {
@@ -716,6 +1100,21 @@ private func waitForLifecycleEvent(
 ) async -> Bool {
     for _ in 0..<attempts {
         if await log.snapshot().contains(event) {
+            return true
+        }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    return false
+}
+
+private func waitForLifecycleEventCount(
+    _ event: String,
+    count: Int,
+    in log: LifecycleEventLog,
+    attempts: Int = 400
+) async -> Bool {
+    for _ in 0..<attempts {
+        if await log.snapshot().filter({ $0 == event }).count >= count {
             return true
         }
         try? await Task.sleep(nanoseconds: 5_000_000)

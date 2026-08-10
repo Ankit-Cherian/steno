@@ -27,6 +27,9 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         var failures: [String] = []
 
         for transport in prioritizedTransports(for: target) {
+            guard !Task.isCancelled else {
+                return Self.cancelledResult(text: text)
+            }
             if let clipboardTransport = transport as? ClipboardInsertionTransport {
                 do {
                     let outcome = try await clipboardTransport.insertAndReturnOutcome(text: text, target: target)
@@ -36,6 +39,8 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                         insertedText: text,
                         errorMessage: outcome.skippedReason
                     )
+                } catch is CancellationError {
+                    return Self.cancelledResult(text: text)
                 } catch {
                     failures.append("\(transport.method.rawValue): \(error.localizedDescription)")
                     continue
@@ -44,10 +49,14 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
 
             do {
                 try await transport.insert(text: text, target: target)
-
                 let status: InsertionStatus = transport.method == .clipboardPaste ? .copiedOnly : .inserted
                 return InsertResult(status: status, method: transport.method, insertedText: text)
+            } catch is CancellationError {
+                return Self.cancelledResult(text: text)
             } catch {
+                guard !Task.isCancelled else {
+                    return Self.cancelledResult(text: text)
+                }
                 failures.append("\(transport.method.rawValue): \(error.localizedDescription)")
             }
         }
@@ -57,6 +66,15 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             method: .none,
             insertedText: text,
             errorMessage: failures.joined(separator: " | ")
+        )
+    }
+
+    private static func cancelledResult(text: String) -> InsertResult {
+        InsertResult(
+            status: .failed,
+            method: .none,
+            insertedText: text,
+            errorMessage: "Insertion canceled."
         )
     }
 
@@ -86,6 +104,7 @@ public actor MemoryClipboardService: ClipboardService {
     public init() {}
 
     public func setString(_ text: String) async throws {
+        try Task.checkCancellation()
         latestValue = text
     }
 }
@@ -108,14 +127,27 @@ public struct ClipboardInsertionTransport: InsertionTransport {
     }
 
     public func insertAndReturnOutcome(text: String, target: AppContext) async throws -> AutoPasteOutcome {
+        try Task.checkCancellation()
         try await clipboard.setString(text)
 
         guard let autoPaste else {
             return .skipped(reason: "Auto-paste callback not configured.")
         }
 
-        try? await Task.sleep(nanoseconds: 50_000_000) // 50ms for clipboard to settle
-        return await autoPaste(target)
+        guard !Task.isCancelled else {
+            return .skipped(reason: "Auto-paste canceled after copying.")
+        }
+
+        do {
+            try await Task.sleep(nanoseconds: 50_000_000) // 50ms for clipboard to settle
+        } catch {
+            return .skipped(reason: "Auto-paste canceled after copying.")
+        }
+        guard !Task.isCancelled else {
+            return .skipped(reason: "Auto-paste canceled after copying.")
+        }
+        let outcome = await autoPaste(target)
+        return outcome
     }
 }
 
@@ -126,6 +158,7 @@ public actor MacClipboardService: ClipboardService {
     public init() {}
 
     public func setString(_ text: String) async throws {
+        try Task.checkCancellation()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }

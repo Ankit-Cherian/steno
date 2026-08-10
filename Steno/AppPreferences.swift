@@ -107,7 +107,10 @@ struct AppPreferences: Codable, Sendable, Equatable {
             let bundledRuntime = BundledWhisperRuntime.resolvedPaths(bundle: .main, fileManager: fileManager)
             let vendorRuntime = Self.detectedVendorRoot().map { vendorRoot in
                 WhisperRuntimePathCandidates(
-                    whisperCLIPath: vendorRoot.appendingPathComponent("build/bin/whisper-cli").path,
+                    whisperCLIPath: Self.detectedVendorCLIPath(
+                        for: vendorRoot,
+                        fileManager: fileManager
+                    ),
                     modelPath: vendorRoot.appendingPathComponent("models/ggml-small.en.bin").path,
                     vadModelPath: vendorRoot.appendingPathComponent("models/ggml-silero-v6.2.0.bin").path
                 )
@@ -160,9 +163,23 @@ struct AppPreferences: Codable, Sendable, Equatable {
             #endif
 
             return candidates.first { candidate in
-                fileManager.fileExists(atPath: candidate.appendingPathComponent("build/bin/whisper-cli").path)
+                let canonicalCLI = candidate.appendingPathComponent("build-steno/bin/whisper-cli").path
+                let legacyCLI = candidate.appendingPathComponent("build/bin/whisper-cli").path
+                return (fileManager.fileExists(atPath: canonicalCLI)
+                    || fileManager.fileExists(atPath: legacyCLI))
                     && fileManager.fileExists(atPath: candidate.appendingPathComponent("models/ggml-small.en.bin").path)
             }
+        }
+
+        private static func detectedVendorCLIPath(
+            for vendorRoot: URL,
+            fileManager: FileManager
+        ) -> String {
+            let canonical = vendorRoot.appendingPathComponent("build-steno/bin/whisper-cli").path
+            if fileManager.fileExists(atPath: canonical) {
+                return canonical
+            }
+            return vendorRoot.appendingPathComponent("build/bin/whisper-cli").path
         }
     }
 
@@ -212,7 +229,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         let vendorRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("vendor/whisper.cpp", isDirectory: true)
             .path
-        let defaultCLIPath = bundledRuntime?.whisperCLIPath ?? "\(vendorRoot)/build/bin/whisper-cli"
+        let defaultCLIPath = bundledRuntime?.whisperCLIPath ?? "\(vendorRoot)/build-steno/bin/whisper-cli"
         let defaultModelPath = bundledRuntime?.modelPath ?? "\(vendorRoot)/models/ggml-small.en.bin"
         let defaultVADPath = bundledRuntime?.vadModelPath
 
