@@ -7,8 +7,8 @@ enum WaveformOverlayHostedEvidenceEvent: Equatable {
     case listeningPresented(elapsedMilliseconds: Double)
     case previewAccepted(queueDepth: Int, totalCoalesced: UInt64)
     case previewRendered(
-        elapsedMilliseconds: Double,
-        monotonicMilliseconds: Double,
+        mainActorWorkMilliseconds: Double,
+        renderStartedMonotonicMilliseconds: Double,
         sessionID: UUID,
         revision: UInt64?
     )
@@ -58,7 +58,6 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
     private var accentGlowColor = WaveformOverlayPresenter.defaultAccentGlow
     #if DEBUG
     private var hostedEvidenceHandler: ((WaveformOverlayHostedEvidenceEvent) -> Void)?
-    private var hostedPendingAcceptedAt: TimeInterval?
     #endif
 
     // MARK: - Constants
@@ -201,9 +200,6 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         liveTranscriptSession = snapshot.session
         lastReceivedLiveRevision = snapshot.lastAcceptedRevision
 
-        #if DEBUG
-        hostedPendingAcceptedAt = ProcessInfo.processInfo.systemUptime
-        #endif
         liveRenderBuffer.enqueue(snapshot)
         #if DEBUG
         hostedEvidenceHandler?(.previewAccepted(
@@ -690,6 +686,9 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
 
     @MainActor
     private func renderPendingLiveSnapshot() {
+        #if DEBUG
+        let hostedRenderStartedAt = ProcessInfo.processInfo.systemUptime
+        #endif
         guard let snapshot = liveRenderBuffer.pendingSnapshot,
               listeningSessionIsActive,
               liveTranscriptEnabled,
@@ -753,16 +752,17 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         }
         #if DEBUG
         let renderedAt = ProcessInfo.processInfo.systemUptime
-        if let acceptedAt = hostedPendingAcceptedAt,
-           let renderedRevision = snapshot.lastAcceptedRevision {
+        if let renderedRevision = snapshot.lastAcceptedRevision {
             hostedEvidenceHandler?(.previewRendered(
-                elapsedMilliseconds: max(0, (renderedAt - acceptedAt) * 1_000),
-                monotonicMilliseconds: renderedAt * 1_000,
+                mainActorWorkMilliseconds: max(
+                    0,
+                    (renderedAt - hostedRenderStartedAt) * 1_000
+                ),
+                renderStartedMonotonicMilliseconds: hostedRenderStartedAt * 1_000,
                 sessionID: snapshot.session.sessionID,
                 revision: renderedRevision
             ))
         }
-        hostedPendingAcceptedAt = nil
         #endif
     }
 
@@ -799,7 +799,6 @@ public final class WaveformOverlayPresenter: NSObject, OverlayPresenter {
         livePreviewUnavailable = false
         clearLiveTranscriptContent()
         #if DEBUG
-        hostedPendingAcceptedAt = nil
         hostedEvidenceHandler?(.previewCleared)
         #endif
     }

@@ -237,6 +237,11 @@ private enum HostedEvidenceProducer {
         let urlLoading = HostedURLLoadingSpy.snapshot()
 
         let privacySnapshot = await coordinator.ledger.snapshot()
+        let overlayMainActorWork = LiveLatencyDistribution.summarize(overlay.renderMS)
+        let overlayThresholds = LiveContextHostedReceipt.Thresholds()
+        let overlayMaximumUpdatesPerSecond = hostedMaximumBurstUpdatesPerSecond(
+            overlay.renderedTimestampsMS
+        )
         var failures: [String] = []
         if overlay.acceptedCount != overlay.renderedCount + overlay.coalescedCount {
             failures.append("overlay-accounting")
@@ -248,6 +253,24 @@ private enum HostedEvidenceProducer {
         }
         if overlay.renderedTimestampsMS.count < 2 || overlay.maximumQueueDepth != 1 {
             failures.append("overlay-measurement")
+        }
+        if overlayMainActorWork.count < 5
+            || (overlayMainActorWork.p99MS ?? .infinity)
+                > overlayThresholds.overlayMainActorP99MS {
+            failures.append("overlay-mainactor-work")
+        }
+        if overlayMainActorWork.count != overlay.renderedCount {
+            failures.append("overlay-work-render-binding")
+        }
+        if overlay.acceptedCount <= overlay.renderedCount
+            || overlay.renderedCount != overlay.renderedTimestampsMS.count
+            || overlay.coalescedCount <= 0 {
+            failures.append("overlay-render-accounting")
+        }
+        if !overlayMaximumUpdatesPerSecond.isFinite
+            || overlayMaximumUpdatesPerSecond
+                > overlayThresholds.maximumVisibleUpdatesPerSecond {
+            failures.append("overlay-visible-cadence")
         }
         if overlay.retainedTextLeaks != 0 { failures.append("overlay-retention") }
         if overlay.controlLifecycleViolations != 0 { failures.append("overlay-lifecycle") }
@@ -301,7 +324,7 @@ private enum HostedEvidenceProducer {
             syntheticCoordinatorListeningAcknowledgementDiagnostic: .summarize(
                 controllerListening.elapsedMilliseconds
             ),
-            overlayMainActorWork: .summarize(overlay.renderMS),
+            overlayMainActorWork: overlayMainActorWork,
             renderedUpdateTimestampsMS: overlay.renderedTimestampsMS,
             syntheticCoordinatorStopToInsertionEnabledDiagnostic: .summarize(
                 coordinator.enabledStopMS
@@ -728,6 +751,15 @@ private struct HostedOverlayMeasurement {
     var controlLifecycleViolations: Int
 }
 
+private func hostedMaximumBurstUpdatesPerSecond(_ timestampsMS: [Double]) -> Double {
+    guard timestampsMS.count >= 2 else { return .infinity }
+    return zip(timestampsMS, timestampsMS.dropFirst()).reduce(0) { maximum, pair in
+        let gap = pair.1 - pair.0
+        guard gap > 0, gap.isFinite else { return .infinity }
+        return max(maximum, 1_000 / gap)
+    }
+}
+
 @MainActor
 private func measureOverlay(sentinels: HostedSentinels) async throws -> HostedOverlayMeasurement {
     let presenter = WaveformOverlayPresenter()
@@ -753,17 +785,23 @@ private func measureOverlay(sentinels: HostedSentinels) async throws -> HostedOv
             vadIdentifier: nil
         )
     )
-    for revision in 1...20 {
-        presenter.updateLiveTranscript(LiveTranscriptionSnapshot(
-            session: session,
-            stablePrefix: revision == 20 ? sentinels.provisional : "",
-            revisableTail: revision == 20 ? "" : "draft",
-            lastAcceptedRevision: UInt64(revision),
-            decodedAudioWatermark: UInt64(revision * 4_000),
-            emittedAtMonotonicNanos: UInt64(revision) * 1_000_000
-        ))
+    var revision = 0
+    for expectedRenderCount in 1...5 {
+        for _ in 0..<4 {
+            revision += 1
+            presenter.updateLiveTranscript(LiveTranscriptionSnapshot(
+                session: session,
+                stablePrefix: revision == 20 ? sentinels.provisional : "",
+                revisableTail: revision == 20 ? "" : "draft",
+                lastAcceptedRevision: UInt64(revision),
+                decodedAudioWatermark: UInt64(revision * 4_000),
+                emittedAtMonotonicNanos: UInt64(revision) * 1_000_000
+            ))
+        }
+        try await waitForHostedCondition {
+            recorder.renderedCount >= expectedRenderCount
+        }
     }
-    try await waitForHostedCondition { recorder.renderedCount >= 2 }
     let firstTimestamp = recorder.renderTimestampsMS.first ?? 0
     let relativeTimestamps = recorder.renderTimestampsMS.map { max(0, $0 - firstTimestamp) }
     presenter.show(state: .transcribing)

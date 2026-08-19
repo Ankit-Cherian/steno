@@ -194,6 +194,31 @@ func evidenceReceiptsFailClosed() throws {
     )
     #expect(LiveContextBenchmarkRunner.adversarialReceiptSchemaDecodes(at: fixture.adversarialURL.path))
 
+    var hostedWithLegacyOverlayTiming = fixture.hosted
+    hostedWithLegacyOverlayTiming.overlayMainActorDefinition =
+        "production-overlay-accepted-snapshot-to-mainactor-render-complete"
+    try JSONEncoder().encode(hostedWithLegacyOverlayTiming).write(to: fixture.hostedURL)
+    #expect(throws: LiveContextBenchmarkRunnerError.invalidEvidenceReceipt("hosted")) {
+        try LiveContextBenchmarkRunner.validateEvidenceReceipts(
+            configuration: fixture.configuration,
+            identity: fixture.identity,
+            now: fixture.now
+        )
+    }
+    try JSONEncoder().encode(fixture.hosted).write(to: fixture.hostedURL)
+
+    var hostedWithUnboundOverlayWork = fixture.hosted
+    hostedWithUnboundOverlayWork.overlayMainActorWork = .summarize([1, 2, 3, 4, 5, 6])
+    try JSONEncoder().encode(hostedWithUnboundOverlayWork).write(to: fixture.hostedURL)
+    #expect(throws: LiveContextBenchmarkRunnerError.invalidEvidenceReceipt("hosted")) {
+        try LiveContextBenchmarkRunner.validateEvidenceReceipts(
+            configuration: fixture.configuration,
+            identity: fixture.identity,
+            now: fixture.now
+        )
+    }
+    try JSONEncoder().encode(fixture.hosted).write(to: fixture.hostedURL)
+
     var hostedMissingWrapperAttestation = fixture.hosted
     hostedMissingWrapperAttestation.wrapperAttestation = nil
     try JSONEncoder().encode(hostedMissingWrapperAttestation).write(to: fixture.hostedURL)
