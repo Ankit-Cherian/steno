@@ -868,7 +868,7 @@ public enum LiveContextBenchmarkRunner {
                   hosted.environment
               ),
               hosted.syntheticCoordinatorListeningAcknowledgementDefinition == "production-dictation-controller-entry-through-injected-immediate-coordinator-capture-acknowledgement-to-nonactivating-panel-order-return-diagnostic-only",
-              hosted.overlayMainActorDefinition == "production-overlay-accepted-snapshot-to-mainactor-render-complete",
+              hosted.overlayMainActorDefinition == "production-overlay-mainactor-render-start-to-render-complete",
               hosted.syntheticCoordinatorStopToInsertionDefinition == "production-session-coordinator-capture-stop-call-to-injected-synthetic-engine-insertion-complete-diagnostic-only",
               validReceiptDistribution(
                   hosted.syntheticCoordinatorListeningAcknowledgementDiagnostic,
@@ -892,6 +892,7 @@ public enum LiveContextBenchmarkRunner {
               hosted.renderedUpdateTimestampsMS.allSatisfy({ $0.isFinite && $0 >= 0 }),
               maximumBurstUpdatesPerSecond(hosted.renderedUpdateTimestampsMS)
                   <= hosted.thresholds.maximumVisibleUpdatesPerSecond,
+              hosted.overlayMainActorWork.count == hosted.renderedPreviewCount,
               hosted.acceptedPreviewCount > hosted.renderedPreviewCount,
               hosted.renderedPreviewCount == hosted.renderedUpdateTimestampsMS.count,
               hosted.maximumQueueDepth > 0,
