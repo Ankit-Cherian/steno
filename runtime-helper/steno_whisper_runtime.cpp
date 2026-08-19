@@ -43,6 +43,24 @@ enum class ObservedBackend : int {
 };
 
 std::atomic<ObservedBackend> g_observed_backend{ObservedBackend::Unknown};
+uint32_t g_current_asr_context_count = 0;
+uint32_t g_peak_asr_context_count = 0;
+
+void record_asr_context_constructed() {
+    ++g_current_asr_context_count;
+    g_peak_asr_context_count = std::max(
+        g_peak_asr_context_count,
+        g_current_asr_context_count
+    );
+}
+
+void free_asr_context(whisper_context * context) {
+    if (context == nullptr) {
+        return;
+    }
+    whisper_free(context);
+    --g_current_asr_context_count;
+}
 
 void observe_backend_log(ggml_log_level, const char * message, void *) {
     if (message == nullptr) {
@@ -55,10 +73,11 @@ void observe_backend_log(ggml_log_level, const char * message, void *) {
         g_observed_backend.store(ObservedBackend::CPU, std::memory_order_relaxed);
     }
 }
-constexpr uint32_t kIdentitySchemaVersion = 1;
+constexpr uint32_t kIdentitySchemaVersion = 2;
 // streaming | identity acknowledgements | cooperative cancellation |
-// terminal acknowledgements | preview speech evidence | correlated errors
-constexpr uint32_t kRuntimeCapabilities = 0x3f;
+// terminal acknowledgements | preview speech evidence | correlated errors |
+// ASR context telemetry
+constexpr uint32_t kRuntimeCapabilities = 0x7f;
 constexpr size_t kMaximumIdentityBytes = 128;
 
 // Frame headers and integer payload fields use network byte order. AudioAppend
@@ -527,6 +546,8 @@ void append_identity_payload(
     append_string(payload, identity.runtime);
     append_string(payload, identity.model);
     append_string(payload, identity.vad);
+    append_u32(payload, g_current_asr_context_count);
+    append_u32(payload, g_peak_asr_context_count);
 }
 
 bool same_request_identity(const Frame & lhs, const Frame & rhs) {
@@ -1018,8 +1039,14 @@ bool detect_preview_speech(
         samples[index] = static_cast<float>(pcm[index]) / 32768.0f;
     }
     whisper_vad_params parameters = whisper_vad_default_params();
-    parameters.threshold = 0.5f;
-    parameters.min_speech_duration_ms = 250;
+    parameters.threshold = 0.12f;
+    // Preview evidence is decode-scoped and must qualify before the canonical
+    // final-transcription VAD gate runs. A 50 ms minimum admits sustained
+    // early speech split across a 200 ms scheduling boundary while still rejecting
+    // shorter transients. The lower preview-only threshold admits the public
+    // JFK onset, whose short-window probability remains below the canonical
+    // 0.5 threshold; final transcription retains its 0.5/250 ms gate.
+    parameters.min_speech_duration_ms = 50;
     parameters.min_silence_duration_ms = 100;
     parameters.max_speech_duration_s = FLT_MAX;
     parameters.speech_pad_ms = 30;
@@ -1048,7 +1075,7 @@ int run_version_1(whisper_context * context) {
             if (vad_context != nullptr) {
                 whisper_vad_free(vad_context);
             }
-            whisper_free(context);
+            free_asr_context(context);
             return write_frame(response_frame(request, Operation::Stopped)) ? 0 : 67;
         }
         if (request.operation != Operation::Transcribe) {
@@ -1089,7 +1116,7 @@ int run_version_1(whisper_context * context) {
     if (vad_context != nullptr) {
         whisper_vad_free(vad_context);
     }
-    whisper_free(context);
+    free_asr_context(context);
     return exit_code;
 }
 
@@ -1616,7 +1643,7 @@ int run_version_2(
         && !write_stream_frame(runtime, response_frame(*shutdown_request, Operation::Stopped))) {
         exit_code = 67;
     }
-    whisper_free(context);
+    free_asr_context(context);
     return exit_code;
 }
 
@@ -1724,13 +1751,14 @@ int main(int argc, char ** argv) {
         write_error(load_request, ErrorCategory::ModelLoad);
         return 66;
     }
+    record_asr_context_constructed();
 
     if (const char * attestation = std::getenv("STENO_RUNTIME_BACKEND_ATTESTATION");
         attestation != nullptr && std::strcmp(attestation, "1") == 0) {
         whisper_state * backend_probe = whisper_init_state(context);
         if (backend_probe == nullptr) {
             write_error(load_request, ErrorCategory::ModelLoad);
-            whisper_free(context);
+            free_asr_context(context);
             return 66;
         }
         whisper_free_state(backend_probe);
@@ -1741,7 +1769,7 @@ int main(int argc, char ** argv) {
                 ? "STENO_BACKEND=cpu\n"
                 : "STENO_BACKEND=unknown\n";
         if (!write_exact(STDERR_FILENO, line, std::strlen(line))) {
-            whisper_free(context);
+            free_asr_context(context);
             return 67;
         }
     }
@@ -1751,7 +1779,7 @@ int main(int argc, char ** argv) {
         append_identity_payload(ready.payload, identity);
     }
     if (!write_frame(ready)) {
-        whisper_free(context);
+        free_asr_context(context);
         return 67;
     }
 

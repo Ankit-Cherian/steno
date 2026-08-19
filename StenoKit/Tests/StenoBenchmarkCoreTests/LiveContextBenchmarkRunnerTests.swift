@@ -4,6 +4,79 @@ import Testing
 import StenoKit
 import CryptoKit
 
+@Test("Active CPU attribution requires one exact helper process that survives the trial")
+func activeCPUAttributionRequiresStableExactHelperPID() {
+    #expect(LiveContextProcessProbe.uniqueProcessID([]) == nil)
+    #expect(LiveContextProcessProbe.uniqueProcessID([41]) == 41)
+    #expect(LiveContextProcessProbe.uniqueProcessID([41, 42]) == nil)
+
+    let before = LiveContextProcessProbe.Usage(
+        processIdentifier: 41,
+        residentBytes: 1,
+        physicalFootprintBytes: 1,
+        cpuNanoseconds: 100_000_000
+    )
+    var sameProcessAfter = before
+    sameProcessAfter.cpuNanoseconds = 150_000_000
+    var replacementAfter = sameProcessAfter
+    replacementAfter.processIdentifier = 42
+
+    #expect(LiveContextProcessProbe.cpuPercent(
+        before: before,
+        after: sameProcessAfter,
+        elapsedMS: 100
+    ) == 50)
+    #expect(LiveContextProcessProbe.cpuPercent(
+        before: before,
+        after: replacementAfter,
+        elapsedMS: 100
+    ) == nil)
+}
+
+@Test("Resource soak checkpoints use the exact declared periodic schedule")
+func resourceCheckpointScheduleIsExact() {
+    #expect(LiveContextBenchmarkRunner.resourceCheckpointIndices(requestedSessionCount: 0) == [])
+    #expect(LiveContextBenchmarkRunner.resourceCheckpointIndices(requestedSessionCount: 24) == [
+        1, 10, 24,
+    ])
+    #expect(LiveContextBenchmarkRunner.resourceCheckpointIndices(requestedSessionCount: 100) == [
+        1, 10, 25, 50, 75, 100,
+    ])
+    #expect(LiveContextBenchmarkRunner.resourceCheckpointIndices(requestedSessionCount: 511) == [
+        1, 10, 25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275, 300, 325,
+        350, 375, 400, 425, 450, 475, 500, 511,
+    ])
+}
+
+@Test("Post-soak resident telemetry uses a content-free start and cancel and surfaces a stale peak")
+func postSoakResidentTelemetrySurfacesLatestPeakWithoutAudioOrText() async throws {
+    let engine = TelemetryOnlyLiveEngine(
+        identity: LiveTranscriptionRuntimeIdentity(
+            protocolVersion: 2,
+            runtimeIdentifier: "post-soak-runtime",
+            modelIdentifier: "post-soak-model",
+            vadIdentifier: "post-soak-vad",
+            currentASRContextCount: 1,
+            peakASRContextCount: 2
+        )
+    )
+
+    let identity = try await LiveContextBenchmarkRunner.queryResidentModelTelemetry(
+        engine: engine,
+        request: TranscriptionRequest(languageHints: ["en"])
+    )
+    let evidence = await engine.evidence()
+
+    #expect(identity.currentASRContextCount == 1)
+    #expect(identity.peakASRContextCount == 2)
+    #expect(evidence.startCalls == 1)
+    #expect(evidence.cancelCalls == 1)
+    #expect(evidence.appendCalls == 0)
+    #expect(evidence.hypothesisCalls == 0)
+    #expect(evidence.finishCalls == 0)
+    #expect(evidence.transcribeCalls == 0)
+}
+
 @Test("Corpus runner computes directive, continuation, literal, and spacing decisions from typed inputs")
 func liveCorpusRunnerUsesProductionPolicy() {
     let corpus = ContinuationDirectiveCorpus(rows: [
@@ -82,7 +155,7 @@ func enabledTrialExercisesProductionLiveProtocolAndWAVParser() async throws {
         audioURL: audioURL,
         request: TranscriptionRequest(languageHints: ["en"]),
         speechOnsetMS: 0,
-        realtimePacing: false
+        realtimePacing: true
     )
 
     #expect(trial.summary.sampleCount == 8_000)
@@ -109,6 +182,237 @@ func enabledTrialExercisesProductionLiveProtocolAndWAVParser() async throws {
     #expect(parityFailures.contains { $0.id == "capture-parity:all" && $0.reasonCode == "canonical-pcm-hash-varied-across-trials" })
 }
 
+@Test("Enabled-trial scheduler keeps one decode active and coalesces the newest watermark")
+func enabledTrialSchedulerCoalescesNewestPendingWatermark() async throws {
+    let session = makeBenchmarkLiveSession()
+    let coordinator = LiveContextBenchmarkRunner.EnabledTrialHypothesisCoordinator(
+        session: session,
+        speechOnsetMS: 0,
+        cadenceSamples: 3_200
+    )
+
+    await coordinator.offerAppendedWatermark(3_200)
+    let first = try #require(await coordinator.nextRequest())
+    #expect(first == .init(revision: 1, watermark: 3_200))
+
+    await coordinator.offerAppendedWatermark(6_400)
+    await coordinator.offerAppendedWatermark(9_600)
+    try await coordinator.complete(
+        first,
+        event: benchmarkHypothesis(session: session, request: first, text: "one"),
+        receivedAtMS: 250
+    )
+
+    let second = try #require(await coordinator.nextRequest())
+    #expect(second == .init(revision: 2, watermark: 9_600))
+    await coordinator.beginFinishing()
+}
+
+@Test("Enabled-trial scheduler rejects mismatched helper responses without poisoning metrics")
+func enabledTrialSchedulerRejectsUncorrelatedResponses() async throws {
+    let session = makeBenchmarkLiveSession()
+    let mismatches: [(LiveTranscriptionEventKind, LiveTranscriptionSession, UInt64, UInt64)] = [
+        (.hypothesis, session, 99, 3_200),
+        (.hypothesis, session, 1, 9_999),
+        (.authoritativeFinal, session, 1, 3_200),
+        (.hypothesis, makeBenchmarkLiveSession(), 1, 3_200),
+    ]
+
+    for mismatch in mismatches {
+        let coordinator = LiveContextBenchmarkRunner.EnabledTrialHypothesisCoordinator(
+            session: session,
+            speechOnsetMS: 0,
+            cadenceSamples: 3_200
+        )
+        await coordinator.offerAppendedWatermark(3_200)
+        let poisonedRequest = try #require(await coordinator.nextRequest())
+        await #expect(throws: LiveContextBenchmarkRunnerError.uncorrelatedLiveHypothesisResponse) {
+            try await coordinator.complete(
+                poisonedRequest,
+                event: benchmarkHypothesis(
+                    session: mismatch.1,
+                    request: poisonedRequest,
+                    kind: mismatch.0,
+                    revision: mismatch.2,
+                    watermark: mismatch.3,
+                    text: "poison"
+                ),
+                receivedAtMS: 100
+            )
+        }
+
+        await coordinator.offerAppendedWatermark(6_400)
+        let validRequest = try #require(await coordinator.nextRequest())
+        try await coordinator.complete(
+            validRequest,
+            event: benchmarkHypothesis(
+                session: session,
+                request: validRequest,
+                text: "valid"
+            ),
+            receivedAtMS: 250
+        )
+        await coordinator.beginFinishing()
+        let metrics = await coordinator.finalize(
+            authoritativeText: "valid final",
+            sampleCount: 6_400
+        )
+
+        #expect(metrics.firstPartialMS == 250)
+        #expect(metrics.subsequentGapsMS.isEmpty)
+        #expect(metrics.eventCount == 1)
+        #expect(metrics.stablePrefixConflicts == 0)
+        #expect(metrics.stablePrefixFinalConflicts == 0)
+        #expect(metrics.noSpeechFalseDisplays == 0)
+        #expect(metrics.finalizationCount == 1)
+    }
+}
+
+@Test("Enabled trial fails closed when the runtime returns an uncorrelated hypothesis")
+func enabledTrialFailsClosedOnUncorrelatedHypothesis() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("steno-live-uncorrelated-runner-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let audioURL = directory.appendingPathComponent("public-fixture.wav")
+    try makePCM16WAV(sampleCount: 8_000).write(to: audioURL)
+    let engine = DeterministicLiveEngine(
+        returnedSessionOverride: makeBenchmarkLiveSession()
+    )
+
+    await #expect(throws: LiveContextBenchmarkRunnerError.uncorrelatedLiveHypothesisResponse) {
+        _ = try await LiveContextBenchmarkRunner.runEnabledTrial(
+            engine: engine,
+            audioURL: audioURL,
+            request: TranscriptionRequest(languageHints: ["en"]),
+            speechOnsetMS: 0,
+            realtimePacing: true
+        )
+    }
+}
+
+@Test("Enabled-trial gaps reset across non-speech and unknown evidence")
+func enabledTrialSchedulerMeasuresOnlyUninterruptedSpeechRuns() async throws {
+    let session = makeBenchmarkLiveSession()
+    let coordinator = LiveContextBenchmarkRunner.EnabledTrialHypothesisCoordinator(
+        session: session,
+        speechOnsetMS: 0,
+        cadenceSamples: 1
+    )
+    let observations: [(Double, LiveTranscriptionSpeechEvidence, String)] = [
+        (100, .speechDetected, "one"),
+        (300, .speechDetected, "one two"),
+        (500, .noSpeechDetected, "one two"),
+        (800, .speechDetected, "one two three"),
+        (1_050, .speechDetected, "one two three four"),
+        (1_100, .unknown, "one two three four"),
+        (1_300, .speechDetected, "one two three four five"),
+    ]
+
+    for (index, observation) in observations.enumerated() {
+        await coordinator.offerAppendedWatermark(UInt64(index + 1))
+        let request = try #require(await coordinator.nextRequest())
+        try await coordinator.complete(
+            request,
+            event: benchmarkHypothesis(
+                session: session,
+                request: request,
+                text: observation.2,
+                evidence: observation.1
+            ),
+            receivedAtMS: observation.0
+        )
+    }
+    await coordinator.beginFinishing()
+    let metrics = await coordinator.finalize(
+        authoritativeText: "one two three four five",
+        sampleCount: 7
+    )
+
+    #expect(metrics.firstPartialMS == 100)
+    #expect(metrics.subsequentGapsMS == [200, 250])
+}
+
+@Test("Authoritative finish supersedes pending and late provisional work")
+func enabledTrialSchedulerFinishSupersedesPreviewWork() async throws {
+    let session = makeBenchmarkLiveSession()
+    let coordinator = LiveContextBenchmarkRunner.EnabledTrialHypothesisCoordinator(
+        session: session,
+        speechOnsetMS: 0,
+        cadenceSamples: 3_200
+    )
+
+    await coordinator.offerAppendedWatermark(3_200)
+    let active = try #require(await coordinator.nextRequest())
+    await coordinator.offerAppendedWatermark(6_400)
+    await coordinator.offerAppendedWatermark(9_600)
+    await coordinator.beginFinishing()
+    try await coordinator.complete(
+        active,
+        event: benchmarkHypothesis(session: session, request: active, text: "late"),
+        receivedAtMS: 500
+    )
+
+    #expect(await coordinator.nextRequest() == nil)
+    let metrics = await coordinator.finalize(authoritativeText: "final", sampleCount: 9_600)
+    #expect(metrics.firstPartialMS == nil)
+    #expect(metrics.subsequentGapsMS.isEmpty)
+    #expect(metrics.eventCount == 0)
+    #expect(metrics.stablePrefixConflicts == 0)
+    #expect(metrics.noSpeechFalseDisplays == 0)
+}
+
+@Test("Enabled trial appends audio while one decode is suspended and finish supersedes it")
+func enabledTrialFeedsAudioConcurrentlyWithDecode() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("steno-live-concurrent-runner-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let audioURL = directory.appendingPathComponent("public-fixture.wav")
+    try makePCM16WAV(sampleCount: 8_000).write(to: audioURL)
+    let engine = FinishSupersedingLiveEngine()
+
+    let trial = try await LiveContextBenchmarkRunner.runEnabledTrial(
+        engine: engine,
+        audioURL: audioURL,
+        request: TranscriptionRequest(languageHints: ["en"]),
+        speechOnsetMS: 0,
+        realtimePacing: true
+    )
+    let evidence = await engine.evidence()
+
+    #expect(evidence.appendedSamples == 8_000)
+    #expect(evidence.samplesObservedAtFinish == 8_000)
+    #expect(evidence.hypothesisRequests == 1)
+    #expect(evidence.maximumConcurrentHypotheses == 1)
+    #expect(evidence.finishCalls == 1)
+    #expect(trial.firstPartialMS == nil)
+    #expect(trial.revisionCount == 0)
+    #expect(trial.finalizationCount == 1)
+}
+
+@Test("Benchmark finalization stays in the provisional producer's monotonic clock domain")
+func enabledTrialFinalizesAcrossIndependentMonotonicEpochs() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("steno-live-clock-domain-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let audioURL = directory.appendingPathComponent("public-fixture.wav")
+    try makePCM16WAV(sampleCount: 8_000).write(to: audioURL)
+    let engine = DeterministicLiveEngine(hypothesisTimestampBase: UInt64.max - 10)
+
+    let trial = try await LiveContextBenchmarkRunner.runEnabledTrial(
+        engine: engine,
+        audioURL: audioURL,
+        request: TranscriptionRequest(languageHints: ["en"]),
+        speechOnsetMS: 0,
+        realtimePacing: true
+    )
+
+    #expect(trial.revisionCount == 2)
+    #expect(trial.finalizationCount == 1)
+}
+
 @Test("Non-speech hypotheses rejected by the reducer are not reported as displayed")
 func silenceHallucinationIsSuppressedBeforeDisplay() async throws {
     let directory = FileManager.default.temporaryDirectory
@@ -124,19 +428,22 @@ func silenceHallucinationIsSuppressedBeforeDisplay() async throws {
         audioURL: audioURL,
         request: TranscriptionRequest(languageHints: ["en"]),
         speechOnsetMS: 0,
-        realtimePacing: false
+        realtimePacing: true
     )
 
     #expect(trial.noSpeechFalseDisplays == 0)
+    #expect(await engine.hypothesisRequestCount() == 2)
 
+    let unknownEngine = DeterministicLiveEngine(speechEvidence: .unknown)
     let unknownTrial = try await LiveContextBenchmarkRunner.runEnabledTrial(
-        engine: DeterministicLiveEngine(speechEvidence: .unknown),
+        engine: unknownEngine,
         audioURL: audioURL,
         request: TranscriptionRequest(languageHints: ["en"]),
         speechOnsetMS: 0,
-        realtimePacing: false
+        realtimePacing: true
     )
     #expect(unknownTrial.noSpeechFalseDisplays == 0)
+    #expect(await unknownEngine.hypothesisRequestCount() == 2)
 }
 
 @Test("Runner rejects incomplete external receipts before launching a helper")
@@ -431,6 +738,25 @@ func evidenceReceiptsFailClosed() throws {
     try expectAdversarialReceiptRejected(adversarial, fixture: fixture)
 
     adversarial = fixture.adversarial
+    var runtimeIdentity = adversarial["identity"] as! [String: Any]
+    runtimeIdentity.removeValue(forKey: "peakASRContextCount")
+    adversarial["identity"] = runtimeIdentity
+    try JSONSerialization.data(withJSONObject: adversarial).write(to: fixture.adversarialURL)
+    #expect(throws: LiveContextBenchmarkRunnerError.invalidEvidenceReceipt("hosted/adversarial")) {
+        try LiveContextBenchmarkRunner.validateEvidenceReceipts(
+            configuration: fixture.configuration,
+            identity: fixture.identity,
+            now: fixture.now
+        )
+    }
+
+    adversarial = fixture.adversarial
+    runtimeIdentity = adversarial["identity"] as! [String: Any]
+    runtimeIdentity["peakASRContextCount"] = 2
+    adversarial["identity"] = runtimeIdentity
+    try expectAdversarialReceiptRejected(adversarial, fixture: fixture)
+
+    adversarial = fixture.adversarial
     var cases = adversarial["cases"] as! [String: Any]
     var categories = cases["categories"] as! [String: Any]
     categories.removeValue(forKey: "receiptIntegrity")
@@ -582,6 +908,22 @@ func evidenceReceiptsFailClosed() throws {
     network["observedNetworkFDCount"] = 1
     adversarial["network"] = network
     try expectAdversarialReceiptRejected(adversarial, fixture: fixture)
+
+    adversarial = fixture.adversarial
+    var configuration = adversarial["configuration"] as! [String: Any]
+    var vadThresholds = configuration["vadThresholds"] as! [String: Any]
+    vadThresholds["previewThreshold"] = 0.5
+    configuration["vadThresholds"] = vadThresholds
+    adversarial["configuration"] = configuration
+    try expectAdversarialReceiptRejected(adversarial, fixture: fixture)
+
+    adversarial = fixture.adversarial
+    configuration = adversarial["configuration"] as! [String: Any]
+    vadThresholds = configuration["vadThresholds"] as! [String: Any]
+    vadThresholds["previewMinimumSpeechDurationMS"] = 250
+    configuration["vadThresholds"] = vadThresholds
+    adversarial["configuration"] = configuration
+    try expectAdversarialReceiptRejected(adversarial, fixture: fixture)
 }
 
 @Test("Canonical receipt manifest hashing matches the Python producer wire format")
@@ -598,21 +940,92 @@ func canonicalReceiptManifestHashMatchesProducer() {
     )
 }
 
-@Test("Generated schema-v2 CPU diagnostic receipt strict-decodes but cannot qualify as Metal")
+@Test("Independent PCM oracle ignores transport frame boundaries")
+func productionCoreAudioOracleIgnoresFrameBoundaries() {
+    let summary = LivePCMStreamSummary(
+        sampleCount: 176_000,
+        byteCount: 352_000,
+        frameCount: 11,
+        fnv1a64: 0xd24a_d879_cea3_f9c4
+    )
+
+    #expect(LiveContextBenchmarkRunner.productionCoreAudioOracleMatches(
+        summary,
+        expectedSampleCount: 176_000,
+        sampleWidthBytes: 2,
+        expectedFNV1A64: "d24ad879cea3f9c4"
+    ))
+    var differentlyFramed = summary
+    differentlyFramed.frameCount = 44
+    #expect(LiveContextBenchmarkRunner.productionCoreAudioOracleMatches(
+        differentlyFramed,
+        expectedSampleCount: 176_000,
+        sampleWidthBytes: 2,
+        expectedFNV1A64: "d24ad879cea3f9c4"
+    ))
+
+    var mismatched = summary
+    mismatched.sampleCount -= 1
+    #expect(!LiveContextBenchmarkRunner.productionCoreAudioOracleMatches(
+        mismatched,
+        expectedSampleCount: 176_000,
+        sampleWidthBytes: 2,
+        expectedFNV1A64: "d24ad879cea3f9c4"
+    ))
+    mismatched = summary
+    mismatched.byteCount -= 2
+    #expect(!LiveContextBenchmarkRunner.productionCoreAudioOracleMatches(
+        mismatched,
+        expectedSampleCount: 176_000,
+        sampleWidthBytes: 2,
+        expectedFNV1A64: "d24ad879cea3f9c4"
+    ))
+    mismatched = summary
+    mismatched.fnv1a64 ^= 1
+    #expect(!LiveContextBenchmarkRunner.productionCoreAudioOracleMatches(
+        mismatched,
+        expectedSampleCount: 176_000,
+        sampleWidthBytes: 2,
+        expectedFNV1A64: "d24ad879cea3f9c4"
+    ))
+    mismatched = summary
+    mismatched.frameCount = 0
+    #expect(!LiveContextBenchmarkRunner.productionCoreAudioOracleMatches(
+        mismatched,
+        expectedSampleCount: 176_000,
+        sampleWidthBytes: 2,
+        expectedFNV1A64: "d24ad879cea3f9c4"
+    ))
+}
+
+@Test("Current schema-v2 CPU diagnostic receipt strict-decodes but cannot qualify as Metal")
 func generatedCPUReceiptIsSchemaValidButNonqualifying() throws {
-    let path = "/tmp/steno-whisper-runtime-v2-cpu-receipt-schema2.json"
-    guard FileManager.default.fileExists(atPath: path) else { return }
-    #expect(LiveContextBenchmarkRunner.adversarialReceiptSchemaDecodes(at: path))
+    let fixture = try makeReceiptFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    var receipt = fixture.adversarial
+    var git = receipt["git"] as! [String: Any]
+    git["dirty"] = true
+    git["state"] = "dirty"
+    receipt["git"] = git
+    var execution = receipt["execution"] as! [String: Any]
+    execution["requestedDeviceMode"] = "cpu"
+    execution["backend"] = "observed-cpu"
+    execution["productionMetalSmokePerformed"] = false
+    execution["qualification"] = "diagnostic-cpu-only"
+    execution["observedBackends"] = ["cpu": 4, "metal": 0, "unknown": 0]
+    receipt["execution"] = execution
+    try JSONSerialization.data(withJSONObject: receipt).write(to: fixture.adversarialURL)
+
+    #expect(LiveContextBenchmarkRunner.adversarialReceiptSchemaDecodes(
+        at: fixture.adversarialURL.path
+    ))
     let qualificationFailures = LiveContextBenchmarkRunner.adversarialReceiptQualificationFailures(
-        at: path
+        at: fixture.adversarialURL.path
     )
     #expect(qualificationFailures.contains("dirty-git-tree"))
     #expect(qualificationFailures.contains("non-metal-backend"))
     #expect(!qualificationFailures.contains("adversarial-catalog-mismatch"))
 
-    let fixture = try makeReceiptFixture()
-    defer { try? FileManager.default.removeItem(at: fixture.directory) }
-    try Data(contentsOf: URL(fileURLWithPath: path)).write(to: fixture.adversarialURL)
     #expect(throws: LiveContextBenchmarkRunnerError.invalidEvidenceReceipt("adversarial")) {
         try LiveContextBenchmarkRunner.validateEvidenceReceipts(
             configuration: fixture.configuration,
@@ -807,14 +1220,19 @@ private func makeReceiptFixture() throws -> ReceiptFixture {
             "hardware": ["architecture": "arm64", "chip": "fixture", "logicalProcessorCount": 8, "memoryBytes": 16_000_000_000 as UInt64, "modelIdentifier": "fixture"],
             "operatingSystem": ["build": "fixture", "name": "macOS", "version": "fixture"],
         ],
-        "identity": ["schema": 1, "capabilities": 15, "runtime": "runtime", "model": "model", "vad": "vad", "helperBinary": "helper", "helperBinarySHA256": helperHash],
+        "identity": [
+            "schema": 2, "capabilities": 127,
+            "runtime": "runtime", "model": "model", "vad": "vad",
+            "currentASRContextCount": 1, "peakASRContextCount": 1,
+            "helperBinary": "helper", "helperBinarySHA256": helperHash,
+        ],
         "configuration": [
             "audio": ["channelCount": 1, "encoding": "signed-integer-little-endian", "sampleRateHz": 16_000, "sampleWidthBytes": 2],
             "bounds": ["maximumAppendBytes": 32_768, "maximumAppendSamples": 16_384, "maximumHypothesisBytes": 1_048_576, "maximumPayloadBytes": 67_108_864, "maximumStreamSamples": 691_200_000, "maximumStringBytes": 1_048_576, "previewWindowSamples": 192_000],
             "harnessTimeoutsSeconds": ["backendAttestation": 2.0, "defaultFrameRead": 5.0, "inference": 30.0, "loadReady": 15.0, "networkMonitorStartup": 3.0, "networkPollInterval": 0.05],
             "inferenceThresholds": ["entropyThreshold": 2.4, "logProbabilityThreshold": -1.0, "noSpeechThreshold": 0.6, "temperature": 0.0, "temperatureIncrement": 0.2],
             "streamRequest": ["beamSize": 1, "bestOf": 1, "flags": 3, "language": "en", "prompt": NSNull(), "suppressNonSpeechTokens": true, "suppressRegex": NSNull(), "threads": 8, "vadEnabled": true],
-            "vadThresholds": ["maximumSpeechDurationSeconds": "FLT_MAX", "minimumSilenceDurationMS": 100, "minimumSpeechDurationMS": 250, "previewScope": "newly-accepted-audio-since-prior-admitted-decode", "samplesOverlap": 0.1, "speechPadMS": 30, "threshold": 0.5],
+            "vadThresholds": ["maximumSpeechDurationSeconds": "FLT_MAX", "minimumSilenceDurationMS": 100, "minimumSpeechDurationMS": 250, "previewMinimumSpeechDurationMS": 50, "previewScope": "newly-accepted-audio-since-prior-admitted-decode", "previewThreshold": 0.12, "samplesOverlap": 0.1, "speechPadMS": 30, "threshold": 0.5],
         ],
         "sourceFixtureManifest": ["algorithm": "sha256-canonical-json-v1", "sha256": manifestHash, "entries": manifestEntries],
         "cases": ["expected": caseRows.count, "passed": caseRows.count, "failed": 0, "skipped": 0,
@@ -883,14 +1301,176 @@ private func testSHA256(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
+private func makeBenchmarkLiveSession() -> LiveTranscriptionSession {
+    LiveTranscriptionSession(
+        sessionID: UUID(),
+        controllerGeneration: UUID(),
+        runtimeGeneration: 1,
+        runtimeIdentity: LiveTranscriptionRuntimeIdentity(
+            protocolVersion: 2,
+            runtimeIdentifier: "benchmark-test-runtime",
+            modelIdentifier: "benchmark-test-model",
+            vadIdentifier: "benchmark-test-vad",
+            currentASRContextCount: 1,
+            peakASRContextCount: 1
+        )
+    )
+}
+
+private func benchmarkHypothesis(
+    session: LiveTranscriptionSession,
+    request: LiveContextBenchmarkRunner.EnabledTrialDecodeRequest,
+    kind: LiveTranscriptionEventKind = .hypothesis,
+    revision: UInt64? = nil,
+    watermark: UInt64? = nil,
+    text: String,
+    evidence: LiveTranscriptionSpeechEvidence = .speechDetected
+) -> LiveTranscriptionEvent {
+    LiveTranscriptionEvent(
+        kind: kind,
+        session: session,
+        revision: revision ?? request.revision,
+        decodedAudioWatermark: watermark ?? request.watermark,
+        emittedAtMonotonicNanos: request.revision,
+        fullHypothesisText: text,
+        speechEvidence: evidence
+    )
+}
+
+private actor FinishSupersedingLiveEngine: LiveTranscriptionEngine {
+    struct Evidence: Sendable, Equatable {
+        var appendedSamples: Int
+        var samplesObservedAtFinish: Int
+        var hypothesisRequests: Int
+        var maximumConcurrentHypotheses: Int
+        var finishCalls: Int
+    }
+
+    private var active: LiveTranscriptionSession?
+    private var appendedSamples = 0
+    private var samplesObservedAtFinish = 0
+    private var hypothesisRequests = 0
+    private var activeHypotheses = 0
+    private var maximumConcurrentHypotheses = 0
+    private var finishCalls = 0
+    private var hypothesisContinuation: CheckedContinuation<LiveTranscriptionEvent, Error>?
+
+    func startLiveTranscription(
+        sessionID: SessionID,
+        controllerGeneration: UUID,
+        request: TranscriptionRequest
+    ) async throws -> LiveTranscriptionSession {
+        _ = request
+        let session = LiveTranscriptionSession(
+            sessionID: sessionID,
+            controllerGeneration: controllerGeneration,
+            runtimeGeneration: 1,
+            runtimeIdentity: LiveTranscriptionRuntimeIdentity(
+                protocolVersion: 2,
+                runtimeIdentifier: "finish-superseding-runtime",
+                modelIdentifier: "finish-superseding-model",
+                vadIdentifier: "finish-superseding-vad",
+                currentASRContextCount: 1,
+                peakASRContextCount: 1
+            )
+        )
+        active = session
+        return session
+    }
+
+    func appendLiveAudio(
+        _ frame: LivePCMFrame,
+        session: LiveTranscriptionSession
+    ) async throws {
+        guard active == session else { throw CancellationError() }
+        appendedSamples += frame.sampleCount
+    }
+
+    func requestLiveHypothesis(
+        session: LiveTranscriptionSession,
+        revision: UInt64,
+        decodedAudioWatermark: UInt64
+    ) async throws -> LiveTranscriptionEvent {
+        _ = revision
+        _ = decodedAudioWatermark
+        guard active == session, hypothesisContinuation == nil else {
+            throw CancellationError()
+        }
+        hypothesisRequests += 1
+        activeHypotheses += 1
+        maximumConcurrentHypotheses = max(maximumConcurrentHypotheses, activeHypotheses)
+        defer { activeHypotheses -= 1 }
+        return try await withCheckedThrowingContinuation { continuation in
+            hypothesisContinuation = continuation
+        }
+    }
+
+    func finishLiveTranscription(
+        session: LiveTranscriptionSession,
+        canonicalAudioURL: URL,
+        streamSummary: LivePCMStreamSummary,
+        request: TranscriptionRequest
+    ) async throws -> RawTranscript {
+        _ = canonicalAudioURL
+        _ = streamSummary
+        _ = request
+        guard active == session else { throw CancellationError() }
+        samplesObservedAtFinish = appendedSamples
+        finishCalls += 1
+        active = nil
+        let continuation = hypothesisContinuation
+        hypothesisContinuation = nil
+        continuation?.resume(throwing: CancellationError())
+        return RawTranscript(text: "final", durationMS: 500)
+    }
+
+    func cancelLiveTranscription(session: LiveTranscriptionSession) async {
+        if active == session { active = nil }
+        let continuation = hypothesisContinuation
+        hypothesisContinuation = nil
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    func transcribe(
+        audioURL: URL,
+        request: TranscriptionRequest
+    ) async throws -> RawTranscript {
+        _ = audioURL
+        _ = request
+        return RawTranscript(text: "final", durationMS: 500)
+    }
+
+    func shutdown() async {}
+    func unloadRetainedResources() async {}
+
+    func evidence() -> Evidence {
+        Evidence(
+            appendedSamples: appendedSamples,
+            samplesObservedAtFinish: samplesObservedAtFinish,
+            hypothesisRequests: hypothesisRequests,
+            maximumConcurrentHypotheses: maximumConcurrentHypotheses,
+            finishCalls: finishCalls
+        )
+    }
+}
+
 private actor DeterministicLiveEngine: LiveTranscriptionEngine {
     private var active: LiveTranscriptionSession?
     private var samples = 0
     private var finishes = 0
+    private var hypothesisRequests = 0
     private let speechEvidence: LiveTranscriptionSpeechEvidence
+    private let hypothesisTimestampBase: UInt64?
+    private let returnedSessionOverride: LiveTranscriptionSession?
 
-    init(speechEvidence: LiveTranscriptionSpeechEvidence = .speechDetected) {
+    init(
+        speechEvidence: LiveTranscriptionSpeechEvidence = .speechDetected,
+        hypothesisTimestampBase: UInt64? = nil,
+        returnedSessionOverride: LiveTranscriptionSession? = nil
+    ) {
         self.speechEvidence = speechEvidence
+        self.hypothesisTimestampBase = hypothesisTimestampBase
+        self.returnedSessionOverride = returnedSessionOverride
     }
 
     func startLiveTranscription(sessionID: SessionID, controllerGeneration: UUID, request: TranscriptionRequest) async throws -> LiveTranscriptionSession {
@@ -903,7 +1483,9 @@ private actor DeterministicLiveEngine: LiveTranscriptionEngine {
                 protocolVersion: 2,
                 runtimeIdentifier: "test-runtime",
                 modelIdentifier: "test-model",
-                vadIdentifier: nil
+                vadIdentifier: nil,
+                currentASRContextCount: 1,
+                peakASRContextCount: 1
             )
         )
         active = session
@@ -917,11 +1499,13 @@ private actor DeterministicLiveEngine: LiveTranscriptionEngine {
 
     func requestLiveHypothesis(session: LiveTranscriptionSession, revision: UInt64, decodedAudioWatermark: UInt64) async throws -> LiveTranscriptionEvent {
         guard active == session else { throw CancellationError() }
+        hypothesisRequests += 1
         return LiveTranscriptionEvent(
-            session: session,
+            session: returnedSessionOverride ?? session,
             revision: revision,
             decodedAudioWatermark: decodedAudioWatermark,
-            emittedAtMonotonicNanos: DispatchTime.now().uptimeNanoseconds,
+            emittedAtMonotonicNanos: hypothesisTimestampBase.map { $0 + revision }
+                ?? DispatchTime.now().uptimeNanoseconds,
             fullHypothesisText: revision == 1 ? "This" : "This works",
             speechEvidence: speechEvidence
         )
@@ -951,6 +1535,109 @@ private actor DeterministicLiveEngine: LiveTranscriptionEngine {
     func unloadRetainedResources() async {}
     func appendedSampleCount() -> Int { samples }
     func finishCallCount() -> Int { finishes }
+    func hypothesisRequestCount() -> Int { hypothesisRequests }
+}
+
+private actor TelemetryOnlyLiveEngine: LiveTranscriptionEngine {
+    struct Evidence: Sendable, Equatable {
+        var startCalls: Int
+        var cancelCalls: Int
+        var appendCalls: Int
+        var hypothesisCalls: Int
+        var finishCalls: Int
+        var transcribeCalls: Int
+    }
+
+    private let identity: LiveTranscriptionRuntimeIdentity
+    private var startCalls = 0
+    private var cancelCalls = 0
+    private var appendCalls = 0
+    private var hypothesisCalls = 0
+    private var finishCalls = 0
+    private var transcribeCalls = 0
+
+    init(identity: LiveTranscriptionRuntimeIdentity) {
+        self.identity = identity
+    }
+
+    func startLiveTranscription(
+        sessionID: SessionID,
+        controllerGeneration: UUID,
+        request: TranscriptionRequest
+    ) async throws -> LiveTranscriptionSession {
+        _ = request
+        startCalls += 1
+        return LiveTranscriptionSession(
+            sessionID: sessionID,
+            controllerGeneration: controllerGeneration,
+            runtimeGeneration: 1,
+            runtimeIdentity: identity
+        )
+    }
+
+    func appendLiveAudio(
+        _ frame: LivePCMFrame,
+        session: LiveTranscriptionSession
+    ) async throws {
+        _ = frame
+        _ = session
+        appendCalls += 1
+    }
+
+    func requestLiveHypothesis(
+        session: LiveTranscriptionSession,
+        revision: UInt64,
+        decodedAudioWatermark: UInt64
+    ) async throws -> LiveTranscriptionEvent {
+        _ = session
+        _ = revision
+        _ = decodedAudioWatermark
+        hypothesisCalls += 1
+        throw CancellationError()
+    }
+
+    func finishLiveTranscription(
+        session: LiveTranscriptionSession,
+        canonicalAudioURL: URL,
+        streamSummary: LivePCMStreamSummary,
+        request: TranscriptionRequest
+    ) async throws -> RawTranscript {
+        _ = session
+        _ = canonicalAudioURL
+        _ = streamSummary
+        _ = request
+        finishCalls += 1
+        throw CancellationError()
+    }
+
+    func cancelLiveTranscription(session: LiveTranscriptionSession) async {
+        _ = session
+        cancelCalls += 1
+    }
+
+    func transcribe(
+        audioURL: URL,
+        request: TranscriptionRequest
+    ) async throws -> RawTranscript {
+        _ = audioURL
+        _ = request
+        transcribeCalls += 1
+        throw CancellationError()
+    }
+
+    func shutdown() async {}
+    func unloadRetainedResources() async {}
+
+    func evidence() -> Evidence {
+        Evidence(
+            startCalls: startCalls,
+            cancelCalls: cancelCalls,
+            appendCalls: appendCalls,
+            hypothesisCalls: hypothesisCalls,
+            finishCalls: finishCalls,
+            transcribeCalls: transcribeCalls
+        )
+    }
 }
 
 private func makePCM16WAV(

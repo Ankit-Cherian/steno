@@ -207,7 +207,9 @@ private actor LiveCoordinatorEngine: LiveTranscriptionEngine {
                 protocolVersion: 2,
                 runtimeIdentifier: "test-runtime",
                 modelIdentifier: "test-model",
-                vadIdentifier: nil
+                vadIdentifier: nil,
+                currentASRContextCount: 1,
+                peakASRContextCount: 1
             )
         )
     }
@@ -899,6 +901,61 @@ func liveCoordinatorIsolationAndExactlyOnceFinal() async throws {
     #expect(await cleanup.calls == 1)
     #expect(await insertion.texts == ["Authoritative final"])
     #expect(await history.entries.count == 1)
+}
+
+@Test("Live coordinator requests its first hypothesis at the 200 millisecond watermark")
+func liveCoordinatorRequestsFirstHypothesisAtTwoHundredMilliseconds() async throws {
+    let url = try makeCoordinatorWAV(sampleCount: 3_200)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let trace = CoordinatorTrace()
+    let engine = LiveCoordinatorEngine(trace: trace)
+    let coordinator = SessionCoordinator(
+        captureService: LiveCoordinatorCapture(url: url, trace: trace),
+        transcriptionEngine: engine,
+        cleanupEngine: CoordinatorCleanup(),
+        insertionService: CoordinatorInsertion(),
+        historyStore: CoordinatorHistory(),
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(
+        appContext: .unknown,
+        options: SessionStartOptions(livePreviewEnabled: true)
+    )
+    #expect(await waitUntil { await engine.hypothesisCalls == 1 })
+    #expect(await engine.hypothesisWatermarks == [3_200])
+    _ = try await coordinator.stopPressToTalk(sessionID: sessionID)
+}
+
+@Test("Live coordinator does not request a hypothesis below 200 milliseconds")
+func liveCoordinatorDoesNotRequestHypothesisBelowTwoHundredMilliseconds() async throws {
+    let url = try makeCoordinatorWAV(sampleCount: 3_199)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let trace = CoordinatorTrace()
+    let engine = LiveCoordinatorEngine(trace: trace)
+    let coordinator = SessionCoordinator(
+        captureService: LiveCoordinatorCapture(url: url, trace: trace),
+        transcriptionEngine: engine,
+        cleanupEngine: CoordinatorCleanup(),
+        insertionService: CoordinatorInsertion(),
+        historyStore: CoordinatorHistory(),
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(
+        appContext: .unknown,
+        options: SessionStartOptions(livePreviewEnabled: true)
+    )
+    #expect(await waitUntil {
+        await coordinator.liveHypothesisSchedulingEvaluationWatermark(
+            sessionID: sessionID
+        ) == 3_199
+    })
+    #expect(await engine.hypothesisCalls == 0)
+    try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+    _ = try await coordinator.completePressToTalk(sessionID: sessionID)
 }
 
 @Test("Capture acknowledgement precedes exact target binding without blocking it")

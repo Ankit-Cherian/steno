@@ -10,24 +10,32 @@ public struct LiveTranscriptionRuntimeIdentity: Sendable, Equatable, Hashable {
     public let runtimeIdentifier: String
     public let modelIdentifier: String
     public let vadIdentifier: String?
+    public let currentASRContextCount: UInt32
+    public let peakASRContextCount: UInt32
 
     public init(
         protocolVersion: UInt16,
         runtimeIdentifier: String,
         modelIdentifier: String,
-        vadIdentifier: String?
+        vadIdentifier: String?,
+        currentASRContextCount: UInt32,
+        peakASRContextCount: UInt32
     ) {
         self.protocolVersion = protocolVersion
         self.runtimeIdentifier = runtimeIdentifier
         self.modelIdentifier = modelIdentifier
         self.vadIdentifier = vadIdentifier
+        self.currentASRContextCount = currentASRContextCount
+        self.peakASRContextCount = peakASRContextCount
     }
 
     static let pending = LiveTranscriptionRuntimeIdentity(
         protocolVersion: 0,
         runtimeIdentifier: "pending",
         modelIdentifier: "pending",
-        vadIdentifier: nil
+        vadIdentifier: nil,
+        currentASRContextCount: 0,
+        peakASRContextCount: 0
     )
 }
 

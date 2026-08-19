@@ -238,7 +238,9 @@ private let testLiveRuntimeIdentity = LiveTranscriptionRuntimeIdentity(
     protocolVersion: 2,
     runtimeIdentifier: "test-runtime",
     modelIdentifier: "test-model",
-    vadIdentifier: "test-vad"
+    vadIdentifier: "test-vad",
+    currentASRContextCount: 1,
+    peakASRContextCount: 1
 )
 
 private struct FakeLiveFallbackEngine: TranscriptionEngine {
@@ -391,7 +393,9 @@ func retainedLiveRejectsStaleIdentity() async throws {
             protocolVersion: 2,
             runtimeIdentifier: "other-runtime",
             modelIdentifier: live.runtimeIdentity.modelIdentifier,
-            vadIdentifier: live.runtimeIdentity.vadIdentifier
+            vadIdentifier: live.runtimeIdentity.vadIdentifier,
+            currentASRContextCount: live.runtimeIdentity.currentASRContextCount,
+            peakASRContextCount: live.runtimeIdentity.peakASRContextCount
         )
     )
 

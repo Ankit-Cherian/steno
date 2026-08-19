@@ -165,7 +165,9 @@ private actor ProductionBenchmarkFakeLiveEngine: LiveTranscriptionEngine {
                 protocolVersion: 2,
                 runtimeIdentifier: "production-benchmark-test-runtime",
                 modelIdentifier: "production-benchmark-test-model",
-                vadIdentifier: nil
+                vadIdentifier: nil,
+                currentASRContextCount: 1,
+                peakASRContextCount: 1
             )
         )
     }

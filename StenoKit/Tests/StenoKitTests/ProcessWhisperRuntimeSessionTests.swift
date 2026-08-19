@@ -557,6 +557,8 @@ func streamingRuntimeLifecycleIsFramedAndOrdered() async throws {
     #expect(runtimeIdentity.runtimeIdentifier.isEmpty == false)
     #expect(runtimeIdentity.modelIdentifier.count == 64)
     #expect(runtimeIdentity.vadIdentifier == nil)
+    #expect(runtimeIdentity.currentASRContextCount == 1)
+    #expect(runtimeIdentity.peakASRContextCount == 1)
     #expect(runtimeIdentity.runtimeIdentifier.contains("/") == false)
     #expect(runtimeIdentity.modelIdentifier.contains(fixture.modelURL.path) == false)
     let samples = Data([0x01, 0x00, 0x02, 0x00])
@@ -1026,11 +1028,11 @@ func streamingRuntimeRejectsProtocolFailure() async throws {
     }
 }
 
-@Test("Streaming v2 rejects mismatched readiness and stream identity acknowledgements")
+@Test("Streaming v2 rejects mismatched identity and ASR context telemetry")
 func streamingRuntimeRejectsIdentityMismatch() async throws {
     let missingCorrelationCapability = fakeStreamingProtocolPrelude.replacingOccurrences(
-        of: "struct.pack(\">II\", 1, 0x3f)",
-        with: "struct.pack(\">II\", 1, 0x1f)"
+        of: "struct.pack(\">II\", 2, 0x7f)",
+        with: "struct.pack(\">II\", 2, 0x3f)"
     )
     let capabilityFixture = try StreamingRuntimeFixture(helperSource: missingCorrelationCapability)
     await #expect(throws: RetainedWhisperRuntimeError.invalidResponse) {
@@ -1040,7 +1042,7 @@ func streamingRuntimeRejectsIdentityMismatch() async throws {
 
     let mismatchedReady = fakeStreamingProtocolPrelude.replacingOccurrences(
         of: "write_frame(load, 2, fragmented=True)",
-        with: "identity_payload = struct.pack('>II', 1, 0x3f) + pack_string(b'wrong-runtime') + pack_string(model_identity) + pack_string(vad_identity)\nwrite_frame(load, 2, fragmented=True)"
+        with: "identity_payload = struct.pack('>II', 2, 0x7f) + pack_string(b'wrong-runtime') + pack_string(model_identity) + pack_string(vad_identity) + struct.pack('>II', 1, 1)\nwrite_frame(load, 2, fragmented=True)"
     )
     let readyFixture = try StreamingRuntimeFixture(helperSource: mismatchedReady)
     await #expect(throws: RetainedWhisperRuntimeError.staleResponse) {
@@ -1051,7 +1053,7 @@ func streamingRuntimeRejectsIdentityMismatch() async throws {
     let startFixture = try StreamingRuntimeFixture(
         helperSource: fakeStreamingProtocolPrelude + "\n" + #"""
 start = read_frame()
-identity_payload = struct.pack(">II", 1, 0x3f) + pack_string(b"wrong-runtime") + pack_string(model_identity) + pack_string(vad_identity)
+identity_payload = struct.pack(">II", 2, 0x7f) + pack_string(b"wrong-runtime") + pack_string(model_identity) + pack_string(vad_identity) + struct.pack(">II", 1, 1)
 write_frame(start, 10)
 """#
     )
@@ -1065,6 +1067,44 @@ write_frame(start, 10)
     }
     await session.shutdown()
     startFixture.remove()
+
+    let missingTelemetry = fakeStreamingProtocolPrelude.replacingOccurrences(
+        of: "    + struct.pack(\">II\", 1, 1)\n",
+        with: ""
+    )
+    let missingTelemetryFixture = try StreamingRuntimeFixture(helperSource: missingTelemetry)
+    await #expect(throws: RetainedWhisperRuntimeError.invalidResponse) {
+        _ = try await missingTelemetryFixture.makeSession()
+    }
+    missingTelemetryFixture.remove()
+
+    let duplicateReadyContext = fakeStreamingProtocolPrelude.replacingOccurrences(
+        of: "struct.pack(\">II\", 1, 1)",
+        with: "struct.pack(\">II\", 1, 2)"
+    )
+    let duplicateReadyFixture = try StreamingRuntimeFixture(helperSource: duplicateReadyContext)
+    await #expect(throws: RetainedWhisperRuntimeError.staleResponse) {
+        _ = try await duplicateReadyFixture.makeSession()
+    }
+    duplicateReadyFixture.remove()
+
+    let stalePeakFixture = try StreamingRuntimeFixture(
+        helperSource: fakeStreamingProtocolPrelude + "\n" + #"""
+start = read_frame()
+identity_payload = struct.pack(">II", 2, 0x7f) + pack_string(runtime_identity) + pack_string(model_identity) + pack_string(vad_identity) + struct.pack(">II", 1, 2)
+write_frame(start, 10)
+"""#
+    )
+    let stalePeakSession = try await stalePeakFixture.makeSession()
+    await #expect(throws: RetainedWhisperRuntimeError.staleResponse) {
+        _ = try await stalePeakSession.startStream(
+            id: UUID(),
+            generation: 0,
+            configuration: streamingConfiguration()
+        )
+    }
+    await stalePeakSession.shutdown()
+    stalePeakFixture.remove()
 }
 
 @Test("Streaming v2 binds the configured VAD identity without exposing its path")
@@ -1282,10 +1322,11 @@ vad_identity, offset = read_string(load[5], offset)
 if offset != len(load[5]):
     raise SystemExit(30)
 identity_payload = (
-    struct.pack(">II", 1, 0x3f)
+    struct.pack(">II", 2, 0x7f)
     + pack_string(runtime_identity)
     + pack_string(model_identity)
     + pack_string(vad_identity)
+    + struct.pack(">II", 1, 1)
 )
 write_frame(load, 2, fragmented=True)
 """#

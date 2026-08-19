@@ -370,6 +370,7 @@ public struct LiveContextBenchmarkThresholds: Sendable, Codable, Equatable {
     public var minimumIdleSampleSeconds: Double
     public var maximumPeakGrowthBytes: Int64
     public var maximumTailSlopeBytesPerRequest: Double
+    public var maximumHelperMonitorGapMS: Double
 
     public init(
         listeningAcknowledgementP95MS: Double = 100,
@@ -384,7 +385,8 @@ public struct LiveContextBenchmarkThresholds: Sendable, Codable, Equatable {
         maximumIdleCPUPercent: Double = 0.1,
         minimumIdleSampleSeconds: Double = 60,
         maximumPeakGrowthBytes: Int64 = 128 * 1024 * 1024,
-        maximumTailSlopeBytesPerRequest: Double = 32 * 1024
+        maximumTailSlopeBytesPerRequest: Double = 32 * 1024,
+        maximumHelperMonitorGapMS: Double = 250
     ) {
         self.listeningAcknowledgementP95MS = listeningAcknowledgementP95MS
         self.firstPartialP50MS = firstPartialP50MS
@@ -399,6 +401,7 @@ public struct LiveContextBenchmarkThresholds: Sendable, Codable, Equatable {
         self.minimumIdleSampleSeconds = minimumIdleSampleSeconds
         self.maximumPeakGrowthBytes = maximumPeakGrowthBytes
         self.maximumTailSlopeBytesPerRequest = maximumTailSlopeBytesPerRequest
+        self.maximumHelperMonitorGapMS = maximumHelperMonitorGapMS
     }
 
     public static let required = Self()
@@ -615,12 +618,14 @@ public struct LiveContextCaptureEvidence: Sendable, Codable, Equatable {
 
 public struct LiveContextResourceEvidence: Sendable, Codable, Equatable {
     public var soakSessionCount: Int
+    public var warmRuntime: WarmRuntimeResourceSummary
     public var peakRSSBytes: UInt64?
     public var rssCeilingBytes: UInt64
     public var peakGrowthBytes: Int64?
     public var tailSlopeBytesPerRequest: Double?
     public var monotonicGrowthObserved: Bool?
     public var sawtoothGrowthObserved: Bool?
+    public var physicalFootprintSawtoothGrowthObserved: Bool?
     public var idleCPUPercent: Double?
     public var idleSampleSeconds: Double
     public var activeCPUPercentSamples: [Double]
@@ -636,18 +641,25 @@ public struct LiveContextResourceEvidence: Sendable, Codable, Equatable {
     public var idleObservationCompleted: Bool
     public var continuousHelperMonitorPerformed: Bool
     public var helperProcessObservationCount: Int
+    public var helperProcessUnexpectedObservationCount: Int
+    public var maximumHelperMonitorGapMS: Double?
+    public var helperMonitorPreSoakObservationLeadMS: Double
+    public var helperMonitorPostSoakObservationLagMS: Double
+    public var currentResidentModelCount: Int?
     public var maximumResidentModelCount: Int?
     public var modelInitializationSourceSHA256: String
     public var modelInitializationSiteCount: Int
 
-    public init(soakSessionCount: Int, peakRSSBytes: UInt64?, rssCeilingBytes: UInt64, peakGrowthBytes: Int64?, tailSlopeBytesPerRequest: Double?, monotonicGrowthObserved: Bool?, sawtoothGrowthObserved: Bool?, idleCPUPercent: Double?, idleSampleSeconds: Double, activeCPUPercentSamples: [Double], maximumQueueDepth: Int, coalescedPreviewCount: Int, helperReloadCount: Int, helperFallbackCount: Int, maximumConcurrentHelperProcessCount: Int?, thermalState: String?, requestedSoakSessionCount: Int? = nil, completedSoakSessionCount: Int? = nil, observedIdleSampleSeconds: Double? = nil, idleObservationCompleted: Bool = true, continuousHelperMonitorPerformed: Bool = false, helperProcessObservationCount: Int = 0, maximumResidentModelCount: Int? = nil, modelInitializationSourceSHA256: String = "", modelInitializationSiteCount: Int = 0) {
+    public init(soakSessionCount: Int, warmRuntime: WarmRuntimeResourceSummary, peakRSSBytes: UInt64?, rssCeilingBytes: UInt64, peakGrowthBytes: Int64?, tailSlopeBytesPerRequest: Double?, monotonicGrowthObserved: Bool?, sawtoothGrowthObserved: Bool?, physicalFootprintSawtoothGrowthObserved: Bool? = nil, idleCPUPercent: Double?, idleSampleSeconds: Double, activeCPUPercentSamples: [Double], maximumQueueDepth: Int, coalescedPreviewCount: Int, helperReloadCount: Int, helperFallbackCount: Int, maximumConcurrentHelperProcessCount: Int?, thermalState: String?, requestedSoakSessionCount: Int? = nil, completedSoakSessionCount: Int? = nil, observedIdleSampleSeconds: Double? = nil, idleObservationCompleted: Bool = true, continuousHelperMonitorPerformed: Bool = false, helperProcessObservationCount: Int = 0, helperProcessUnexpectedObservationCount: Int = 0, maximumHelperMonitorGapMS: Double? = nil, helperMonitorPreSoakObservationLeadMS: Double, helperMonitorPostSoakObservationLagMS: Double, currentResidentModelCount: Int? = nil, maximumResidentModelCount: Int? = nil, modelInitializationSourceSHA256: String = "", modelInitializationSiteCount: Int = 0) {
         self.soakSessionCount = soakSessionCount
+        self.warmRuntime = warmRuntime
         self.peakRSSBytes = peakRSSBytes
         self.rssCeilingBytes = rssCeilingBytes
         self.peakGrowthBytes = peakGrowthBytes
         self.tailSlopeBytesPerRequest = tailSlopeBytesPerRequest
         self.monotonicGrowthObserved = monotonicGrowthObserved
         self.sawtoothGrowthObserved = sawtoothGrowthObserved
+        self.physicalFootprintSawtoothGrowthObserved = physicalFootprintSawtoothGrowthObserved
         self.idleCPUPercent = idleCPUPercent
         self.idleSampleSeconds = idleSampleSeconds
         self.activeCPUPercentSamples = activeCPUPercentSamples
@@ -663,6 +675,11 @@ public struct LiveContextResourceEvidence: Sendable, Codable, Equatable {
         self.idleObservationCompleted = idleObservationCompleted
         self.continuousHelperMonitorPerformed = continuousHelperMonitorPerformed
         self.helperProcessObservationCount = helperProcessObservationCount
+        self.helperProcessUnexpectedObservationCount = helperProcessUnexpectedObservationCount
+        self.maximumHelperMonitorGapMS = maximumHelperMonitorGapMS
+        self.helperMonitorPreSoakObservationLeadMS = helperMonitorPreSoakObservationLeadMS
+        self.helperMonitorPostSoakObservationLagMS = helperMonitorPostSoakObservationLagMS
+        self.currentResidentModelCount = currentResidentModelCount
         self.maximumResidentModelCount = maximumResidentModelCount
         self.modelInitializationSourceSHA256 = modelInitializationSourceSHA256
         self.modelInitializationSiteCount = modelInitializationSiteCount
@@ -789,7 +806,7 @@ public struct LiveContextFailureRow: Sendable, Codable, Equatable {
 }
 
 public struct LiveContextBenchmarkArtifact: Sendable, Codable, Equatable {
-    public static let currentSchemaVersion = "steno-live-context-benchmark/v5"
+    public static let currentSchemaVersion = "steno-live-context-benchmark/v6"
 
     public var schemaVersion: String
     public var generatedAt: Date
@@ -1373,6 +1390,9 @@ public enum LiveContextArtifactIO {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let artifact = try decoder.decode(LiveContextBenchmarkArtifact.self, from: data)
+        guard artifact.schemaVersion == LiveContextBenchmarkArtifact.currentSchemaVersion else {
+            throw LiveContextArtifactIOError.unsupportedSchema
+        }
         guard artifactCanariesAreAbsent(data, gitSHA: artifact.identity.gitSHA) else {
             throw LiveContextArtifactIOError.privacyValidationFailed
         }
@@ -1425,9 +1445,14 @@ public enum LiveContextArtifactIO {
                 return array.allSatisfy(isSafe)
             }
             if let string = value as? String {
-                return !string.hasPrefix("/Users/")
-                    && !string.hasPrefix("/private/")
-                    && !string.hasPrefix("file://")
+                var normalized = string
+                while normalized.contains(#"\/"#) {
+                    normalized = normalized.replacingOccurrences(of: #"\/"#, with: "/")
+                }
+                let lowered = normalized.lowercased()
+                return !lowered.contains("/users/")
+                    && !lowered.contains("/private/")
+                    && !lowered.contains("file://")
             }
             return true
         }
@@ -1437,6 +1462,7 @@ public enum LiveContextArtifactIO {
 
 public enum LiveContextArtifactIOError: Error, Equatable {
     case privacyValidationFailed
+    case unsupportedSchema
 }
 
 public enum LiveContextBenchmarkValidator {
@@ -1551,6 +1577,8 @@ public enum LiveContextBenchmarkValidator {
             ("overlay-main-actor", artifact.latency.overlayMainActorWork),
             ("final-enabled", artifact.latency.finishToAuthoritativeFinalEnabled),
             ("final-disabled", artifact.latency.finishToAuthoritativeFinalDisabledControl),
+            ("stop-to-insertion-enabled", artifact.latency.stopToInsertionEnabled),
+            ("stop-to-insertion-disabled", artifact.latency.stopToInsertionDisabledControl),
         ]
         for (name, distribution) in distributions {
             if !valid(distribution) { failures.append("invalid-latency-distribution:\(name)") }
@@ -1561,24 +1589,45 @@ public enum LiveContextBenchmarkValidator {
         if exceeds(artifact.latency.subsequentPartialGap.p95MS, required.subsequentPartialGapP95MS) { failures.append("subsequent-gap-p95") }
         if exceeds(artifact.latency.overlayMainActorWork.p99MS, required.overlayMainActorP99MS) { failures.append("overlay-main-actor-p99") }
         if exceeds(artifact.latency.finishToAuthoritativeFinalEnabled.p95MS, 2_000) { failures.append("finish-to-final-hard-limit") }
+        if exceeds(artifact.latency.stopToInsertionEnabled.p95MS, required.stopToInsertionP95MS)
+            || exceeds(artifact.latency.stopToInsertionDisabledControl.p95MS, required.stopToInsertionP95MS) {
+            failures.append("stop-to-insertion-p95")
+        }
+        if let enabledP95 = artifact.latency.stopToInsertionEnabled.p95MS,
+           let disabledP95 = artifact.latency.stopToInsertionDisabledControl.p95MS,
+           enabledP95.isFinite, disabledP95.isFinite,
+           enabledP95 > disabledP95 * (1 + required.maximumStopToInsertionRegressionRatio) {
+            failures.append("stop-to-insertion-regression")
+        }
         if !artifact.latency.maximumVisibleUpdatesPerSecond.isFinite || artifact.latency.maximumVisibleUpdatesPerSecond > required.visibleUpdatesPerSecond { failures.append("visible-update-cadence") }
         let expectedOrder = (0..<artifact.latency.alternatingTrialCount).map {
             $0.isMultiple(of: 2) ? LiveContextTrialMode.enabled : .disabled
         }
+        let enabledTrialCount = expectedOrder.filter({ $0 == .enabled }).count
+        let disabledTrialCount = expectedOrder.filter({ $0 == .disabled }).count
         if artifact.latency.alternatingTrialCount < 10
             || artifact.latency.trialOrder != expectedOrder
             || artifact.latency.trialOrder.filter({ $0 == .enabled }).count < 5
             || artifact.latency.trialOrder.filter({ $0 == .disabled }).count < 5
-            || artifact.latency.firstPartial.count < 5
-            || artifact.latency.finishToAuthoritativeFinalEnabled.count < 5
-            || artifact.latency.finishToAuthoritativeFinalDisabledControl.count < 5
+            || artifact.latency.helperStreamSetup.count != enabledTrialCount
+            || artifact.latency.firstPartial.count != enabledTrialCount
+            || artifact.latency.finishToAuthoritativeFinalEnabled.count != enabledTrialCount
+            || artifact.latency.finishToAuthoritativeFinalDisabledControl.count != disabledTrialCount
+            || artifact.latency.stopToInsertionEnabled.count != enabledTrialCount
+            || artifact.latency.stopToInsertionDisabledControl.count != disabledTrialCount
             || !artifact.latency.sameConfigurationAcrossTrials {
             failures.append("alternating-control-trials")
         }
-        let enabledTrialCount = artifact.latency.trialOrder.filter({ $0 == .enabled }).count
+        let acceptedSubsequentGapCounts = artifact.latency.acceptedSubsequentGapCountByEnabledTrial
+        let acceptedSubsequentGapCount = acceptedSubsequentGapCounts.reduce(Optional(0)) { total, count in
+            guard let total else { return nil }
+            let addition = total.addingReportingOverflow(count)
+            return addition.overflow ? nil : addition.partialValue
+        }
         if artifact.latency.subsequentPartialGap.count < enabledTrialCount
-            || artifact.latency.acceptedSubsequentGapCountByEnabledTrial.count != enabledTrialCount
-            || artifact.latency.acceptedSubsequentGapCountByEnabledTrial.contains(where: { $0 < 1 }) {
+            || acceptedSubsequentGapCounts.count != enabledTrialCount
+            || acceptedSubsequentGapCounts.contains(where: { $0 < 1 })
+            || acceptedSubsequentGapCount != artifact.latency.subsequentPartialGap.count {
             failures.append("insufficient-subsequent-gap-coverage")
         }
         if artifact.latency.coreDiagnosticDefinition != LiveContextProductionCoordinatorBenchmark.definition
@@ -1622,6 +1671,10 @@ public enum LiveContextBenchmarkValidator {
             }
         }
 
+        let minimumAcceptedRevisionCount = acceptedSubsequentGapCount.flatMap { gapCount in
+            let addition = gapCount.addingReportingOverflow(enabledTrialCount)
+            return addition.overflow ? nil : addition.partialValue
+        }
         let correctness = artifact.correctness
         if correctness.stablePrefixMutations != 0 || correctness.provisionalSideEffects != 0
             || correctness.duplicateFinalInsertions != 0 || correctness.staleEventsAccepted != 0
@@ -1630,8 +1683,9 @@ public enum LiveContextBenchmarkValidator {
             || correctness.latePartialsAfterCancellation != 0 {
             failures.append("correctness-regression")
         }
-        if correctness.provisionalSessionCount <= 0 || correctness.revisionCount <= 0
-            || correctness.finalizationCount != correctness.provisionalSessionCount {
+        if correctness.provisionalSessionCount != enabledTrialCount
+            || correctness.finalizationCount != enabledTrialCount
+            || minimumAcceptedRevisionCount.map({ correctness.revisionCount < $0 }) != false {
             failures.append("preview-convergence-not-proven")
         }
 
@@ -1644,11 +1698,15 @@ public enum LiveContextBenchmarkValidator {
             failures.append("capture-parity")
         }
         let expectedFNV = capture.expectedFNV1A64
+        let expectedEnabledTrialIndices = expectedOrder.enumerated().compactMap { index, mode in
+            mode == .enabled ? index : nil
+        }
         if expectedFNV.count != 16 || UInt64(expectedFNV, radix: 16) == nil
             || capture.streamedFNV1A64 != expectedFNV
             || capture.canonicalFNV1A64 != expectedFNV
             || capture.audioFixtureSHA256 != artifact.identity.audioFixtureSHA256
-            || capture.trials.count < 5
+            || capture.trials.count != enabledTrialCount
+            || capture.trials.map(\.trialIndex) != expectedEnabledTrialIndices
             || capture.trials.contains(where: {
                 $0.expectedSampleCount != capture.expectedAudioSampleCount
                     || $0.streamedSampleCount != $0.expectedSampleCount
@@ -1672,31 +1730,101 @@ public enum LiveContextBenchmarkValidator {
         }
 
         let resources = artifact.resources
+        let warmResources = resources.warmRuntime
+        let expectedResourceCheckpointIndices = LiveContextBenchmarkRunner.resourceCheckpointIndices(
+            requestedSessionCount: resources.requestedSoakSessionCount
+        )
+        let observedResourceCheckpointIndices = warmResources.checkpoints
+            .map(\.requestIndex)
+            .sorted()
+        let rawResourceEvidenceMissing = observedResourceCheckpointIndices
+            != expectedResourceCheckpointIndices
+            || warmResources.checkpoints.contains {
+                $0.residentBytes == nil || $0.physicalFootprintBytes == nil
+            }
+        let recomputedWarmResources = WarmRuntimeResourceSummary.analyze(
+            checkpoints: warmResources.checkpoints,
+            idleCPUPercent: warmResources.idleCPUPercent,
+            idleSampleSeconds: warmResources.idleSampleSeconds,
+            postIdleResidentBytes: warmResources.postIdleResidentBytes,
+            postIdlePhysicalFootprintBytes: warmResources.postIdlePhysicalFootprintBytes
+        )
+        let residentValues = warmResources.checkpoints.compactMap { checkpoint in
+            checkpoint.residentBytes.map { (checkpoint.requestIndex, $0) }
+        }
+        let physicalValues = warmResources.checkpoints.compactMap { checkpoint in
+            checkpoint.physicalFootprintBytes.map { (checkpoint.requestIndex, $0) }
+        }
+        let recomputedResidentSawtooth = LiveContextBenchmarkRunner.detectsUnboundedSawtooth(
+            residentValues,
+            maximumTailSlopeBytesPerRequest: required.maximumTailSlopeBytesPerRequest
+        )
+        let recomputedPhysicalSawtooth = LiveContextBenchmarkRunner.detectsUnboundedSawtooth(
+            physicalValues,
+            maximumTailSlopeBytesPerRequest: required.maximumTailSlopeBytesPerRequest
+        )
         if resources.soakSessionCount < 500
             || resources.requestedSoakSessionCount < 500
             || resources.completedSoakSessionCount != resources.requestedSoakSessionCount
             || resources.soakSessionCount != resources.completedSoakSessionCount
+            || rawResourceEvidenceMissing
+            || warmResources != recomputedWarmResources
+            || resources.peakRSSBytes != residentValues.map(\.1).max()
             || (resources.peakRSSBytes ?? 0) == 0 || resources.rssCeilingBytes != 2_147_483_648
             || (resources.peakRSSBytes ?? .max) > resources.rssCeilingBytes
+            || resources.peakGrowthBytes != warmResources.peakGrowthBytesFromFirst
             || (resources.peakGrowthBytes ?? .max) > required.maximumPeakGrowthBytes
+            || (warmResources.physicalFootprintPeakGrowthBytesFromFirst ?? .max)
+                > required.maximumPeakGrowthBytes
+            || resources.tailSlopeBytesPerRequest != warmResources.tailSlopeBytesPerRequest
             || resources.tailSlopeBytesPerRequest?.isFinite != true
             || (resources.tailSlopeBytesPerRequest ?? .infinity) > required.maximumTailSlopeBytesPerRequest
-            || resources.monotonicGrowthObserved != false || resources.sawtoothGrowthObserved != false
+            || warmResources.physicalFootprintTailSlopeBytesPerRequest?.isFinite != true
+            || (warmResources.physicalFootprintTailSlopeBytesPerRequest ?? .infinity)
+                > required.maximumTailSlopeBytesPerRequest
+            || resources.monotonicGrowthObserved != warmResources.monotonicGrowthObserved
+            || resources.monotonicGrowthObserved != false
+            || warmResources.physicalFootprintMonotonicGrowthObserved
+            || resources.sawtoothGrowthObserved != recomputedResidentSawtooth
+            || resources.sawtoothGrowthObserved != false
+            || resources.physicalFootprintSawtoothGrowthObserved != recomputedPhysicalSawtooth
+            || resources.physicalFootprintSawtoothGrowthObserved != false
+            || resources.idleCPUPercent != warmResources.idleCPUPercent
             || resources.idleCPUPercent?.isFinite != true || (resources.idleCPUPercent ?? -.infinity) < 0
             || (resources.idleCPUPercent ?? .infinity) > required.maximumIdleCPUPercent
             || !resources.idleSampleSeconds.isFinite
             || resources.idleSampleSeconds < required.minimumIdleSampleSeconds
             || !resources.observedIdleSampleSeconds.isFinite
             || resources.observedIdleSampleSeconds < required.minimumIdleSampleSeconds
+            || warmResources.idleSampleSeconds != resources.observedIdleSampleSeconds
+            || warmResources.postIdleResidentBytes == nil
+            || warmResources.postIdlePhysicalFootprintBytes == nil
+            || warmResources.postIdleResidentDeltaBytes == nil
+            || warmResources.postIdlePhysicalFootprintDeltaBytes == nil
+            || (warmResources.postIdleResidentBytes ?? .max) > resources.rssCeilingBytes
+            || (warmResources.postIdleResidentDeltaBytes ?? .max) > 0
+            || (warmResources.postIdlePhysicalFootprintDeltaBytes ?? .max) > 0
             || !resources.idleObservationCompleted
             || resources.maximumConcurrentHelperProcessCount != 1
             || !resources.continuousHelperMonitorPerformed
             || resources.helperProcessObservationCount < resources.requestedSoakSessionCount
+            || resources.helperProcessUnexpectedObservationCount != 0
+            || resources.maximumHelperMonitorGapMS?.isFinite != true
+            || (resources.maximumHelperMonitorGapMS ?? .infinity) < 0
+            || (resources.maximumHelperMonitorGapMS ?? .infinity) > required.maximumHelperMonitorGapMS
+            || !resources.helperMonitorPreSoakObservationLeadMS.isFinite
+            || resources.helperMonitorPreSoakObservationLeadMS < 0
+            || resources.helperMonitorPreSoakObservationLeadMS > required.maximumHelperMonitorGapMS
+            || !resources.helperMonitorPostSoakObservationLagMS.isFinite
+            || resources.helperMonitorPostSoakObservationLagMS < 0
+            || resources.helperMonitorPostSoakObservationLagMS > required.maximumHelperMonitorGapMS
+            || resources.currentResidentModelCount != 1
             || resources.maximumResidentModelCount != 1
             || resources.modelInitializationSourceSHA256 != artifact.identity.helperSourceSHA256
             || resources.modelInitializationSiteCount != 1
             || resources.thermalState?.isEmpty != false
-            || resources.activeCPUPercentSamples.isEmpty || !finiteNonnegative(resources.activeCPUPercentSamples)
+            || resources.activeCPUPercentSamples.count != enabledTrialCount
+            || !finiteNonnegative(resources.activeCPUPercentSamples)
             || resources.maximumQueueDepth <= 0 || resources.coalescedPreviewCount <= 0
             || resources.helperReloadCount != 0 || resources.helperFallbackCount != 0 {
             failures.append("resource-gate")
