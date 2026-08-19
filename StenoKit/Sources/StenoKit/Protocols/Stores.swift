@@ -41,4 +41,80 @@ public protocol UsageAnalyticsRecording: Sendable {
 public protocol InsertionServiceProtocol: Sendable {
     /// Inserts the given text into the target application using the configured transport chain.
     func insert(text: String, target: AppContext) async -> InsertResult
+
+    #if os(macOS)
+    /// Inserts only into the exact editor captured for this dictation when a
+    /// process-local handle is available. Implementations must revalidate at
+    /// each transport's commit point and fail closed on target drift.
+    func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?
+    ) async -> InsertResult
+
+    /// Attempts exact-target transports with `text`, but uses
+    /// `clipboardRecoveryText` if the only safe outcome is copied recovery.
+    /// Callers that do not distinguish the two payloads should pass `text`.
+    func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?,
+        clipboardRecoveryText: String
+    ) async -> InsertResult
+
+    func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?,
+        clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization
+    ) async -> InsertResult
+    #endif
+}
+
+public extension InsertionServiceProtocol {
+    #if os(macOS)
+    func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?
+    ) async -> InsertResult {
+        _ = editorTarget
+        return await insert(text: text, target: target)
+    }
+
+    func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?,
+        clipboardRecoveryText: String
+    ) async -> InsertResult {
+        _ = clipboardRecoveryText
+        return await insert(text: text, target: target, editorTarget: editorTarget)
+    }
+
+
+    func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?,
+        clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization
+    ) async -> InsertResult {
+        guard commitAuthorization.isAuthorized else {
+            return InsertResult(
+                status: .failed,
+                method: .none,
+                insertedText: text,
+                errorMessage: "Insertion canceled."
+            )
+        }
+        return await insert(
+            text: text,
+            target: target,
+            editorTarget: editorTarget,
+            clipboardRecoveryText: clipboardRecoveryText
+        )
+    }
+    #endif
 }

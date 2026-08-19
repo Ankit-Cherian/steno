@@ -72,7 +72,7 @@ func clipboardTransportReportsSkipReason() async {
     let clipboard = MemoryClipboardService()
     let service = InsertionService(
         transports: [
-            ClipboardInsertionTransport(clipboard: clipboard) { _ in
+            ClipboardInsertionTransport(clipboard: clipboard) { _, _ in
                 .skipped(reason: "Accessibility permission is required for auto-paste.")
             }
         ]

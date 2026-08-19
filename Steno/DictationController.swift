@@ -1540,18 +1540,48 @@ private struct DictationRuntimeFactory {
             case .accessibility:
                 transports.append(AccessibilityInsertionTransport())
             case .clipboardPaste:
-                transports.append(ClipboardInsertionTransport(clipboard: clipboardService, autoPaste: { target in
-                    await MacPasteHelper.activateAndPaste(target: target)
-                }))
+                transports.append(
+                    ClipboardInsertionTransport(
+                        clipboard: clipboardService,
+                        autoPaste: { target, permit in
+                            await MacPasteHelper.activateAndPaste(
+                                target: target,
+                                commitPermit: permit
+                            )
+                        },
+                        exactTargetAutoPaste: { target, editorTarget, permit in
+                            await MacPasteHelper.activateAndPaste(
+                                target: target,
+                                editorTarget: editorTarget,
+                                commitPermit: permit
+                            )
+                        }
+                    )
+                )
             case .none:
                 continue
             }
         }
 
         if !transports.contains(where: { $0.method == .clipboardPaste }) {
-            transports.append(ClipboardInsertionTransport(clipboard: clipboardService, autoPaste: { target in
-                await MacPasteHelper.activateAndPaste(target: target)
-            }))
+            transports.append(
+                ClipboardInsertionTransport(
+                    clipboard: clipboardService,
+                    autoPaste: { target, permit in
+                        await MacPasteHelper.activateAndPaste(
+                            target: target,
+                            commitPermit: permit
+                        )
+                    },
+                    exactTargetAutoPaste: { target, editorTarget, permit in
+                        await MacPasteHelper.activateAndPaste(
+                            target: target,
+                            editorTarget: editorTarget,
+                            commitPermit: permit
+                        )
+                    }
+                )
+            )
         }
 
         return transports
