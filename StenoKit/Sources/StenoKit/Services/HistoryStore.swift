@@ -151,7 +151,7 @@ public actor HistoryStore: HistoryStoreProtocol {
             appSupport = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support", isDirectory: true)
             StenoKitDiagnostics.logger.fault(
-                "Application Support directory lookup failed. Falling back to \(appSupport.path, privacy: .private)."
+                "Application Support directory lookup failed; using the conventional fallback directory."
             )
         }
 

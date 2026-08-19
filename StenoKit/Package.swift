@@ -17,6 +17,10 @@ let package = Package(
             name: "StenoKitTestSupport",
             targets: ["StenoKitTestSupport"]
         ),
+        .library(
+            name: "StenoBenchmarkCore",
+            targets: ["StenoBenchmarkCore"]
+        ),
         .executable(
             name: "StenoBenchmarkCLI",
             targets: ["StenoBenchmarkCLI"]

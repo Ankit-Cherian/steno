@@ -48,3 +48,7 @@ targets:
         BUNDLE_LOADER: "$(TEST_HOST)"
     dependencies:
       - target: Steno
+      - package: StenoKit
+        product: StenoKit
+      - package: StenoKit
+        product: StenoBenchmarkCore

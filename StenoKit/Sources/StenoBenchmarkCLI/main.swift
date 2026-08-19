@@ -8,6 +8,7 @@ enum CLIError: Error, LocalizedError {
     case invalidValue(argument: String, value: String)
     case retainedBenchmarkFailed
     case retainedAcceptanceFailed([WarmRuntimeAcceptanceFailure])
+    case liveContextValidationFailed([String])
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +22,8 @@ enum CLIError: Error, LocalizedError {
             return "The retained-runtime benchmark failed before producing aggregate evidence."
         case .retainedAcceptanceFailed(let failures):
             return "The retained-runtime benchmark was rejected: \(failures.map(\.rawValue).joined(separator: ", "))."
+        case .liveContextValidationFailed(let failures):
+            return "The live-context benchmark was rejected: \(failures.joined(separator: ", "))."
         }
     }
 }
@@ -75,6 +78,16 @@ enum StenoBenchmarkCLI {
             try await runAll(command)
         case "compare-retained":
             try await compareRetained(command)
+        case "validate-continuation-corpus":
+            try validateContinuationCorpus(command)
+        case "validate-live-context":
+            try validateLiveContext(command)
+        case "validate-live-context-core-diagnostics":
+            try validateLiveContext(command, coreDiagnosticsOnly: true)
+        case "run-live-context":
+            try await runLiveContext(command)
+        case "write-live-context-corpus":
+            try writeLiveContextCorpus(command)
         case "help", "--help", "-h":
             printHelp()
         default:
@@ -269,6 +282,184 @@ enum StenoBenchmarkCLI {
         print(
             "Pipeline validation passed for \(pipelinePath) with thresholds: maxWERDelta=\(formatDecimal(maxWERDelta)), maxCERDelta=\(formatDecimal(maxCERDelta)), maxRegressedSamples=\(maxRegressed)"
         )
+    }
+
+    private static func validateContinuationCorpus(_ command: ParsedCommand) throws {
+        let artifactPath = try command.required("artifact")
+        let corpusPath = try command.required("corpus")
+        let expectedIdentity = try parseLiveContextExpectedIdentity(command)
+        let maximumAge = try parseOptionalDouble(
+            command.optional("max-age-seconds"),
+            argument: "max-age-seconds"
+        ) ?? 86_400
+        guard maximumAge > 0 else {
+            throw CLIError.invalidValue(
+                argument: "max-age-seconds",
+                value: command.optional("max-age-seconds") ?? ""
+            )
+        }
+        let artifact = try LiveContextArtifactIO.loadArtifact(at: artifactPath)
+        let corpus = try LiveContextArtifactIO.loadCorpus(at: corpusPath)
+        let result = LiveContextBenchmarkValidator.validateCaseSensitive(
+            artifact: artifact,
+            corpus: corpus,
+            expectedIdentity: expectedIdentity,
+            maximumAge: maximumAge
+        )
+        guard result.accepted else {
+            throw CLIError.liveContextValidationFailed(result.failures)
+        }
+        print("Case-sensitive continuation corpus validated successfully for \(artifactPath)")
+    }
+
+    private static func validateLiveContext(
+        _ command: ParsedCommand,
+        coreDiagnosticsOnly: Bool = false
+    ) throws {
+        let artifactPath = try command.required("artifact")
+        let corpusPath = try command.required("corpus")
+        let expectedIdentity = try parseLiveContextExpectedIdentity(command)
+        let maximumAge = try parseOptionalDouble(
+            command.optional("max-age-seconds"),
+            argument: "max-age-seconds"
+        ) ?? 86_400
+        guard maximumAge > 0 else {
+            throw CLIError.invalidValue(
+                argument: "max-age-seconds",
+                value: command.optional("max-age-seconds") ?? ""
+            )
+        }
+        let artifact = try LiveContextArtifactIO.loadArtifact(at: artifactPath)
+        let corpus = try LiveContextArtifactIO.loadCorpus(at: corpusPath)
+        let result = coreDiagnosticsOnly
+            ? LiveContextBenchmarkValidator.validateLiveCoreDiagnostics(
+                artifact: artifact,
+                corpus: corpus,
+                expectedIdentity: expectedIdentity,
+                maximumAge: maximumAge
+            )
+            : LiveContextBenchmarkValidator.validateLive(
+                artifact: artifact,
+                corpus: corpus,
+                expectedIdentity: expectedIdentity,
+                maximumAge: maximumAge
+            )
+        guard result.accepted else {
+            throw CLIError.liveContextValidationFailed(result.failures)
+        }
+        if coreDiagnosticsOnly {
+            print("Live-context core diagnostics validated for \(artifactPath); shipping remains blocked pending native listening and stop-to-insertion evidence")
+        } else {
+            print("Live-context latency, resource, lifecycle, and privacy evidence validated successfully for \(artifactPath)")
+        }
+    }
+
+    private static func parseLiveContextExpectedIdentity(
+        _ command: ParsedCommand
+    ) throws -> LiveContextExpectedIdentity {
+        LiveContextExpectedIdentity(
+            gitSHA: try command.required("expected-git-sha"),
+            manifestSHA256: try command.required("expected-manifest-sha256"),
+            modelSHA256: try command.required("expected-model-sha256"),
+            runtimeSHA256: try command.required("expected-runtime-sha256"),
+            expectedCorpusRowCount: try parseRequiredPositiveInt(command, key: "expected-corpus-row-count"),
+            vadModelSHA256: command.optional("expected-vad-model-sha256"),
+            threadCount: try parseRequiredPositiveInt(command, key: "expected-thread-count"),
+            hostedReceiptSHA256: try command.required("expected-hosted-receipt-sha256"),
+            adversarialReceiptSHA256: try command.required("expected-adversarial-receipt-sha256"),
+            audioFixtureSHA256: try command.required("expected-audio-fixture-sha256"),
+            hostedSourceManifestSHA256: try command.required("expected-hosted-source-manifest-sha256"),
+            helperSourceSHA256: try command.required("expected-helper-source-sha256"),
+            adversarialHarnessSHA256: try command.required("expected-adversarial-harness-sha256"),
+            language: try command.required("expected-language")
+        )
+    }
+
+    private static func runLiveContext(_ command: ParsedCommand) async throws {
+        let outputPath = try command.required("output")
+        let resourceSoakSessions = try parseOptionalInt(
+            command.optional("resource-soak-sessions"),
+            argument: "resource-soak-sessions"
+        ) ?? 500
+        let alternatingTrials = try parseOptionalInt(
+            command.optional("alternating-trials"),
+            argument: "alternating-trials"
+        ) ?? 10
+        let idleSampleSeconds = try parseOptionalDouble(
+            command.optional("idle-sample-seconds"),
+            argument: "idle-sample-seconds"
+        ) ?? 60
+        let speechOnsetMS = try parseOptionalInt(
+            command.optional("speech-onset-ms"),
+            argument: "speech-onset-ms"
+        ) ?? 0
+        let threads = try parseOptionalInt(command.optional("threads"), argument: "threads") ?? 8
+        let rssCeiling = try parseRequiredUInt64(command, key: "rss-ceiling-bytes")
+        guard resourceSoakSessions >= 500 else {
+            throw CLIError.invalidValue(argument: "resource-soak-sessions", value: String(resourceSoakSessions))
+        }
+        guard idleSampleSeconds >= 60 else {
+            throw CLIError.invalidValue(argument: "idle-sample-seconds", value: String(idleSampleSeconds))
+        }
+        guard rssCeiling == 2_147_483_648 else {
+            throw CLIError.invalidValue(argument: "rss-ceiling-bytes", value: String(rssCeiling))
+        }
+        let artifact = try await LiveContextBenchmarkRunner.run(
+            configuration: LiveContextBenchmarkConfiguration(
+                corpusPath: try command.required("corpus"),
+                audioFixturePath: try command.required("audio-fixture"),
+                audioFixtureIsPublic: command.optional("public-audio-fixture") == "true",
+                declaredSpeechOnsetMS: speechOnsetMS,
+                helperPath: try command.required("helper"),
+                whisperCLIPath: try command.required("whisper-cli"),
+                modelPath: try command.required("model"),
+                vadModelPath: command.optional("vad-model"),
+                sourceRootPath: try command.required("source-root"),
+                hostedReceiptPath: try command.required("hosted-receipt"),
+                adversarialReceiptPath: try command.required("adversarial-receipt"),
+                threads: threads,
+                language: command.optional("language") ?? "en",
+                alternatingTrialCount: alternatingTrials,
+                resourceSoakSessions: resourceSoakSessions,
+                idleSampleSeconds: idleSampleSeconds,
+                rssCeilingBytes: rssCeiling
+            )
+        )
+        let data = try LiveContextArtifactIO.encodeArtifact(artifact)
+        try data.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        print("Live-context benchmark saved to \(outputPath) — corpusRows=\(artifact.observedCorpusRowCount), audioSamples=\(artifact.capture.streamedSampleCount), failures=\(artifact.failures.count), skips=\(artifact.skips.count)")
+    }
+
+    private static func writeLiveContextCorpus(_ command: ParsedCommand) throws {
+        let outputPath = try command.required("output")
+        let corpus = ContinuationDirectiveCorpus.frozenAcceptanceCorpus
+        try LiveContextArtifactIO.encodeCorpus(corpus).write(
+            to: URL(fileURLWithPath: outputPath),
+            options: .atomic
+        )
+        print("Frozen case-sensitive corpus written to \(outputPath) — rows=\(corpus.rows.count), sha256=\(try corpus.sha256())")
+    }
+
+    private static func parseRequiredPositiveInt(
+        _ command: ParsedCommand,
+        key: String
+    ) throws -> Int {
+        let raw = try command.required(key)
+        guard let value = Int(raw), value > 0 else {
+            throw CLIError.invalidValue(argument: key, value: raw)
+        }
+        return value
+    }
+
+    private static func parseRequiredUInt64(
+        _ command: ParsedCommand,
+        key: String
+    ) throws -> UInt64 {
+        let raw = try command.required(key)
+        guard let value = UInt64(raw), value > 0 else {
+            throw CLIError.invalidValue(argument: key, value: raw)
+        }
+        return value
     }
 
     private static func runAll(_ command: ParsedCommand) async throws {
@@ -653,6 +844,72 @@ enum StenoBenchmarkCLI {
             [--structure-mode natural|paragraph|bullets|email|command]
             [--filler-policy minimal|balanced|aggressive]
             [--command-policy passthrough|transform]
+
+          validate-continuation-corpus
+            --artifact <live-context-json-path>
+            --corpus <case-sensitive-corpus-json-path>
+            --expected-git-sha <sha>
+            --expected-manifest-sha256 <sha256>
+            --expected-model-sha256 <sha256>
+            --expected-runtime-sha256 <sha256>
+            --expected-hosted-receipt-sha256 <sha256>
+            --expected-adversarial-receipt-sha256 <sha256>
+            --expected-audio-fixture-sha256 <sha256>
+            --expected-hosted-source-manifest-sha256 <sha256>
+            --expected-helper-source-sha256 <sha256>
+            --expected-adversarial-harness-sha256 <sha256>
+            --expected-language <code>
+            --expected-corpus-row-count <int>
+            --expected-thread-count <int>
+            [--expected-vad-model-sha256 <sha256>]
+            [--max-age-seconds <double>] (default: 86400)
+
+          validate-live-context
+            --artifact <live-context-json-path>
+            --corpus <case-sensitive-corpus-json-path>
+            --expected-git-sha <sha>
+            --expected-manifest-sha256 <sha256>
+            --expected-model-sha256 <sha256>
+            --expected-runtime-sha256 <sha256>
+            --expected-hosted-receipt-sha256 <sha256>
+            --expected-adversarial-receipt-sha256 <sha256>
+            --expected-audio-fixture-sha256 <sha256>
+            --expected-hosted-source-manifest-sha256 <sha256>
+            --expected-helper-source-sha256 <sha256>
+            --expected-adversarial-harness-sha256 <sha256>
+            --expected-language <code>
+            --expected-corpus-row-count <int>
+            --expected-thread-count <int>
+            [--expected-vad-model-sha256 <sha256>]
+            [--max-age-seconds <double>] (default: 86400)
+
+          validate-live-context-core-diagnostics
+            Same required arguments as validate-live-context. Validates the
+            production-core diagnostics while explicitly leaving shipping
+            blocked until native listening and stop-to-insertion evidence exists.
+
+          run-live-context
+            --corpus <case-sensitive-corpus-json-path>
+            --audio-fixture <public-wav-path>
+            --public-audio-fixture
+            --helper <path>
+            --whisper-cli <path>
+            --model <path>
+            --source-root <repository-path>
+            --rss-ceiling-bytes <uint64>
+            --output <aggregate-json-path>
+            [--vad-model <path>]
+            [--threads <int>] (default: 8)
+            [--language <code>] (default: en)
+            [--speech-onset-ms <int>] (default: 0)
+            --hosted-receipt <aggregate-only-hosted-receipt.json>
+            --adversarial-receipt <aggregate-only-helper-receipt.json>
+            [--alternating-trials <int>] (minimum/default: 10; 5 enabled + 5 disabled)
+            [--resource-soak-sessions <int>] (default: 500)
+            [--idle-sample-seconds <double>] (default: 60)
+
+          write-live-context-corpus
+            --output <case-sensitive-corpus-json-path>
         """
     }
 
