@@ -74,13 +74,25 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var threadCount: Int
         var vadEnabled: Bool
         var vadModelPath: String
+        var showLiveTranscriptWhileRecording: Bool
+        var useNearbyTextForContinuation: Bool
 
-        init(whisperCLIPath: String, modelPath: String, threadCount: Int, vadEnabled: Bool = true, vadModelPath: String? = nil) {
+        init(
+            whisperCLIPath: String,
+            modelPath: String,
+            threadCount: Int,
+            vadEnabled: Bool = true,
+            vadModelPath: String? = nil,
+            showLiveTranscriptWhileRecording: Bool = false,
+            useNearbyTextForContinuation: Bool = false
+        ) {
             self.whisperCLIPath = whisperCLIPath
             self.modelPath = modelPath
             self.threadCount = threadCount
             self.vadEnabled = vadEnabled
             self.vadModelPath = vadModelPath ?? WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: modelPath)
+            self.showLiveTranscriptWhileRecording = showLiveTranscriptWhileRecording
+            self.useNearbyTextForContinuation = useNearbyTextForContinuation
         }
 
         init(from decoder: Decoder) throws {
@@ -91,6 +103,14 @@ struct AppPreferences: Codable, Sendable, Equatable {
             vadEnabled = try container.decodeIfPresent(Bool.self, forKey: .vadEnabled) ?? true
             let savedVAD = try container.decodeIfPresent(String.self, forKey: .vadModelPath)
             vadModelPath = savedVAD ?? WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: modelPath)
+            showLiveTranscriptWhileRecording = try container.decodeIfPresent(
+                Bool.self,
+                forKey: .showLiveTranscriptWhileRecording
+            ) ?? false
+            useNearbyTextForContinuation = try container.decodeIfPresent(
+                Bool.self,
+                forKey: .useNearbyTextForContinuation
+            ) ?? false
         }
 
         mutating func updateModelPath(_ newModelPath: String) {

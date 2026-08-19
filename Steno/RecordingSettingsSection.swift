@@ -10,6 +10,30 @@ struct RecordingSettingsSection: View {
             Toggle("Enable Option hold-to-talk", isOn: $preferences.hotkeys.optionPressToTalkEnabled)
 
             VStack(alignment: .leading, spacing: StenoDesign.xxs) {
+                Toggle(
+                    "Show live transcript while recording",
+                    isOn: $preferences.dictation.showLiveTranscriptWhileRecording
+                )
+
+                Text("Shows local provisional words in Steno's overlay. Draft words may revise; only the final transcript is typed and saved.")
+                    .font(StenoDesign.caption())
+                    .foregroundStyle(StenoDesign.textSecondary)
+                    .padding(.leading, StenoDesign.xxs)
+            }
+
+            VStack(alignment: .leading, spacing: StenoDesign.xxs) {
+                Toggle(
+                    "Use nearby text for continuation",
+                    isOn: $preferences.dictation.useNearbyTextForContinuation
+                )
+
+                Text("Locally reads only a bounded area around the verified caret to choose boundary spacing and capitalization. Nearby text is never saved. With or without context, after optional leading Unicode whitespace, use “lowercase” as the exact case-insensitive first lexical token, followed by Unicode whitespace and a nonempty payload containing a cased grapheme. Used alone, non-leading, punctuated, quoted, introduced, or code-like, “lowercase” remains literal. To escape the directive, after optional leading Unicode whitespace, start with the exact case-insensitive tokens “literal lowercase”, followed by Unicode whitespace and nonempty text.")
+                    .font(StenoDesign.caption())
+                    .foregroundStyle(StenoDesign.textSecondary)
+                    .padding(.leading, StenoDesign.xxs)
+            }
+
+            VStack(alignment: .leading, spacing: StenoDesign.xxs) {
                 Picker("Global hands-free key", selection: handsFreeKeyBinding) {
                     Text("Disabled").tag(nil as UInt16?)
                     Section("F1–F12 (built-in keyboard)") {

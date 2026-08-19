@@ -5,6 +5,20 @@ import StenoKit
 
 protocol DictationSessionCoordinating: Sendable {
     func startPressToTalk(appContext: AppContext) async throws -> SessionID
+    func startPressToTalk(
+        appContext: AppContext,
+        options: SessionStartOptions
+    ) async throws -> SessionID
+    func startPressToTalk(
+        appContext: AppContext,
+        options: SessionStartOptions,
+        captureStarted: @Sendable (SessionID) -> Void
+    ) async throws -> SessionID
+    func startPressToTalkWithCaptureStopCapability(
+        appContext: AppContext,
+        options: SessionStartOptions,
+        captureStarted: @Sendable (PressToTalkCaptureStopCapability) -> Void
+    ) async throws -> SessionID
     func endPressToTalkCapture(sessionID: SessionID) async throws
     func completePressToTalk(
         sessionID: SessionID,
@@ -19,6 +33,47 @@ protocol DictationSessionCoordinating: Sendable {
 extension SessionCoordinator: DictationSessionCoordinating {}
 
 extension DictationSessionCoordinating {
+    func startPressToTalk(
+        appContext: AppContext,
+        options: SessionStartOptions
+    ) async throws -> SessionID {
+        try await startPressToTalk(appContext: appContext)
+    }
+
+    func startPressToTalk(
+        appContext: AppContext,
+        options: SessionStartOptions,
+        captureStarted: @Sendable (SessionID) -> Void
+    ) async throws -> SessionID {
+        let sessionID = try await startPressToTalk(
+            appContext: appContext,
+            options: options
+        )
+        captureStarted(sessionID)
+        return sessionID
+    }
+
+    func startPressToTalkWithCaptureStopCapability(
+        appContext: AppContext,
+        options: SessionStartOptions,
+        captureStarted: @Sendable (PressToTalkCaptureStopCapability) -> Void
+    ) async throws -> SessionID {
+        let sessionID = try await startPressToTalk(
+            appContext: appContext,
+            options: options
+        )
+        captureStarted(PressToTalkCaptureStopCapability(
+            sessionID: sessionID,
+            stopOperation: { [self] in
+                try await endPressToTalkCapture(sessionID: sessionID)
+            },
+            cancelOperation: { [self] in
+                await cancel(sessionID: sessionID)
+            }
+        ))
+        return sessionID
+    }
+
     func unloadTranscriptionRuntime() async {}
     func shutdown() async {}
 }
@@ -48,6 +103,129 @@ private struct UsageAnalyticsRefreshRequest {
     var now: Date
     var calendar: Calendar
     var forceHistoryReconciliation: Bool
+}
+
+private enum CaptureHandoffRequest: Equatable {
+    case stop
+    case cancel
+}
+
+private enum PromptCaptureStopResult: Sendable {
+    case unavailable
+    case stopped(PressToTalkCaptureStopCapability)
+    case failed(PressToTalkCaptureStopCapability, message: String)
+}
+
+private struct PromptCaptureStopError: Error, LocalizedError, Sendable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+private final class CaptureStartHandoff: @unchecked Sendable {
+    private let lock = NSLock()
+    private var capability: PressToTalkCaptureStopCapability?
+    private var pendingRequest: CaptureHandoffRequest?
+    private var publicationFinished = false
+    private var stopCapabilityClaimed = false
+    private var stopWaiters: [CheckedContinuation<PressToTalkCaptureStopCapability?, Never>] = []
+
+    func publish(
+        _ capability: PressToTalkCaptureStopCapability
+    ) -> CaptureHandoffRequest? {
+        var waiters: [CheckedContinuation<PressToTalkCaptureStopCapability?, Never>] = []
+        let request = lock.withLock {
+            guard self.capability == nil else { return pendingRequest }
+            self.capability = capability
+            if pendingRequest == .stop, !stopWaiters.isEmpty {
+                stopCapabilityClaimed = true
+                self.capability = nil
+                waiters = stopWaiters
+                stopWaiters.removeAll()
+            }
+            return pendingRequest
+        }
+        for waiter in waiters {
+            waiter.resume(returning: capability)
+        }
+        return request
+    }
+
+    func request(_ request: CaptureHandoffRequest) -> PressToTalkCaptureStopCapability? {
+        var cancelledStopWaiters: [CheckedContinuation<PressToTalkCaptureStopCapability?, Never>] = []
+        let result = lock.withLock { () -> PressToTalkCaptureStopCapability? in
+            let previousRequest = pendingRequest
+            let effectiveRequest: CaptureHandoffRequest = previousRequest == .cancel
+                ? .cancel
+                : request
+            pendingRequest = effectiveRequest
+            if previousRequest == .stop, effectiveRequest == .cancel {
+                cancelledStopWaiters = stopWaiters
+                stopWaiters.removeAll()
+            }
+            guard effectiveRequest == request, let capability else { return nil }
+            self.capability = nil
+            if effectiveRequest == .stop {
+                stopCapabilityClaimed = true
+            }
+            return capability
+        }
+        for waiter in cancelledStopWaiters {
+            waiter.resume(returning: nil)
+        }
+        return result
+    }
+
+    func awaitStopCapability() async -> PressToTalkCaptureStopCapability? {
+        await withCheckedContinuation { continuation in
+            var immediate: PressToTalkCaptureStopCapability?
+            var shouldResume = false
+            lock.withLock {
+                if let capability {
+                    self.capability = nil
+                    stopCapabilityClaimed = true
+                    immediate = capability
+                    shouldResume = true
+                } else if publicationFinished {
+                    shouldResume = true
+                } else {
+                    stopWaiters.append(continuation)
+                }
+            }
+            if shouldResume {
+                continuation.resume(returning: immediate)
+            }
+        }
+    }
+
+    func finishPublication() {
+        var waiters: [CheckedContinuation<PressToTalkCaptureStopCapability?, Never>] = []
+        lock.withLock {
+            publicationFinished = true
+            guard capability == nil, !stopCapabilityClaimed else { return }
+            waiters = stopWaiters
+            stopWaiters.removeAll()
+        }
+        for waiter in waiters {
+            waiter.resume(returning: nil)
+        }
+    }
+
+    func take(sessionID: SessionID? = nil) -> PressToTalkCaptureStopCapability? {
+        lock.withLock {
+            if pendingRequest == .stop || stopCapabilityClaimed {
+                return nil
+            }
+            guard sessionID == nil || capability?.sessionID == sessionID else { return nil }
+            defer { capability = nil }
+            return capability
+        }
+    }
+
+    var stopOwnsCapture: Bool {
+        lock.withLock {
+            pendingRequest == .stop || stopCapabilityClaimed
+        }
+    }
 }
 
 @MainActor
@@ -85,6 +263,8 @@ final class DictationController: ObservableObject {
     private let preferencesStore: AppPreferencesStore
     private let launchAtLoginService: LaunchAtLoginService
     private let runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)?
+    private let overlayDismissDelay: @Sendable () async -> Void
+    private let overlayDismissAction: @MainActor @Sendable () -> Void
     private let modelDownloadService = WhisperModelDownloadService()
     private let compatibilityService = try? WhisperCompatibilityService.bundled()
 
@@ -95,15 +275,23 @@ final class DictationController: ObservableObject {
 
     private var recordingStateMachine = RecordingStateMachine()
     private var currentSessionID: SessionID?
+    private var currentCaptureStopCapability: PressToTalkCaptureStopCapability?
+    private var activeCaptureStartHandoff: CaptureStartHandoff?
     private var activeRecordingMode: RecordingMode?
     private var activeMediaToken: MediaInterruptionToken?
+    private var deferredMediaTokens: [MediaInterruptionToken] = []
+    private var captureTerminationBarriers: [UUID: Task<Void, Never>] = [:]
     private var activeStartTask: Task<Void, Never>?
     private var activeSessionGeneration: UUID?
+    private var pendingLiveSnapshots: [SessionID: LiveTranscriptionSnapshot] = [:]
+    private var pendingLiveUnavailableSessionIDs: Set<SessionID> = []
     private var sessionCleanupStartGate = SessionCleanupStartGate()
     private var cleanupTask: Task<Void, Never>?
     private var completionTask: Task<Void, Never>?
     private var completionTaskID: UUID?
     private var completionTasks: [UUID: Task<Void, Never>] = [:]
+    private var overlayDismissTask: Task<Void, Never>?
+    private var overlayDismissGeneration: UInt64 = 0
     private var isTearingDown = false
     private var isRuntimeUnloadingForSystemEvent = false
     private var pendingMemoryPressureRuntimeUnload = false
@@ -132,6 +320,10 @@ final class DictationController: ObservableObject {
         launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService(),
         coordinator: (any DictationSessionCoordinating)? = nil,
         runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)? = nil,
+        overlayDismissDelay: @escaping @Sendable () async -> Void = {
+            try? await Task.sleep(for: .seconds(2))
+        },
+        overlayDismissAction: (@MainActor @Sendable () -> Void)? = nil,
         historyStore: HistoryStore? = nil,
         usageAnalyticsStore: (any UsageAnalyticsStoreServicing)? = nil,
         legacyHistoryURL: URL? = nil
@@ -144,6 +336,10 @@ final class DictationController: ObservableObject {
         self.launchAtLoginService = launchAtLoginService
         self.coordinator = coordinator
         self.runtimeRebuildOverride = runtimeRebuildOverride
+        self.overlayDismissDelay = overlayDismissDelay
+        self.overlayDismissAction = overlayDismissAction ?? { [weak overlay] in
+            overlay?.hide()
+        }
         self.historyStore = historyStore ?? HistoryStore(clipboardService: clipboardService)
         self.usageAnalyticsStore = usageAnalyticsStore ?? UsageAnalyticsStore()
         self.legacyHistoryURL = legacyHistoryURL ?? Self.defaultLegacyHistoryURL()
@@ -230,6 +426,7 @@ final class DictationController: ObservableObject {
     func teardown() {
         guard shutdownTask == nil else { return }
         isTearingDown = true
+        invalidatePendingOverlayDismissal()
         pendingMemoryPressureRuntimeUnload = false
         runtimeRebuildGeneration &+= 1
         terminationTask?.cancel()
@@ -257,13 +454,31 @@ final class DictationController: ObservableObject {
         for completion in pendingCompletions {
             completion.cancel()
         }
-        activeSessionGeneration = nil
+        pendingLiveSnapshots.removeAll()
+        pendingLiveUnavailableSessionIDs.removeAll()
+        let sessionGeneration = activeSessionGeneration
         let pendingStart = activeStartTask
         activeStartTask = nil
+        let captureStopCapability = currentCaptureStopCapability
+            ?? activeCaptureStartHandoff?.request(.cancel)
+        captureStopCapability?.markStopRequested()
+        let promptCaptureCancelTask = captureStopCapability.map { capability in
+            Task { await capability.cancelCapture() }
+        }
+        installCaptureTerminationBarrier(
+            promptCaptureCancelTask,
+            for: sessionGeneration,
+            pendingStart: pendingStart
+        )
+        activeSessionGeneration = nil
         pendingStart?.cancel()
+        currentCaptureStopCapability = nil
+        activeCaptureStartHandoff = nil
         let mediaToken = activeMediaToken
         activeMediaToken = nil
-        let sessionID = currentSessionID
+        let deferredMediaTokens = self.deferredMediaTokens
+        self.deferredMediaTokens.removeAll()
+        let sessionID = currentSessionID ?? captureStopCapability?.sessionID
         currentSessionID = nil
         let coordinator = self.coordinator
         self.coordinator = nil
@@ -271,6 +486,7 @@ final class DictationController: ObservableObject {
         recordingTimer = nil
 
         shutdownTask = Task {
+            await promptCaptureCancelTask?.value
             await pendingCleanup?.value
             await pendingStart?.value
             for completion in pendingCompletions {
@@ -281,6 +497,9 @@ final class DictationController: ObservableObject {
             }
             if let mediaToken {
                 await mediaInterruption.endInterruption(token: mediaToken)
+            }
+            for token in deferredMediaTokens {
+                await mediaInterruption.endInterruption(token: token)
             }
             await waitForRuntimeRebuilds()
             await coordinator?.shutdown()
@@ -818,47 +1037,75 @@ final class DictationController: ObservableObject {
             return
         }
 
-        status = mode == .handsFree ? "Hands-free listening..." : "Recording..."
-        lastError = ""
-        isRecording = true
-        handsFreeOn = mode == .handsFree
-        menuBar.updateIcon(isRecording: true, handsFreeOn: mode == .handsFree)
-        activeRecordingMode = mode
-        recordingElapsed = 0
-        recordingStartedAt = Date()
-        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.recordingElapsed += 1
-            }
-        }
-        overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
+        invalidatePendingOverlayDismissal()
+        // Capture the lightweight app identity at keydown, then start audio.
+        // Display enumeration, overlay presentation, and recording UI wait for
+        // the coordinator's post-capture acknowledgement.
         let capturedContext = AppContextProvider.current()
+        let generation = UUID()
+        activeSessionGeneration = generation
+        let captureHandoff = CaptureStartHandoff()
+        activeCaptureStartHandoff = captureHandoff
+        let startOptions = SessionStartOptions(
+            controllerGeneration: generation,
+            livePreviewEnabled: preferences.dictation.showLiveTranscriptWhileRecording,
+            nearbyContextEnabled: preferences.dictation.useNearbyTextForContinuation,
+            languageHints: ["en-US"]
+        )
 
         let shouldPauseMedia = (mode == .handsFree && preferences.media.pauseDuringHandsFree)
                             || (mode == .pressToTalk && preferences.media.pauseDuringPressToTalk)
 
-        let generation = UUID()
-        activeSessionGeneration = generation
         activeStartTask = Task {
             var ownedMediaToken: MediaInterruptionToken?
-            var ownedSessionID: SessionID?
+            var returnedSessionID: SessionID?
+            defer { captureHandoff.finishPublication() }
 
             do {
-                // Press-to-talk should start capture immediately so the first spoken
-                // words are not clipped while media detection/pausing runs.
-                if mode == .handsFree && shouldPauseMedia {
-                    ownedMediaToken = await mediaInterruption.beginInterruption()
+                try Task.checkCancellation()
+                guard activeSessionGeneration == generation else { throw CancellationError() }
+
+                returnedSessionID = try await coordinator.startPressToTalkWithCaptureStopCapability(
+                    appContext: capturedContext,
+                    options: startOptions,
+                    captureStarted: { [weak self] capability in
+                        let pendingRequest = captureHandoff.publish(capability)
+                        if pendingRequest != nil {
+                            capability.markStopRequested()
+                        }
+                        Task { @MainActor [weak self] in
+                            switch pendingRequest {
+                            case .stop:
+                                break
+                            case .cancel:
+                                await capability.cancelCapture()
+                            case nil:
+                                self?.acknowledgeCaptureStarted(
+                                    capability: capability,
+                                    handoff: captureHandoff,
+                                    mode: mode,
+                                    generation: generation
+                                )
+                            }
+                        }
+                    }
+                )
+
+                try Task.checkCancellation()
+                guard activeSessionGeneration == generation else { throw CancellationError() }
+                guard let returnedSessionID,
+                      adoptCaptureStopCapability(
+                          sessionID: returnedSessionID,
+                          handoff: captureHandoff,
+                          generation: generation
+                      )
+                else {
+                    throw CancellationError()
                 }
 
-                try Task.checkCancellation()
-                guard activeSessionGeneration == generation else { throw CancellationError() }
-
-                ownedSessionID = try await coordinator.startPressToTalk(appContext: capturedContext)
-
-                try Task.checkCancellation()
-                guard activeSessionGeneration == generation else { throw CancellationError() }
-
-                if mode == .pressToTalk && shouldPauseMedia {
+                // Capture always owns the opening words. Optional media detection
+                // and pausing runs only after the microphone is already recording.
+                if shouldPauseMedia {
                     ownedMediaToken = await mediaInterruption.beginInterruption()
                 }
 
@@ -870,17 +1117,32 @@ final class DictationController: ObservableObject {
                 try Task.checkCancellation()
                 guard activeSessionGeneration == generation else { throw CancellationError() }
 
-                currentSessionID = ownedSessionID
-                ownedSessionID = nil
+                if let sessionID = currentSessionID {
+                    if pendingLiveUnavailableSessionIDs.remove(sessionID) != nil {
+                        overlay.showLiveTranscriptUnavailable()
+                    } else if let snapshot = pendingLiveSnapshots.removeValue(forKey: sessionID) {
+                        overlay.updateLiveTranscript(snapshot)
+                    }
+                }
+                pendingLiveSnapshots.removeAll()
+                pendingLiveUnavailableSessionIDs.removeAll()
+                activeCaptureStartHandoff = nil
                 activeMediaToken = ownedMediaToken
                 ownedMediaToken = nil
             } catch is CancellationError {
-                if let ownedSessionID {
-                    await coordinator.cancel(sessionID: ownedSessionID)
+                if let sessionID = takeFailedStartSession(
+                    returnedSessionID: returnedSessionID,
+                    handoff: captureHandoff,
+                    generation: generation
+                ) {
+                    await coordinator.cancel(sessionID: sessionID)
                 }
 
                 if let ownedMediaToken {
-                    await mediaInterruption.endInterruption(token: ownedMediaToken)
+                    await releaseMediaToken(
+                        ownedMediaToken,
+                        originatingGeneration: generation
+                    )
                 }
 
                 if !Task.isCancelled,
@@ -893,12 +1155,19 @@ final class DictationController: ObservableObject {
                     )
                 }
             } catch {
-                if let ownedSessionID {
-                    await coordinator.cancel(sessionID: ownedSessionID)
+                if let sessionID = takeFailedStartSession(
+                    returnedSessionID: returnedSessionID,
+                    handoff: captureHandoff,
+                    generation: generation
+                ) {
+                    await coordinator.cancel(sessionID: sessionID)
                 }
 
                 if let ownedMediaToken {
-                    await mediaInterruption.endInterruption(token: ownedMediaToken)
+                    await releaseMediaToken(
+                        ownedMediaToken,
+                        originatingGeneration: generation
+                    )
                 }
 
                 await markStartFailed(error: error, generation: generation)
@@ -910,18 +1179,77 @@ final class DictationController: ObservableObject {
         }
     }
 
+    private func acknowledgeCaptureStarted(
+        capability: PressToTalkCaptureStopCapability,
+        handoff: CaptureStartHandoff,
+        mode: RecordingMode,
+        generation: UUID
+    ) {
+        guard !isTearingDown,
+              activeSessionGeneration == generation,
+              adoptCaptureStopCapability(
+                  sessionID: capability.sessionID,
+                  handoff: handoff,
+                  generation: generation
+              ),
+              recordingStateMachine.state == (mode == .handsFree
+                  ? .recordingHandsFree
+                  : .recordingPressToTalk)
+        else { return }
+
+        status = mode == .handsFree ? "Hands-free listening..." : "Recording..."
+        lastError = ""
+        isRecording = true
+        handsFreeOn = mode == .handsFree
+        menuBar.updateIcon(isRecording: true, handsFreeOn: mode == .handsFree)
+        activeRecordingMode = mode
+        recordingElapsed = 0
+        recordingStartedAt = Date()
+        recordingTimer?.invalidate()
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.isRecording,
+                      self.activeSessionGeneration == generation else { return }
+                self.recordingElapsed += 1
+            }
+        }
+        overlay.setLiveTranscriptEnabled(preferences.dictation.showLiveTranscriptWhileRecording)
+        overlay.pinNextSessionToDisplay(containing: captureStartTargetDisplayPoint())
+        overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
+    }
+
     private func cancelSession(mode: RecordingMode) {
+        invalidatePendingOverlayDismissal()
         sessionCleanupStartGate.beginCleanup()
         // Settings may rebuild the runtime once the state machine returns to idle.
         // Retain the coordinator that created this session before cleanup suspends.
         let sessionCoordinator = coordinator
-        activeSessionGeneration = nil
+        pendingLiveSnapshots.removeAll()
+        pendingLiveUnavailableSessionIDs.removeAll()
+        let sessionGeneration = activeSessionGeneration
         let pendingStart = activeStartTask
         activeStartTask = nil
+        let captureStopCapability = currentCaptureStopCapability
+            ?? activeCaptureStartHandoff?.request(.cancel)
+        captureStopCapability?.markStopRequested()
+        let promptCaptureCancelTask = captureStopCapability.map { capability in
+            Task { await capability.cancelCapture() }
+        }
+        installCaptureTerminationBarrier(
+            promptCaptureCancelTask,
+            for: sessionGeneration,
+            pendingStart: pendingStart
+        )
+        activeSessionGeneration = nil
         pendingStart?.cancel()
+        currentCaptureStopCapability = nil
+        activeCaptureStartHandoff = nil
         let mediaToken = activeMediaToken
         activeMediaToken = nil
-        let sessionID = currentSessionID
+        let deferredMediaTokens = self.deferredMediaTokens
+        self.deferredMediaTokens.removeAll()
+        let sessionID = currentSessionID ?? captureStopCapability?.sessionID
         currentSessionID = nil
 
         recordingTimer?.invalidate()
@@ -937,6 +1265,7 @@ final class DictationController: ObservableObject {
         overlay.hide()
 
         cleanupTask = Task {
+            await promptCaptureCancelTask?.value
             await pendingStart?.value
 
             if let sessionCoordinator, let sessionID {
@@ -945,6 +1274,9 @@ final class DictationController: ObservableObject {
 
             if let mediaToken {
                 await mediaInterruption.endInterruption(token: mediaToken)
+            }
+            for token in deferredMediaTokens {
+                await mediaInterruption.endInterruption(token: token)
             }
 
             guard !Task.isCancelled, !isTearingDown else {
@@ -970,9 +1302,56 @@ final class DictationController: ObservableObject {
     }
 
     private func stopSession(mode: RecordingMode) {
-        let generation = activeSessionGeneration
+        invalidatePendingOverlayDismissal()
+        let sessionGeneration = activeSessionGeneration
         let pendingStart = activeStartTask
         activeStartTask = nil
+        let sessionCoordinator = coordinator
+        let captureHandoff = activeCaptureStartHandoff
+        let captureStopCapability = currentCaptureStopCapability
+            ?? captureHandoff?.request(.stop)
+        captureStopCapability?.markStopRequested()
+        let promptCaptureStopTask = Task<PromptCaptureStopResult, Never> {
+            let capability: PressToTalkCaptureStopCapability?
+            if let captureStopCapability {
+                capability = captureStopCapability
+            } else {
+                capability = await captureHandoff?.awaitStopCapability()
+            }
+            guard let capability else { return .unavailable }
+            capability.markStopRequested()
+            do {
+                try await capability.stopCapture()
+                return .stopped(capability)
+            } catch {
+                return .failed(capability, message: error.localizedDescription)
+            }
+        }
+        let captureTerminationBarrier = Task<Void, Never> {
+            if case .failed(let capability, _) = await promptCaptureStopTask.value {
+                if let sessionCoordinator {
+                    await sessionCoordinator.cancel(sessionID: capability.sessionID)
+                } else {
+                    await capability.cancelCapture()
+                }
+            }
+        }
+        installCaptureTerminationBarrier(
+            captureTerminationBarrier,
+            for: sessionGeneration,
+            pendingStart: pendingStart
+        )
+        currentCaptureStopCapability = nil
+        activeCaptureStartHandoff = nil
+        let sessionID = currentSessionID ?? captureStopCapability?.sessionID
+        currentSessionID = nil
+        let mediaToken = activeMediaToken
+        activeMediaToken = nil
+        let deferredMediaTokens = self.deferredMediaTokens
+        self.deferredMediaTokens.removeAll()
+        activeSessionGeneration = nil
+        pendingLiveSnapshots.removeAll()
+        pendingLiveUnavailableSessionIDs.removeAll()
 
         // Shared cleanup — runs on every path including the guard-return.
         recordingTimer?.invalidate()
@@ -987,28 +1366,21 @@ final class DictationController: ObservableObject {
         let taskID = UUID()
         completionTaskID = taskID
         let task = Task {
-            // Wait for startSession's Task to finish so currentSessionID
-            // and activeMediaToken are guaranteed to be set (or errored out).
-            await pendingStart?.value
-
             guard !isTearingDown,
-                  completionTaskID == taskID,
-                  let generation,
-                  activeSessionGeneration == generation
+                  completionTaskID == taskID
             else {
                 await finishCompletionTask(id: taskID)
                 return
             }
 
-            let sessionID = currentSessionID
-            currentSessionID = nil
-            let mediaToken = activeMediaToken
-            activeMediaToken = nil
-            activeSessionGeneration = nil
-
-            guard let coordinator, let sessionID else {
+            guard let sessionCoordinator else {
+                await captureTerminationBarrier.value
+                await pendingStart?.value
                 if let mediaToken {
                     await mediaInterruption.endInterruption(token: mediaToken)
+                }
+                for token in deferredMediaTokens {
+                    await mediaInterruption.endInterruption(token: token)
                 }
                 if !isTearingDown, completionTaskID == taskID {
                     recordingStateMachine.markTranscriptionFailed()
@@ -1018,17 +1390,45 @@ final class DictationController: ObservableObject {
                 return
             }
 
-            status = "Finishing recording..."
-            lastError = ""
-            overlay.show(state: .transcribing)
-
             var releasedMedia = false
+            var resolvedSessionID = sessionID
+            var captureCancelledAfterStopFailure = false
             do {
-                try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+                let captureStopResult = await promptCaptureStopTask.value
+                await captureTerminationBarrier.value
+                switch captureStopResult {
+                case .unavailable:
+                    break
+                case .stopped(let capability):
+                    if resolvedSessionID == nil {
+                        resolvedSessionID = capability.sessionID
+                    }
+                case .failed(let capability, let message):
+                    if resolvedSessionID == nil {
+                        resolvedSessionID = capability.sessionID
+                    }
+                    captureCancelledAfterStopFailure = true
+                    throw PromptCaptureStopError(message: message)
+                }
+                guard let activeSessionID = resolvedSessionID else {
+                    throw SessionCoordinatorError.sessionNotFound
+                }
+                status = "Finishing recording..."
+                lastError = ""
+                overlay.show(state: .transcribing)
+                // Capture closes at the key-up boundary above. Only final
+                // inference waits for optional media setup to settle, so a
+                // late pause token is released before transcription begins.
+                await pendingStart?.value
+                try await sessionCoordinator.endPressToTalkCapture(sessionID: activeSessionID)
                 if let mediaToken {
                     await mediaInterruption.endInterruption(token: mediaToken)
                     releasedMedia = true
                 }
+                for token in deferredMediaTokens {
+                    await mediaInterruption.endInterruption(token: token)
+                }
+                releasedMedia = true
 
                 try Task.checkCancellation()
                 guard !isTearingDown, completionTaskID == taskID else {
@@ -1036,8 +1436,8 @@ final class DictationController: ObservableObject {
                 }
 
                 status = "Transcribing..."
-                let result = try await coordinator.completePressToTalk(
-                    sessionID: sessionID,
+                let result = try await sessionCoordinator.completePressToTalk(
+                    sessionID: activeSessionID,
                     languageHints: ["en-US"]
                 )
                 let insertionCommitted = result.status == .inserted || result.status == .copiedOnly
@@ -1110,9 +1510,16 @@ final class DictationController: ObservableObject {
                 }
                 await applyDeferredRebuildIfNeeded()
             } catch {
-                await coordinator.cancel(sessionID: sessionID)
+                if let resolvedSessionID, !captureCancelledAfterStopFailure {
+                    await sessionCoordinator.cancel(sessionID: resolvedSessionID)
+                }
                 if let mediaToken, !releasedMedia {
                     await mediaInterruption.endInterruption(token: mediaToken)
+                }
+                if !releasedMedia {
+                    for token in deferredMediaTokens {
+                        await mediaInterruption.endInterruption(token: token)
+                    }
                 }
 
                 if !Task.isCancelled,
@@ -1133,7 +1540,80 @@ final class DictationController: ObservableObject {
         completionTasks[taskID] = task
     }
 
+    private func adoptCaptureStopCapability(
+        sessionID: SessionID,
+        handoff: CaptureStartHandoff,
+        generation: UUID
+    ) -> Bool {
+        guard activeSessionGeneration == generation,
+              activeCaptureStartHandoff === handoff else { return false }
+        if currentSessionID == sessionID,
+           currentCaptureStopCapability?.sessionID == sessionID {
+            return true
+        }
+        guard currentSessionID == nil,
+              currentCaptureStopCapability == nil,
+              let capability = handoff.take(sessionID: sessionID) else { return false }
+        currentSessionID = sessionID
+        currentCaptureStopCapability = capability
+        return true
+    }
+
+    private func takeFailedStartSession(
+        returnedSessionID: SessionID?,
+        handoff: CaptureStartHandoff,
+        generation: UUID
+    ) -> SessionID? {
+        guard !handoff.stopOwnsCapture else { return nil }
+        guard activeSessionGeneration == generation,
+              activeCaptureStartHandoff === handoff else {
+            return handoff.take(sessionID: returnedSessionID)?.sessionID
+        }
+
+        let capability: PressToTalkCaptureStopCapability?
+        if let currentCaptureStopCapability,
+           returnedSessionID == nil || currentCaptureStopCapability.sessionID == returnedSessionID {
+            capability = currentCaptureStopCapability
+        } else {
+            capability = handoff.take(sessionID: returnedSessionID)
+        }
+        currentCaptureStopCapability = nil
+        currentSessionID = nil
+        activeCaptureStartHandoff = nil
+        return capability?.sessionID ?? returnedSessionID
+    }
+
+    private func releaseMediaToken(
+        _ token: MediaInterruptionToken,
+        originatingGeneration: UUID
+    ) async {
+        // Session termination can race with a media interruption whose token is
+        // still owned by the start task. Never release that token until the same
+        // generation's canonical capture has physically closed.
+        await captureTerminationBarriers[originatingGeneration]?.value
+        if let activeSessionGeneration,
+           activeSessionGeneration != originatingGeneration {
+            deferredMediaTokens.append(token)
+            return
+        }
+        await mediaInterruption.endInterruption(token: token)
+    }
+
+    private func installCaptureTerminationBarrier(
+        _ barrier: Task<Void, Never>?,
+        for generation: UUID?,
+        pendingStart: Task<Void, Never>?
+    ) {
+        guard let barrier, let generation else { return }
+        captureTerminationBarriers[generation] = barrier
+        Task { @MainActor [weak self] in
+            await pendingStart?.value
+            self?.captureTerminationBarriers.removeValue(forKey: generation)
+        }
+    }
+
     private func cancelTranscription() {
+        invalidatePendingOverlayDismissal()
         let pendingCompletion = completionTask
         pendingCompletion?.cancel()
         status = "Transcription canceled."
@@ -1151,6 +1631,11 @@ final class DictationController: ObservableObject {
         guard activeSessionGeneration == generation, !isTearingDown else { return }
         activeStartTask = nil
         activeSessionGeneration = nil
+        currentSessionID = nil
+        currentCaptureStopCapability = nil
+        activeCaptureStartHandoff = nil
+        pendingLiveSnapshots.removeAll()
+        pendingLiveUnavailableSessionIDs.removeAll()
         recordingTimer?.invalidate()
         recordingTimer = nil
         recordingElapsed = 0
@@ -1166,8 +1651,38 @@ final class DictationController: ObservableObject {
         dismissOverlaySoon()
         await applyDeferredRebuildIfNeeded()
         await applyDeferredMemoryPressureUnloadIfNeeded()
+        let deferredMediaTokens = self.deferredMediaTokens
+        self.deferredMediaTokens.removeAll()
+        for token in deferredMediaTokens {
+            await mediaInterruption.endInterruption(token: token)
+        }
         if !isTearingDown, activeSessionGeneration == nil, !isRecording {
             status = "Failed to start"
+        }
+    }
+
+    private func receiveLiveTranscript(_ snapshot: LiveTranscriptionSnapshot) {
+        guard !isTearingDown,
+              isRecording,
+              activeSessionGeneration == snapshot.session.controllerGeneration
+        else { return }
+
+        if let currentSessionID {
+            guard currentSessionID == snapshot.session.sessionID else { return }
+            overlay.updateLiveTranscript(snapshot)
+        } else if activeStartTask != nil {
+            pendingLiveSnapshots[snapshot.session.sessionID] = snapshot
+        }
+    }
+
+    private func receiveLiveTranscriptUnavailable(sessionID: SessionID) {
+        guard !isTearingDown, isRecording, activeSessionGeneration != nil else { return }
+
+        if let currentSessionID {
+            guard currentSessionID == sessionID else { return }
+            overlay.showLiveTranscriptUnavailable()
+        } else if activeStartTask != nil {
+            pendingLiveUnavailableSessionIDs.insert(sessionID)
         }
     }
 
@@ -1181,10 +1696,27 @@ final class DictationController: ObservableObject {
     }
 
     private func dismissOverlaySoon() {
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            overlay.hide()
+        overlayDismissTask?.cancel()
+        overlayDismissGeneration &+= 1
+        let expectedGeneration = overlayDismissGeneration
+        let delay = overlayDismissDelay
+        let action = overlayDismissAction
+        overlayDismissTask = Task { @MainActor [weak self] in
+            await delay()
+            guard !Task.isCancelled,
+                  let self,
+                  self.overlayDismissGeneration == expectedGeneration else {
+                return
+            }
+            self.overlayDismissTask = nil
+            action()
         }
+    }
+
+    private func invalidatePendingOverlayDismissal() {
+        overlayDismissGeneration &+= 1
+        overlayDismissTask?.cancel()
+        overlayDismissTask = nil
     }
 
     private func applyPreferencesLocally(_ newValue: AppPreferences) {
@@ -1193,6 +1725,7 @@ final class DictationController: ObservableObject {
         hotkey.globalToggleKeyCode = newValue.hotkeys.handsFreeGlobalKeyCode
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
         applyOverlayAppearance(for: newValue.appearance)
+        overlay.setLiveTranscriptEnabled(newValue.dictation.showLiveTranscriptWhileRecording)
     }
 
     private func rebuildRuntimeOrDefer() async {
@@ -1269,7 +1802,13 @@ final class DictationController: ObservableObject {
             styleProfileService: styleProfileService,
             snippetService: snippetService,
             fallbackCleanupEngine: RuleBasedCleanupEngine(),
-            usageRecorder: usageAnalyticsStore
+            usageRecorder: usageAnalyticsStore,
+            liveSnapshotHandler: { [weak self] snapshot in
+                await self?.receiveLiveTranscript(snapshot)
+            },
+            liveUnavailableHandler: { [weak self] sessionID, _ in
+                await self?.receiveLiveTranscriptUnavailable(sessionID: sessionID)
+            }
         )
 
         status = "Running local transcription + local cleanup."
@@ -1400,12 +1939,62 @@ final class DictationController: ObservableObject {
             return "Transcript copied. Auto-paste unavailable until Accessibility is re-granted for this Steno build."
         }
 
+        if reason.contains("exact editor target")
+            || reason.contains("selection changed")
+            || reason.contains("selectionchanged")
+            || reason.contains("target changed") {
+            return "Target changed—final text copied."
+        }
+
         return "Transcript copied to clipboard. Paste with Cmd+V."
     }
 
     private func applyOverlayAppearance(for appearance: AppPreferences.Appearance) {
         let theme = StenoDesign.theme(for: appearance)
         overlay.updateAccentColor(NSColor(theme.accent), glowColor: NSColor(theme.accentGlow))
+    }
+
+    /// Selects a display from content-free frontmost-window geometry captured at
+    /// session start. Window names, text, and pixels are never requested.
+    private func captureStartTargetDisplayPoint() -> CGPoint {
+        let fallback = NSEvent.mouseLocation
+        guard let processID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              let rawWindows = CGWindowListCopyWindowInfo(
+                  [.optionOnScreenOnly, .excludeDesktopElements],
+                  kCGNullWindowID
+              ) as? [[CFString: Any]]
+        else { return fallback }
+
+        let windows = rawWindows.compactMap { info -> CaptureTargetWindowGeometry? in
+            guard let owner = info[kCGWindowOwnerPID] as? NSNumber,
+                  let layer = info[kCGWindowLayer] as? NSNumber,
+                  let rawBounds = info[kCGWindowBounds] as? [String: Any],
+                  let bounds = CGRect(dictionaryRepresentation: rawBounds as CFDictionary)
+            else { return nil }
+            return CaptureTargetWindowGeometry(
+                ownerProcessID: pid_t(owner.int32Value),
+                layer: layer.intValue,
+                quartzBounds: bounds
+            )
+        }
+
+        let screens = NSScreen.screens.compactMap { screen -> CaptureTargetScreenGeometry? in
+            let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
+            guard let number = screen.deviceDescription[screenNumberKey] as? NSNumber else {
+                return nil
+            }
+            return CaptureTargetScreenGeometry(
+                appKitFrame: screen.frame,
+                quartzFrame: CGDisplayBounds(CGDirectDisplayID(number.uint32Value))
+            )
+        }
+
+        return CaptureTargetDisplaySelector.point(
+            processID: processID,
+            windows: windows,
+            screens: screens,
+            fallback: fallback
+        )
     }
 
     private static func defaultLegacyHistoryURL() -> URL {
@@ -1417,6 +2006,50 @@ final class DictationController: ObservableObject {
         return appSupport
             .appendingPathComponent("WhisperClone", isDirectory: true)
             .appendingPathComponent("transcript-history.json")
+    }
+}
+
+struct CaptureTargetWindowGeometry: Sendable, Equatable {
+    let ownerProcessID: pid_t
+    let layer: Int
+    let quartzBounds: CGRect
+}
+
+struct CaptureTargetScreenGeometry: Sendable, Equatable {
+    let appKitFrame: CGRect
+    let quartzFrame: CGRect
+}
+
+enum CaptureTargetDisplaySelector {
+    static func point(
+        processID: pid_t,
+        windows: [CaptureTargetWindowGeometry],
+        screens: [CaptureTargetScreenGeometry],
+        fallback: CGPoint
+    ) -> CGPoint {
+        guard let targetWindow = windows.first(where: {
+            $0.ownerProcessID == processID
+                && $0.layer == 0
+                && !$0.quartzBounds.isEmpty
+                && !$0.quartzBounds.isNull
+        }) else { return fallback }
+
+        let targetScreen = screens.max { lhs, rhs in
+            lhs.quartzFrame.intersection(targetWindow.quartzBounds).area
+                < rhs.quartzFrame.intersection(targetWindow.quartzBounds).area
+        }
+        guard let targetScreen,
+              targetScreen.quartzFrame.intersection(targetWindow.quartzBounds).area > 0
+        else { return fallback }
+
+        return CGPoint(x: targetScreen.appKitFrame.midX, y: targetScreen.appKitFrame.midY)
+    }
+}
+
+private extension CGRect {
+    var area: CGFloat {
+        guard !isNull, !isEmpty else { return 0 }
+        return width * height
     }
 }
 
