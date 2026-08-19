@@ -162,33 +162,25 @@ struct AppPreferences: Codable, Sendable, Equatable {
             let home = fileManager.homeDirectoryForCurrentUser
             let cwd = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
 
-            var candidates: [URL] = [
-                home.appendingPathComponent("vendor/whisper.cpp", isDirectory: true),
-                cwd.appendingPathComponent("vendor/whisper.cpp", isDirectory: true),
-                cwd.appendingPathComponent("../vendor/whisper.cpp", isDirectory: true),
-                cwd.appendingPathComponent("../Steno/vendor/whisper.cpp", isDirectory: true)
-            ]
-
-            #if DEBUG
-            let localProjects = home.appendingPathComponent("Desktop/LocalProjects", isDirectory: true)
-            if let projectDirs = try? fileManager.contentsOfDirectory(
-                at: localProjects,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            ) {
-                candidates.append(contentsOf: projectDirs.map {
-                    $0.appendingPathComponent("vendor/whisper.cpp", isDirectory: true)
-                })
-            }
-            #endif
-
-            return candidates.first { candidate in
+            return vendorRootCandidates(homeDirectory: home, currentDirectory: cwd).first { candidate in
                 let canonicalCLI = candidate.appendingPathComponent("build-steno/bin/whisper-cli").path
                 let legacyCLI = candidate.appendingPathComponent("build/bin/whisper-cli").path
                 return (fileManager.fileExists(atPath: canonicalCLI)
                     || fileManager.fileExists(atPath: legacyCLI))
                     && fileManager.fileExists(atPath: candidate.appendingPathComponent("models/ggml-small.en.bin").path)
             }
+        }
+
+        static func vendorRootCandidates(
+            homeDirectory: URL,
+            currentDirectory: URL
+        ) -> [URL] {
+            [
+                homeDirectory.appendingPathComponent("vendor/whisper.cpp", isDirectory: true),
+                currentDirectory.appendingPathComponent("vendor/whisper.cpp", isDirectory: true),
+                currentDirectory.appendingPathComponent("../vendor/whisper.cpp", isDirectory: true),
+                currentDirectory.appendingPathComponent("../Steno/vendor/whisper.cpp", isDirectory: true)
+            ]
         }
 
         private static func detectedVendorCLIPath(
