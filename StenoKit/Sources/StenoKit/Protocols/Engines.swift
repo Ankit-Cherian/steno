@@ -12,6 +12,57 @@ public protocol AudioCaptureService: Sendable {
 
     /// Cancels an in-progress recording without producing output.
     func cancelCapture(sessionID: SessionID) async
+
+    /// Returns the canonical capture file while recording is active, when the
+    /// implementation can safely expose it for bounded read-only tailing.
+    ///
+    /// The URL continues to be owned by the capture service. Callers must not
+    /// mutate, move, or delete the file and must treat `nil` as live preview
+    /// being unavailable without affecting final capture.
+    func canonicalCaptureURL(sessionID: SessionID) async -> URL?
+}
+
+public extension AudioCaptureService {
+    func canonicalCaptureURL(sessionID: SessionID) async -> URL? {
+        _ = sessionID
+        return nil
+    }
+}
+
+/// Session-scoped authority to close canonical press-to-talk capture without
+/// waiting for unrelated coordinator setup. The operation is idempotent: the
+/// coordinator and its controller consume the same cached capture result.
+public struct PressToTalkCaptureStopCapability: Sendable {
+    public let sessionID: SessionID
+    private let stopOperation: @Sendable () async throws -> Void
+    private let cancelOperation: @Sendable () async -> Void
+    private let markStopRequestedOperation: @Sendable () -> Void
+
+    public init(
+        sessionID: SessionID,
+        stopOperation: @escaping @Sendable () async throws -> Void,
+        cancelOperation: (@Sendable () async -> Void)? = nil,
+        markStopRequestedOperation: @escaping @Sendable () -> Void = {}
+    ) {
+        self.sessionID = sessionID
+        self.stopOperation = stopOperation
+        self.cancelOperation = cancelOperation ?? {
+            try? await stopOperation()
+        }
+        self.markStopRequestedOperation = markStopRequestedOperation
+    }
+
+    public func stopCapture() async throws {
+        try await stopOperation()
+    }
+
+    public func cancelCapture() async {
+        await cancelOperation()
+    }
+
+    public func markStopRequested() {
+        markStopRequestedOperation()
+    }
 }
 
 /// Converts audio files to raw text transcripts using speech recognition.
