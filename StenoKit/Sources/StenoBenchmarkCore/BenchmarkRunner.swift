@@ -715,7 +715,7 @@ public enum BenchmarkRunner {
                             ClosureInsertionTransport(method: .direct) { _, _ in },
                             ClipboardInsertionTransport(
                                 clipboard: MemoryClipboardService(),
-                                autoPaste: { _ in .attempted }
+                                autoPaste: { _, _ in .attempted }
                             ),
                         ]
                     ),
