@@ -1434,9 +1434,12 @@ public enum LiveContextBenchmarkRunner {
         return count
     }
 
-    private static func canonicalJSONSHA256(_ value: Any) -> String? {
+    static func canonicalJSONSHA256(_ value: Any) -> String? {
         guard JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else {
+              let data = try? JSONSerialization.data(
+                  withJSONObject: value,
+                  options: [.sortedKeys, .withoutEscapingSlashes]
+              ) else {
             return nil
         }
         return sha256(data)

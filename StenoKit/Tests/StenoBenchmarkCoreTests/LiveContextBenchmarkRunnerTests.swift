@@ -584,6 +584,20 @@ func evidenceReceiptsFailClosed() throws {
     try expectAdversarialReceiptRejected(adversarial, fixture: fixture)
 }
 
+@Test("Canonical receipt manifest hashing matches the Python producer wire format")
+func canonicalReceiptManifestHashMatchesProducer() {
+    let vector: [[String: Any]] = [[
+        "path": "vendor/whisper.cpp/samples/jfk.wav",
+        "role": "audioFixture",
+        "sha256": String(repeating: "0", count: 64),
+    ]]
+
+    #expect(
+        LiveContextBenchmarkRunner.canonicalJSONSHA256(vector)
+            == "2144fd26456dd7727603c18d0bbaf4f080acbefd8984c1632e3666f6953a629c"
+    )
+}
+
 @Test("Generated schema-v2 CPU diagnostic receipt strict-decodes but cannot qualify as Metal")
 func generatedCPUReceiptIsSchemaValidButNonqualifying() throws {
     let path = "/tmp/steno-whisper-runtime-v2-cpu-receipt-schema2.json"
@@ -773,7 +787,10 @@ private func makeReceiptFixture() throws -> ReceiptFixture {
         ["role": "vadModel", "path": vadModelURL.standardizedFileURL.path, "sha256": vadModelHash],
         ["role": "whisperModel", "path": modelURL.standardizedFileURL.path, "sha256": modelHash],
     ]
-    let manifestHash = testSHA256(try JSONSerialization.data(withJSONObject: manifestEntries, options: [.sortedKeys]))
+    let manifestHash = testSHA256(try JSONSerialization.data(
+        withJSONObject: manifestEntries,
+        options: [.sortedKeys, .withoutEscapingSlashes]
+    ))
     let adversarial: [String: Any] = [
         "schemaVersion": 2,
         "generatedAt": formatter.string(from: now.addingTimeInterval(-1)),
