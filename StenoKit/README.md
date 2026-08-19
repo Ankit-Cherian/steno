@@ -57,6 +57,10 @@ Key package interfaces include:
 ## Planned 0.3 Package Changes
 
 - Retained local Whisper context between compatible dictations, using a private inherited-pipe helper with no HTTP server or network listener
+- Versioned retained-helper streaming for bounded provisional hypotheses, cooperative cancellation, final priority, and canonical PCM count/digest validation
+- Ephemeral stable/revisable transcript reduction with session, controller, runtime, revision, and audio-watermark isolation
+- Bounded exact-editor context, target revalidation, insertion-only continuation shaping, and secure/unsupported-field exclusion
+- Frozen `lowercase <payload>` directive plus `literal lowercase <text>` escape, both applied around the existing cleanup pipeline
 - Per-request `whisper-cli` fallback after retained-helper failure, plus cancellation, unload, shutdown, and load-identity invalidation
 - First-use loading and reload after model, VAD, or other load-identity changes
 - Local usage analytics for the app's Insights tab: calendar activity, streaks, words, known time, sessions, weighted speed, cleanup coverage, and top apps
@@ -76,6 +80,8 @@ The retained helper is built from the audited `whisper.cpp` revision `764482c317
 - prompt contamination and no-speech gating
 - whisper runtime argument forwarding and rich output parsing
 - retained-runtime queueing, fallback, cancellation, reload identity, and shutdown behavior
+- streaming-frame bounds, identity/order validation, PCM/WAV parity, final priority, and provisional/final isolation
+- deterministic provisional stability, rapid restart, exact-target drift, bounded AX context, continuation, and directive behavior
 - lexicon aliasing and hot-term recovery
 - recording state-machine transitions
 - exact-app media ownership, playback evidence, cancellation, and rapid restart races

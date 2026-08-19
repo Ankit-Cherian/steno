@@ -97,8 +97,8 @@ func pressToTalkStartsCaptureBeforeCheckingMedia() async {
 }
 
 @MainActor
-@Test("Hands-free checks media before starting capture")
-func handsFreeChecksMediaBeforeStartingCapture() async {
+@Test("Hands-free starts capture before checking media")
+func handsFreeStartsCaptureBeforeCheckingMedia() async {
     let events = LifecycleEventLog()
     let controller = DictationController(
         hotkey: FakeHotkeyService(),
@@ -107,13 +107,13 @@ func handsFreeChecksMediaBeforeStartingCapture() async {
     )
 
     controller.toggleHandsFree()
-    guard await waitForLifecycleEvent("capture.start", in: events) else {
+    guard await waitForLifecycleEvent("media.pause", in: events) else {
         Issue.record("Start events: \(await events.snapshot()); status: \(controller.status)")
         controller.teardown()
         return
     }
 
-    assertEventOrder("media.pause", before: "capture.start", in: await events.snapshot())
+    assertEventOrder("capture.start", before: "media.pause", in: await events.snapshot())
     controller.teardown()
 }
 
@@ -121,7 +121,11 @@ func handsFreeChecksMediaBeforeStartingCapture() async {
 @Test("Normal stop closes the capture before media ownership releases")
 func normalStopClosesCaptureBeforeMediaRelease() async {
     let events = LifecycleEventLog()
-    let coordinator = FakeDictationCoordinator(events: events)
+    let stopEntryGate = LifecycleGate()
+    let coordinator = FakeDictationCoordinator(
+        events: events,
+        stopEntryGate: stopEntryGate
+    )
     let media = FakeMediaInterruptionService(events: events)
     let controller = DictationController(
         hotkey: FakeHotkeyService(),
@@ -136,6 +140,13 @@ func normalStopClosesCaptureBeforeMediaRelease() async {
         return
     }
     controller.pressToTalkStop()
+    guard await waitForLifecycleEvent("capture.stop.waiting", in: events) else {
+        Issue.record("Capture stop never reached its gate: \(await events.snapshot())")
+        controller.teardown()
+        return
+    }
+    #expect(!(await waitForLifecycleEvent("media.release", in: events, attempts: 20)))
+    await stopEntryGate.open()
     guard await waitForLifecycleEvent("media.release", in: events) else {
         Issue.record("Stop events: \(await events.snapshot()); status: \(controller.status)")
         controller.teardown()
@@ -350,6 +361,56 @@ func systemUnloadWaitsForAllCompletionTasks() async {
 }
 
 @MainActor
+@Test("A terminal overlay dismissal cannot hide a rapidly restarted session")
+func staleOverlayDismissalCannotHideRapidRestart() async {
+    let events = LifecycleEventLog()
+    let dismissDelay = LifecycleGate()
+    let dismissRecorder = OverlayDismissActionRecorder()
+    let controller = DictationController(
+        hotkey: FakeHotkeyService(),
+        mediaInterruption: FakeMediaInterruptionService(events: events),
+        coordinator: FakeDictationCoordinator(events: events),
+        overlayDismissDelay: {
+            await dismissDelay.wait()
+        },
+        overlayDismissAction: {
+            dismissRecorder.dismiss()
+        }
+    )
+
+    controller.pressToTalkStart()
+    guard await waitForLifecycleEventCount("capture.ready", count: 1, in: events) else {
+        Issue.record("First start did not settle: \(await events.snapshot())")
+        await controller.teardownAndWait()
+        return
+    }
+    controller.pressToTalkStop()
+    guard await waitForCondition({ controller.recordingLifecycleState == .idle }) else {
+        Issue.record("First completion did not settle: \(await events.snapshot())")
+        await controller.teardownAndWait()
+        return
+    }
+
+    controller.pressToTalkStart()
+    guard await waitForLifecycleEventCount("capture.ready", count: 2, in: events) else {
+        Issue.record("Rapid restart did not settle: \(await events.snapshot())")
+        await controller.teardownAndWait()
+        return
+    }
+
+    await dismissDelay.open()
+    for _ in 0..<20 {
+        await Task.yield()
+    }
+
+    #expect(controller.recordingLifecycleState == .recordingPressToTalk)
+    #expect(controller.isRecording)
+    #expect(dismissRecorder.dismissCount == 0)
+    controller.cancelActiveRecording()
+    await controller.teardownAndWait()
+}
+
+@MainActor
 @Test("Memory pressure defers runtime unload until press-to-talk finishes")
 func memoryPressureCannotReleaseMediaDuringPressToTalk() async {
     let events = LifecycleEventLog()
@@ -486,7 +547,12 @@ func systemUnloadSerializesDeferredRuntimeRebuild() async {
 @Test("Stop failure cancels capture before media ownership releases")
 func stopFailureCancelsCaptureBeforeMediaRelease() async {
     let events = LifecycleEventLog()
-    let coordinator = FakeDictationCoordinator(events: events, stopShouldFail: true)
+    let cancelEntryGate = LifecycleGate()
+    let coordinator = FakeDictationCoordinator(
+        events: events,
+        stopShouldFail: true,
+        cancelEntryGate: cancelEntryGate
+    )
     let media = FakeMediaInterruptionService(events: events)
     let controller = DictationController(
         hotkey: FakeHotkeyService(),
@@ -501,6 +567,13 @@ func stopFailureCancelsCaptureBeforeMediaRelease() async {
         return
     }
     controller.pressToTalkStop()
+    guard await waitForLifecycleEvent("capture.cancel.waiting", in: events) else {
+        Issue.record("Stop fallback never reached its cancel gate: \(await events.snapshot())")
+        controller.teardown()
+        return
+    }
+    #expect(!(await waitForLifecycleEvent("media.release", in: events, attempts: 20)))
+    await cancelEntryGate.open()
     guard await waitForLifecycleEvent("media.release", in: events) else {
         Issue.record("Failure events: \(await events.snapshot()); status: \(controller.status)")
         controller.teardown()
@@ -523,7 +596,11 @@ func stopFailureCancelsCaptureBeforeMediaRelease() async {
 @Test("Explicit cancel closes capture before media ownership releases")
 func explicitCancelClosesCaptureBeforeMediaRelease() async {
     let events = LifecycleEventLog()
-    let coordinator = FakeDictationCoordinator(events: events)
+    let cancelEntryGate = LifecycleGate()
+    let coordinator = FakeDictationCoordinator(
+        events: events,
+        cancelEntryGate: cancelEntryGate
+    )
     let media = FakeMediaInterruptionService(events: events)
     let controller = DictationController(
         hotkey: FakeHotkeyService(),
@@ -538,6 +615,13 @@ func explicitCancelClosesCaptureBeforeMediaRelease() async {
         return
     }
     controller.cancelActiveRecording()
+    guard await waitForLifecycleEvent("capture.cancel.waiting", in: events) else {
+        Issue.record("Capture cancel never reached its gate: \(await events.snapshot())")
+        controller.teardown()
+        return
+    }
+    #expect(!(await waitForLifecycleEvent("media.release", in: events, attempts: 20)))
+    await cancelEntryGate.open()
     guard await waitForLifecycleEvent("media.release", in: events) else {
         Issue.record("Cancel events: \(await events.snapshot()); status: \(controller.status)")
         controller.teardown()
@@ -552,7 +636,11 @@ func explicitCancelClosesCaptureBeforeMediaRelease() async {
 @Test("Teardown closes capture before media ownership releases")
 func teardownClosesCaptureBeforeMediaRelease() async {
     let events = LifecycleEventLog()
-    let coordinator = FakeDictationCoordinator(events: events)
+    let cancelEntryGate = LifecycleGate()
+    let coordinator = FakeDictationCoordinator(
+        events: events,
+        cancelEntryGate: cancelEntryGate
+    )
     let media = FakeMediaInterruptionService(events: events)
     let controller = DictationController(
         hotkey: FakeHotkeyService(),
@@ -567,6 +655,12 @@ func teardownClosesCaptureBeforeMediaRelease() async {
         return
     }
     controller.teardown()
+    guard await waitForLifecycleEvent("capture.cancel.waiting", in: events) else {
+        Issue.record("Teardown cancel never reached its gate: \(await events.snapshot())")
+        return
+    }
+    #expect(!(await waitForLifecycleEvent("media.release", in: events, attempts: 20)))
+    await cancelEntryGate.open()
     guard await waitForLifecycleEvent("media.release", in: events) else {
         Issue.record("Teardown events: \(await events.snapshot()); status: \(controller.status)")
         return
@@ -969,6 +1063,15 @@ private actor AsyncCounter {
     }
 }
 
+@MainActor
+private final class OverlayDismissActionRecorder {
+    private(set) var dismissCount = 0
+
+    func dismiss() {
+        dismissCount += 1
+    }
+}
+
 private enum FakeCoordinatorError: Error {
     case startFailed
     case stopFailed
@@ -980,6 +1083,8 @@ private actor FakeDictationCoordinator: DictationSessionCoordinating {
     private let startThrowsCancellation: Bool
     private let stopShouldFail: Bool
     private let startGate: LifecycleGate?
+    private let stopEntryGate: LifecycleGate?
+    private let cancelEntryGate: LifecycleGate?
     private let cancelGate: LifecycleGate?
     private let processingGates: [LifecycleGate]
     private var processingGateIndex = 0
@@ -992,6 +1097,8 @@ private actor FakeDictationCoordinator: DictationSessionCoordinating {
         startThrowsCancellation: Bool = false,
         stopShouldFail: Bool = false,
         startGate: LifecycleGate? = nil,
+        stopEntryGate: LifecycleGate? = nil,
+        cancelEntryGate: LifecycleGate? = nil,
         cancelGate: LifecycleGate? = nil,
         processingGate: LifecycleGate? = nil,
         processingGates: [LifecycleGate] = [],
@@ -1003,6 +1110,8 @@ private actor FakeDictationCoordinator: DictationSessionCoordinating {
         self.startThrowsCancellation = startThrowsCancellation
         self.stopShouldFail = stopShouldFail
         self.startGate = startGate
+        self.stopEntryGate = stopEntryGate
+        self.cancelEntryGate = cancelEntryGate
         self.cancelGate = cancelGate
         if processingGates.isEmpty, let processingGate {
             self.processingGates = [processingGate]
@@ -1028,6 +1137,10 @@ private actor FakeDictationCoordinator: DictationSessionCoordinating {
     }
 
     func endPressToTalkCapture(sessionID: SessionID) async throws {
+        if let stopEntryGate {
+            await events.append(event("capture.stop.waiting"))
+            await stopEntryGate.wait()
+        }
         await events.append(event("capture.stop"))
         if stopShouldFail {
             throw FakeCoordinatorError.stopFailed
@@ -1048,6 +1161,10 @@ private actor FakeDictationCoordinator: DictationSessionCoordinating {
     }
 
     func cancel(sessionID: SessionID) async {
+        if let cancelEntryGate {
+            await events.append(event("capture.cancel.waiting"))
+            await cancelEntryGate.wait()
+        }
         await events.append(event("capture.cancel"))
         if let cancelGate {
             await cancelGate.wait()

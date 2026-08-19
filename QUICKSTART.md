@@ -88,6 +88,10 @@ The app has four primary tabs: Record, History, Insights, and Settings. Insights
 
 Cleanup is conservative by default: ambiguous language, including `like`, `you know`, `question mark`, `open paren`, and `slash command`, stays literal rather than being automatically converted or removed. Only the explicit aggressive filler policy performs narrow filler removal. Optional media interruption is also fail-closed: Steno sends semantic Pause and Play commands only when it can bind ownership to the exact application and process lineage it observed.
 
+Recording settings include an optional live transcript and nearby-text continuation. Live hypotheses are local, bounded overlay content only; the completed WAV still supplies the authoritative transcript. Nearby text is read only from a bounded range around the captured selection, retained only for the active dictation, and never added to transcription prompts or History. Context-derived casing is disabled when the exact editor cannot be revalidated and for code, terminal, remote-desktop, or unknown-language boundaries.
+
+The directive works with or without nearby context. It is recognized only when, after optional leading Unicode whitespace, the exact case-insensitive first lexical token is `lowercase`, followed by Unicode whitespace and a nonempty payload containing a cased grapheme. It lowercases only the first cased grapheme after normal cleanup. Used alone, non-leading, punctuated (`lowercase,`), quoted, introduced, or code-like, `lowercase` remains literal. To escape the directive, after optional leading Unicode whitespace, start with the exact case-insensitive tokens `literal lowercase`, followed by Unicode whitespace and nonempty text; the output begins `lowercase` without invoking the directive.
+
 ## 5) Automated checks
 
 These checks do not require a signed app, microphone session, or media player:
@@ -106,7 +110,9 @@ The following checks are intentionally separate from automated validation and re
 - Hold `Option` to start dictation immediately, then release to transcribe.
 - Trigger hands-free mode using the configured function key (default `F18`).
 - Confirm Record, History, Insights, and Settings load correctly, including the Insights empty, loading, error, and populated states.
+- Verify the recording overlay's stable and revisable text with the live-transcript setting both on and off.
 - Insert text into both a standard text editor and a terminal-like target.
+- Verify nearby-text continuation at sentence and mid-sentence boundaries, plus `lowercase <payload>` and `literal lowercase <text>`.
 - Verify exact-application media Pause/Play behavior with supported players, including already-paused and ambiguous-owner cases.
 - Open Settings -> Engine and confirm:
   - the detected hardware line is present
@@ -119,7 +125,7 @@ Passing the automated commands does not establish any of these manual results. D
 
 ## Cleanup behavior
 
-Steno remains local for transcription, cleanup, and Insights aggregation. The retained helper has no HTTP or network-listener mode, and the Insights ledger excludes transcript text and audio.
+Steno remains local for transcription, provisional display, cleanup, and Insights aggregation. The retained helper has no HTTP or network-listener mode, the Insights ledger excludes transcript text and audio, and bounded nearby editor text remains ephemeral rather than entering prompts, History, or analytics.
 
 ## If something fails
 
