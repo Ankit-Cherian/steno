@@ -523,6 +523,12 @@ func evidenceReceiptsFailClosed() throws {
     try expectAdversarialReceiptRejected(adversarial, fixture: fixture)
 
     adversarial = fixture.adversarial
+    execution = adversarial["execution"] as! [String: Any]
+    execution["qualification"] = "qualifying-metal"
+    adversarial["execution"] = execution
+    try expectAdversarialReceiptRejected(adversarial, fixture: fixture)
+
+    adversarial = fixture.adversarial
     network = adversarial["network"] as! [String: Any]
     network["continuous"] = false
     adversarial["network"] = network
@@ -753,7 +759,7 @@ private func makeReceiptFixture() throws -> ReceiptFixture {
             "backendEligibleProcessCount": 4, "attestedProcessCount": 4,
             "observedBackends": ["cpu": 0, "metal": 4, "unknown": 0],
             "productionMetalSmokePerformed": true,
-            "qualification": "qualifying-metal", "matrix": "full-adversarial",
+            "qualification": "qualifying-production-metal", "matrix": "full-adversarial",
         ],
         "environment": [
             "hardware": ["architecture": "arm64", "chip": "fixture", "logicalProcessorCount": 8, "memoryBytes": 16_000_000_000 as UInt64, "modelIdentifier": "fixture"],

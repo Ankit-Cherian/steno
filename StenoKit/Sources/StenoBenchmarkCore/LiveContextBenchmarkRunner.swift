@@ -990,7 +990,7 @@ public enum LiveContextBenchmarkRunner {
               adversarial.execution.requestedDeviceMode == "default",
               adversarial.execution.productionMetalSmokePerformed,
               adversarial.execution.backend == "observed-metal",
-              adversarial.execution.qualification == "qualifying-metal",
+              adversarial.execution.qualification == "qualifying-production-metal",
               adversarial.execution.matrix == "full-adversarial",
               adversarial.execution.backendEligibleProcessCount > 0,
               adversarial.execution.backendEligibleProcessCount <= 10_000,
@@ -1176,7 +1176,7 @@ public enum LiveContextBenchmarkRunner {
         if receipt.git.dirty || receipt.git.state != "clean" { failures.append("dirty-git-tree") }
         if receipt.execution.requestedDeviceMode != "default"
             || receipt.execution.backend != "observed-metal"
-            || receipt.execution.qualification != "qualifying-metal"
+            || receipt.execution.qualification != "qualifying-production-metal"
             || !receipt.execution.productionMetalSmokePerformed {
             failures.append("non-metal-backend")
         }
