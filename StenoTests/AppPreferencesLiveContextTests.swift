@@ -44,6 +44,25 @@ struct AppPreferencesLiveContextTests {
     }
 
     @Test
+    func vendorDiscoveryUsesOnlyExplicitLocations() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+        let workingDirectory = URL(fileURLWithPath: "/workspace/Steno", isDirectory: true)
+
+        let candidates = AppPreferences.Dictation.vendorRootCandidates(
+            homeDirectory: home,
+            currentDirectory: workingDirectory
+        )
+
+        #expect(candidates.map(\.standardizedFileURL.path) == [
+            "/Users/example/vendor/whisper.cpp",
+            "/workspace/Steno/vendor/whisper.cpp",
+            "/workspace/vendor/whisper.cpp",
+            "/workspace/Steno/vendor/whisper.cpp"
+        ])
+        #expect(candidates.allSatisfy { !$0.path.contains("Desktop/LocalProjects") })
+    }
+
+    @Test
     func storePersistsBothFeatureToggles() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("StenoPreferencesTests-\(UUID().uuidString)", isDirectory: true)
