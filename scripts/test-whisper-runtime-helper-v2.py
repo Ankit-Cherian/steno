@@ -47,6 +47,7 @@ RECEIPT_SCHEMA_VERSION = 2
 SAMPLE_RATE_HZ = 16_000
 CHANNEL_COUNT = 1
 SAMPLE_WIDTH_BYTES = 2
+STREAM_THREAD_COUNT = 8
 PREVIEW_WINDOW_SAMPLES = 12 * SAMPLE_RATE_HZ
 MAXIMUM_STREAM_SAMPLES = 12 * 60 * 60 * SAMPLE_RATE_HZ
 
@@ -112,7 +113,7 @@ def stream_configuration(vad_model: Path | None = None, vad_identity: str | None
     vad_enabled = vad_model is not None
     return b"".join(
         (
-            u32(4),
+            u32(STREAM_THREAD_COUNT),
             u32(1),
             u32(1),
             u32(3 if vad_enabled else 1),
@@ -1001,7 +1002,7 @@ def declared_configuration() -> dict[str, object]:
             "encoding": "signed-integer-little-endian",
         },
         "streamRequest": {
-            "threads": 4,
+            "threads": STREAM_THREAD_COUNT,
             "beamSize": 1,
             "bestOf": 1,
             "flags": 3,
