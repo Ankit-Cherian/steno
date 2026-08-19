@@ -229,7 +229,9 @@ struct OverlayPresenterPolicyTests {
                 protocolVersion: 2,
                 runtimeIdentifier: "overlay-runtime",
                 modelIdentifier: "overlay-model",
-                vadIdentifier: nil
+                vadIdentifier: nil,
+                currentASRContextCount: 1,
+                peakASRContextCount: 1
             )
         )
     }

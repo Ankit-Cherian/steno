@@ -36,8 +36,10 @@ MAXIMUM_PAYLOAD_BYTES = 64 * 1024 * 1024
 MAXIMUM_APPEND_SAMPLES = 16 * 1024
 FNV1A_OFFSET_BASIS = 14695981039346656037
 FNV1A_PRIME = 1099511628211
-IDENTITY_SCHEMA = 1
-IDENTITY_CAPABILITIES = 0x3F
+IDENTITY_SCHEMA = 2
+IDENTITY_CAPABILITIES = 0x7F
+CURRENT_ASR_CONTEXT_COUNT = 1
+PEAK_ASR_CONTEXT_COUNT = 1
 RUNTIME_IDENTITY = "real-helper-v2-harness"
 MODEL_IDENTITY = "vendored-small-en"
 VAD_IDENTITY = "vendored-silero-v6-2"
@@ -103,6 +105,8 @@ def identity_payload(vad_identity: str = VAD_IDENTITY) -> bytes:
         + string(RUNTIME_IDENTITY)
         + string(MODEL_IDENTITY)
         + string(vad_identity)
+        + u32(CURRENT_ASR_CONTEXT_COUNT)
+        + u32(PEAK_ASR_CONTEXT_COUNT)
     )
 
 
@@ -765,17 +769,68 @@ def test_cancel_priority(executable: Path, model: Path, _: Path, pcm: bytes) -> 
 def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: bytes) -> None:
     helper = Helper(executable, model, VERSION_2)
     try:
+        def keyboard_click_fixture(sample_count: int) -> bytes:
+            samples = [0] * sample_count
+            click_start = sample_count // 4
+            click_length = min(80, sample_count - click_start)
+            for index in range(click_length):
+                magnitude = 30_000 * (click_length - index) // click_length
+                samples[click_start + index] = magnitude if index % 2 == 0 else -magnitude
+            return b"".join(struct.pack("<h", sample) for sample in samples)
+
+        def deterministic_broadband_noise(sample_count: int) -> bytes:
+            state = 0x6D2B79F5
+            samples = bytearray()
+            for _ in range(sample_count):
+                state ^= (state << 13) & 0xFFFFFFFF
+                state ^= state >> 17
+                state ^= (state << 5) & 0xFFFFFFFF
+                sample = ((state & 0xFFFF) - 32_768) * 7 // 8
+                samples.extend(struct.pack("<h", sample))
+            return bytes(samples)
+
+        def fresh_stream_evidence(fixture_pcm: bytes, fixture_generation: int) -> tuple[int, int]:
+            fixture_sample_count = len(fixture_pcm) // SAMPLE_WIDTH_BYTES
+            fixture_stream_id = uuid.uuid4().bytes
+            start_stream(helper, fixture_stream_id, fixture_generation)
+            append_all(helper, fixture_stream_id, fixture_generation, fixture_pcm)
+            helper.send(
+                Frame(
+                    STREAM_DECODE,
+                    fixture_stream_id,
+                    fixture_generation,
+                    u64(1) + u64(fixture_sample_count),
+                )
+            )
+            fixture_response = helper.expect(
+                HYPOTHESIS,
+                fixture_stream_id,
+                fixture_generation,
+                timeout=30.0,
+            )
+            _, fixture_watermark, _, fixture_evidence, _ = parse_hypothesis(fixture_response.payload)
+            helper.send(Frame(STREAM_CANCEL, fixture_stream_id, fixture_generation))
+            helper.expect(CANCELLED, fixture_stream_id, fixture_generation)
+            return fixture_watermark, fixture_evidence
+
         stream_id = uuid.uuid4().bytes
         generation = 76
         start_stream(helper, stream_id, generation)
-        next_sequence = append_all(helper, stream_id, generation, pcm)
-        first_watermark = len(pcm) // 2
+        preview_sample_count = SAMPLE_RATE_HZ // 5
+        preview_byte_count = preview_sample_count * SAMPLE_WIDTH_BYTES
+        early_speech = pcm[:preview_byte_count]
+        require(len(early_speech) == preview_byte_count, "JFK fixture was shorter than the early-speech probe")
+        next_sequence = append_all(helper, stream_id, generation, early_speech)
+        first_watermark = preview_sample_count
         helper.send(Frame(STREAM_DECODE, stream_id, generation, u64(1) + u64(first_watermark)))
         first = helper.expect(HYPOTHESIS, stream_id, generation, timeout=30.0)
         revision, watermark, _, evidence, _ = parse_hypothesis(first.payload)
-        require((revision, watermark, evidence) == (1, first_watermark, 2), "JFK speech evidence mismatch")
+        require(
+            (revision, watermark, evidence) == (1, first_watermark, 2),
+            "first 200 ms of JFK did not carry speech evidence",
+        )
 
-        silence = b"\x00\x00" * 16_000
+        silence = b"\x00\x00" * preview_sample_count
         helper.send(
             Frame(
                 AUDIO_APPEND,
@@ -785,7 +840,7 @@ def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: by
             )
         )
         accepted = helper.expect(AUDIO_ACCEPTED, stream_id, generation)
-        second_watermark = first_watermark + 16_000
+        second_watermark = first_watermark + preview_sample_count
         require(accepted.payload == u64(next_sequence) + u64(second_watermark), "silence append mismatch")
         helper.send(Frame(STREAM_DECODE, stream_id, generation, u64(2) + u64(second_watermark)))
         second = helper.expect(HYPOTHESIS, stream_id, generation, timeout=30.0)
@@ -796,6 +851,89 @@ def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: by
         )
         helper.send(Frame(STREAM_CANCEL, stream_id, generation))
         helper.expect(CANCELLED, stream_id, generation)
+
+        fixture_generation = generation + 1
+        for speech_sample_count in (SAMPLE_RATE_HZ * 18 // 100, SAMPLE_RATE_HZ // 5, SAMPLE_RATE_HZ // 4):
+            speech_pcm = pcm[: speech_sample_count * SAMPLE_WIDTH_BYTES]
+            speech_watermark, speech_evidence = fresh_stream_evidence(speech_pcm, fixture_generation)
+            require(speech_watermark == speech_sample_count, "early JFK speech watermark mismatch")
+            require(speech_evidence == 2, f"first {speech_sample_count * 1_000 // SAMPLE_RATE_HZ} ms of JFK did not carry speech evidence")
+            fixture_generation += 1
+
+        phase_stream_id = uuid.uuid4().bytes
+        phase_generation = fixture_generation
+        phase_slice_samples = SAMPLE_RATE_HZ // 5
+        speech_half_samples = SAMPLE_RATE_HZ * 9 // 100
+        quiet_samples = phase_slice_samples - speech_half_samples
+        straddling_speech = pcm[: speech_half_samples * 2 * SAMPLE_WIDTH_BYTES]
+        require(
+            len(straddling_speech) == speech_half_samples * 2 * SAMPLE_WIDTH_BYTES,
+            "JFK fixture was shorter than the straddling-speech probe",
+        )
+        first_phase_slice = (
+            b"\x00\x00" * quiet_samples
+            + straddling_speech[: speech_half_samples * SAMPLE_WIDTH_BYTES]
+        )
+        second_phase_slice = (
+            straddling_speech[speech_half_samples * SAMPLE_WIDTH_BYTES :]
+            + b"\x00\x00" * quiet_samples
+        )
+        start_stream(helper, phase_stream_id, phase_generation)
+        append_all(helper, phase_stream_id, phase_generation, first_phase_slice)
+        helper.send(Frame(STREAM_DECODE, phase_stream_id, phase_generation, u64(1) + u64(phase_slice_samples)))
+        first_phase_response = helper.expect(HYPOTHESIS, phase_stream_id, phase_generation, timeout=30.0)
+        _, first_phase_watermark, _, first_phase_evidence, _ = parse_hypothesis(first_phase_response.payload)
+        require(first_phase_watermark == phase_slice_samples, "first phase-offset watermark mismatch")
+
+        helper.send(
+            Frame(
+                AUDIO_APPEND,
+                phase_stream_id,
+                phase_generation,
+                append_payload(1, phase_slice_samples, second_phase_slice),
+            )
+        )
+        second_phase_watermark = phase_slice_samples * 2
+        require(
+            helper.expect(AUDIO_ACCEPTED, phase_stream_id, phase_generation).payload
+            == u64(1) + u64(second_phase_watermark),
+            "second phase-offset append mismatch",
+        )
+        helper.send(Frame(STREAM_DECODE, phase_stream_id, phase_generation, u64(2) + u64(second_phase_watermark)))
+        second_phase_response = helper.expect(HYPOTHESIS, phase_stream_id, phase_generation, timeout=30.0)
+        _, observed_second_watermark, _, second_phase_evidence, _ = parse_hypothesis(second_phase_response.payload)
+        require(observed_second_watermark == second_phase_watermark, "second phase-offset watermark mismatch")
+        require(
+            2 in (first_phase_evidence, second_phase_evidence),
+            "detectable 180 ms JFK speech was suppressed when split across two 200 ms preview scopes",
+        )
+        helper.send(Frame(STREAM_CANCEL, phase_stream_id, phase_generation))
+        helper.expect(CANCELLED, phase_stream_id, phase_generation)
+        fixture_generation += 1
+
+        for non_speech_sample_count in (SAMPLE_RATE_HZ // 5, SAMPLE_RATE_HZ // 4):
+            non_speech_fixtures = {
+                "zero silence": b"\x00\x00" * non_speech_sample_count,
+                "one-kHz square wave": b"".join(
+                    struct.pack("<h", 28_000 if (index // 8) % 2 == 0 else -28_000)
+                    for index in range(non_speech_sample_count)
+                ),
+                "alternating full-scale samples": b"".join(
+                    struct.pack("<h", 30_000 if index % 2 == 0 else -30_000)
+                    for index in range(non_speech_sample_count)
+                ),
+                "keyboard-click impulse": keyboard_click_fixture(non_speech_sample_count),
+                "deterministic broadband noise": deterministic_broadband_noise(non_speech_sample_count),
+            }
+            for fixture_name, fixture_pcm in non_speech_fixtures.items():
+                fixture_watermark, fixture_evidence = fresh_stream_evidence(fixture_pcm, fixture_generation)
+                require(fixture_watermark == non_speech_sample_count, f"{fixture_name} watermark mismatch")
+                require(
+                    fixture_evidence == 1,
+                    f"{non_speech_sample_count * 1_000 // SAMPLE_RATE_HZ} ms {fixture_name} was misclassified as preview speech",
+                )
+                fixture_generation += 1
+
         helper.shutdown()
     finally:
         helper.terminate()
@@ -1022,6 +1160,8 @@ def declared_configuration() -> dict[str, object]:
         "vadThresholds": {
             "threshold": 0.5,
             "minimumSpeechDurationMS": 250,
+            "previewThreshold": 0.12,
+            "previewMinimumSpeechDurationMS": 50,
             "minimumSilenceDurationMS": 100,
             "maximumSpeechDurationSeconds": "FLT_MAX",
             "speechPadMS": 30,
@@ -1155,11 +1295,21 @@ def validate_receipt(receipt: dict[str, object], fixture: AudioFixture) -> None:
 
     identity = receipt["identity"]
     require(isinstance(identity, dict), "receipt runtime identity was malformed")
+    require(
+        set(identity) == {
+            "schema", "capabilities", "runtime", "model", "vad",
+            "currentASRContextCount", "peakASRContextCount",
+            "helperBinary", "helperBinarySHA256",
+        },
+        "receipt runtime identity schema was malformed",
+    )
     require(identity.get("schema") == IDENTITY_SCHEMA, "runtime identity schema mismatch")
     require(identity.get("capabilities") == IDENTITY_CAPABILITIES, "runtime capabilities mismatch")
     require(identity.get("runtime") == RUNTIME_IDENTITY, "runtime identity mismatch")
     require(identity.get("model") == MODEL_IDENTITY, "model identity mismatch")
     require(identity.get("vad") == VAD_IDENTITY, "VAD identity mismatch")
+    require(identity.get("currentASRContextCount") == CURRENT_ASR_CONTEXT_COUNT, "current ASR context count mismatch")
+    require(identity.get("peakASRContextCount") == PEAK_ASR_CONTEXT_COUNT, "peak ASR context count mismatch")
     require(identity.get("helperBinarySHA256") == artifacts["helper"]["sha256"], "helper identity SHA disagreed")
 
     audio = receipt["audio"]
@@ -1404,6 +1554,8 @@ def main() -> int:
                 "runtime": RUNTIME_IDENTITY,
                 "model": MODEL_IDENTITY,
                 "vad": VAD_IDENTITY,
+                "currentASRContextCount": CURRENT_ASR_CONTEXT_COUNT,
+                "peakASRContextCount": PEAK_ASR_CONTEXT_COUNT,
                 "helperBinary": arguments.helper.name,
                 "helperBinarySHA256": helper_sha,
             },

@@ -185,7 +185,9 @@ struct ProvisionalTranscriptReducerTests {
                 protocolVersion: 2,
                 runtimeIdentifier: "wrong-runtime",
                 modelIdentifier: session.runtimeIdentity.modelIdentifier,
-                vadIdentifier: session.runtimeIdentity.vadIdentifier
+                vadIdentifier: session.runtimeIdentity.vadIdentifier,
+                currentASRContextCount: session.runtimeIdentity.currentASRContextCount,
+                peakASRContextCount: session.runtimeIdentity.peakASRContextCount
             ),
             revision: 11,
             decodedAudioWatermark: 101,
@@ -462,7 +464,9 @@ private func makeSession(_ value: UInt64) -> LiveTranscriptionSession {
             protocolVersion: 2,
             runtimeIdentifier: "runtime-\(value)",
             modelIdentifier: "model-test",
-            vadIdentifier: nil
+            vadIdentifier: nil,
+            currentASRContextCount: 1,
+            peakASRContextCount: 1
         )
     )
 }

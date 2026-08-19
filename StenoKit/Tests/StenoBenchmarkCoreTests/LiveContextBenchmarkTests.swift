@@ -47,6 +47,30 @@ func liveContextValidatorAcceptsCompleteEvidence() throws {
     #expect(liveResult.accepted)
 }
 
+@Test("Current live artifact round-trips through the v6 loader and prior schemas are rejected")
+func liveArtifactV6RoundTrip() throws {
+    let fixture = try acceptedFixture()
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("steno-live-artifact-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let artifactURL = directory.appendingPathComponent("artifact.json")
+
+    try LiveContextArtifactIO.encodeArtifact(fixture.artifact).write(to: artifactURL)
+    let loaded = try LiveContextArtifactIO.loadArtifact(at: artifactURL.path)
+
+    #expect(loaded == fixture.artifact)
+    #expect(loaded.schemaVersion == LiveContextBenchmarkArtifact.currentSchemaVersion)
+    #expect(loaded.resources.warmRuntime == fixture.artifact.resources.warmRuntime)
+
+    var prior = fixture.artifact
+    prior.schemaVersion = "steno-live-context-benchmark/v5"
+    try LiveContextArtifactIO.encodeArtifact(prior).write(to: artifactURL)
+    #expect(throws: LiveContextArtifactIOError.unsupportedSchema) {
+        try LiveContextArtifactIO.loadArtifact(at: artifactURL.path)
+    }
+}
+
 @Test("Authoritative final replacement does not invalidate monotonic provisional evidence")
 func authoritativeFinalReplacementIsReportedButAllowed() throws {
     let fixture = try acceptedFixture()
@@ -70,6 +94,10 @@ func liveContextIdentityFailures() throws {
     var unsupported = fixture.artifact
     unsupported.schemaVersion = "future"
     #expect(failures(unsupported, fixture).contains("unsupported-artifact-schema"))
+
+    var priorSchema = fixture.artifact
+    priorSchema.schemaVersion = "steno-live-context-benchmark/v5"
+    #expect(failures(priorSchema, fixture).contains("unsupported-artifact-schema"))
 
     var stale = fixture.artifact
     stale.generatedAt = liveNow.addingTimeInterval(-86_401)
@@ -190,6 +218,12 @@ func liveLatencyFailsClosed() throws {
     tooFewTrials.latency.alternatingTrialCount = 4
     #expect(failures(tooFewTrials, fixture).contains("alternating-control-trials"))
 
+    var expandedTrialClaimWithSubsetEvidence = fixture.artifact
+    expandedTrialClaimWithSubsetEvidence.latency.alternatingTrialCount = 12
+    expandedTrialClaimWithSubsetEvidence.latency.trialOrder += [.enabled, .disabled]
+    expandedTrialClaimWithSubsetEvidence.latency.acceptedSubsequentGapCountByEnabledTrial.append(1)
+    #expect(failures(expandedTrialClaimWithSubsetEvidence, fixture).contains("alternating-control-trials"))
+
     var wrongOrder = fixture.artifact
     wrongOrder.latency.trialOrder.swapAt(0, 1)
     #expect(failures(wrongOrder, fixture).contains("alternating-control-trials"))
@@ -198,16 +232,71 @@ func liveLatencyFailsClosed() throws {
     insufficientGaps.latency.subsequentPartialGap = .summarize([200, 250, 300, 325])
     #expect(failures(insufficientGaps, fixture).contains("insufficient-subsequent-gap-coverage"))
 
+    var favorableGapWithoutTrialAttribution = fixture.artifact
+    favorableGapWithoutTrialAttribution.latency.subsequentPartialGap = .summarize([
+        0, 200, 225, 250, 275, 300,
+    ])
+    #expect(failures(favorableGapWithoutTrialAttribution, fixture).contains(
+        "insufficient-subsequent-gap-coverage"
+    ))
+
+    var inconsistentPerTrialGapTotal = fixture.artifact
+    inconsistentPerTrialGapTotal.latency.acceptedSubsequentGapCountByEnabledTrial = [2, 1, 1, 1, 1]
+    #expect(failures(inconsistentPerTrialGapTotal, fixture).contains(
+        "insufficient-subsequent-gap-coverage"
+    ))
+
+    var overflowingPerTrialGapTotal = fixture.artifact
+    overflowingPerTrialGapTotal.latency.acceptedSubsequentGapCountByEnabledTrial = [
+        .max, .max, 1, 1, 1,
+    ]
+    #expect(failures(overflowingPerTrialGapTotal, fixture).contains(
+        "insufficient-subsequent-gap-coverage"
+    ))
+
     var identityMismatch = fixture.artifact
     identityMismatch.coreDiagnostics?.publicFixtureSHA256 = String(repeating: "9", count: 64)
     #expect(failures(identityMismatch, fixture).contains("production-core-diagnostic-gate"))
 
+    var malformedStopDistribution = fixture.artifact
+    malformedStopDistribution.latency.stopToInsertionEnabled.p95MS = 1
+    #expect(failures(malformedStopDistribution, fixture).contains(
+        "invalid-latency-distribution:stop-to-insertion-enabled"
+    ))
+
+    var slowStop = fixture.artifact
+    slowStop.latency.stopToInsertionEnabled = .summarize([701, 701, 701, 701, 701])
+    slowStop.latency.stopToInsertionDisabledControl = .summarize([690, 690, 690, 690, 690])
+    #expect(failures(slowStop, fixture).contains("stop-to-insertion-p95"))
+
+    var insufficientStopTrials = fixture.artifact
+    insufficientStopTrials.latency.stopToInsertionEnabled = .summarize([500, 500, 500, 500])
+    #expect(failures(insufficientStopTrials, fixture).contains("alternating-control-trials"))
+
+    var fabricatedExtraSetup = fixture.artifact
+    fabricatedExtraSetup.latency.helperStreamSetup = .summarize([20, 25, 30, 35, 40, 0])
+    #expect(failures(fabricatedExtraSetup, fixture).contains("alternating-control-trials"))
+
+    var fabricatedExtraFirstPartial = fixture.artifact
+    fabricatedExtraFirstPartial.latency.firstPartial = .summarize([300, 400, 450, 500, 550, 0])
+    #expect(failures(fabricatedExtraFirstPartial, fixture).contains("alternating-control-trials"))
+
+    var fabricatedExtraFinal = fixture.artifact
+    fabricatedExtraFinal.latency.finishToAuthoritativeFinalDisabledControl = .summarize([
+        500, 540, 560, 590, 620, 0,
+    ])
+    #expect(failures(fabricatedExtraFinal, fixture).contains("alternating-control-trials"))
+
+    var fabricatedExtraStopTrial = fixture.artifact
+    fabricatedExtraStopTrial.latency.stopToInsertionEnabled = .summarize([
+        500, 550, 575, 600, 650, 0,
+    ])
+    #expect(failures(fabricatedExtraStopTrial, fixture).contains("alternating-control-trials"))
+
     var regression = fixture.artifact
-    regression.latency.finishToAuthoritativeFinalEnabled = .summarize([690])
-    regression.latency.finishToAuthoritativeFinalDisabledControl = .summarize([600])
     regression.latency.stopToInsertionEnabled = .summarize([690, 690, 690, 690, 690])
     regression.latency.stopToInsertionDisabledControl = .summarize([600, 600, 600, 600, 600])
-    #expect(!failures(regression, fixture).contains("stop-to-insertion-regression"))
+    #expect(failures(regression, fixture).contains("stop-to-insertion-regression"))
 }
 
 @Test("Shipping validation remains structurally blocked without an independent native receipt")
@@ -226,6 +315,44 @@ func nativeShippingEvidenceCannotBeSelfAttested() throws {
 @Test("Capture, resource, privacy, correctness, and lifecycle omissions are blocking")
 func liveOperationalEvidenceFailsClosed() throws {
     let fixture = try acceptedFixture()
+    func replacingResourceCheckpoints(
+        _ artifact: LiveContextBenchmarkArtifact,
+        transform: (inout [WarmRuntimeResourceCheckpoint]) -> Void
+    ) -> LiveContextBenchmarkArtifact {
+        var artifact = artifact
+        let previous = artifact.resources.warmRuntime
+        var checkpoints = previous.checkpoints
+        transform(&checkpoints)
+        let updated = WarmRuntimeResourceSummary.analyze(
+            checkpoints: checkpoints,
+            idleCPUPercent: previous.idleCPUPercent,
+            idleSampleSeconds: previous.idleSampleSeconds,
+            postIdleResidentBytes: previous.postIdleResidentBytes,
+            postIdlePhysicalFootprintBytes: previous.postIdlePhysicalFootprintBytes
+        )
+        let residentValues = updated.checkpoints.compactMap { checkpoint in
+            checkpoint.residentBytes.map { (checkpoint.requestIndex, $0) }
+        }
+        let physicalValues = updated.checkpoints.compactMap { checkpoint in
+            checkpoint.physicalFootprintBytes.map { (checkpoint.requestIndex, $0) }
+        }
+        artifact.resources.warmRuntime = updated
+        artifact.resources.peakRSSBytes = residentValues.map(\.1).max()
+        artifact.resources.peakGrowthBytes = updated.peakGrowthBytesFromFirst
+        artifact.resources.tailSlopeBytesPerRequest = updated.tailSlopeBytesPerRequest
+        artifact.resources.monotonicGrowthObserved = updated.monotonicGrowthObserved
+        artifact.resources.sawtoothGrowthObserved = LiveContextBenchmarkRunner.detectsUnboundedSawtooth(
+            residentValues,
+            maximumTailSlopeBytesPerRequest: LiveContextBenchmarkThresholds.required.maximumTailSlopeBytesPerRequest
+        )
+        artifact.resources.physicalFootprintSawtoothGrowthObserved =
+            LiveContextBenchmarkRunner.detectsUnboundedSawtooth(
+                physicalValues,
+                maximumTailSlopeBytesPerRequest:
+                    LiveContextBenchmarkThresholds.required.maximumTailSlopeBytesPerRequest
+            )
+        return artifact
+    }
 
     var capture = fixture.artifact
     capture.capture.canonicalPCMHash = String(repeating: "7", count: 64)
@@ -234,6 +361,11 @@ func liveOperationalEvidenceFailsClosed() throws {
     var wrongFNV = fixture.artifact
     wrongFNV.capture.trials[0].canonicalFNV1A64 = "ffffffffffffffff"
     #expect(failures(wrongFNV, fixture).contains("capture-fnv-parity"))
+
+    var duplicateCaptureTrialIndex = fixture.artifact
+    duplicateCaptureTrialIndex.capture.trials[1].trialIndex =
+        duplicateCaptureTrialIndex.capture.trials[0].trialIndex
+    #expect(failures(duplicateCaptureTrialIndex, fixture).contains("capture-fnv-parity"))
 
     var resources = fixture.artifact
     resources.resources.soakSessionCount = 499
@@ -265,6 +397,92 @@ func liveOperationalEvidenceFailsClosed() throws {
     nonFiniteResource.resources.activeCPUPercentSamples = [.infinity]
     #expect(failures(nonFiniteResource, fixture).contains("resource-gate"))
 
+    var missingActiveCPUSample = fixture.artifact
+    missingActiveCPUSample.resources.activeCPUPercentSamples.removeLast()
+    #expect(failures(missingActiveCPUSample, fixture).contains("resource-gate"))
+
+    var missingResidentTelemetry = fixture.artifact
+    missingResidentTelemetry.resources.currentResidentModelCount = nil
+    #expect(failures(missingResidentTelemetry, fixture).contains("resource-gate"))
+
+    var duplicateResidentContext = fixture.artifact
+    duplicateResidentContext.resources.maximumResidentModelCount = 2
+    #expect(failures(duplicateResidentContext, fixture).contains("resource-gate"))
+
+    var missingRawCheckpoint = fixture.artifact
+    missingRawCheckpoint.resources.warmRuntime.checkpoints.removeAll { $0.requestIndex == 10 }
+    #expect(failures(missingRawCheckpoint, fixture).contains("resource-gate"))
+
+    let missingPeriodicCheckpoint = replacingResourceCheckpoints(fixture.artifact) {
+        $0.removeAll { $0.requestIndex == 25 }
+    }
+    #expect(failures(missingPeriodicCheckpoint, fixture).contains("resource-gate"))
+
+    let offGridCheckpoint = replacingResourceCheckpoints(fixture.artifact) {
+        $0.append(.init(
+            requestIndex: 24,
+            residentBytes: 1_480_000_000,
+            physicalFootprintBytes: 1_530_000_000
+        ))
+    }
+    #expect(failures(offGridCheckpoint, fixture).contains("resource-gate"))
+
+    let duplicateCheckpoint = replacingResourceCheckpoints(fixture.artifact) {
+        let first = $0[0]
+        $0.append(first)
+    }
+    #expect(failures(duplicateCheckpoint, fixture).contains("resource-gate"))
+
+    var missingPhysicalFootprint = fixture.artifact
+    missingPhysicalFootprint.resources.warmRuntime.checkpoints[0].physicalFootprintBytes = nil
+    #expect(failures(missingPhysicalFootprint, fixture).contains("resource-gate"))
+
+    var physicalTailGrowth = fixture.artifact
+    physicalTailGrowth.resources.warmRuntime.physicalFootprintTailSlopeBytesPerRequest = 32 * 1_024 + 1
+    #expect(failures(physicalTailGrowth, fixture).contains("resource-gate"))
+
+    var missingPostIdleEvidence = fixture.artifact
+    missingPostIdleEvidence.resources.warmRuntime.postIdlePhysicalFootprintBytes = nil
+    #expect(failures(missingPostIdleEvidence, fixture).contains("resource-gate"))
+
+    var interruptedHelperMonitor = fixture.artifact
+    interruptedHelperMonitor.resources.maximumHelperMonitorGapMS = 250.001
+    #expect(failures(interruptedHelperMonitor, fixture).contains("resource-gate"))
+
+    var emptyHelperPoll = fixture.artifact
+    emptyHelperPoll.resources.helperProcessUnexpectedObservationCount = 1
+    #expect(failures(emptyHelperPoll, fixture).contains("resource-gate"))
+
+    var monitorStartedAfterSoak = fixture.artifact
+    monitorStartedAfterSoak.resources.helperMonitorPreSoakObservationLeadMS = -0.001
+    #expect(failures(monitorStartedAfterSoak, fixture).contains("resource-gate"))
+
+    var monitorEndedBeforeSoak = fixture.artifact
+    monitorEndedBeforeSoak.resources.helperMonitorPostSoakObservationLagMS = -0.001
+    #expect(failures(monitorEndedBeforeSoak, fixture).contains("resource-gate"))
+
+    var monitorCoveredSoakTooLate = fixture.artifact
+    monitorCoveredSoakTooLate.resources.helperMonitorPostSoakObservationLagMS = 250.001
+    #expect(failures(monitorCoveredSoakTooLate, fixture).contains("resource-gate"))
+
+    var idleMemoryGrowth = fixture.artifact
+    let idleBaseline = try #require(
+        idleMemoryGrowth.resources.warmRuntime.checkpoints.last?.residentBytes
+    )
+    let priorWarm = idleMemoryGrowth.resources.warmRuntime
+    idleMemoryGrowth.resources.warmRuntime = .analyze(
+        checkpoints: priorWarm.checkpoints,
+        idleCPUPercent: priorWarm.idleCPUPercent,
+        idleSampleSeconds: priorWarm.idleSampleSeconds,
+        postIdleResidentBytes: idleBaseline + 1,
+        postIdlePhysicalFootprintBytes: priorWarm.postIdlePhysicalFootprintBytes
+    )
+    #expect(failures(idleMemoryGrowth, fixture).contains("resource-gate"))
+
+    var contradictorySummary = fixture.artifact
+    contradictorySummary.resources.peakGrowthBytes = 0
+    #expect(failures(contradictorySummary, fixture).contains("resource-gate"))
+
     var privacy = fixture.artifact
     privacy.privacy.canaryProbeCount = 0
     privacy.privacy.argumentVectorLeaks = 1
@@ -273,6 +491,15 @@ func liveOperationalEvidenceFailsClosed() throws {
     var correctness = fixture.artifact
     correctness.correctness.stablePrefixMutations = 1
     #expect(failures(correctness, fixture).contains("correctness-regression"))
+
+    var forgedPreviewSessionCounts = fixture.artifact
+    forgedPreviewSessionCounts.correctness.provisionalSessionCount = 1
+    forgedPreviewSessionCounts.correctness.finalizationCount = 1
+    #expect(failures(forgedPreviewSessionCounts, fixture).contains("preview-convergence-not-proven"))
+
+    var insufficientAcceptedRevisions = fixture.artifact
+    insufficientAcceptedRevisions.correctness.revisionCount = 9
+    #expect(failures(insufficientAcceptedRevisions, fixture).contains("preview-convergence-not-proven"))
 
     var lifecycle = fixture.artifact
     lifecycle.lifecycle.rapidCancelRestartCases = 249
@@ -296,6 +523,20 @@ func liveArtifactEncodingIsRedacted() throws {
     #expect(try !LiveContextArtifactIO.validatePrivacy(of: injected))
     let pathInjected = Data("{\"modelIdentity\":\"/Users/private/model.bin\"}".utf8)
     #expect(try !LiveContextArtifactIO.validatePrivacy(of: pathInjected))
+    let embeddedUserPath = Data("{\"modelIdentity\":\"diagnostic: /Users/private/model.bin\"}".utf8)
+    #expect(try !LiveContextArtifactIO.validatePrivacy(of: embeddedUserPath))
+    let embeddedPrivatePath = Data("{\"modelIdentity\":\"diagnostic: /private/tmp/model.bin\"}".utf8)
+    #expect(try !LiveContextArtifactIO.validatePrivacy(of: embeddedPrivatePath))
+    let mixedCaseLocalPath = Data("{\"modelIdentity\":\"diagnostic: /uSeRs/private/model.bin\"}".utf8)
+    #expect(try !LiveContextArtifactIO.validatePrivacy(of: mixedCaseLocalPath))
+    let embeddedFileURI = Data("{\"modelIdentity\":\"diagnostic: FILE:///tmp/model.bin\"}".utf8)
+    #expect(try !LiveContextArtifactIO.validatePrivacy(of: embeddedFileURI))
+    let escapedEmbeddedPath = Data(#"{"modelIdentity":"diagnostic: \\/Users/private/model.bin"}"#.utf8)
+    #expect(try !LiveContextArtifactIO.validatePrivacy(of: escapedEmbeddedPath))
+    let repositoryRelativePath = Data(
+        "{\"modelIdentity\":\"vendor/whisper.cpp/models/ggml-model.bin\"}".utf8
+    )
+    #expect(try LiveContextArtifactIO.validatePrivacy(of: repositoryRelativePath))
 
     var canaryArtifact = fixture.artifact
     canaryArtifact.identity.runtimeIdentity = LiveContextReceiptManifest.hostedPrivacyCanaries(
@@ -373,6 +614,22 @@ private func acceptedFixture() throws -> LiveFixture {
             boundarySpacingCorrect: true
         )
     }
+    let resourceCheckpoints = [1, 10, 25, 50, 75, 100, 125, 150, 175, 200,
+                               225, 250, 275, 300, 325, 350, 375, 400, 425, 450,
+                               475, 500].map { index in
+        WarmRuntimeResourceCheckpoint(
+            requestIndex: index,
+            residentBytes: UInt64(index == 10 ? 1_500_000_000 : 1_480_000_000),
+            physicalFootprintBytes: UInt64(index == 10 ? 1_550_000_000 : 1_530_000_000)
+        )
+    }
+    let warmResources = WarmRuntimeResourceSummary.analyze(
+        checkpoints: resourceCheckpoints,
+        idleCPUPercent: 0.05,
+        idleSampleSeconds: 60,
+        postIdleResidentBytes: 1_479_000_000,
+        postIdlePhysicalFootprintBytes: 1_529_000_000
+    )
     let artifact = LiveContextBenchmarkArtifact(
         generatedAt: liveNow.addingTimeInterval(-60),
         identity: .init(
@@ -435,11 +692,11 @@ private func acceptedFixture() throws -> LiveFixture {
             staleEventsAccepted: 0,
             stablePrefixConflicts: 0,
             stablePrefixFinalConflicts: 0,
-            provisionalSessionCount: 100,
+            provisionalSessionCount: 5,
             noSpeechFalseDisplays: 0,
             latePartialsAfterCancellation: 0,
             revisionCount: 250,
-            finalizationCount: 100
+            finalizationCount: 5
         ),
         capture: .init(
             expectedAudioSampleCount: 16_000,
@@ -458,15 +715,17 @@ private func acceptedFixture() throws -> LiveFixture {
         ),
         resources: .init(
             soakSessionCount: 500,
-            peakRSSBytes: 1_500_000_000,
+            warmRuntime: warmResources,
+            peakRSSBytes: resourceCheckpoints.compactMap(\.residentBytes).max(),
             rssCeilingBytes: 2_147_483_648,
-            peakGrowthBytes: Int64(32 * 1024 * 1024),
-            tailSlopeBytesPerRequest: 1_024,
-            monotonicGrowthObserved: false,
+            peakGrowthBytes: warmResources.peakGrowthBytesFromFirst,
+            tailSlopeBytesPerRequest: warmResources.tailSlopeBytesPerRequest,
+            monotonicGrowthObserved: warmResources.monotonicGrowthObserved,
             sawtoothGrowthObserved: false,
-            idleCPUPercent: 0.05,
+            physicalFootprintSawtoothGrowthObserved: false,
+            idleCPUPercent: warmResources.idleCPUPercent,
             idleSampleSeconds: 60,
-            activeCPUPercentSamples: [40, 55, 60],
+            activeCPUPercentSamples: [40, 45, 50, 55, 60],
             maximumQueueDepth: 1,
             coalescedPreviewCount: 10,
             helperReloadCount: 0,
@@ -479,6 +738,10 @@ private func acceptedFixture() throws -> LiveFixture {
             idleObservationCompleted: true,
             continuousHelperMonitorPerformed: true,
             helperProcessObservationCount: 500,
+            maximumHelperMonitorGapMS: 70,
+            helperMonitorPreSoakObservationLeadMS: 1,
+            helperMonitorPostSoakObservationLagMS: 1,
+            currentResidentModelCount: 1,
             maximumResidentModelCount: 1,
             modelInitializationSourceSHA256: helperSource,
             modelInitializationSiteCount: 1

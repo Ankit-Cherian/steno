@@ -138,6 +138,8 @@ public enum SessionCoordinatorError: Error, LocalizedError {
 }
 
 public actor SessionCoordinator {
+    private static let minimumLiveHypothesisAdvanceSamples: UInt64 = 3_200
+
     private final class CaptureStopRequestFlag: @unchecked Sendable {
         private let lock = NSLock()
         private var requestedAt: ContinuousClock.Instant?
@@ -336,6 +338,7 @@ public actor SessionCoordinator {
         var request: TranscriptionRequest
         var revision: UInt64 = 0
         var decodedAudioWatermark: UInt64 = 0
+        var hypothesisSchedulingEvaluationWatermark: UInt64 = 0
         var lastHypothesisWatermark: UInt64 = 0
         var hypothesisAssembler = LiveCumulativeHypothesisAssembler()
         var failed = false
@@ -582,6 +585,12 @@ public actor SessionCoordinator {
         }
         activeSessions[sessionID]?.setupTasks = setupTasks
         return sessionID
+    }
+
+    func liveHypothesisSchedulingEvaluationWatermark(
+        sessionID: SessionID
+    ) -> UInt64? {
+        activeSessions[sessionID]?.livePipeline?.hypothesisSchedulingEvaluationWatermark
     }
 
     public func stopPressToTalk(sessionID: SessionID, languageHints: [String] = ["en-US"]) async throws -> InsertResult {
@@ -950,8 +959,13 @@ public actor SessionCoordinator {
         }
 
         guard !captureStopWasRequested(sessionID: sessionID),
-              let pipeline = activeSessions[sessionID]?.livePipeline,
-              pipeline.decodedAudioWatermark >= pipeline.lastHypothesisWatermark + 4_000 else {
+              let pipeline = activeSessions[sessionID]?.livePipeline else {
+            return
+        }
+        activeSessions[sessionID]?.livePipeline?.hypothesisSchedulingEvaluationWatermark =
+            pipeline.decodedAudioWatermark
+        guard pipeline.decodedAudioWatermark >= pipeline.lastHypothesisWatermark
+                + Self.minimumLiveHypothesisAdvanceSamples else {
             return
         }
         let pending = LivePipeline.PendingHypothesis(

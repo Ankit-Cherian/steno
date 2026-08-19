@@ -73,6 +73,7 @@ public enum LiveContextBenchmarkRunnerError: Error, LocalizedError, Equatable {
     case emptyCorpus
     case helperNotFound
     case canonicalAudioDidNotFinalize
+    case uncorrelatedLiveHypothesisResponse
     case invalidEvidenceReceipt(String)
 
     public var errorDescription: String? {
@@ -89,6 +90,8 @@ public enum LiveContextBenchmarkRunnerError: Error, LocalizedError, Equatable {
             return "The retained helper process was not observed."
         case .canonicalAudioDidNotFinalize:
             return "The canonical WAV fixture did not produce a final stream summary."
+        case .uncorrelatedLiveHypothesisResponse:
+            return "The retained runtime returned an uncorrelated live hypothesis response."
         case .invalidEvidenceReceipt(let name):
             return "The \(name) evidence receipt is missing, stale, dirty, mismatched, skipped, or incomplete."
         }
@@ -114,6 +117,207 @@ public enum LiveContextBenchmarkRunner {
         var canonicalPCMSHA256: String
         var runtimeIdentity: LiveTranscriptionRuntimeIdentity
         var activeCPUPercent: Double?
+    }
+
+    struct EnabledTrialDecodeRequest: Sendable, Equatable {
+        var revision: UInt64
+        var watermark: UInt64
+    }
+
+    struct EnabledTrialHypothesisMetrics: Sendable, Equatable {
+        var firstPartialMS: Double?
+        var subsequentGapsMS: [Double]
+        var eventCount: Int
+        var stablePrefixConflicts: Int
+        var stablePrefixFinalConflicts: Int
+        var noSpeechFalseDisplays: Int
+        var finalizationCount: Int
+    }
+
+    actor EnabledTrialHypothesisCoordinator {
+        private let session: LiveTranscriptionSession
+        private let speechOnsetMS: Double
+        private let cadenceSamples: UInt64
+        private var reducer: ProvisionalTranscriptReducer
+        private var nextRevision: UInt64 = 0
+        private var lastLaunchedWatermark: UInt64 = 0
+        private var readyRequest: EnabledTrialDecodeRequest?
+        private var activeRequest: EnabledTrialDecodeRequest?
+        private var pendingWatermark: UInt64?
+        private var waiter: CheckedContinuation<EnabledTrialDecodeRequest?, Never>?
+        private var isFinishing = false
+        private var previousStable = ""
+        private var firstPartialMS: Double?
+        private var lastSpeechPartialMS: Double?
+        private var subsequentGapsMS: [Double] = []
+        private var eventCount = 0
+        private var stablePrefixConflicts = 0
+        private var noSpeechFalseDisplays = 0
+
+        init(
+            session: LiveTranscriptionSession,
+            speechOnsetMS: Int,
+            cadenceSamples: UInt64 = 3_200
+        ) {
+            self.session = session
+            self.speechOnsetMS = Double(speechOnsetMS)
+            self.cadenceSamples = cadenceSamples
+            self.reducer = ProvisionalTranscriptReducer(session: session)
+        }
+
+        func offerAppendedWatermark(_ watermark: UInt64) {
+            guard !isFinishing,
+                  watermark >= lastLaunchedWatermark + cadenceSamples else { return }
+            guard readyRequest == nil, activeRequest == nil else {
+                pendingWatermark = max(pendingWatermark ?? 0, watermark)
+                return
+            }
+            enqueue(watermark: watermark)
+        }
+
+        func nextRequest() async -> EnabledTrialDecodeRequest? {
+            if let readyRequest {
+                self.readyRequest = nil
+                activeRequest = readyRequest
+                return readyRequest
+            }
+            guard !isFinishing else { return nil }
+            return await withCheckedContinuation { continuation in
+                precondition(waiter == nil, "Only one hypothesis worker may wait for work")
+                waiter = continuation
+            }
+        }
+
+        func complete(
+            _ request: EnabledTrialDecodeRequest,
+            event: LiveTranscriptionEvent,
+            receivedAtMS: Double
+        ) throws {
+            guard activeRequest == request else {
+                guard !isFinishing else { return }
+                throw LiveContextBenchmarkRunnerError.uncorrelatedLiveHypothesisResponse
+            }
+            activeRequest = nil
+            guard !isFinishing else { return }
+            guard event.kind == .hypothesis,
+                  event.session == session,
+                  event.revision == request.revision,
+                  event.decodedAudioWatermark == request.watermark else {
+                promotePendingIfNeeded()
+                throw LiveContextBenchmarkRunnerError.uncorrelatedLiveHypothesisResponse
+            }
+            record(event: event, receivedAtMS: receivedAtMS)
+            promotePendingIfNeeded()
+        }
+
+        /// Returns true when the authoritative finish already superseded the
+        /// failed preview and the worker should terminate without surfacing it.
+        func failed(_ request: EnabledTrialDecodeRequest) -> Bool {
+            guard activeRequest == request else { return isFinishing }
+            activeRequest = nil
+            if isFinishing { return true }
+            pendingWatermark = nil
+            return false
+        }
+
+        func beginFinishing() {
+            guard !isFinishing else { return }
+            isFinishing = true
+            pendingWatermark = nil
+            readyRequest = nil
+            waiter?.resume(returning: nil)
+            waiter = nil
+        }
+
+        func finalize(
+            authoritativeText: String,
+            sampleCount: UInt64
+        ) -> EnabledTrialHypothesisMetrics {
+            let stableFinalConflict = !previousStable.isEmpty
+                && !authoritativeText.hasPrefix(previousStable) ? 1 : 0
+            // Hypothesis timestamps originate in the retained helper's
+            // monotonic clock domain. Preserve that domain for the synthetic
+            // benchmark final instead of comparing unrelated process epochs.
+            let finalMonotonicNanos = reducer.snapshot.emittedAtMonotonicNanos
+                ?? DispatchTime.now().uptimeNanoseconds
+            let finalEvent = LiveTranscriptionEvent(
+                kind: .authoritativeFinal,
+                session: session,
+                revision: nextRevision &+ 1,
+                decodedAudioWatermark: sampleCount,
+                emittedAtMonotonicNanos: finalMonotonicNanos,
+                fullHypothesisText: authoritativeText
+            )
+            let finalReduction = reducer.reduce(finalEvent)
+            return EnabledTrialHypothesisMetrics(
+                firstPartialMS: firstPartialMS,
+                subsequentGapsMS: subsequentGapsMS,
+                eventCount: eventCount,
+                stablePrefixConflicts: stablePrefixConflicts,
+                stablePrefixFinalConflicts: stableFinalConflict,
+                noSpeechFalseDisplays: noSpeechFalseDisplays,
+                finalizationCount: {
+                    if case .accepted = finalReduction.outcome { return 1 }
+                    return 0
+                }()
+            )
+        }
+
+        private func enqueue(watermark: UInt64) {
+            nextRevision &+= 1
+            lastLaunchedWatermark = watermark
+            let request = EnabledTrialDecodeRequest(
+                revision: nextRevision,
+                watermark: watermark
+            )
+            if let waiter {
+                self.waiter = nil
+                activeRequest = request
+                waiter.resume(returning: request)
+            } else {
+                readyRequest = request
+            }
+        }
+
+        private func promotePendingIfNeeded() {
+            guard let pendingWatermark else { return }
+            self.pendingWatermark = nil
+            guard pendingWatermark >= lastLaunchedWatermark + cadenceSamples else { return }
+            enqueue(watermark: pendingWatermark)
+        }
+
+        private func record(event: LiveTranscriptionEvent, receivedAtMS: Double) {
+            let reduction = reducer.reduce(event)
+            if case .suppressedNoSpeechHypothesis = reduction.outcome {
+                // A gap spanning unknown or explicitly non-speech audio cannot
+                // prove the frozen "during continuing speech" condition.
+                lastSpeechPartialMS = nil
+            }
+            if event.speechEvidence != .speechDetected,
+               case .accepted = reduction.outcome,
+               !reduction.snapshot.displayText
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                noSpeechFalseDisplays += 1
+            }
+            guard case .accepted = reduction.outcome else { return }
+            eventCount += 1
+            if event.speechEvidence == .speechDetected,
+               !event.fullHypothesisText
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if firstPartialMS == nil {
+                    firstPartialMS = max(0, receivedAtMS - speechOnsetMS)
+                }
+                if let lastSpeechPartialMS {
+                    subsequentGapsMS.append(receivedAtMS - lastSpeechPartialMS)
+                }
+                lastSpeechPartialMS = receivedAtMS
+            }
+            let stable = reduction.snapshot.stablePrefix
+            if !previousStable.isEmpty && !stable.hasPrefix(previousStable) {
+                stablePrefixConflicts += 1
+            }
+            previousStable = stable
+        }
     }
 
     private struct LiveAggregate {
@@ -171,6 +375,7 @@ public enum LiveContextBenchmarkRunner {
         }
         struct Identity: Decodable {
             var schema: Int; var capabilities: Int; var runtime: String; var model: String; var vad: String
+            var currentASRContextCount: Int; var peakASRContextCount: Int
             var helperBinary: String; var helperBinarySHA256: String
         }
         struct Configuration: Decodable {
@@ -196,7 +401,8 @@ public enum LiveContextBenchmarkRunner {
             struct VAD: Decodable {
                 var maximumSpeechDurationSeconds: String; var minimumSilenceDurationMS: Int
                 var minimumSpeechDurationMS: Int; var previewScope: String; var samplesOverlap: Double
-                var speechPadMS: Int; var threshold: Double
+                var speechPadMS: Int; var threshold: Double; var previewThreshold: Double
+                var previewMinimumSpeechDurationMS: Int
             }
             var audio: Audio; var bounds: Bounds; var harnessTimeoutsSeconds: Timeouts
             var inferenceThresholds: Inference; var streamRequest: Stream; var vadThresholds: VAD
@@ -406,7 +612,8 @@ public enum LiveContextBenchmarkRunner {
                     audioURL: audioURL,
                     request: request,
                     speechOnsetMS: configuration.declaredSpeechOnsetMS,
-                    realtimePacing: configuration.realtimePacing
+                    realtimePacing: configuration.realtimePacing,
+                    helperExecutableName: helperExecutableName
                 )
                 aggregate.startMS.append(measurement.startMS)
                 if let first = measurement.firstPartialMS {
@@ -500,10 +707,12 @@ public enum LiveContextBenchmarkRunner {
                     failures.append(.init(id: "production-core:\(trial.index)", reasonCode: "enabled-summary-missing"))
                     continue
                 }
-                if Int(summary.sampleCount) != receipts.adversarial.audio.expectedSampleCount
-                    || summary.byteCount != summary.sampleCount * UInt64(receipts.adversarial.audio.sampleWidthBytes)
-                    || summary.frameCount != aggregate.canonicalCaptureSummary?.frameCount
-                    || hexadecimal(summary.fnv1a64) != expectedFNV {
+                if !productionCoreAudioOracleMatches(
+                    summary,
+                    expectedSampleCount: receipts.adversarial.audio.expectedSampleCount,
+                    sampleWidthBytes: receipts.adversarial.audio.sampleWidthBytes,
+                    expectedFNV1A64: expectedFNV
+                ) {
                     failures.append(.init(id: "production-core:\(trial.index)", reasonCode: "independent-audio-oracle-mismatch"))
                 }
             } else if trial.canonicalPCM != nil {
@@ -532,6 +741,13 @@ public enum LiveContextBenchmarkRunner {
         )
         if resource.peakRSSBytes == nil || resource.idleCPUPercent == nil {
             failures.append(.init(id: "resources", reasonCode: "process-resource-probe-unavailable"))
+        }
+        if resource.currentResidentModelCount != 1
+            || resource.maximumResidentModelCount != 1 {
+            failures.append(.init(
+                id: "resources",
+                reasonCode: "resident-model-telemetry-missing-or-not-singleton"
+            ))
         }
 
         let childPIDs = LiveContextProcessProbe.childProcessIDs(
@@ -686,12 +902,15 @@ public enum LiveContextBenchmarkRunner {
             ),
             resources: .init(
                 soakSessionCount: resource.completedSoakSessions,
+                warmRuntime: resource.warmRuntime,
                 peakRSSBytes: resource.peakRSSBytes,
                 rssCeilingBytes: configuration.rssCeilingBytes,
                 peakGrowthBytes: resource.peakGrowthBytes,
                 tailSlopeBytesPerRequest: resource.tailSlopeBytesPerRequest,
                 monotonicGrowthObserved: resource.monotonicGrowthObserved,
                 sawtoothGrowthObserved: resource.sawtoothGrowthObserved,
+                physicalFootprintSawtoothGrowthObserved:
+                    resource.physicalFootprintSawtoothGrowthObserved,
                 idleCPUPercent: resource.idleCPUPercent,
                 idleSampleSeconds: configuration.idleSampleSeconds,
                 activeCPUPercentSamples: aggregate.activeCPUPercentSamples,
@@ -707,7 +926,15 @@ public enum LiveContextBenchmarkRunner {
                 idleObservationCompleted: resource.idleObservationCompleted,
                 continuousHelperMonitorPerformed: resource.continuousHelperMonitorPerformed,
                 helperProcessObservationCount: resource.helperProcessObservationCount,
-                maximumResidentModelCount: maximumConcurrentHelperProcessCount == 1 ? 1 : nil,
+                helperProcessUnexpectedObservationCount:
+                    resource.helperProcessUnexpectedObservationCount,
+                maximumHelperMonitorGapMS: resource.maximumHelperMonitorGapMS,
+                helperMonitorPreSoakObservationLeadMS:
+                    resource.helperMonitorPreSoakObservationLeadMS,
+                helperMonitorPostSoakObservationLagMS:
+                    resource.helperMonitorPostSoakObservationLagMS,
+                currentResidentModelCount: resource.currentResidentModelCount,
+                maximumResidentModelCount: resource.maximumResidentModelCount,
                 modelInitializationSourceSHA256: identity.helperSourceSHA256,
                 modelInitializationSiteCount: modelInitializationSiteCount
             ),
@@ -1001,8 +1228,10 @@ public enum LiveContextBenchmarkRunner {
               adversarial.execution.observedBackends.cpu == 0,
               adversarial.execution.observedBackends.unknown == 0,
               adversarial.execution.observedBackends.metal == adversarial.execution.attestedProcessCount,
-              adversarial.identity.schema > 0,
-              adversarial.identity.capabilities > 0,
+              adversarial.identity.schema == 2,
+              adversarial.identity.capabilities == 0x7f,
+              adversarial.identity.currentASRContextCount == 1,
+              adversarial.identity.peakASRContextCount == 1,
               !adversarial.identity.runtime.isEmpty,
               !adversarial.identity.model.isEmpty,
               adversarial.identity.helperBinary == identity.runtimeIdentity,
@@ -1049,6 +1278,8 @@ public enum LiveContextBenchmarkRunner {
               adversarial.configuration.vadThresholds.maximumSpeechDurationSeconds == "FLT_MAX",
               adversarial.configuration.vadThresholds.minimumSilenceDurationMS == 100,
               adversarial.configuration.vadThresholds.minimumSpeechDurationMS == 250,
+              adversarial.configuration.vadThresholds.previewThreshold == 0.12,
+              adversarial.configuration.vadThresholds.previewMinimumSpeechDurationMS == 50,
               adversarial.configuration.vadThresholds.previewScope == "newly-accepted-audio-since-prior-admitted-decode",
               adversarial.configuration.vadThresholds.samplesOverlap == 0.1,
               adversarial.configuration.vadThresholds.speechPadMS == 30,
@@ -1354,14 +1585,14 @@ public enum LiveContextBenchmarkRunner {
               let environment = object(root, "environment"), hasExactKeys(environment, ["hardware", "operatingSystem"]),
               let hardware = object(environment, "hardware"), hasExactKeys(hardware, ["architecture", "chip", "logicalProcessorCount", "memoryBytes", "modelIdentifier"]),
               let operatingSystem = object(environment, "operatingSystem"), hasExactKeys(operatingSystem, ["build", "name", "version"]),
-              let identity = object(root, "identity"), hasExactKeys(identity, ["schema", "capabilities", "runtime", "model", "vad", "helperBinary", "helperBinarySHA256"]),
+              let identity = object(root, "identity"), hasExactKeys(identity, ["schema", "capabilities", "runtime", "model", "vad", "currentASRContextCount", "peakASRContextCount", "helperBinary", "helperBinarySHA256"]),
               let configuration = object(root, "configuration"), hasExactKeys(configuration, ["audio", "bounds", "harnessTimeoutsSeconds", "inferenceThresholds", "streamRequest", "vadThresholds"]),
               let configurationAudio = object(configuration, "audio"), hasExactKeys(configurationAudio, ["channelCount", "encoding", "sampleRateHz", "sampleWidthBytes"]),
               let bounds = object(configuration, "bounds"), hasExactKeys(bounds, ["maximumAppendBytes", "maximumAppendSamples", "maximumHypothesisBytes", "maximumPayloadBytes", "maximumStreamSamples", "maximumStringBytes", "previewWindowSamples"]),
               let timeouts = object(configuration, "harnessTimeoutsSeconds"), hasExactKeys(timeouts, ["backendAttestation", "defaultFrameRead", "inference", "loadReady", "networkMonitorStartup", "networkPollInterval"]),
               let inference = object(configuration, "inferenceThresholds"), hasExactKeys(inference, ["entropyThreshold", "logProbabilityThreshold", "noSpeechThreshold", "temperature", "temperatureIncrement"]),
               let stream = object(configuration, "streamRequest"), hasExactKeys(stream, ["beamSize", "bestOf", "flags", "language", "prompt", "suppressNonSpeechTokens", "suppressRegex", "threads", "vadEnabled"]),
-              let vad = object(configuration, "vadThresholds"), hasExactKeys(vad, ["maximumSpeechDurationSeconds", "minimumSilenceDurationMS", "minimumSpeechDurationMS", "previewScope", "samplesOverlap", "speechPadMS", "threshold"]),
+              let vad = object(configuration, "vadThresholds"), hasExactKeys(vad, ["maximumSpeechDurationSeconds", "minimumSilenceDurationMS", "minimumSpeechDurationMS", "previewMinimumSpeechDurationMS", "previewScope", "previewThreshold", "samplesOverlap", "speechPadMS", "threshold"]),
               let manifest = object(root, "sourceFixtureManifest"), hasExactKeys(manifest, ["algorithm", "sha256", "entries"]),
               let manifestEntries = objects(manifest, "entries"), manifestEntries.allSatisfy({ hasExactKeys($0, ["role", "path", "sha256"]) }),
               let cases = object(root, "cases"), hasExactKeys(cases, ["expected", "passed", "failed", "skipped", "categories", "failureRows", "skipRows", "rows"]),
@@ -1445,13 +1676,26 @@ public enum LiveContextBenchmarkRunner {
         return sha256(data)
     }
 
+    static func productionCoreAudioOracleMatches(
+        _ summary: LivePCMStreamSummary,
+        expectedSampleCount: Int,
+        sampleWidthBytes: Int,
+        expectedFNV1A64: String
+    ) -> Bool {
+        summary.frameCount > 0
+            && Int(summary.sampleCount) == expectedSampleCount
+            && summary.byteCount == summary.sampleCount * UInt64(sampleWidthBytes)
+            && hexadecimal(summary.fnv1a64) == expectedFNV1A64
+    }
+
 
     static func runEnabledTrial(
         engine: any LiveTranscriptionEngine,
         audioURL: URL,
         request: TranscriptionRequest,
         speechOnsetMS: Int,
-        realtimePacing: Bool
+        realtimePacing: Bool,
+        helperExecutableName: String? = nil
     ) async throws -> EnabledTrial {
         let sessionID = UUID()
         let generation = UUID()
@@ -1462,30 +1706,49 @@ public enum LiveContextBenchmarkRunner {
             request: request
         )
         let startMS = elapsedMS(since: started)
+        let hypothesisCoordinator = EnabledTrialHypothesisCoordinator(
+            session: session,
+            speechOnsetMS: speechOnsetMS
+        )
+        let hypothesisWorker = Task {
+            while let scheduled = await hypothesisCoordinator.nextRequest() {
+                do {
+                    let event = try await engine.requestLiveHypothesis(
+                        session: session,
+                        revision: scheduled.revision,
+                        decodedAudioWatermark: scheduled.watermark
+                    )
+                    try await hypothesisCoordinator.complete(
+                        scheduled,
+                        event: event,
+                        receivedAtMS: elapsedMS(since: started)
+                    )
+                } catch {
+                    if await hypothesisCoordinator.failed(scheduled) { return }
+                    throw error
+                }
+            }
+        }
+        // Install the single worker's waiter before accelerated test fixtures
+        // can deliver their first complete scheduling window.
+        await Task.yield()
         do {
         let streamer = try CanonicalWAVFrameStreamer(
             sessionID: sessionID,
             audioURL: audioURL,
-            maximumFrameBytes: 8_000,
+            maximumFrameBytes: 6_400,
             maximumFramesPerPoll: 8
         )
         var poll = try await streamer.finalize(sessionID: sessionID)
         var finalSummary: LivePCMStreamSummary?
         var pcmHasher = SHA256()
-        var reducer = ProvisionalTranscriptReducer(session: session)
-        var previousStable = ""
-        var stableConflicts = 0
-        var firstPartial: Double?
-        var lastPartialTime: Double?
-        var gaps: [Double] = []
-        var eventCount = 0
-        var noSpeechFalseDisplays = 0
         var frameSequenceOrOffsetDiscontinuities = 0
         var expectedFrameSequence: UInt64 = 0
         var expectedSampleOffset: UInt64 = 0
         var observedFrameCount: UInt64 = 0
-        var revision: UInt64 = 0
-        var hasherUsageBefore = LiveContextProcessProbe.currentHelperUsage()
+        var hasherUsageBefore = helperExecutableName.flatMap {
+            LiveContextProcessProbe.currentHelperUsage(named: $0)
+        }
 
         while true {
           for frame in poll.frames {
@@ -1503,47 +1766,10 @@ public enum LiveContextBenchmarkRunner {
                 if remaining > 0 { try await Task.sleep(for: .milliseconds(remaining)) }
             }
             try await engine.appendLiveAudio(frame, session: session)
-            guard frame.sampleOffset + UInt64(frame.sampleCount) >= UInt64(speechOnsetMS * 16) else {
-                continue
-            }
-            revision &+= 1
-            let rawEvent = try await engine.requestLiveHypothesis(
-                session: session,
-                revision: revision,
-                decodedAudioWatermark: frame.sampleOffset + UInt64(frame.sampleCount)
+            await hypothesisCoordinator.offerAppendedWatermark(
+                frame.sampleOffset + UInt64(frame.sampleCount)
             )
-            let evidence = rawEvent.speechEvidence
-            let event = LiveTranscriptionEvent(
-                kind: rawEvent.kind,
-                session: rawEvent.session,
-                revision: rawEvent.revision,
-                decodedAudioWatermark: rawEvent.decodedAudioWatermark,
-                emittedAtMonotonicNanos: rawEvent.emittedAtMonotonicNanos,
-                fullHypothesisText: rawEvent.fullHypothesisText,
-                speechEvidence: evidence
-            )
-            let reduction = reducer.reduce(event)
-            if evidence != .speechDetected,
-               case .accepted = reduction.outcome,
-               !reduction.snapshot.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                noSpeechFalseDisplays += 1
-            }
-            guard case .accepted = reduction.outcome else { continue }
-            eventCount += 1
-            let nowMS = elapsedMS(since: started)
-            if !event.fullHypothesisText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                if firstPartial == nil {
-                    firstPartial = max(0, nowMS - Double(speechOnsetMS))
-                } else if let lastPartialTime {
-                    gaps.append(nowMS - lastPartialTime)
-                }
-                lastPartialTime = nowMS
-            }
-            let stable = reduction.snapshot.stablePrefix
-            if !previousStable.isEmpty && !stable.hasPrefix(previousStable) {
-                stableConflicts += 1
-            }
-            previousStable = stable
+            await Task.yield()
           }
           if case .finalized(let summary) = poll.state {
               finalSummary = summary
@@ -1563,9 +1789,16 @@ public enum LiveContextBenchmarkRunner {
         if summary.sampleCount != expectedSampleOffset {
             frameSequenceOrOffsetDiscontinuities += 1
         }
+
+        // Canonical capture has closed. Claim terminal ownership before any
+        // independent evidence work can suspend and admit a late preview.
+        await hypothesisCoordinator.beginFinishing()
         let pcmHash = pcmHasher.finalize().map { String(format: "%02x", $0) }.joined()
         let canonicalCapture = try await canonicalCaptureEvidence(audioURL: audioURL)
 
+        // Closing capture owns terminal priority: discard queued preview work,
+        // let authoritative finish abort any in-flight decode, and never wait
+        // for provisional work before starting the final.
         let finishStarted = ContinuousClock.now
         let final = try await engine.finishLiveTranscription(
             session: session,
@@ -1574,17 +1807,14 @@ public enum LiveContextBenchmarkRunner {
             request: request
         )
         let finishMS = elapsedMS(since: finishStarted)
-        let stableFinalConflict = !previousStable.isEmpty && !final.text.hasPrefix(previousStable) ? 1 : 0
-        let finalEvent = LiveTranscriptionEvent(
-            kind: .authoritativeFinal,
-            session: session,
-            revision: revision &+ 1,
-            decodedAudioWatermark: summary.sampleCount,
-            emittedAtMonotonicNanos: DispatchTime.now().uptimeNanoseconds,
-            fullHypothesisText: final.text
+        try await hypothesisWorker.value
+        let hypothesisMetrics = await hypothesisCoordinator.finalize(
+            authoritativeText: final.text,
+            sampleCount: summary.sampleCount
         )
-        let finalReduction = reducer.reduce(finalEvent)
-        let usageAfter = LiveContextProcessProbe.currentHelperUsage()
+        let usageAfter = helperExecutableName.flatMap {
+            LiveContextProcessProbe.currentHelperUsage(named: $0)
+        }
         let activeCPU = LiveContextProcessProbe.cpuPercent(
             before: hasherUsageBefore,
             after: usageAfter,
@@ -1593,19 +1823,16 @@ public enum LiveContextBenchmarkRunner {
         hasherUsageBefore = nil
         return EnabledTrial(
             startMS: startMS,
-            firstPartialMS: firstPartial,
-            subsequentGapsMS: gaps,
+            firstPartialMS: hypothesisMetrics.firstPartialMS,
+            subsequentGapsMS: hypothesisMetrics.subsequentGapsMS,
             finishMS: finishMS,
-            eventCount: eventCount,
-            stablePrefixConflicts: stableConflicts,
-            stablePrefixFinalConflicts: stableFinalConflict,
-            noSpeechFalseDisplays: noSpeechFalseDisplays,
+            eventCount: hypothesisMetrics.eventCount,
+            stablePrefixConflicts: hypothesisMetrics.stablePrefixConflicts,
+            stablePrefixFinalConflicts: hypothesisMetrics.stablePrefixFinalConflicts,
+            noSpeechFalseDisplays: hypothesisMetrics.noSpeechFalseDisplays,
             frameSequenceOrOffsetDiscontinuities: frameSequenceOrOffsetDiscontinuities,
-            revisionCount: eventCount,
-            finalizationCount: {
-                if case .accepted = finalReduction.outcome { return 1 }
-                return 0
-            }(),
+            revisionCount: hypothesisMetrics.eventCount,
+            finalizationCount: hypothesisMetrics.finalizationCount,
             summary: summary,
             pcmSHA256: pcmHash,
             canonicalSummary: canonicalCapture.summary,
@@ -1614,7 +1841,10 @@ public enum LiveContextBenchmarkRunner {
             activeCPUPercent: activeCPU
         )
         } catch {
+            await hypothesisCoordinator.beginFinishing()
+            hypothesisWorker.cancel()
             await engine.cancelLiveTranscription(session: session)
+            _ = try? await hypothesisWorker.value
             throw error
         }
     }
@@ -1680,24 +1910,81 @@ public enum LiveContextBenchmarkRunner {
 
     private struct ResourceMeasurement {
         var completedSoakSessions: Int
+        var warmRuntime: WarmRuntimeResourceSummary
         var peakRSSBytes: UInt64?
         var peakGrowthBytes: Int64?
         var tailSlopeBytesPerRequest: Double?
         var monotonicGrowthObserved: Bool?
         var sawtoothGrowthObserved: Bool?
+        var physicalFootprintSawtoothGrowthObserved: Bool?
         var idleCPUPercent: Double?
         var maximumConcurrentHelperProcessCount: Int
         var observedIdleSampleSeconds: Double
         var idleObservationCompleted: Bool
         var helperProcessObservationCount: Int
+        var helperProcessUnexpectedObservationCount: Int
         var continuousHelperMonitorPerformed: Bool
+        var maximumHelperMonitorGapMS: Double
+        var helperMonitorPreSoakObservationLeadMS: Double
+        var helperMonitorPostSoakObservationLagMS: Double
+        var currentResidentModelCount: Int?
+        var maximumResidentModelCount: Int?
     }
 
     private struct HelperMonitorEvidence: Sendable {
         var processIDs: Set<Int32>
         var observationCount: Int
+        var exactlyOneHelperObservationCount: Int
+        var unexpectedHelperObservationCount: Int
         var maximumConcurrentProcessCount: Int
         var maximumGapMS: Double
+    }
+
+    private final class HelperMonitorRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var processIDs: Set<Int32> = []
+        private var observationTimestampsNanos: [UInt64] = []
+        private var exactlyOneHelperObservationCount = 0
+        private var unexpectedHelperObservationCount = 0
+        private var maximumConcurrentProcessCount = 0
+        private var observationEndNanos: UInt64?
+
+        func record(_ observed: [Int32], atUptimeNanos timestamp: UInt64) {
+            lock.lock()
+            defer { lock.unlock() }
+            processIDs.formUnion(observed)
+            observationTimestampsNanos.append(timestamp)
+            maximumConcurrentProcessCount = max(maximumConcurrentProcessCount, observed.count)
+            if observed.count == 1 {
+                exactlyOneHelperObservationCount += 1
+            } else {
+                unexpectedHelperObservationCount += 1
+            }
+        }
+
+        func finish(atUptimeNanos timestamp: UInt64) {
+            lock.lock()
+            observationEndNanos = timestamp
+            lock.unlock()
+        }
+
+        func snapshot() -> HelperMonitorEvidence {
+            lock.lock()
+            defer { lock.unlock() }
+            return .init(
+                processIDs: processIDs,
+                observationCount: observationTimestampsNanos.count,
+                exactlyOneHelperObservationCount: exactlyOneHelperObservationCount,
+                unexpectedHelperObservationCount: unexpectedHelperObservationCount,
+                maximumConcurrentProcessCount: maximumConcurrentProcessCount,
+                maximumGapMS: observationEndNanos.map {
+                    LiveContextBenchmarkRunner.maximumHelperMonitorGapMS(
+                        observationTimestampsNanos: observationTimestampsNanos,
+                        observationEndNanos: $0
+                    )
+                } ?? .infinity
+            )
+        }
     }
 
     private static func measureResources(
@@ -1709,39 +1996,34 @@ public enum LiveContextBenchmarkRunner {
         helperPIDs: inout Set<Int32>
     ) async -> ResourceMeasurement {
         let helperName = URL(fileURLWithPath: configuration.helperPath).lastPathComponent
-        let monitorTask = Task<HelperMonitorEvidence, Never> {
-            var processIDs: Set<Int32> = []
-            var observationCount = 0
-            var maximumConcurrentProcessCount = 0
-            var previousNanos: UInt64?
-            var maximumGapMS = 0.0
+        let monitorRecorder = HelperMonitorRecorder()
+        let initialHelperProcesses = LiveContextProcessProbe.childProcessIDs(named: helperName)
+        let initialObservationNanos = DispatchTime.now().uptimeNanoseconds
+        monitorRecorder.record(initialHelperProcesses, atUptimeNanos: initialObservationNanos)
+        let soakStartedNanos = DispatchTime.now().uptimeNanoseconds
+        let helperMonitorPreSoakObservationLeadMS = Double(
+            soakStartedNanos - initialObservationNanos
+        ) / 1_000_000
+        let monitorTask = Task.detached(priority: .high) {
             while !Task.isCancelled {
-                let now = DispatchTime.now().uptimeNanoseconds
-                if let previousNanos {
-                    maximumGapMS = max(maximumGapMS, Double(now - previousNanos) / 1_000_000)
-                }
-                previousNanos = now
                 let observed = LiveContextProcessProbe.childProcessIDs(named: helperName)
-                processIDs.formUnion(observed)
-                maximumConcurrentProcessCount = max(maximumConcurrentProcessCount, observed.count)
-                observationCount += 1
+                monitorRecorder.record(
+                    observed,
+                    atUptimeNanos: DispatchTime.now().uptimeNanoseconds
+                )
                 do {
                     try await Task.sleep(for: .milliseconds(50))
                 } catch {
                     break
                 }
             }
-            return .init(
-                processIDs: processIDs,
-                observationCount: observationCount,
-                maximumConcurrentProcessCount: maximumConcurrentProcessCount,
-                maximumGapMS: maximumGapMS
-            )
         }
-        var values: [(Int, UInt64)] = []
+        let checkpointTargets = Set(
+            resourceCheckpointIndices(requestedSessionCount: configuration.resourceSoakSessions)
+        )
+        var checkpoints: [WarmRuntimeResourceCheckpoint] = []
         var completed = 0
         var maximumConcurrentHelperProcessCount = 0
-        var helperProcessObservationCount = 0
         for index in 1...configuration.resourceSoakSessions {
             do {
                 try await runLiveSoakSession(engine: engine, audioURL: audioURL, request: request)
@@ -1749,9 +2031,13 @@ public enum LiveContextBenchmarkRunner {
             } catch {
                 break
             }
-            if index == 1 || index.isMultiple(of: 25) || index == configuration.resourceSoakSessions,
-               let usage = LiveContextProcessProbe.resourceUsage(pid: helperPID) {
-                values.append((index, usage.residentBytes))
+            if checkpointTargets.contains(index) {
+                let usage = LiveContextProcessProbe.resourceUsage(pid: helperPID)
+                checkpoints.append(.init(
+                    requestIndex: index,
+                    residentBytes: usage?.residentBytes,
+                    physicalFootprintBytes: usage?.physicalFootprintBytes
+                ))
             }
             let observedHelperPIDs = LiveContextProcessProbe.childProcessIDs(
                 named: URL(fileURLWithPath: configuration.helperPath).lastPathComponent
@@ -1761,24 +2047,56 @@ public enum LiveContextBenchmarkRunner {
                 maximumConcurrentHelperProcessCount,
                 observedHelperPIDs.count
             )
-            if observedHelperPIDs.count == 1 { helperProcessObservationCount += 1 }
         }
-        let peak = values.map(\.1).max()
-        let growth = values.first.flatMap { first in
-            peak.map { Int64(clamping: $0) - Int64(clamping: first.1) }
+        let soakEndedNanos = DispatchTime.now().uptimeNanoseconds
+        let postSoakHelperProcesses = LiveContextProcessProbe.childProcessIDs(named: helperName)
+        let postSoakObservationNanos = DispatchTime.now().uptimeNanoseconds
+        monitorRecorder.record(postSoakHelperProcesses, atUptimeNanos: postSoakObservationNanos)
+        let helperMonitorPostSoakObservationLagMS = Double(
+            postSoakObservationNanos - soakEndedNanos
+        ) / 1_000_000
+        let residentValues = checkpoints.compactMap { checkpoint in
+            checkpoint.residentBytes.map { (checkpoint.requestIndex, $0) }
         }
-        let tail = Array(values.suffix(max(2, values.count / 3)))
-        let slope = regressionSlope(tail)
-        let monotonic = values.count >= 3 ? zip(values, values.dropFirst()).allSatisfy { $1.1 > $0.1 } : nil
-        let sawtooth = values.count >= 5 ? detectUnboundedSawtooth(values) : nil
+        let physicalValues = checkpoints.compactMap { checkpoint in
+            checkpoint.physicalFootprintBytes.map { (checkpoint.requestIndex, $0) }
+        }
+        let sawtooth = residentValues.count >= 5 ? detectsUnboundedSawtooth(
+            residentValues,
+            maximumTailSlopeBytesPerRequest:
+                LiveContextBenchmarkThresholds.required.maximumTailSlopeBytesPerRequest
+        ) : nil
+        let physicalSawtooth = physicalValues.count >= 5 ? detectsUnboundedSawtooth(
+            physicalValues,
+            maximumTailSlopeBytesPerRequest:
+                LiveContextBenchmarkThresholds.required.maximumTailSlopeBytesPerRequest
+        ) : nil
         let idleStarted = ContinuousClock.now
-        let idle = await LiveContextProcessProbe.idleCPUPercent(
+        let idle = await LiveContextProcessProbe.idleSample(
             pid: helperPID,
             seconds: configuration.idleSampleSeconds
         )
         let observedIdleSampleSeconds = elapsedMS(since: idleStarted) / 1_000
+        let warmRuntime = WarmRuntimeResourceSummary.analyze(
+            checkpoints: checkpoints,
+            idleCPUPercent: idle?.cpuPercent,
+            idleSampleSeconds: observedIdleSampleSeconds,
+            postIdleResidentBytes: idle?.after.residentBytes,
+            postIdlePhysicalFootprintBytes: idle?.after.physicalFootprintBytes
+        )
+        let finalRuntimeIdentity = try? await queryResidentModelTelemetry(
+            engine: engine,
+            request: request
+        )
+        let finalHelperProcesses = LiveContextProcessProbe.childProcessIDs(named: helperName)
+        monitorRecorder.record(
+            finalHelperProcesses,
+            atUptimeNanos: DispatchTime.now().uptimeNanoseconds
+        )
         monitorTask.cancel()
-        let monitor = await monitorTask.value
+        await monitorTask.value
+        monitorRecorder.finish(atUptimeNanos: DispatchTime.now().uptimeNanoseconds)
+        let monitor = monitorRecorder.snapshot()
         helperPIDs.formUnion(monitor.processIDs)
         maximumConcurrentHelperProcessCount = max(
             maximumConcurrentHelperProcessCount,
@@ -1786,23 +2104,61 @@ public enum LiveContextBenchmarkRunner {
         )
         return ResourceMeasurement(
             completedSoakSessions: completed,
-            peakRSSBytes: peak,
-            peakGrowthBytes: growth,
-            tailSlopeBytesPerRequest: slope,
-            monotonicGrowthObserved: monotonic,
+            warmRuntime: warmRuntime,
+            peakRSSBytes: residentValues.map(\.1).max(),
+            peakGrowthBytes: warmRuntime.peakGrowthBytesFromFirst,
+            tailSlopeBytesPerRequest: warmRuntime.tailSlopeBytesPerRequest,
+            monotonicGrowthObserved: warmRuntime.monotonicGrowthObserved,
             sawtoothGrowthObserved: sawtooth,
-            idleCPUPercent: idle,
+            physicalFootprintSawtoothGrowthObserved: physicalSawtooth,
+            idleCPUPercent: idle?.cpuPercent,
             maximumConcurrentHelperProcessCount: maximumConcurrentHelperProcessCount,
             observedIdleSampleSeconds: observedIdleSampleSeconds,
             idleObservationCompleted: idle != nil
                 && observedIdleSampleSeconds >= configuration.idleSampleSeconds,
-            helperProcessObservationCount: max(
-                helperProcessObservationCount,
-                monitor.observationCount
+            helperProcessObservationCount: monitor.exactlyOneHelperObservationCount,
+            helperProcessUnexpectedObservationCount: monitor.unexpectedHelperObservationCount,
+            continuousHelperMonitorPerformed: helperMonitorIsContinuous(
+                observationCount: monitor.observationCount,
+                unexpectedObservationCount: monitor.unexpectedHelperObservationCount,
+                maximumGapMS: monitor.maximumGapMS,
+                maximumAllowedGapMS: LiveContextBenchmarkThresholds.required.maximumHelperMonitorGapMS,
+                preSoakObservationLeadMS: helperMonitorPreSoakObservationLeadMS,
+                postSoakObservationLagMS: helperMonitorPostSoakObservationLagMS
             ),
-            continuousHelperMonitorPerformed: monitor.observationCount >= 2
-                && monitor.maximumGapMS <= 250
+            maximumHelperMonitorGapMS: monitor.maximumGapMS,
+            helperMonitorPreSoakObservationLeadMS: helperMonitorPreSoakObservationLeadMS,
+            helperMonitorPostSoakObservationLagMS: helperMonitorPostSoakObservationLagMS,
+            currentResidentModelCount: finalRuntimeIdentity.map {
+                Int($0.currentASRContextCount)
+            },
+            maximumResidentModelCount: finalRuntimeIdentity.map {
+                Int($0.peakASRContextCount)
+            }
         )
+    }
+
+    static func queryResidentModelTelemetry(
+        engine: any LiveTranscriptionEngine,
+        request: TranscriptionRequest
+    ) async throws -> LiveTranscriptionRuntimeIdentity {
+        let sessionID = UUID()
+        let session = try await engine.startLiveTranscription(
+            sessionID: sessionID,
+            controllerGeneration: UUID(),
+            request: request
+        )
+        await engine.cancelLiveTranscription(session: session)
+        return session.runtimeIdentity
+    }
+
+    static func resourceCheckpointIndices(requestedSessionCount: Int) -> [Int] {
+        guard requestedSessionCount > 0 else { return [] }
+        var indices: Set<Int> = [1, 10, 50, 100, requestedSessionCount]
+        if requestedSessionCount >= 25 {
+            indices.formUnion(stride(from: 25, through: requestedSessionCount, by: 25))
+        }
+        return indices.filter { $0 <= requestedSessionCount }.sorted()
     }
 
     private static func runLiveSoakSession(
@@ -1870,27 +2226,14 @@ public enum LiveContextBenchmarkRunner {
         }
         let corpusHash = try corpus.sha256()
         let vadHash = configuration.vadModelPath.flatMap(sha256File) ?? "none"
-        let manifestMaterial = [
+        let manifestMaterial = ([
             audioHash, corpusHash, modelHash, helperHash, vadHash,
             hostedReceiptHash, adversarialReceiptHash,
             String(configuration.threads), String(configuration.declaredSpeechOnsetMS),
             String(configuration.alternatingTrialCount), String(configuration.resourceSoakSessions),
             configuration.language, String(configuration.realtimePacing),
             String(configuration.idleSampleSeconds), String(configuration.rssCeilingBytes),
-            String(LiveContextBenchmarkThresholds.required.listeningAcknowledgementP95MS),
-            String(LiveContextBenchmarkThresholds.required.firstPartialP50MS),
-            String(LiveContextBenchmarkThresholds.required.firstPartialP95MS),
-            String(LiveContextBenchmarkThresholds.required.firstPartialP99MS),
-            String(LiveContextBenchmarkThresholds.required.subsequentPartialGapP95MS),
-            String(LiveContextBenchmarkThresholds.required.visibleUpdatesPerSecond),
-            String(LiveContextBenchmarkThresholds.required.overlayMainActorP99MS),
-            String(LiveContextBenchmarkThresholds.required.stopToInsertionP95MS),
-            String(LiveContextBenchmarkThresholds.required.maximumStopToInsertionRegressionRatio),
-            String(LiveContextBenchmarkThresholds.required.maximumIdleCPUPercent),
-            String(LiveContextBenchmarkThresholds.required.minimumIdleSampleSeconds),
-            String(LiveContextBenchmarkThresholds.required.maximumPeakGrowthBytes),
-            String(LiveContextBenchmarkThresholds.required.maximumTailSlopeBytesPerRequest),
-        ].joined(separator: "\u{0}")
+        ] + manifestThresholdComponents(.required)).joined(separator: "\u{0}")
         let manifestHash = SHA256.hash(data: Data(manifestMaterial.utf8))
             .map { String(format: "%02x", $0) }.joined()
         let git = LiveContextProcessProbe.gitIdentity(root: configuration.sourceRootPath)
@@ -1922,6 +2265,27 @@ public enum LiveContextBenchmarkRunner {
             operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
             powerState: LiveContextProcessProbe.powerState
         )
+    }
+
+    static func manifestThresholdComponents(
+        _ thresholds: LiveContextBenchmarkThresholds
+    ) -> [String] {
+        [
+            String(thresholds.listeningAcknowledgementP95MS),
+            String(thresholds.firstPartialP50MS),
+            String(thresholds.firstPartialP95MS),
+            String(thresholds.firstPartialP99MS),
+            String(thresholds.subsequentPartialGapP95MS),
+            String(thresholds.visibleUpdatesPerSecond),
+            String(thresholds.overlayMainActorP99MS),
+            String(thresholds.stopToInsertionP95MS),
+            String(thresholds.maximumStopToInsertionRegressionRatio),
+            String(thresholds.maximumIdleCPUPercent),
+            String(thresholds.minimumIdleSampleSeconds),
+            String(thresholds.maximumPeakGrowthBytes),
+            String(thresholds.maximumTailSlopeBytesPerRequest),
+            String(thresholds.maximumHelperMonitorGapMS),
+        ]
     }
 
     private static func retainedConfiguration(
@@ -2017,11 +2381,73 @@ public enum LiveContextBenchmarkRunner {
         return zip(xs, ys).reduce(0) { $0 + ($1.0 - xMean) * ($1.1 - yMean) } / denominator
     }
 
-    private static func detectUnboundedSawtooth(_ values: [(Int, UInt64)]) -> Bool {
-        guard let first = values.first?.1, let last = values.last?.1 else { return true }
-        let increases = zip(values, values.dropFirst()).filter { $1.1 > $0.1 }.count
-        let decreases = zip(values, values.dropFirst()).filter { $1.1 < $0.1 }.count
-        return increases > 0 && decreases > 0 && last > first
+    static func detectsUnboundedSawtooth(
+        _ values: [(Int, UInt64)],
+        maximumTailSlopeBytesPerRequest: Double
+    ) -> Bool {
+        guard values.count >= 5,
+              maximumTailSlopeBytesPerRequest.isFinite,
+              maximumTailSlopeBytesPerRequest >= 0
+        else { return true }
+        let ordered = values.sorted { $0.0 < $1.0 }
+        guard zip(ordered, ordered.dropFirst()).allSatisfy({ $0.0 < $1.0 }) else { return true }
+        guard let firstRequest = ordered.first?.0, let lastRequest = ordered.last?.0 else { return true }
+        let tailStart = firstRequest + ((lastRequest - firstRequest) / 2)
+        let tail = ordered.filter { $0.0 >= tailStart }
+        guard tail.count >= 5 else { return true }
+        let pairs = Array(zip(tail, tail.dropFirst()))
+        guard pairs.contains(where: { $1.1 > $0.1 }),
+              pairs.contains(where: { $1.1 < $0.1 })
+        else { return false }
+
+        let extrema = tail.indices.dropFirst().dropLast().reduce(into: (
+            peaks: [(Int, UInt64)](), troughs: [(Int, UInt64)]()
+        )) { result, index in
+            let previous = tail[index - 1].1
+            let current = tail[index].1
+            let next = tail[index + 1].1
+            if current > previous, current >= next { result.peaks.append(tail[index]) }
+            if current < previous, current <= next { result.troughs.append(tail[index]) }
+        }
+        return [regressionSlope(extrema.peaks), regressionSlope(extrema.troughs)]
+            .compactMap { $0 }
+            .contains { $0 > maximumTailSlopeBytesPerRequest }
+    }
+
+    static func helperMonitorIsContinuous(
+        observationCount: Int,
+        unexpectedObservationCount: Int,
+        maximumGapMS: Double,
+        maximumAllowedGapMS: Double,
+        preSoakObservationLeadMS: Double,
+        postSoakObservationLagMS: Double
+    ) -> Bool {
+        observationCount >= 2
+            && unexpectedObservationCount == 0
+            && maximumGapMS.isFinite
+            && maximumGapMS >= 0
+            && maximumAllowedGapMS.isFinite
+            && maximumAllowedGapMS > 0
+            && maximumGapMS <= maximumAllowedGapMS
+            && preSoakObservationLeadMS.isFinite
+            && preSoakObservationLeadMS >= 0
+            && preSoakObservationLeadMS <= maximumAllowedGapMS
+            && postSoakObservationLagMS.isFinite
+            && postSoakObservationLagMS >= 0
+            && postSoakObservationLagMS <= maximumAllowedGapMS
+    }
+
+    static func maximumHelperMonitorGapMS(
+        observationTimestampsNanos: [UInt64],
+        observationEndNanos: UInt64
+    ) -> Double {
+        guard let lastObservationNanos = observationTimestampsNanos.max(),
+              observationEndNanos >= lastObservationNanos
+        else { return .infinity }
+        let timestamps = observationTimestampsNanos.sorted() + [observationEndNanos]
+        return zip(timestamps, timestamps.dropFirst()).reduce(0.0) { result, pair in
+            max(result, Double(pair.1 - pair.0) / 1_000_000)
+        }
     }
 
     static func elapsedMS(since start: ContinuousClock.Instant) -> Double {
@@ -2056,10 +2482,17 @@ actor CountingFallbackEngine: TranscriptionEngine {
     func callCount() -> Int { calls }
 }
 
-private enum LiveContextProcessProbe {
+enum LiveContextProcessProbe {
     struct Usage {
+        var processIdentifier: Int32
         var residentBytes: UInt64
+        var physicalFootprintBytes: UInt64
         var cpuNanoseconds: UInt64
+    }
+
+    struct IdleSample {
+        var cpuPercent: Double
+        var after: Usage
     }
 
     static var hardware: String {
@@ -2094,21 +2527,44 @@ private enum LiveContextProcessProbe {
     }
 
     static func childProcessIDs(named name: String) -> [Int32] {
-        let children = run("/usr/bin/pgrep", ["-P", String(ProcessInfo.processInfo.processIdentifier)])
-        guard children.status == 0 else { return [] }
-        return children.output.split(whereSeparator: \ .isNewline).compactMap { Int32($0) }.filter { pid in
-            let command = run("/bin/ps", ["-p", String(pid), "-o", "comm="]).output
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return URL(fileURLWithPath: command).lastPathComponent == name
+#if os(macOS)
+        let parentPID = pid_t(ProcessInfo.processInfo.processIdentifier)
+        let requiredCount = proc_listchildpids(parentPID, nil, 0)
+        guard requiredCount > 0 else { return [] }
+        var children = [pid_t](repeating: 0, count: Int(requiredCount) + 1)
+        let writtenCount = children.withUnsafeMutableBytes { buffer in
+            proc_listchildpids(parentPID, buffer.baseAddress, Int32(buffer.count))
         }
+        guard writtenCount > 0 else { return [] }
+        let count = min(Int(writtenCount), children.count)
+        var matches: [Int32] = []
+        for index in 0..<count {
+            let pid = children[index]
+            // Darwin defines PROC_PIDPATHINFO_MAXSIZE as 4 * MAXPATHLEN, but
+            // that expression macro is not imported into Swift.
+            var path = [UInt8](repeating: 0, count: 4_096)
+            let length = proc_pidpath(pid, &path, UInt32(path.count))
+            let end = path.firstIndex(of: 0) ?? min(Int(length), path.count)
+            let executablePath = String(decoding: path[..<end], as: UTF8.self)
+            if length > 0, URL(fileURLWithPath: executablePath).lastPathComponent == name {
+                matches.append(Int32(pid))
+            }
+        }
+        return matches
+#else
+        _ = name
+        return []
+#endif
     }
 
-    static func currentHelperUsage() -> Usage? {
-        let children = run("/usr/bin/pgrep", ["-P", String(ProcessInfo.processInfo.processIdentifier)])
-        guard children.status == 0,
-              let pid = children.output.split(whereSeparator: \ .isNewline).compactMap({ Int32($0) }).first
-        else { return nil }
+    static func currentHelperUsage(named name: String) -> Usage? {
+        guard let pid = uniqueProcessID(childProcessIDs(named: name)) else { return nil }
         return resourceUsage(pid: pid)
+    }
+
+    static func uniqueProcessID(_ processIDs: [Int32]) -> Int32? {
+        guard processIDs.count == 1 else { return nil }
+        return processIDs[0]
     }
 
     static func resourceUsage(pid: Int32) -> Usage? {
@@ -2121,7 +2577,9 @@ private enum LiveContextProcessProbe {
         }
         guard status == 0 else { return nil }
         return Usage(
+            processIdentifier: pid,
             residentBytes: info.ri_resident_size,
+            physicalFootprintBytes: info.ri_phys_footprint,
             cpuNanoseconds: info.ri_user_time &+ info.ri_system_time
         )
 #else
@@ -2131,19 +2589,26 @@ private enum LiveContextProcessProbe {
     }
 
     static func cpuPercent(before: Usage?, after: Usage?, elapsedMS: Double) -> Double? {
-        guard let before, let after, elapsedMS > 0, after.cpuNanoseconds >= before.cpuNanoseconds else { return nil }
+        guard let before,
+              let after,
+              before.processIdentifier == after.processIdentifier,
+              elapsedMS > 0,
+              after.cpuNanoseconds >= before.cpuNanoseconds
+        else { return nil }
         return Double(after.cpuNanoseconds - before.cpuNanoseconds) / (elapsedMS * 1_000_000) * 100
     }
 
-    static func idleCPUPercent(pid: Int32, seconds: Double) async -> Double? {
+    static func idleSample(pid: Int32, seconds: Double) async -> IdleSample? {
         guard let before = resourceUsage(pid: pid) else { return nil }
         let started = ContinuousClock.now
         try? await Task.sleep(for: .seconds(seconds))
-        return cpuPercent(
+        guard let after = resourceUsage(pid: pid),
+              let cpuPercent = cpuPercent(
             before: before,
-            after: resourceUsage(pid: pid),
+            after: after,
             elapsedMS: LiveContextBenchmarkRunner.elapsedMS(since: started)
-        )
+        ) else { return nil }
+        return IdleSample(cpuPercent: cpuPercent, after: after)
     }
 
     static func networkConnectionCount(pid: Int32) -> Int? {

@@ -632,19 +632,21 @@ private enum WhisperStreamingRuntimeProtocol {
     static let maximumPayloadBytes = 64 * 1024 * 1024
     static let maximumTextBytes = 16 * 1024
     static let maximumIdentityPayloadBytes = 512
-    static let identitySchemaVersion: UInt32 = 1
+    static let identitySchemaVersion: UInt32 = 2
     static let streamingCapability: UInt32 = 1 << 0
     static let identityAcknowledgementCapability: UInt32 = 1 << 1
     static let cooperativeCancellationCapability: UInt32 = 1 << 2
     static let terminalAcknowledgementCapability: UInt32 = 1 << 3
     static let previewSpeechEvidenceCapability: UInt32 = 1 << 4
     static let correlatedErrorCapability: UInt32 = 1 << 5
+    static let asrContextTelemetryCapability: UInt32 = 1 << 6
     static let requiredCapabilities = streamingCapability
         | identityAcknowledgementCapability
         | cooperativeCancellationCapability
         | terminalAcknowledgementCapability
         | previewSpeechEvidenceCapability
         | correlatedErrorCapability
+        | asrContextTelemetryCapability
 
     private static let maximumIdentityBytes = 128
 
@@ -817,10 +819,13 @@ private enum WhisperStreamingRuntimeProtocol {
         let runtime = try reader.readString(maximumByteCount: maximumIdentityBytes)
         let model = try reader.readString(maximumByteCount: maximumIdentityBytes)
         let vad = try reader.readString(maximumByteCount: maximumIdentityBytes)
+        let currentASRContextCount = try reader.readUInt32()
+        let peakASRContextCount = try reader.readUInt32()
         guard reader.remainingByteCount == 0,
               isOpaqueIdentity(runtime),
               isOpaqueIdentity(model),
-              vad.isEmpty || isOpaqueIdentity(vad)
+              vad.isEmpty || isOpaqueIdentity(vad),
+              currentASRContextCount <= peakASRContextCount
         else {
             throw RetainedWhisperRuntimeError.invalidResponse
         }
@@ -828,7 +833,9 @@ private enum WhisperStreamingRuntimeProtocol {
             protocolVersion: version,
             runtimeIdentifier: runtime,
             modelIdentifier: model,
-            vadIdentifier: vad.isEmpty ? nil : vad
+            vadIdentifier: vad.isEmpty ? nil : vad,
+            currentASRContextCount: currentASRContextCount,
+            peakASRContextCount: peakASRContextCount
         )
     }
 
@@ -839,8 +846,27 @@ private enum WhisperStreamingRuntimeProtocol {
             protocolVersion: version,
             runtimeIdentifier: UUID().uuidString.lowercased(),
             modelIdentifier: try fileIdentityToken(configuration.modelPath),
-            vadIdentifier: try configuration.vadModelPath.map { try fileIdentityToken($0) }
+            vadIdentifier: try configuration.vadModelPath.map { try fileIdentityToken($0) },
+            currentASRContextCount: 0,
+            peakASRContextCount: 0
         )
+    }
+
+    static func hasExpectedConfiguration(
+        _ observed: LiveTranscriptionRuntimeIdentity,
+        expected: LiveTranscriptionRuntimeIdentity
+    ) -> Bool {
+        observed.protocolVersion == expected.protocolVersion
+            && observed.runtimeIdentifier == expected.runtimeIdentifier
+            && observed.modelIdentifier == expected.modelIdentifier
+            && observed.vadIdentifier == expected.vadIdentifier
+    }
+
+    static func hasSingleResidentASRContext(
+        _ identity: LiveTranscriptionRuntimeIdentity
+    ) -> Bool {
+        identity.currentASRContextCount == 1
+            && identity.peakASRContextCount == 1
     }
 
     private static func fileIdentityToken(_ url: URL) throws -> String {
@@ -1014,16 +1040,21 @@ private actor ProcessWhisperStreamingRuntimeSession: WhisperStreamingRuntimeSess
                 discriminator: nil,
                 timeout: configuration.modelLoadTimeout
             )
+            let readyIdentity = try WhisperStreamingRuntimeProtocol.parseIdentity(response.payload)
             guard response.requestID == requestID,
                   response.generation == 0,
-                  try WhisperStreamingRuntimeProtocol.parseIdentity(response.payload) == expectedIdentity
+                  WhisperStreamingRuntimeProtocol.hasExpectedConfiguration(
+                    readyIdentity,
+                    expected: expectedIdentity
+                  ),
+                  WhisperStreamingRuntimeProtocol.hasSingleResidentASRContext(readyIdentity)
             else {
                 throw RetainedWhisperRuntimeError.staleResponse
             }
             return ProcessWhisperStreamingRuntimeSession(
                 state: state,
                 inferenceTimeout: configuration.inferenceTimeout,
-                runtimeIdentity: expectedIdentity
+                runtimeIdentity: readyIdentity
             )
         } catch {
             await state.shutdown()
@@ -1102,15 +1133,20 @@ private actor ProcessWhisperStreamingRuntimeSession: WhisperStreamingRuntimeSess
                 discriminator: nil,
                 timeout: .seconds(5)
             )
+            let streamIdentity = try WhisperStreamingRuntimeProtocol.parseIdentity(response.payload)
             guard phase == .starting(id: id, generation: generation),
                   response.requestID == id,
                   response.generation == generation,
-                  try WhisperStreamingRuntimeProtocol.parseIdentity(response.payload) == runtimeIdentity
+                  WhisperStreamingRuntimeProtocol.hasExpectedConfiguration(
+                    streamIdentity,
+                    expected: runtimeIdentity
+                  ),
+                  WhisperStreamingRuntimeProtocol.hasSingleResidentASRContext(streamIdentity)
             else {
                 throw RetainedWhisperRuntimeError.staleResponse
             }
             phase = .active(id: id, generation: generation, nextSequence: 0, watermark: 0, revision: 0)
-            return runtimeIdentity
+            return streamIdentity
         } catch {
             if phase == .starting(id: id, generation: generation) { phase = .idle }
             throw error
