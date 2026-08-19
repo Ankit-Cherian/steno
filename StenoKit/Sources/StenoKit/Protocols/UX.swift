@@ -58,8 +58,31 @@ public protocol OverlayPresenter: AnyObject {
     /// Shows the overlay with the given state.
     func show(state: OverlayState)
 
+    /// Enables or disables ephemeral local transcript previews for future
+    /// recording sessions. This does not affect final transcription.
+    func setLiveTranscriptEnabled(_ isEnabled: Bool)
+
+    /// Pins the next recording session to the display containing the captured
+    /// target point. Passing `nil` leaves display selection to the presenter.
+    func pinNextSessionToDisplay(containing targetPoint: CGPoint?)
+
+    /// Updates only the provisional transcript region of an active listening
+    /// session. Implementations must not restart lifecycle presentation.
+    func updateLiveTranscript(_ snapshot: LiveTranscriptionSnapshot)
+
+    /// Replaces the provisional region with a truthful local-preview failure
+    /// message while canonical recording continues.
+    func showLiveTranscriptUnavailable()
+
     /// Hides the overlay.
     func hide()
+}
+
+public extension OverlayPresenter {
+    func setLiveTranscriptEnabled(_: Bool) {}
+    func pinNextSessionToDisplay(containing _: CGPoint?) {}
+    func updateLiveTranscript(_: LiveTranscriptionSnapshot) {}
+    func showLiveTranscriptUnavailable() {}
 }
 
 /// Pauses and safely resumes system media playback during recording sessions.
