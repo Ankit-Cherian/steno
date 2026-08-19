@@ -94,6 +94,11 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
         return fileURL
     }
 
+    public func canonicalCaptureURL(sessionID: SessionID) async -> URL? {
+        guard recorders[sessionID]?.isRecording == true else { return nil }
+        return outputURLs[sessionID]
+    }
+
     public func cancelCapture(sessionID: SessionID) async {
         guard let recorder = recorders.removeValue(forKey: sessionID),
               let fileURL = outputURLs.removeValue(forKey: sessionID) else {
