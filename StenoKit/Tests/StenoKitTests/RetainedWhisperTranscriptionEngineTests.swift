@@ -11,6 +11,7 @@ private actor FakeRuntimeState {
     var shutdownCount = 0
     var fallbackCount = 0
     var activeRequests = 0
+    var startedRequestCount = 0
     var maximumActiveRequests = 0
     var completedRequestIDs: [UUID] = []
     var failure: FakeRuntimeFailure?
@@ -18,14 +19,73 @@ private actor FakeRuntimeState {
     var shouldBlockShutdown = false
     var shutdownStarted = false
     var shutdownContinuation: CheckedContinuation<Void, Never>?
+    var loadStartedContinuations: [CheckedContinuation<Void, Never>] = []
+    var requestStartedContinuations: [CheckedContinuation<Void, Never>] = []
+    var shouldBlockRequest = false
+    var requestBlockContinuations: [CheckedContinuation<Void, Never>] = []
+    var requestCancellationCount = 0
+    var requestCancellationContinuations: [CheckedContinuation<Void, Never>] = []
 
     func recordLoad() {
         loadCount += 1
+        let continuations = loadStartedContinuations
+        loadStartedContinuations.removeAll()
+        continuations.forEach { $0.resume() }
     }
 
     func beginRequest() {
         activeRequests += 1
+        startedRequestCount += 1
         maximumActiveRequests = max(maximumActiveRequests, activeRequests)
+        let continuations = requestStartedContinuations
+        requestStartedContinuations.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+
+    func waitUntilLoadStarts() async {
+        guard loadCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            loadStartedContinuations.append(continuation)
+        }
+    }
+
+    func waitUntilRequestStarts() async {
+        guard startedRequestCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            requestStartedContinuations.append(continuation)
+        }
+    }
+
+    func setBlockRequest(_ shouldBlock: Bool) {
+        shouldBlockRequest = shouldBlock
+    }
+
+    func waitWhileRequestIsBlocked() async {
+        guard shouldBlockRequest else { return }
+        await withCheckedContinuation { continuation in
+            requestBlockContinuations.append(continuation)
+        }
+    }
+
+    func recordRequestCancellation() {
+        requestCancellationCount += 1
+        let continuations = requestCancellationContinuations
+        requestCancellationContinuations.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+
+    func waitUntilRequestIsCancelled() async {
+        guard requestCancellationCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            requestCancellationContinuations.append(continuation)
+        }
+    }
+
+    func releaseBlockedRequest() {
+        shouldBlockRequest = false
+        let continuations = requestBlockContinuations
+        requestBlockContinuations.removeAll()
+        continuations.forEach { $0.resume() }
     }
 
     func finishRequest(id: UUID) {
@@ -112,6 +172,11 @@ private struct FakeWhisperRuntimeSession: WhisperRuntimeSession {
 
     func transcribe(_ request: WhisperRuntimeRequest) async throws -> Data {
         await state.beginRequest()
+        await withTaskCancellationHandler {
+            await state.waitWhileRequestIsBlocked()
+        } onCancel: {
+            Task { await state.recordRequestCancellation() }
+        }
         let snapshot = await state.snapshot()
         do {
             if snapshot.ignoreCancellationDelay > 0 {
@@ -244,7 +309,7 @@ func retainedRuntimeCancellationDuringLoadDoesNotFallback() async throws {
     let task = Task {
         try await engine.transcribe(audioURL: URL(fileURLWithPath: "/tmp/load.wav"), request: .init())
     }
-    try await Task.sleep(nanoseconds: 20_000_000)
+    await state.waitUntilLoadStarts()
     let clock = ContinuousClock()
     let started = clock.now
     task.cancel()
@@ -396,7 +461,7 @@ func retainedRuntimeHundredRequestResourceHarness() async throws {
 @Test("Reload drains old work before a newer request can start")
 func retainedRuntimeReloadSerializesNewRequests() async throws {
     let state = FakeRuntimeState()
-    await state.setIgnoreCancellationDelay(80_000_000)
+    await state.setBlockRequest(true)
     let engine = makeRetainedEngine(state: state)
     let oldRequest = Task {
         try await engine.transcribe(
@@ -405,13 +470,13 @@ func retainedRuntimeReloadSerializesNewRequests() async throws {
         )
     }
 
-    for _ in 0..<100 where (await state.snapshot()).active == 0 {
-        try await Task.sleep(nanoseconds: 1_000_000)
-    }
+    await state.waitUntilRequestStarts()
     await state.setBlockShutdown(true)
     var updated = retainedConfiguration()
     updated.modelPath = URL(fileURLWithPath: "/tmp/model-b.bin")
     let reload = Task { await engine.updateConfiguration(updated) }
+    await state.waitUntilRequestIsCancelled()
+    await state.releaseBlockedRequest()
     while !(await state.hasStartedShutdown()) {
         await Task.yield()
     }

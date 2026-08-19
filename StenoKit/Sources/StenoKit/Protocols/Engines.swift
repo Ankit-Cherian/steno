@@ -32,6 +32,39 @@ public extension TranscriptionEngine {
     func unloadRetainedResources() async {}
 }
 
+/// Optional retained-runtime capability for local provisional transcription.
+///
+/// Implementations must keep hypotheses ephemeral, use the same resident model
+/// as authoritative transcription, and derive the final result from the
+/// completed canonical WAV rather than provisional text.
+public protocol LiveTranscriptionEngine: TranscriptionEngine {
+    func startLiveTranscription(
+        sessionID: SessionID,
+        controllerGeneration: UUID,
+        request: TranscriptionRequest
+    ) async throws -> LiveTranscriptionSession
+
+    func appendLiveAudio(
+        _ frame: LivePCMFrame,
+        session: LiveTranscriptionSession
+    ) async throws
+
+    func requestLiveHypothesis(
+        session: LiveTranscriptionSession,
+        revision: UInt64,
+        decodedAudioWatermark: UInt64
+    ) async throws -> LiveTranscriptionEvent
+
+    func finishLiveTranscription(
+        session: LiveTranscriptionSession,
+        canonicalAudioURL: URL,
+        streamSummary: LivePCMStreamSummary,
+        request: TranscriptionRequest
+    ) async throws -> RawTranscript
+
+    func cancelLiveTranscription(session: LiveTranscriptionSession) async
+}
+
 /// Refines raw transcripts by applying style profiles, personal lexicon corrections, and filler word policies.
 public protocol CleanupEngine: Sendable {
     /// Cleans up a raw transcript.

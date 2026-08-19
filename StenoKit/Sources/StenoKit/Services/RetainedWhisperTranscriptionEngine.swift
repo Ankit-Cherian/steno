@@ -23,6 +23,20 @@ public enum RetainedWhisperRuntimeError: Error, LocalizedError, Equatable {
     }
 }
 
+/// A terminal authoritative-final failure that has already consumed the
+/// retained engine's one allowed canonical CLI fallback.
+///
+/// Callers must surface this error and must not retry the same canonical audio
+/// through `transcribe(audioURL:request:)`. The retained engine also enforces
+/// that contract for the lifetime of the engine instance.
+public enum LiveTranscriptionFinalizationError: Error, LocalizedError, Equatable, Sendable {
+    case authoritativeFallbackExhausted
+
+    public var errorDescription: String? {
+        "The authoritative transcription failed after its final local fallback was attempted."
+    }
+}
+
 public struct RetainedWhisperTranscriptionConfiguration: Sendable, Equatable {
     public var helperExecutableURL: URL
     public var modelPath: URL
@@ -116,7 +130,14 @@ protocol WhisperRuntimeSessionFactory: Sendable {
     ) async throws -> any WhisperRuntimeSession
 }
 
-public actor RetainedWhisperTranscriptionEngine: TranscriptionEngine {
+public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
+    private enum LiveLifecyclePhase: Equatable {
+        case starting
+        case active
+        case finishing
+        case cancelling
+    }
+
     private struct PendingRequest {
         var id: UUID
         var audioURL: URL
@@ -131,6 +152,13 @@ public actor RetainedWhisperTranscriptionEngine: TranscriptionEngine {
     private var sessionIdentity: RetainedWhisperTranscriptionConfiguration.LoadIdentity?
     private var sessionShutdownTask: Task<Void, Never>?
     private var generation: UInt64 = 0
+    private var liveSessionIdentity: LiveTranscriptionSession?
+    private var liveRuntimeSession: (any WhisperStreamingRuntimeSession)?
+    private var liveLifecyclePhase: LiveLifecyclePhase?
+    private var isLiveAppendInFlight = false
+    private var isLiveHypothesisInFlight = false
+    private var failedLiveSession: LiveTranscriptionSession?
+    private var exhaustedCanonicalFinals: Set<String> = []
     private var pendingOrder: [UUID] = []
     private var pending: [UUID: PendingRequest] = [:]
     private var activeRequestID: UUID?
@@ -156,14 +184,321 @@ public actor RetainedWhisperTranscriptionEngine: TranscriptionEngine {
         fallback: any TranscriptionEngine
     ) {
         self.configuration = configuration
-        self.sessionFactory = ProcessWhisperRuntimeSessionFactory()
+        self.sessionFactory = ProcessWhisperStreamingRuntimeSessionFactory()
         self.fallback = fallback
+    }
+
+    public func startLiveTranscription(
+        sessionID: SessionID,
+        controllerGeneration: UUID,
+        request: TranscriptionRequest
+    ) async throws -> LiveTranscriptionSession {
+        guard !isShutDown else {
+            throw RetainedWhisperRuntimeError.shutDown
+        }
+        guard !isRuntimeTransitioning,
+              liveSessionIdentity == nil,
+              failedLiveSession == nil,
+              activeRequestID == nil,
+              pending.isEmpty
+        else {
+            throw RetainedWhisperRuntimeError.unsupportedConfiguration
+        }
+
+        let configuration = self.configuration
+        guard configuration.vadModelPath != nil else {
+            // A provisional hypothesis is display-eligible only when the
+            // configured local VAD can attest speech for that exact decode.
+            // Final-only retained and CLI transcription remain available.
+            throw RetainedWhisperRuntimeError.unsupportedConfiguration
+        }
+        let requestGeneration = generation
+        let pendingIdentity = LiveTranscriptionSession(
+            sessionID: sessionID,
+            controllerGeneration: controllerGeneration,
+            runtimeGeneration: requestGeneration,
+            runtimeIdentity: .pending
+        )
+
+        // Reserve the identity before loading or starting the helper. Actor
+        // reentrancy must never admit a second live stream while this method is
+        // suspended.
+        liveSessionIdentity = pendingIdentity
+        liveLifecyclePhase = .starting
+
+        do {
+            let runtimeSession = try await activeSession(for: configuration)
+            guard let streamingSession = runtimeSession as? any WhisperStreamingRuntimeSession else {
+                throw RetainedWhisperRuntimeError.unsupportedConfiguration
+            }
+            try Task.checkCancellation()
+            guard liveSessionIdentity == pendingIdentity,
+                  liveLifecyclePhase == .starting,
+                  generation == requestGeneration,
+                  !isShutDown,
+                  !isRuntimeTransitioning
+            else {
+                throw CancellationError()
+            }
+
+            let runtimeIdentity = try await streamingSession.startStream(
+                id: sessionID,
+                generation: requestGeneration,
+                configuration: streamConfiguration(for: request, configuration: configuration)
+            )
+            try Task.checkCancellation()
+            guard liveSessionIdentity == pendingIdentity,
+                  liveLifecyclePhase == .starting,
+                  generation == requestGeneration,
+                  !isShutDown,
+                  !isRuntimeTransitioning
+            else {
+                await streamingSession.cancelStream(
+                    id: sessionID,
+                    generation: requestGeneration
+                )
+                throw CancellationError()
+            }
+
+            let identity = LiveTranscriptionSession(
+                sessionID: sessionID,
+                controllerGeneration: controllerGeneration,
+                runtimeGeneration: requestGeneration,
+                runtimeIdentity: runtimeIdentity
+            )
+            liveSessionIdentity = identity
+            liveRuntimeSession = streamingSession
+            liveLifecyclePhase = .active
+            return identity
+        } catch {
+            let stillOwned = liveSessionIdentity == pendingIdentity
+            if stillOwned {
+                liveSessionIdentity = nil
+                liveRuntimeSession = nil
+                liveLifecyclePhase = nil
+                isLiveAppendInFlight = false
+                isLiveHypothesisInFlight = false
+            }
+
+            if !isUnsupportedStreamingCapability(error) {
+                await invalidateSession()
+            }
+            if stillOwned {
+                startNextIfNeeded()
+            }
+            throw error
+        }
+    }
+
+    public func appendLiveAudio(
+        _ frame: LivePCMFrame,
+        session requestedSession: LiveTranscriptionSession
+    ) async throws {
+        guard frame.pcmS16LE.count.isMultiple(of: MemoryLayout<Int16>.size),
+              let sampleCount = UInt32(exactly: frame.sampleCount)
+        else {
+            throw RetainedWhisperRuntimeError.unsupportedConfiguration
+        }
+        let chunk = try WhisperStreamAudioChunk(
+            sequence: frame.sequenceNumber,
+            sampleOffset: frame.sampleOffset,
+            sampleCount: sampleCount,
+            samplesS16LE: frame.pcmS16LE
+        )
+        let runtime = try activeStreamingSession(for: requestedSession, phase: .active)
+        guard !isLiveAppendInFlight else {
+            throw RetainedWhisperRuntimeError.unsupportedConfiguration
+        }
+        isLiveAppendInFlight = true
+
+        do {
+            try await runtime.append(
+                chunk,
+                streamID: requestedSession.sessionID,
+                generation: requestedSession.runtimeGeneration
+            )
+            try Task.checkCancellation()
+            guard liveSessionIdentity == requestedSession,
+                  liveLifecyclePhase == .active,
+                  generation == requestedSession.runtimeGeneration
+            else {
+                throw CancellationError()
+            }
+            isLiveAppendInFlight = false
+        } catch {
+            isLiveAppendInFlight = false
+            if liveSessionIdentity == requestedSession,
+               (liveLifecyclePhase == .finishing || liveLifecyclePhase == .cancelling) {
+                throw error
+            }
+            await failLiveSessionIfCurrent(requestedSession)
+            throw error
+        }
+    }
+
+    public func requestLiveHypothesis(
+        session requestedSession: LiveTranscriptionSession,
+        revision: UInt64,
+        decodedAudioWatermark: UInt64
+    ) async throws -> LiveTranscriptionEvent {
+        let runtime = try activeStreamingSession(for: requestedSession, phase: .active)
+        guard !isLiveAppendInFlight, !isLiveHypothesisInFlight else {
+            throw RetainedWhisperRuntimeError.unsupportedConfiguration
+        }
+        isLiveHypothesisInFlight = true
+
+        do {
+            let hypothesis = try await runtime.requestHypothesis(
+                streamID: requestedSession.sessionID,
+                generation: requestedSession.runtimeGeneration,
+                revision: revision,
+                watermark: decodedAudioWatermark
+            )
+            try Task.checkCancellation()
+            guard liveSessionIdentity == requestedSession,
+                  liveLifecyclePhase == .active,
+                  generation == requestedSession.runtimeGeneration
+            else {
+                throw CancellationError()
+            }
+            let event = LiveTranscriptionEvent(
+                session: requestedSession,
+                revision: hypothesis.revision,
+                decodedAudioWatermark: hypothesis.watermark,
+                emittedAtMonotonicNanos: hypothesis.monotonicNanoseconds,
+                fullHypothesisText: hypothesis.text,
+                speechEvidence: hypothesis.speechEvidence
+            )
+            isLiveHypothesisInFlight = false
+            return event
+        } catch {
+            isLiveHypothesisInFlight = false
+            if liveSessionIdentity == requestedSession,
+               (liveLifecyclePhase == .finishing || liveLifecyclePhase == .cancelling) {
+                throw error
+            }
+            await failLiveSessionIfCurrent(requestedSession)
+            throw error
+        }
+    }
+
+    public func finishLiveTranscription(
+        session requestedSession: LiveTranscriptionSession,
+        canonicalAudioURL: URL,
+        streamSummary: LivePCMStreamSummary,
+        request: TranscriptionRequest
+    ) async throws -> RawTranscript {
+        guard !isShutDown else {
+            throw RetainedWhisperRuntimeError.shutDown
+        }
+        let sampleByteCount = UInt64(MemoryLayout<Int16>.size)
+        guard streamSummary.byteCount.isMultiple(of: sampleByteCount),
+              streamSummary.byteCount / sampleByteCount == streamSummary.sampleCount
+        else {
+            throw RetainedWhisperRuntimeError.unsupportedConfiguration
+        }
+
+        // A failed append or provisional decode deliberately invalidates the
+        // helper. The matching canonical final remains eligible for exactly one
+        // CLI fallback without retrying that unhealthy helper.
+        if failedLiveSession == requestedSession,
+           generation == requestedSession.runtimeGeneration {
+            failedLiveSession = nil
+            return try await performLiveFallbackFinal(
+                session: requestedSession,
+                audioURL: canonicalAudioURL,
+                request: request,
+                generation: requestedSession.runtimeGeneration
+            )
+        }
+
+        let runtime = try activeStreamingSession(for: requestedSession, phase: .active)
+        let configuration = self.configuration
+        liveLifecyclePhase = .finishing
+
+        do {
+            let data = try await runtime.finishStream(
+                id: requestedSession.sessionID,
+                generation: requestedSession.runtimeGeneration,
+                request: WhisperStreamFinishRequest(
+                    canonicalAudioURL: canonicalAudioURL,
+                    expectedSampleCount: streamSummary.sampleCount,
+                    audioFNV1a64: streamSummary.fnv1a64,
+                    configuration: streamConfiguration(for: request, configuration: configuration)
+                )
+            )
+            try Task.checkCancellation()
+            guard liveSessionIdentity == requestedSession,
+                  liveLifecyclePhase == .finishing,
+                  generation == requestedSession.runtimeGeneration
+            else {
+                throw CancellationError()
+            }
+            guard let transcript = WhisperTranscriptDecoder.decodeRichJSON(data) else {
+                throw RetainedWhisperRuntimeError.invalidResponse
+            }
+
+            liveSessionIdentity = nil
+            liveRuntimeSession = nil
+            liveLifecyclePhase = nil
+            isLiveAppendInFlight = false
+            isLiveHypothesisInFlight = false
+            failedLiveSession = nil
+            startNextIfNeeded()
+            return transcript
+        } catch is CancellationError {
+            await failLiveSessionIfCurrent(requestedSession, allowFallback: false)
+            throw CancellationError()
+        } catch {
+            let shouldFallback = liveSessionIdentity == requestedSession
+                && liveLifecyclePhase == .finishing
+                && generation == requestedSession.runtimeGeneration
+                && !isShutDown
+            await failLiveSessionIfCurrent(requestedSession, allowFallback: false)
+            guard shouldFallback else {
+                throw CancellationError()
+            }
+            return try await performLiveFallbackFinal(
+                session: requestedSession,
+                audioURL: canonicalAudioURL,
+                request: request,
+                generation: requestedSession.runtimeGeneration
+            )
+        }
+    }
+
+    public func cancelLiveTranscription(session requestedSession: LiveTranscriptionSession) async {
+        if failedLiveSession == requestedSession {
+            failedLiveSession = nil
+            startNextIfNeeded()
+            return
+        }
+        guard liveSessionIdentity == requestedSession else { return }
+        let runtime = liveRuntimeSession
+        liveLifecyclePhase = .cancelling
+        if let runtime {
+            await runtime.cancelStream(
+                id: requestedSession.sessionID,
+                generation: requestedSession.runtimeGeneration
+            )
+        }
+        if liveSessionIdentity == requestedSession {
+            liveSessionIdentity = nil
+            liveRuntimeSession = nil
+            liveLifecyclePhase = nil
+            isLiveAppendInFlight = false
+            isLiveHypothesisInFlight = false
+            startNextIfNeeded()
+        }
     }
 
     public func transcribe(
         audioURL: URL,
         request: TranscriptionRequest
     ) async throws -> RawTranscript {
+        guard !exhaustedCanonicalFinals.contains(canonicalAudioKey(audioURL)) else {
+            throw LiveTranscriptionFinalizationError.authoritativeFallbackExhausted
+        }
         let id = UUID()
         try Task.checkCancellation()
 
@@ -196,12 +531,17 @@ public actor RetainedWhisperTranscriptionEngine: TranscriptionEngine {
             endRuntimeTransition()
             return
         }
+        let configurationChanged = newConfiguration != configuration
         let identityChanged = newConfiguration.loadIdentity != configuration.loadIdentity
         configuration = newConfiguration
         if identityChanged {
             generation &+= 1
             await cancelOutstandingRequests()
+            await cancelActiveLiveStream()
             await invalidateSession()
+        } else if configurationChanged, liveSessionIdentity != nil {
+            await cancelActiveLiveStream()
+            generation &+= 1
         }
         endRuntimeTransition()
     }
@@ -218,6 +558,7 @@ public actor RetainedWhisperTranscriptionEngine: TranscriptionEngine {
         await beginRuntimeTransition()
         generation &+= 1
         await cancelOutstandingRequests()
+        await cancelActiveLiveStream()
         await invalidateSession()
         await fallback.shutdown()
         endRuntimeTransition()
@@ -238,6 +579,7 @@ public actor RetainedWhisperTranscriptionEngine: TranscriptionEngine {
         }
         generation &+= 1
         await cancelOutstandingRequests()
+        await cancelActiveLiveStream()
         await invalidateSession()
         endRuntimeTransition()
     }
@@ -257,7 +599,11 @@ public actor RetainedWhisperTranscriptionEngine: TranscriptionEngine {
         guard !isShutDown else {
             throw RetainedWhisperRuntimeError.shutDown
         }
-        guard activeRequestID == nil, pending.isEmpty else {
+        guard activeRequestID == nil,
+              pending.isEmpty,
+              liveSessionIdentity == nil,
+              failedLiveSession == nil
+        else {
             throw RetainedWhisperRuntimeError.unsupportedConfiguration
         }
 
@@ -284,7 +630,11 @@ public actor RetainedWhisperTranscriptionEngine: TranscriptionEngine {
     }
 
     private func startNextIfNeeded() {
-        guard !isShutDown, !isRuntimeTransitioning, activeRequestID == nil else { return }
+        guard !isShutDown,
+              !isRuntimeTransitioning,
+              activeRequestID == nil,
+              liveSessionIdentity == nil
+        else { return }
 
         while let id = pendingOrder.first {
             pendingOrder.removeFirst()
@@ -313,6 +663,19 @@ public actor RetainedWhisperTranscriptionEngine: TranscriptionEngine {
 
         let requestGeneration = generation
         let configuration = self.configuration
+
+        if let failedSession = failedLiveSession {
+            if failedSession.runtimeGeneration == requestGeneration {
+                failedLiveSession = nil
+                return try await performFallbackFinal(
+                    audioURL: pendingRequest.audioURL,
+                    request: pendingRequest.request,
+                    generation: requestGeneration,
+                    requestID: requestID
+                )
+            }
+            failedLiveSession = nil
+        }
 
         do {
             let runtimeSession = try await activeSession(for: configuration)
@@ -444,6 +807,140 @@ public actor RetainedWhisperTranscriptionEngine: TranscriptionEngine {
     private func invalidateSession() async {
         beginSessionShutdown()
         await waitForSessionShutdown()
+    }
+
+    private func activeStreamingSession(
+        for requestedSession: LiveTranscriptionSession,
+        phase: LiveLifecyclePhase
+    ) throws -> any WhisperStreamingRuntimeSession {
+        guard !isShutDown,
+              !isRuntimeTransitioning,
+              generation == requestedSession.runtimeGeneration,
+              liveSessionIdentity == requestedSession,
+              liveLifecyclePhase == phase,
+              let liveRuntimeSession
+        else {
+            throw RetainedWhisperRuntimeError.staleResponse
+        }
+        return liveRuntimeSession
+    }
+
+    private func failLiveSessionIfCurrent(
+        _ requestedSession: LiveTranscriptionSession,
+        allowFallback: Bool = true
+    ) async {
+        guard liveSessionIdentity == requestedSession else { return }
+        liveSessionIdentity = nil
+        liveRuntimeSession = nil
+        liveLifecyclePhase = nil
+        isLiveAppendInFlight = false
+        isLiveHypothesisInFlight = false
+        if allowFallback, generation == requestedSession.runtimeGeneration, !isShutDown {
+            failedLiveSession = requestedSession
+        }
+        await invalidateSession()
+        startNextIfNeeded()
+    }
+
+    private func cancelActiveLiveStream() async {
+        guard let identity = liveSessionIdentity else {
+            failedLiveSession = nil
+            return
+        }
+        if let liveRuntimeSession {
+            liveLifecyclePhase = .cancelling
+            await liveRuntimeSession.cancelStream(
+                id: identity.sessionID,
+                generation: identity.runtimeGeneration
+            )
+        }
+        if liveSessionIdentity == identity {
+            liveSessionIdentity = nil
+            liveRuntimeSession = nil
+            liveLifecyclePhase = nil
+            isLiveAppendInFlight = false
+            isLiveHypothesisInFlight = false
+        }
+        if failedLiveSession == identity {
+            failedLiveSession = nil
+        }
+    }
+
+    private func performFallbackFinal(
+        audioURL: URL,
+        request: TranscriptionRequest,
+        generation requestGeneration: UInt64,
+        requestID: UUID? = nil
+    ) async throws -> RawTranscript {
+        let transcript = try await fallback.transcribe(audioURL: audioURL, request: request)
+        try Task.checkCancellation()
+        guard !isShutDown, generation == requestGeneration else {
+            throw CancellationError()
+        }
+        if let requestID {
+            guard activeRequestID == requestID else {
+                throw CancellationError()
+            }
+        }
+        return transcript
+    }
+
+    private func performLiveFallbackFinal(
+        session: LiveTranscriptionSession,
+        audioURL: URL,
+        request: TranscriptionRequest,
+        generation requestGeneration: UInt64
+    ) async throws -> RawTranscript {
+        guard session.runtimeGeneration == requestGeneration else {
+            throw CancellationError()
+        }
+        let key = canonicalAudioKey(audioURL)
+        exhaustedCanonicalFinals.insert(key)
+
+        do {
+            let transcript = try await performFallbackFinal(
+                audioURL: audioURL,
+                request: request,
+                generation: requestGeneration
+            )
+            exhaustedCanonicalFinals.remove(key)
+            return transcript
+        } catch is CancellationError {
+            // Cancellation is already terminal for the owning coordinator task.
+            // Keep the tombstone because the fallback may have crossed its
+            // inference commit point before cancellation was observed.
+            throw CancellationError()
+        } catch {
+            // Do not expose the fallback's implementation error as a retryable
+            // live-stream failure. The canonical final has exhausted its one
+            // allowed fallback and is now terminal.
+            throw LiveTranscriptionFinalizationError.authoritativeFallbackExhausted
+        }
+    }
+
+    private func canonicalAudioKey(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private func streamConfiguration(
+        for request: TranscriptionRequest,
+        configuration: RetainedWhisperTranscriptionConfiguration
+    ) -> WhisperStreamConfiguration {
+        WhisperStreamConfiguration(
+            language: normalizedLanguage(from: request.languageHints.first),
+            prompt: WhisperRuntimeConfiguration.buildPrompt(for: request),
+            threadCount: configuration.threadCount,
+            suppressNonSpeechTokens: configuration.suppressNonSpeechTokens,
+            suppressRegex: configuration.suppressRegex,
+            vadModelPath: configuration.vadModelPath,
+            beamSize: configuration.beamSize,
+            bestOf: configuration.bestOf
+        )
+    }
+
+    private func isUnsupportedStreamingCapability(_ error: Error) -> Bool {
+        guard let runtimeError = error as? RetainedWhisperRuntimeError else { return false }
+        return runtimeError == .unsupportedConfiguration
     }
 
     private func beginSessionShutdown() {
