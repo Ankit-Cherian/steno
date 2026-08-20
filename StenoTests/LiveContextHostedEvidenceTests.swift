@@ -782,7 +782,9 @@ private func measureOverlay(sentinels: HostedSentinels) async throws -> HostedOv
             protocolVersion: 2,
             runtimeIdentifier: "hosted-runtime",
             modelIdentifier: "hosted-model",
-            vadIdentifier: nil
+            vadIdentifier: nil,
+            currentASRContextCount: 1,
+            peakASRContextCount: 1
         )
     )
     var revision = 0
@@ -1039,7 +1041,9 @@ private func makeHostedLiveSession(runtimeGeneration: UInt64) -> LiveTranscripti
             protocolVersion: 2,
             runtimeIdentifier: "hosted-runtime",
             modelIdentifier: "hosted-model",
-            vadIdentifier: nil
+            vadIdentifier: nil,
+            currentASRContextCount: 1,
+            peakASRContextCount: 1
         )
     )
 }
@@ -1458,7 +1462,9 @@ private actor HostedLiveEngine: LiveTranscriptionEngine {
                 protocolVersion: 2,
                 runtimeIdentifier: "hosted-synthetic-engine",
                 modelIdentifier: "hosted-synthetic-model",
-                vadIdentifier: nil
+                vadIdentifier: nil,
+                currentASRContextCount: 1,
+                peakASRContextCount: 1
             )
         )
     }
