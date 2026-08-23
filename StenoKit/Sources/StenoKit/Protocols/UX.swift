@@ -70,8 +70,8 @@ public protocol OverlayPresenter: AnyObject {
     /// session. Implementations must not restart lifecycle presentation.
     func updateLiveTranscript(_ snapshot: LiveTranscriptionSnapshot)
 
-    /// Replaces the provisional region with a truthful local-preview failure
-    /// message while canonical recording continues.
+    /// Clears the provisional display and preserves the active recording
+    /// controls when the local preview can no longer continue.
     func showLiveTranscriptUnavailable()
 
     /// Hides the overlay.

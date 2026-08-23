@@ -1,4 +1,7 @@
 import Foundation
+#if os(macOS)
+import AppKit
+#endif
 import Testing
 @testable import StenoKit
 
@@ -212,13 +215,181 @@ struct OverlayPresenterPolicyTests {
         #expect(baseline.backgroundAlpha == 0.94)
         #expect(baseline.borderWidth == 0.5)
         #expect(baseline.duration(0.3) == 0.3)
-        #expect(accessible.textScale == 1.6)
+        #expect(accessible.textScale == 2)
         #expect(accessible.scaledFontSize(13.5) > baseline.scaledFontSize(13.5))
         #expect(accessible.backgroundAlpha == 1)
         #expect(accessible.borderWidth == 1.5)
+        #expect(accessible.innerShadowOpacity == 0)
         #expect(accessible.outerShadowOpacity == 0)
         #expect(accessible.duration(0.3) == 0)
     }
+
+    @Test
+    func largePreferredTextExpandsWithinTheScreenAndAdaptsTheVisibleBudget() {
+        let visibleFrameSize = CGSize(width: 800, height: 600)
+        let preferredBodyPointSize: CGFloat = 52
+        let preferredCaptionPointSize: CGFloat = 42.64
+        let textScale = preferredBodyPointSize / OverlayAccessibilityMetrics.baselineBodyPointSize
+        let expanded = OverlayPanelLayoutPolicy.panelSize(
+            showsTranscript: true,
+            textScale: textScale,
+            preferredBodyPointSize: preferredBodyPointSize,
+            preferredCaptionPointSize: preferredCaptionPointSize,
+            visibleFrameSize: visibleFrameSize
+        )
+        let compact = OverlayPanelLayoutPolicy.panelSize(
+            showsTranscript: false,
+            textScale: textScale,
+            preferredBodyPointSize: preferredBodyPointSize,
+            preferredCaptionPointSize: preferredCaptionPointSize,
+            visibleFrameSize: visibleFrameSize
+        )
+        let geometry = OverlayPanelLayoutPolicy.contentGeometry(
+            panelSize: expanded,
+            showsTranscript: true,
+            preferredBodyPointSize: preferredBodyPointSize,
+            preferredCaptionPointSize: preferredCaptionPointSize
+        )
+        let estimatedTextWidth = expanded.width - 118
+        let budget = OverlayPanelLayoutPolicy.estimatedVisibleGraphemeBudget(
+            textWidth: estimatedTextWidth,
+            textHeight: geometry.transcriptFrame.height,
+            preferredBodyPointSize: preferredBodyPointSize
+        )
+
+        #expect(textScale == 4)
+        #expect(expanded.width <= visibleFrameSize.width - 32)
+        #expect(expanded.height <= visibleFrameSize.height - 32)
+        #expect(geometry.transcriptFrame.height >= preferredBodyPointSize * 3)
+        #expect(geometry.transcriptFrame.maxY <= expanded.height)
+        #expect(budget > 0)
+        #expect(budget < OverlayTranscriptFormatter.maximumVisibleGraphemes)
+        #expect(compact.width < expanded.width)
+        #expect(compact.height < expanded.height)
+    }
+
+    #if os(macOS)
+    @Test
+    @MainActor
+    func productionPresenterUsesOneImmediateTranscriptSurfaceAndCalmUnavailableShell() {
+        let presenter = WaveformOverlayPresenter()
+        presenter.setLiveTranscriptEnabled(true)
+        presenter.prepareWindow()
+
+        #expect(presenter.hostedEvidenceHasOneTranscriptSurface())
+        #expect(presenter.hostedEvidenceUsesPreferredTypography())
+
+        presenter.show(state: .listening(handsFree: false, elapsedSeconds: 0))
+        #expect(presenter.hostedEvidenceTextSurfacesAreEmpty())
+        #expect(presenter.hostedEvidenceRecordingPresentationIsImmediateAndStatic())
+
+        let session = makeSession()
+        presenter.updateLiveTranscript(LiveTranscriptionSnapshot(
+            session: session,
+            stablePrefix: "These words ",
+            revisableTail: "flow as one sentence.",
+            lastAcceptedRevision: 1,
+            decodedAudioWatermark: 1_600,
+            emittedAtMonotonicNanos: 1_000
+        ))
+        #expect(presenter.hostedEvidenceVisibleTranscript() == "These words flow as one sentence.")
+
+        presenter.showLiveTranscriptUnavailable()
+        #expect(presenter.hostedEvidenceUsesCompactUnavailableShell())
+
+        let forbiddenCopy = [
+            "Live preview will appear here",
+            "Listening locally",
+            "Draft",
+            "Live preview unavailable",
+            "Recording continues",
+            "final transcript remains authoritative",
+        ]
+        let userFacingStrings = presenter.hostedEvidenceUserFacingStrings()
+        for forbidden in forbiddenCopy {
+            #expect(userFacingStrings.allSatisfy { !$0.localizedCaseInsensitiveContains(forbidden) })
+        }
+
+        presenter.hide()
+        #expect(presenter.hostedEvidenceTextSurfacesAreEmpty())
+    }
+
+    @Test
+    @MainActor
+    func productionPresenterFitsNewestSpeechAtLargePreferredTextAndRestoresAppearance() {
+        let presenter = WaveformOverlayPresenter()
+        presenter.setLiveTranscriptEnabled(true)
+        presenter.setHostedAccessibilityPreferences(.init(
+            reduceMotion: true,
+            reduceTransparency: true,
+            increaseContrast: true,
+            preferredBodyPointSize: 52
+        ))
+        presenter.show(state: .listening(handsFree: true, elapsedSeconds: 0))
+        #expect(presenter.hostedEvidenceAccessibilityAppearanceMatchesPreferences())
+
+        let provisional = Array(repeating: "Earlier context stays exact. ", count: 12)
+            .joined()
+            + "The newest sentence remains completely visible."
+        presenter.updateLiveTranscript(LiveTranscriptionSnapshot(
+            session: makeSession(),
+            stablePrefix: provisional,
+            revisableTail: "",
+            lastAcceptedRevision: 1,
+            decodedAudioWatermark: 1_600,
+            emittedAtMonotonicNanos: 1_000
+        ))
+        let visible = presenter.hostedEvidenceVisibleTranscript()
+
+        #expect(!visible.isEmpty)
+        #expect(visible.count <= OverlayTranscriptFormatter.maximumVisibleGraphemes)
+        #expect(provisional.hasSuffix(visible))
+        #expect(presenter.hostedEvidenceLargeTextTranscriptIsFullyVisible(
+            preferredBodyPointSize: 52
+        ))
+
+        presenter.setHostedAccessibilityPreferences(.init(
+            reduceMotion: false,
+            reduceTransparency: false,
+            increaseContrast: false,
+            preferredBodyPointSize: 13
+        ))
+        #expect(presenter.hostedEvidenceAccessibilityAppearanceMatchesPreferences())
+        presenter.hide()
+    }
+
+    @Test
+    @MainActor
+    func terminalStatesRemainCompactEvenWhenLivePreviewIsPreferred() {
+        let terminalStates: [OverlayState] = [
+            .transcribing,
+            .inserted,
+            .copiedOnly,
+            .failure(message: "test"),
+            .noSpeechDetected,
+        ]
+
+        for terminalState in terminalStates {
+            let presenter = WaveformOverlayPresenter()
+            presenter.setLiveTranscriptEnabled(true)
+            presenter.show(state: .listening(handsFree: false, elapsedSeconds: 0))
+            presenter.show(state: terminalState)
+
+            #expect(presenter.hostedEvidenceTerminalPresentationIsCompact())
+            #expect(presenter.hostedEvidenceTextSurfacesAreEmpty())
+            presenter.hide()
+        }
+    }
+
+    @Test
+    func presenterCanReleaseItsLastReferenceAwayFromTheMainActor() async {
+        let owner = OverlayPresenterReleaseOwner()
+        await owner.acquirePresenter()
+        await owner.releasePresenter()
+
+        await MainActor.run { }
+    }
+    #endif
 
     private func makeSession() -> LiveTranscriptionSession {
         LiveTranscriptionSession(
@@ -254,3 +425,19 @@ struct OverlayPresenterPolicyTests {
         )
     }
 }
+
+#if os(macOS)
+private actor OverlayPresenterReleaseOwner {
+    private var presenter: WaveformOverlayPresenter?
+
+    func acquirePresenter() async {
+        presenter = await MainActor.run {
+            WaveformOverlayPresenter()
+        }
+    }
+
+    func releasePresenter() {
+        presenter = nil
+    }
+}
+#endif

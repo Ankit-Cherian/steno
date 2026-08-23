@@ -15,7 +15,7 @@ struct RecordingSettingsSection: View {
                     isOn: $preferences.dictation.showLiveTranscriptWhileRecording
                 )
 
-                Text("Shows local provisional words in Steno's overlay. Draft words may revise; only the final transcript is typed and saved.")
+                Text("Shows a flowing local preview in Steno's overlay. Recent words may revise or roll forward; only completed dictation is typed and saved.")
                     .font(StenoDesign.caption())
                     .foregroundStyle(StenoDesign.textSecondary)
                     .padding(.leading, StenoDesign.xxs)

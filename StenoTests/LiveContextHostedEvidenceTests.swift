@@ -856,12 +856,19 @@ private func measureOverlayLifecycleRegression(
         .noSpeechDetected,
     ]
     var retainedTextLeaks = 0
+    var controlViolations = 0
     for (index, terminal) in terminalStates.enumerated() {
         let presenter = WaveformOverlayPresenter()
         let recorder = HostedOverlayEpochRecorder()
         presenter.setHostedEvidenceHandler { recorder.record($0) }
         presenter.setLiveTranscriptEnabled(true)
         presenter.show(state: .listening(handsFree: false, elapsedSeconds: 0))
+        if !presenter.hostedEvidenceHasOneTranscriptSurface()
+            || !presenter.hostedEvidenceUsesPreferredTypography()
+            || !presenter.hostedEvidenceRecordingPresentationIsImmediateAndStatic()
+            || !presenter.hostedEvidenceTextSurfacesAreEmpty() {
+            controlViolations += 1
+        }
         let session = makeHostedLiveSession(runtimeGeneration: UInt64(index + 100))
         presenter.updateLiveTranscript(LiveTranscriptionSnapshot(
             session: session,
@@ -876,11 +883,94 @@ private func measureOverlayLifecycleRegression(
         if !presenter.hostedEvidenceTextSurfacesAreEmpty() {
             retainedTextLeaks += 1
         }
+        if !presenter.hostedEvidenceTerminalPresentationIsCompact() {
+            controlViolations += 1
+        }
         presenter.hide()
         if !presenter.hostedEvidenceTextSurfacesAreEmpty() {
             retainedTextLeaks += 1
         }
         presenter.setHostedEvidenceHandler(nil)
+    }
+
+    do {
+        let presenter = WaveformOverlayPresenter()
+        presenter.setLiveTranscriptEnabled(true)
+        presenter.show(state: .listening(handsFree: false, elapsedSeconds: 0))
+        let session = makeHostedLiveSession(runtimeGeneration: 900)
+        presenter.updateLiveTranscript(LiveTranscriptionSnapshot(
+            session: session,
+            stablePrefix: "These words ",
+            revisableTail: "flow as one sentence.",
+            lastAcceptedRevision: 1,
+            decodedAudioWatermark: 4_000,
+            emittedAtMonotonicNanos: 1_000_000
+        ))
+        if presenter.hostedEvidenceVisibleTranscript() != "These words flow as one sentence." {
+            controlViolations += 1
+        }
+        presenter.showLiveTranscriptUnavailable()
+        let forbiddenCopy = [
+            "Live preview will appear here",
+            "Listening locally",
+            "Draft",
+            "Live preview unavailable",
+            "Recording continues",
+            "final transcript remains authoritative",
+        ]
+        if !presenter.hostedEvidenceUsesCompactUnavailableShell()
+            || forbiddenCopy.contains(where: { forbidden in
+                presenter.hostedEvidenceUserFacingStrings().contains(where: {
+                    $0.localizedCaseInsensitiveContains(forbidden)
+                })
+            }) {
+            controlViolations += 1
+        }
+        presenter.hide()
+    }
+
+    do {
+        let preferredBodyPointSize: CGFloat = 52
+        let presenter = WaveformOverlayPresenter()
+        presenter.setLiveTranscriptEnabled(true)
+        presenter.setHostedAccessibilityPreferences(.init(
+            reduceMotion: true,
+            reduceTransparency: true,
+            increaseContrast: true,
+            preferredBodyPointSize: preferredBodyPointSize
+        ))
+        presenter.show(state: .listening(handsFree: true, elapsedSeconds: 0))
+        let provisional = Array(repeating: "Earlier context stays exact. ", count: 12)
+            .joined()
+            + "The newest sentence remains completely visible."
+        presenter.updateLiveTranscript(LiveTranscriptionSnapshot(
+            session: makeHostedLiveSession(runtimeGeneration: 901),
+            stablePrefix: provisional,
+            revisableTail: "",
+            lastAcceptedRevision: 1,
+            decodedAudioWatermark: 4_000,
+            emittedAtMonotonicNanos: 1_000_000
+        ))
+        let visible = presenter.hostedEvidenceVisibleTranscript()
+        if visible.isEmpty
+            || !provisional.hasSuffix(visible)
+            || !presenter.hostedEvidenceLargeTextTranscriptIsFullyVisible(
+                preferredBodyPointSize: preferredBodyPointSize
+            )
+            || !presenter.hostedEvidenceAccessibilityAppearanceMatchesPreferences() {
+            controlViolations += 1
+        }
+
+        presenter.setHostedAccessibilityPreferences(.init(
+            reduceMotion: false,
+            reduceTransparency: false,
+            increaseContrast: false,
+            preferredBodyPointSize: 13
+        ))
+        if !presenter.hostedEvidenceAccessibilityAppearanceMatchesPreferences() {
+            controlViolations += 1
+        }
+        presenter.hide()
     }
 
     let presenter = WaveformOverlayPresenter()
@@ -931,7 +1021,9 @@ private func measureOverlayLifecycleRegression(
         }
     }
     try await Task.sleep(for: .milliseconds(500))
-    var controlViolations = presenter.hostedEvidenceControlsMatchListeningState() ? 0 : 1
+    if !presenter.hostedEvidenceControlsMatchListeningState() {
+        controlViolations += 1
+    }
     if recorder.rendered.contains(where: {
         $0.sessionID == oldSession.sessionID && $0.revision == 2
     }) {

@@ -393,7 +393,7 @@ struct OnboardingView: View {
 
             VStack(alignment: .leading, spacing: StenoDesign.md) {
                 tipRow(number: "1", text: "Hold Option to dictate (press-to-talk)")
-                tipRow(number: "2", text: "Optionally enable the local live preview in Settings; draft words can change, and only the final is typed and saved")
+                tipRow(number: "2", text: "Optionally enable the flowing local preview in Settings; recent words can change or roll forward, and only completed dictation is typed and saved")
                 tipRow(number: "3", text: "Optionally let Steno use bounded nearby caret text for local spacing and capitalization")
                 tipRow(number: "4", text: "Set a hands-free toggle key in Settings")
                 tipRow(number: "5", text: "Check the History tab for past transcripts")
