@@ -110,7 +110,7 @@ The following checks are intentionally separate from automated validation and re
 - Hold `Option` to start dictation immediately, then release to transcribe.
 - Trigger hands-free mode using the configured function key (default `F18`).
 - Confirm Record, History, Insights, and Settings load correctly, including the Insights empty, loading, error, and populated states.
-- Verify the recording overlay's stable and revisable text with the live-transcript setting both on and off.
+- Verify that local preview words flow, recent sentences roll forward without an error message, and the overlay stays compact when the live-transcript setting is off.
 - Insert text into both a standard text editor and a terminal-like target.
 - Verify nearby-text continuation at sentence and mid-sentence boundaries, plus `lowercase <payload>` and `literal lowercase <text>`.
 - Verify exact-application media Pause/Play behavior with supported players, including already-paused and ambiguous-owner cases.
