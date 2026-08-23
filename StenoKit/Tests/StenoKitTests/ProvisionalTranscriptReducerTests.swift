@@ -56,6 +56,94 @@ struct ProvisionalTranscriptReducerTests {
         #expect(conflict.snapshot.provisionalText == hypotheses.last)
     }
 
+    @Test("Continuity replacement clears only provisional stability state and preserves ordering")
+    func continuityReplacementPreservesIdentityOrderingAndCounters() {
+        let session = makeSession(20)
+        var reducer = ProvisionalTranscriptReducer(
+            session: session,
+            stabilityPolicy: .init(
+                minimumAgreementNanos: 0,
+                revisableWordHoldback: 1
+            )
+        )
+        _ = reducer.reduce(
+            event(
+                session: session,
+                revision: 10,
+                watermark: 1_000,
+                nanos: 10_000,
+                text: "alpha beta gamma delta"
+            )
+        )
+        _ = reducer.reduce(
+            event(
+                session: session,
+                revision: 11,
+                watermark: 2_000,
+                nanos: 20_000,
+                text: "alpha beta gamma delta"
+            )
+        )
+
+        let before = reducer.snapshot
+        #expect(!before.stablePrefix.isEmpty)
+        #expect(before.continuityEpoch == 0)
+
+        var rejectedCandidate = reducer
+        rejectedCandidate.beginContinuityWindowReplacement()
+        #expect(rejectedCandidate.snapshot.session == before.session)
+        #expect(rejectedCandidate.snapshot.stablePrefix.isEmpty)
+        #expect(rejectedCandidate.snapshot.revisableTail.isEmpty)
+        #expect(rejectedCandidate.snapshot.lastAcceptedRevision == before.lastAcceptedRevision)
+        #expect(rejectedCandidate.snapshot.decodedAudioWatermark == before.decodedAudioWatermark)
+        #expect(rejectedCandidate.snapshot.emittedAtMonotonicNanos == before.emittedAtMonotonicNanos)
+        #expect(rejectedCandidate.snapshot.continuityEpoch == 1)
+        #expect(
+            rejectedCandidate.snapshot.counters.receivedEvents
+                == before.counters.receivedEvents
+        )
+        #expect(
+            rejectedCandidate.snapshot.counters.acceptedHypotheses
+                == before.counters.acceptedHypotheses
+        )
+        #expect(
+            rejectedCandidate.snapshot.counters.stablePrefixPromotions
+                == before.counters.stablePrefixPromotions
+        )
+        #expect(rejectedCandidate.snapshot.counters.continuityWindowResets == 1)
+
+        let duplicate = rejectedCandidate.reduce(
+            event(
+                session: session,
+                revision: 11,
+                watermark: 2_001,
+                nanos: 20_001,
+                text: "replacement must not bypass ordering"
+            )
+        )
+        #expect(duplicate.outcome == .rejected(.duplicateRevision))
+        #expect(reducer.snapshot == before)
+
+        var acceptedCandidate = reducer
+        acceptedCandidate.beginContinuityWindowReplacement()
+        let replacement = acceptedCandidate.reduce(
+            event(
+                session: session,
+                revision: 12,
+                watermark: 3_000,
+                nanos: 30_000,
+                text: "replacement window keeps flowing"
+            )
+        )
+        #expect(replacement.outcome == .accepted)
+        #expect(replacement.snapshot.displayText == "replacement window keeps flowing")
+        #expect(replacement.snapshot.continuityEpoch == 1)
+        #expect(replacement.snapshot.counters.continuityWindowResets == 1)
+        #expect(replacement.snapshot.lastAcceptedRevision == 12)
+        #expect(replacement.snapshot.decodedAudioWatermark == 3_000)
+        #expect(replacement.snapshot.emittedAtMonotonicNanos == 30_000)
+    }
+
     @Test("Each accepted hypothesis is a full snapshot independent of a 4 Hz renderer")
     func fullSnapshotsAreNotCadenceThrottled() {
         let session = makeSession(2)

@@ -540,6 +540,11 @@ private actor SnapshotRecorder {
     func append(_ snapshot: LiveTranscriptionSnapshot) { snapshots.append(snapshot) }
 }
 
+private actor LiveUnavailableRecorder {
+    private(set) var reasons: [LiveTranscriptUnavailableReason] = []
+    func append(_ reason: LiveTranscriptUnavailableReason) { reasons.append(reason) }
+}
+
 private actor CoordinatorAsyncGate {
     private var started = false
     private var released = false
@@ -841,26 +846,177 @@ func cumulativeHypothesisAssemblerHandlesUnicodeAndPunctuation() {
     )
 }
 
-@Test("Cumulative hypothesis assembler fails closed on unprovable overlap")
-func cumulativeHypothesisAssemblerRejectsNoOverlap() {
+@Test("Cumulative hypothesis assembler starts a replacement window when overlap is unprovable")
+func cumulativeHypothesisAssemblerReplacesNoOverlap() {
     var assembler = LiveCumulativeHypothesisAssembler()
     _ = assembler.assemble(
         rollingText: "Alpha beta gamma delta epsilon zeta eta theta",
         stablePrefix: ""
     )
+    let replacement = "Completely unrelated rolling decoder output"
     #expect(
         assembler.assemble(
-            rollingText: "Completely unrelated rolling decoder output",
+            rollingText: replacement,
             stablePrefix: "Alpha beta gamma "
-        ) == .unavailable
+        ) == .replacementWindow(
+            text: replacement,
+            reason: .noProvableOverlap
+        )
+    )
+    #expect(assembler.cumulativeText == replacement)
+}
+
+@Test("Cumulative hypothesis assembler rolls over before cumulative text exceeds its bound")
+func cumulativeHypothesisAssemblerReplacesAtCumulativeBound() {
+    var assembler = LiveCumulativeHypothesisAssembler()
+    let overlap = "alpha beta gamma delta epsilon"
+    let headByteCount = LiveCumulativeHypothesisAssembler.maximumUTF8Bytes
+        - overlap.utf8.count
+        - 1
+    let first = String(repeating: "x", count: headByteCount) + " " + overlap
+    #expect(first.utf8.count == LiveCumulativeHypothesisAssembler.maximumUTF8Bytes)
+    #expect(assembler.assemble(rollingText: first, stablePrefix: "") == .accepted(first))
+
+    let rolling = overlap + " " + String(repeating: "y", count: 128)
+    #expect(
+        assembler.assemble(
+            rollingText: rolling,
+            stablePrefix: String(first.prefix(32))
+        ) == .replacementWindow(
+            text: rolling,
+            reason: .cumulativeLimitReached
+        )
+    )
+    #expect(assembler.cumulativeText == rolling)
+}
+
+@Test("Rolling decoder revisions clear older preview text and keep the live session flowing")
+func liveCoordinatorRollsPreviewWindowWithoutBecomingUnavailable() async throws {
+    let url = try makeCoordinatorWAV(sampleCount: 120_000)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let trace = CoordinatorTrace()
+    let firstWindow = "The launch plan is ready, and the design team will review the latest build before the meeting."
+    let revisedWindow = "Design teams will review this latest build before Monday's meeting, then we will share the final notes."
+    let nextWindow = "After lunch, customer research will shape the revised onboarding sequence and the release checklist."
+    let newestWindow = "Tomorrow morning, the team will publish the polished build and confirm every remaining acceptance item."
+    let finalText = "The launch plan is ready, and the design team will review the latest build before Monday's meeting, then we will share the final notes."
+    let engine = LiveCoordinatorEngine(
+        trace: trace,
+        provisionalTextSequence: [
+            firstWindow,
+            firstWindow,
+            revisedWindow,
+            revisedWindow,
+            nextWindow,
+            nextWindow,
+            newestWindow,
+        ],
+        finalText: finalText
+    )
+    let snapshots = SnapshotRecorder()
+    let unavailable = LiveUnavailableRecorder()
+    let insertion = CoordinatorInsertion()
+    let coordinator = SessionCoordinator(
+        captureService: LiveCoordinatorCapture(url: url, trace: trace),
+        transcriptionEngine: engine,
+        cleanupEngine: CoordinatorCleanup(),
+        insertionService: insertion,
+        historyStore: CoordinatorHistory(),
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService(),
+        liveSnapshotHandler: { await snapshots.append($0) },
+        liveUnavailableHandler: { _, reason in await unavailable.append(reason) }
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(
+        appContext: .unknown,
+        options: SessionStartOptions(livePreviewEnabled: true)
+    )
+
+    #expect(await waitUntil {
+        await snapshots.snapshots.contains { $0.displayText == newestWindow }
+    })
+    #expect(await unavailable.reasons.isEmpty)
+    let emittedSnapshots = await snapshots.snapshots
+    let firstRollover = try #require(
+        emittedSnapshots.first { $0.displayText == revisedWindow }
+    )
+    let secondRollover = try #require(
+        emittedSnapshots.first { $0.displayText == nextWindow }
+    )
+    let thirdRollover = try #require(
+        emittedSnapshots.first { $0.displayText == newestWindow }
+    )
+    #expect(firstRollover.continuityEpoch == 1)
+    #expect(firstRollover.counters.continuityWindowResets == 1)
+    #expect(secondRollover.continuityEpoch == 2)
+    #expect(secondRollover.counters.continuityWindowResets == 2)
+    #expect(thirdRollover.continuityEpoch == 3)
+    #expect(thirdRollover.counters.continuityWindowResets == 3)
+
+    let result = try await coordinator.stopPressToTalk(sessionID: sessionID)
+    #expect(result.status == .inserted)
+    #expect(await insertion.texts == [finalText])
+    #expect(await engine.finishCalls == 1)
+    #expect(await engine.transcribeCalls == 0)
+    #expect(await unavailable.reasons.isEmpty)
+}
+
+@Test("Cumulative hypothesis assembler hard-fails invalid or oversized raw windows")
+func cumulativeHypothesisAssemblerRejectsInvalidRawWindows() {
+    var assembler = LiveCumulativeHypothesisAssembler()
+    let oversized = String(repeating: "x", count: LiveCumulativeHypothesisAssembler.maximumUTF8Bytes + 1)
+    #expect(
+        assembler.assemble(rollingText: " \n\t", stablePrefix: "")
+            == .unavailable(reason: .invalidRollingWindow)
+    )
+    #expect(
+        assembler.assemble(rollingText: oversized, stablePrefix: "")
+            == .unavailable(reason: .oversizedRollingWindow)
     )
 }
 
-@Test("Cumulative hypothesis assembler fails closed at its memory bound")
-func cumulativeHypothesisAssemblerEnforcesMemoryBound() {
-    var assembler = LiveCumulativeHypothesisAssembler()
-    let oversized = String(repeating: "x", count: LiveCumulativeHypothesisAssembler.maximumUTF8Bytes + 1)
-    #expect(assembler.assemble(rollingText: oversized, stablePrefix: "") == .unavailable)
+@Test("Oversized live hypotheses still fail preview and preserve exactly-once final insertion")
+func liveCoordinatorHardFailsOversizedRawWindow() async throws {
+    let url = try makeCoordinatorWAV(sampleCount: 120_000)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let trace = CoordinatorTrace()
+    let finalText = "Authoritative final after preview failure"
+    let engine = LiveCoordinatorEngine(
+        trace: trace,
+        provisionalText: String(
+            repeating: "x",
+            count: LiveCumulativeHypothesisAssembler.maximumUTF8Bytes + 1
+        ),
+        finalText: finalText
+    )
+    let unavailable = LiveUnavailableRecorder()
+    let insertion = CoordinatorInsertion()
+    let coordinator = SessionCoordinator(
+        captureService: LiveCoordinatorCapture(url: url, trace: trace),
+        transcriptionEngine: engine,
+        cleanupEngine: CoordinatorCleanup(),
+        insertionService: insertion,
+        historyStore: CoordinatorHistory(),
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService(),
+        liveUnavailableHandler: { _, reason in await unavailable.append(reason) }
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(
+        appContext: .unknown,
+        options: SessionStartOptions(livePreviewEnabled: true)
+    )
+    #expect(await waitUntil { await unavailable.reasons == [.streamFailed] })
+
+    let result = try await coordinator.stopPressToTalk(sessionID: sessionID)
+    #expect(result.status == .inserted)
+    #expect(await unavailable.reasons == [.streamFailed])
+    #expect(await insertion.texts == [finalText])
+    #expect(await engine.finishCalls == 1)
+    #expect(await engine.transcribeCalls == 0)
 }
 
 @Test("Live coordinator captures first, isolates partials, and finishes exactly once")

@@ -1,18 +1,33 @@
 import Foundation
 
+enum LiveCumulativeHypothesisReplacementReason: Sendable, Equatable {
+    case noProvableOverlap
+    case cumulativeLimitReached
+}
+
+enum LiveCumulativeHypothesisFailureReason: Sendable, Equatable {
+    case invalidRollingWindow
+    case oversizedRollingWindow
+}
+
 enum LiveCumulativeHypothesisAssembly: Sendable, Equatable {
     case accepted(String)
-    case unavailable
+    case replacementWindow(
+        text: String,
+        reason: LiveCumulativeHypothesisReplacementReason
+    )
+    case unavailable(reason: LiveCumulativeHypothesisFailureReason)
 }
 
 private enum LiveHypothesisAssemblyError: Error {
-    case unprovableWindowShift
+    case unavailable(LiveCumulativeHypothesisFailureReason)
 }
 
-/// Bounded, fail-closed reconstruction for a decoder whose raw hypothesis is
-/// a rolling window. It accepts ordinary full-hypothesis revisions while they
-/// retain the reducer's stable prefix. Once that prefix falls out of the raw
-/// window, it stitches only through a strong exact overlap at text boundaries.
+/// Bounded reconstruction for a decoder whose raw hypothesis is a rolling
+/// window. It accepts ordinary revisions while they retain the reducer's stable
+/// prefix, stitches only through a strong exact overlap at text boundaries,
+/// and explicitly starts a replacement window when safe continuity is no
+/// longer provable. Invalid or oversized raw input remains a hard failure.
 struct LiveCumulativeHypothesisAssembler: Sendable {
     static let maximumUTF8Bytes = 16 * 1_024
     private static let minimumOverlapGraphemes = 24
@@ -24,14 +39,13 @@ struct LiveCumulativeHypothesisAssembler: Sendable {
         rollingText: String,
         stablePrefix: String
     ) -> LiveCumulativeHypothesisAssembly {
-        guard !rollingText.isEmpty,
-              rollingText.utf8.count <= Self.maximumUTF8Bytes else {
-            return .unavailable
+        guard rollingText.contains(where: { !$0.isWhitespace }) else {
+            return .unavailable(reason: .invalidRollingWindow)
+        }
+        guard rollingText.utf8.count <= Self.maximumUTF8Bytes else {
+            return .unavailable(reason: .oversizedRollingWindow)
         }
         if cumulativeText.isEmpty || stablePrefix.isEmpty || rollingText.hasPrefix(stablePrefix) {
-            guard rollingText.utf8.count <= Self.maximumUTF8Bytes else {
-                return .unavailable
-            }
             cumulativeText = rollingText
             return .accepted(rollingText)
         }
@@ -40,12 +54,26 @@ struct LiveCumulativeHypothesisAssembler: Sendable {
             cumulative: cumulativeText,
             rolling: rollingText
         ) else {
-            return .unavailable
+            cumulativeText = rollingText
+            return .replacementWindow(
+                text: rollingText,
+                reason: .noProvableOverlap
+            )
         }
         let candidate = cumulativeText + rollingText[overlap...]
-        guard candidate.hasPrefix(stablePrefix),
-              candidate.utf8.count <= Self.maximumUTF8Bytes else {
-            return .unavailable
+        guard candidate.hasPrefix(stablePrefix) else {
+            cumulativeText = rollingText
+            return .replacementWindow(
+                text: rollingText,
+                reason: .noProvableOverlap
+            )
+        }
+        guard candidate.utf8.count <= Self.maximumUTF8Bytes else {
+            cumulativeText = rollingText
+            return .replacementWindow(
+                text: rollingText,
+                reason: .cumulativeLimitReached
+            )
         }
         cumulativeText = candidate
         return .accepted(candidate)
@@ -1069,14 +1097,19 @@ public actor SessionCoordinator {
 
             var candidateAssembler = current.hypothesisAssembler
             let assembledText: String
+            let replacesContinuityWindow: Bool
             switch candidateAssembler.assemble(
                 rollingText: received.fullHypothesisText,
                 stablePrefix: current.reducer.snapshot.stablePrefix
             ) {
             case .accepted(let text):
                 assembledText = text
-            case .unavailable:
-                throw LiveHypothesisAssemblyError.unprovableWindowShift
+                replacesContinuityWindow = false
+            case .replacementWindow(let text, _):
+                assembledText = text
+                replacesContinuityWindow = true
+            case .unavailable(let reason):
+                throw LiveHypothesisAssemblyError.unavailable(reason)
             }
             let event = LiveTranscriptionEvent(
                 kind: received.kind,
@@ -1088,10 +1121,17 @@ public actor SessionCoordinator {
                 speechEvidence: received.speechEvidence
             )
             var candidateReducer = current.reducer
+            if replacesContinuityWindow {
+                candidateReducer.beginContinuityWindowReplacement()
+            }
             let reduction = candidateReducer.reduce(event)
-            current.reducer = candidateReducer
             if reduction.outcome == .accepted {
+                current.reducer = candidateReducer
                 current.hypothesisAssembler = candidateAssembler
+            } else if !replacesContinuityWindow {
+                // Preserve existing rejection telemetry without committing a
+                // speculative continuity reset.
+                current.reducer = candidateReducer
             }
             current.hypothesisTask = nil
             activeSessions[sessionID]?.livePipeline = current
