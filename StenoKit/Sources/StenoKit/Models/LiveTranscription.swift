@@ -170,6 +170,7 @@ public struct LiveTranscriptionCounters: Sendable, Equatable {
     public internal(set) var suppressedEmptyHypotheses: UInt64
     public internal(set) var suppressedNoSpeechHypotheses: UInt64
     public internal(set) var stablePrefixPromotions: UInt64
+    public internal(set) var continuityWindowResets: UInt64
     public internal(set) var authoritativeFinalTransitions: UInt64
     public internal(set) var cancellationTransitions: UInt64
     public internal(set) var runtimeUnloadTransitions: UInt64
@@ -181,6 +182,7 @@ public struct LiveTranscriptionCounters: Sendable, Equatable {
         suppressedEmptyHypotheses: UInt64 = 0,
         suppressedNoSpeechHypotheses: UInt64 = 0,
         stablePrefixPromotions: UInt64 = 0,
+        continuityWindowResets: UInt64 = 0,
         authoritativeFinalTransitions: UInt64 = 0,
         cancellationTransitions: UInt64 = 0,
         runtimeUnloadTransitions: UInt64 = 0
@@ -191,6 +193,7 @@ public struct LiveTranscriptionCounters: Sendable, Equatable {
         self.suppressedEmptyHypotheses = suppressedEmptyHypotheses
         self.suppressedNoSpeechHypotheses = suppressedNoSpeechHypotheses
         self.stablePrefixPromotions = stablePrefixPromotions
+        self.continuityWindowResets = continuityWindowResets
         self.authoritativeFinalTransitions = authoritativeFinalTransitions
         self.cancellationTransitions = cancellationTransitions
         self.runtimeUnloadTransitions = runtimeUnloadTransitions
@@ -211,6 +214,9 @@ public struct LiveTranscriptionSnapshot: Sendable, Equatable {
     public let lastAcceptedRevision: UInt64?
     public let decodedAudioWatermark: UInt64?
     public let emittedAtMonotonicNanos: UInt64?
+    /// Increments when a bounded rolling decoder starts a new provisional
+    /// display window without ending the live runtime session.
+    public let continuityEpoch: UInt64
     public let counters: LiveTranscriptionCounters
 
     public var provisionalText: String {
@@ -241,6 +247,7 @@ public struct LiveTranscriptionSnapshot: Sendable, Equatable {
         lastAcceptedRevision: UInt64? = nil,
         decodedAudioWatermark: UInt64? = nil,
         emittedAtMonotonicNanos: UInt64? = nil,
+        continuityEpoch: UInt64 = 0,
         counters: LiveTranscriptionCounters = LiveTranscriptionCounters()
     ) {
         self.session = session
@@ -251,6 +258,7 @@ public struct LiveTranscriptionSnapshot: Sendable, Equatable {
         self.lastAcceptedRevision = lastAcceptedRevision
         self.decodedAudioWatermark = decodedAudioWatermark
         self.emittedAtMonotonicNanos = emittedAtMonotonicNanos
+        self.continuityEpoch = continuityEpoch
         self.counters = counters
     }
 }

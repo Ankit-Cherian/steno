@@ -62,6 +62,29 @@ public struct ProvisionalTranscriptReducer: Sendable {
         }
     }
 
+    /// Starts a new bounded display-continuity epoch without changing runtime
+    /// ownership or ordering. The coordinator applies this only to a candidate
+    /// reducer and commits the candidate after the same event is accepted.
+    mutating func beginContinuityWindowReplacement() {
+        guard snapshot.phase == .active else { return }
+
+        clearProvisionalWorkingState()
+        var counters = snapshot.counters
+        counters.continuityWindowResets += 1
+        snapshot = LiveTranscriptionSnapshot(
+            session: snapshot.session,
+            phase: .active,
+            stablePrefix: "",
+            revisableTail: "",
+            authoritativeFinalText: nil,
+            lastAcceptedRevision: snapshot.lastAcceptedRevision,
+            decodedAudioWatermark: snapshot.decodedAudioWatermark,
+            emittedAtMonotonicNanos: snapshot.emittedAtMonotonicNanos,
+            continuityEpoch: snapshot.continuityEpoch &+ 1,
+            counters: counters
+        )
+    }
+
     private mutating func acceptHypothesis(
         _ event: LiveTranscriptionEvent
     ) -> ProvisionalTranscriptReduction {
@@ -293,6 +316,7 @@ public struct ProvisionalTranscriptReducer: Sendable {
             lastAcceptedRevision: event.revision,
             decodedAudioWatermark: event.decodedAudioWatermark,
             emittedAtMonotonicNanos: event.emittedAtMonotonicNanos,
+            continuityEpoch: snapshot.continuityEpoch,
             counters: snapshot.counters
         )
     }
@@ -318,6 +342,7 @@ public struct ProvisionalTranscriptReducer: Sendable {
             lastAcceptedRevision: snapshot.lastAcceptedRevision,
             decodedAudioWatermark: snapshot.decodedAudioWatermark,
             emittedAtMonotonicNanos: snapshot.emittedAtMonotonicNanos,
+            continuityEpoch: snapshot.continuityEpoch,
             counters: counters
         )
     }
