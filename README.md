@@ -1,24 +1,27 @@
 # Steno
 
-Fast local dictation for Apple silicon Macs, with a planned 0.3 update in preparation.
+Fast local dictation for Apple silicon Macs, with a 1.0 candidate in development.
 
-Steno is a local-first voice-to-text app for people who want responsive dictation, reliable insertion, and conservative cleanup without shipping their audio to a hosted transcription service. The planned 0.3 candidate adds local Insights and a retained Whisper runtime while preserving a command-line fallback.
+Steno is a local-first voice-to-text app for people who want responsive dictation, reliable insertion, and conservative cleanup without shipping their audio to a hosted transcription service. The unreleased 1.0 candidate adds local Insights and a retained Whisper runtime while preserving a command-line fallback.
 
 [![Swift Tests](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml)
 
 ## Download
 
-Download Steno v0.2.1:
+The latest public release is Steno v0.2.0:
 
-[Download Steno-0.2.1.dmg](https://github.com/Ankit-Cherian/steno/releases/download/v0.2.1/Steno-0.2.1.dmg)
+[Download Steno-0.2.0.dmg](https://github.com/Ankit-Cherian/steno/releases/download/v0.2.0/Steno-0.2.0.dmg)
 
-This download line is intentionally unchanged during v0.3 preparation. It currently points to an unpublished `v0.2.1` release, so it is not a working-release claim; release and download-link repair are explicitly deferred. The planned 0.3 candidate has not been released, signed, notarized, or published.
+Version 1.0 is available for source review and testing only. It has not been released, signed, notarized, or published as a download.
 
 Open the DMG, drag Steno to Applications, then launch Steno from Applications. Source setup is only needed if you want to build or contribute to the app.
 
-## What Is Planned for 0.3
+## What Is New in the 1.0 Candidate
 
-- Insights becomes the fourth primary tab alongside Record, History, and Settings. It summarizes a local activity calendar, streaks, words, known dictated time, sessions, average speed, cleanup coverage, and top apps.
+- Three native design candidates cover Dictate, History, Insights, Settings, and onboarding. They share recording controls, transcript recovery, usage storage, and preference behavior; the final design selection is pending review.
+- Optional live transcription shows a bounded preview while recording. Only the completed recording supplies the final text for insertion.
+- Optional nearby-text continuation adjusts insertion spacing and conservative casing using a bounded selection snapshot from the captured editor. Nearby text never enters recognition prompts, history, or analytics.
+- Insights summarizes a local activity calendar, streaks, words, known dictated time, sessions, average speed, cleanup coverage, and top apps.
 - Insights stores per-session usage metadata such as counts, duration quality, application identifier, cleanup counts, and insertion outcome. It does not copy transcript text or audio into the analytics ledger.
 - Usage analytics persist separately from transcript history. Deleting a transcript does not delete the corresponding aggregate usage totals.
 - A private retained runtime keeps the selected Whisper model loaded between compatible dictations. If that helper fails, Steno invalidates it and uses the existing `whisper-cli` path for the request.
@@ -33,20 +36,20 @@ Open the DMG, drag Steno to Applications, then launch Steno from Applications. S
 - Global dictation controls: `Option` hold-to-talk plus a configurable hands-free toggle key
 - Local cleanup with tone, structure, conservative repair and punctuation handling, lexicon corrections, and explicit aggressive filler removal
 - Personal lexicon corrections, app-specific overrides, and text shortcuts
-- Searchable transcript history with recovery-oriented copy and paste actions
+- Searchable transcript history with transcript inspection and recovery-oriented copy actions
 - A separate local Insights ledger for activity, streak, word, time, session, speed, cleanup, and top-app summaries
 - VoiceOver-aware controls and reduced-motion-aware animation behavior
-- Floating recording overlay with waveform motion, terminal-state icons, and compact cancel controls
+- Nonactivating recording overlay with a static recording indicator, readable flowing preview, outcome icons, and a cancel control
 
 ## Validation Status
 
-The May 15 evaluation is historical evidence for the 0.2.1 candidate on one M5 Pro / 64GB / Large V3 Turbo row. It does not validate the current planned 0.3 tree or other hardware/model combinations.
+The May 15 evaluation is historical evidence for the 0.2.1 candidate on one M5 Pro / 64GB / Large V3 Turbo row. It does not validate the current unreleased 1.0 tree or other hardware/model combinations.
 
-The 0.3 preparation uses automated package tests, hosted macOS tests, an unsigned app build, generated-project/signing audits, and benchmark-report validation where applicable. Manual microphone, media-player, insertion, UI, VoiceOver, installed-app, and macOS 13 checks remain pending; signing and notarization have not been performed.
+The 1.0 preparation uses automated package tests, hosted macOS tests, an unsigned app build, generated-project/signing audits, and benchmark-report validation where applicable. Manual microphone, media-player, insertion, UI, VoiceOver, installed-app, and macOS 13 checks remain pending; signing and notarization have not been performed.
 
 ## Screenshots
 
-These are historical 0.2 product screenshots. They are not manual UI evidence for the planned 0.3 candidate.
+These are historical 0.2 product screenshots. They are not manual UI evidence for the unreleased 1.0 candidate.
 
 <table>
   <tr>
@@ -85,12 +88,12 @@ These are recommendation tiers, not blanket validation claims. Exact validated r
 - Use the configured hands-free function key to start and stop dictation without holding a modifier.
 - Let Steno route insertion by target: direct typing for standard editors, safer clipboard-oriented behavior where needed.
 - Use Settings to control cleanup tone, structure, filler removal, command handling, appearance, and engine configuration.
-- Use History to search old transcripts, recover prior text, and repaste the exact output that was inserted or copied.
+- Use History to search old transcripts, recover prior text, and copy the output for pasting where you need it.
 - Use Insights to review local usage trends without placing transcript text or audio in the analytics ledger.
 
 ## Retained Runtime
 
-The planned 0.3 runtime launches `steno-whisper-runtime` as a private child process and communicates through inherited pipes. It does not expose an HTTP server or network listener. The first retained request pays model-load cost; changing the model, VAD path, or another load identity invalidates that context and the next request reloads it. Sleep/wake recovery, memory pressure, cancellation, shutdown, or helper failure can also unload the retained context. The existing `whisper-cli` engine remains the safe fallback.
+The retained runtime launches `steno-whisper-runtime` as a private child process and communicates through inherited pipes. It does not expose an HTTP server or network listener. The first retained request pays model-load cost; changing the model, VAD path, or another load identity invalidates that context and the next request reloads it. Sleep/wake recovery, memory pressure, cancellation, shutdown, or helper failure can also unload the retained context. The existing `whisper-cli` engine remains the safe fallback.
 
 ## Release Eval
 
@@ -127,8 +130,8 @@ For the benchmark and signoff workflow details, see [docs/release/release-eval.m
 - Local setup still expects the pinned `whisper.cpp` checkout, a `build-steno` runtime, and downloaded Whisper and VAD model files
 - Release-eval validation is row-specific, not universal hardware proof
 - Production microphone behavior is broader than the current benchmark corpus
-- Cleanup is materially stronger than before, but raw repair-marker preservation is still not something to oversell as “perfect”
-- The planned 0.3 candidate still requires manual live-app checks plus distribution signing and notarization before release
+- Recognition and cleanup can still make errors; review names, numbers, negation, and other meaning-sensitive text before sharing it
+- The unreleased 1.0 candidate still requires manual live-app checks plus distribution signing and notarization before release
 
 ## Security
 

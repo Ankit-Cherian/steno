@@ -4,9 +4,9 @@ Date: 2026-04-21
 
 > **Status:** This is the dated research that informed Steno’s direct-distribution design. It is not the current release checklist. The repository now contains a distribution entitlements path and `scripts/release-dmg.sh`; current operating instructions live in `docs/release/direct-distribution.md`.
 
-## v0.3 preparation update
+## 1.0 candidate update
 
-The planned v0.3 packaging path now:
+The 1.0 candidate packaging path now:
 
 - targets Apple silicon on macOS 13 or later
 - builds the pinned `whisper.cpp` revision `764482c3175d9c3bc6089c1ec84df7d1b9537d83` with Xcode command-line tools, XcodeGen, and CMake
@@ -228,7 +228,7 @@ Then:
 
 ## Original suggested implementation order
 
-This sequence is historical. For v0.3, use the current guide and record fresh automated, signing/notarization, installation, and manual acceptance receipts separately.
+This sequence is historical. For 1.0, use the current guide and record fresh automated, signing/notarization, installation, and manual acceptance receipts separately.
 
 1. Create/install `Developer ID Application` certificate
 2. Add distribution-specific entitlements/signing path
