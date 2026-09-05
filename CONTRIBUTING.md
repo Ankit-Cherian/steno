@@ -71,7 +71,7 @@ xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=m
 
 Use that as the default automated “done” bar for substantial work. It does not prove live microphone capture, supported-player media interruption, insertion into real applications, UI appearance, VoiceOver behavior, an installed app bundle, or macOS 13 compatibility; run and report those checks separately when the change requires them.
 
-## Planned 0.3 Architecture Boundaries
+## Unreleased 1.0 Architecture Boundaries
 
 ### Retained Whisper runtime
 
@@ -79,7 +79,7 @@ Use that as the default automated “done” bar for substantial work. It does n
 
 ### Insights privacy and persistence
 
-Insights is the fourth primary app tab. Its local ledger records per-session aggregate metadata—timestamps, application identifiers, word and duration counts with provenance, cleanup counts, and insertion outcomes—not transcript text or audio. It persists independently of transcript history, so deleting History content does not delete aggregate usage totals. Keep migrations, corruption recovery, and UI copy honest about exact versus estimated metrics.
+Insights is a primary sidebar destination. Its local ledger records per-session aggregate metadata—timestamps, application identifiers, word and duration counts with provenance, cleanup counts, and insertion outcomes—not transcript text or audio. It persists independently of transcript history, so deleting History content does not delete aggregate usage totals. Keep migrations, corruption recovery, and UI copy honest about exact versus estimated metrics.
 
 ### Media and cleanup safety
 

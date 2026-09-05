@@ -9,7 +9,7 @@ Steno now has two very different benchmark paths:
 
 This document exists so contributors do not blur those two together.
 
-> **Evidence boundary for v0.3:** Existing 0.2/0.2.1 release-eval results, including the May 15, 2026 corpus work and the previously measured `m5-pro / 64GB / large-v3-turbo` row, are historical evidence. They do not establish the planned v0.3 candidate. Any v0.3 accuracy, latency, compatibility, or release-signoff claim needs a fresh run with receipts tied to the final v0.3 commit and declared corpus.
+> **Evidence boundary for 1.0:** Existing 0.2/0.2.1 release-eval results, including the May 15, 2026 corpus work and the previously measured `m5-pro / 64GB / large-v3-turbo` row, are historical evidence. They do not establish the unreleased 1.0 candidate. Any 1.0 accuracy, latency, compatibility, or release-signoff claim needs a fresh run with receipts tied to the final 1.0 commit and declared corpus.
 
 ## Smoke fixture vs release signoff
 
@@ -118,7 +118,7 @@ Rules:
 - WER and CER are error rates, so lower is better.
 - WER is the primary ASR metric for English dictation because it measures substitutions, insertions, and deletions at the word level.
 - CER is useful as a companion metric because it shows spelling/character-level cleanup that WER can hide or over-penalize.
-- Always name the baseline. In the historical Steno 0.2/0.2.1 release evidence, baseline means raw local `whisper.cpp` output before Steno cleanup. A v0.3 report must restate its own baseline and corpus rather than inheriting that wording.
+- Always name the baseline. In the historical Steno 0.2/0.2.1 release evidence, baseline means raw local `whisper.cpp` output before Steno cleanup. A 1.0 report must restate its own baseline and corpus rather than inheriting that wording.
 - Show absolute drop in percentage points and relative error reduction. Example: `22.37% -> 9.21%` is `13.16` percentage points lower and a `59%` relative WER reduction.
 - Keep corpus, hardware, model, and normalization boundaries visible near the table.
 - Do not describe WER/CER as universal product accuracy, and do not compare against other systems unless the same corpus, normalization policy, and hardware scope are used.
@@ -147,7 +147,7 @@ For the historical 0.2/0.2.1 evidence, that means:
 - it is fair to say the exact `m5-pro / 64GB / large-v3-turbo` row was validated by that named run
 - it is **not** fair to say “large-v3-turbo is validated on all high-end Apple silicon Macs”
 
-Do not carry that row forward as a current v0.3 validation without a fresh receipt tied to the v0.3 commit.
+Do not carry that row forward as a current 1.0 validation without a fresh receipt tied to the 1.0 commit.
 
 ## Interpreting `not_evaluable` gates
 
@@ -181,7 +181,7 @@ For public release notes and README copy:
 
 Automated package tests, hosted macOS tests, report validation, zero-regression validation, and an unsigned Xcode build prove only the code paths and artifacts they exercise. They do not prove live microphone capture, exact-app media interruption and resume behavior, insertion into real target apps, installed-app behavior, UI/VoiceOver quality, signing/notarization, or macOS 13 compatibility.
 
-For the planned v0.3 candidate, those manual and distribution checks remain pending until separately performed and recorded. Updating this document is not a release-signoff run.
+For the unreleased 1.0 candidate, those manual and distribution checks remain pending until separately performed and recorded. Updating this document is not a release-signoff run.
 
 ## Safe wording boundaries
 
@@ -196,4 +196,4 @@ Not safe:
 - “All Pro/Max Macs are validated.”
 - “Release eval proves microphone behavior everywhere.”
 - “Command passthrough is fully benchmark-validated.”
-- “The historical May 15, 2026 results validate the v0.3 candidate.”
+- “The historical May 15, 2026 results validate the 1.0 candidate.”

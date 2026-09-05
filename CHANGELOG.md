@@ -7,20 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-_Planned version: 0.3.0._
+_Target version: 1.0.0. Unreleased; review and personal acceptance are pending._
 
 ### Added
+- Added an optional live transcript that follows recording in a nonactivating overlay while preserving the completed recording as the source of final insertion.
+- Added opt-in, bounded nearby-text continuation for insertion spacing and conservative casing, with editor identity revalidation and no persistence of surrounding text.
 - Added Insights with a six-month activity calendar and private, on-device summaries for words, known recording time, estimated speaking speed, completed sessions, streaks, and frequently used applications. The per-session metadata is stored separately from transcript history and contains no transcript text or audio.
 - Added a retained local Whisper context that communicates with a bundled helper over inherited process pipes, without opening a network listener.
 
 ### Changed
-- Retained transcription falls back to the existing local `whisper-cli` path when the helper is unavailable, fails, is cancelled, or must be reloaded after model, VAD, runtime, sleep/wake, or memory-state changes.
+- Rebuilt Dictate, History, Insights, Settings, and onboarding with three native design candidates for review, consistent navigation, readable transcripts, and persistent settings controls.
+- Removed simulated audio meters and misleading shortcut hints; recording controls reflect the actual configured shortcuts and enabled modes.
+- Retained transcription falls back to the existing local `whisper-cli` path when the helper is unavailable or fails. Cancellation stops the request; model, VAD, runtime, sleep/wake, or memory-state changes invalidate the retained context for a subsequent reload.
 - Media interruption now sends semantic Pause and Play commands only to the exact application and process lineage that Steno verified was producing audio. Ambiguous ownership fails closed, and Steno never uses a global play/pause toggle fallback.
 - Local cleanup is conservative by default: ambiguous phrases such as `question mark`, `open paren`, and `slash command` remain literal. Repair handling, punctuation preservation, and user lexicon replacements avoid inferring dictated-symbol intent; only explicitly selected Aggressive cleanup performs narrow filler removal.
 - Benchmark results now carry reproducible input and runtime identity, including manifest, model, VAD, lexicon, and executable provenance.
 - Direct-distribution builds package the retained-runtime helper and validate its local `whisper.cpp` dependency set alongside the app.
 
 ### Fixed
+- Skip provisional recognition when voice activity detection confirms that newly appended audio is silent; final transcription remains unchanged.
 - Hardened capture start, cancellation, overlap, rapid restart, and shutdown so stale asynchronous work cannot resume media or modify a newer dictation session.
 - Improved session teardown and insertion ownership so recording resources close promptly and completed text is inserted or persisted at most once through the active session.
 - Kept media that was already paused unchanged and resumed only media that Steno itself verified it paused.
@@ -29,7 +34,7 @@ _Planned version: 0.3.0._
 - Expanded automated package and hosted macOS coverage for retained-runtime lifecycle and fallback behavior, exact-process media ownership, cancellation and rapid-restart races, conservative cleanup, insertion ownership, helper packaging, and dependency validation.
 
 ### Compatibility
-- Version 0.3.0 supports Apple silicon Macs running macOS 13 or later. Intel Macs and earlier macOS versions are not supported.
+- The 1.0 candidate targets Apple silicon Macs running macOS 13 or later. Minimum-version runtime and distribution acceptance remain pending; Intel Macs are not supported.
 
 ## [0.2.0] - 2026-04-21
 

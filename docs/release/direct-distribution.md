@@ -2,7 +2,7 @@
 
 This document covers the repo’s direct-distribution path for Steno outside the Mac App Store.
 
-> **v0.3 preparation status:** The repository contains the packaging mechanics described below, including the retained local runtime helper. This preparation does not produce a public release: no Developer ID signing, notarization, stapling, upload, download-link change, installed-app check, or manual macOS acceptance run is claimed here.
+> **1.0 candidate status:** The repository contains the packaging mechanics described below, including the retained local runtime helper. This preparation does not produce a public release: no Developer ID signing, notarization, stapling, upload, download-link change, installed-app check, or manual macOS acceptance run is claimed here.
 
 ## Goal
 
@@ -165,7 +165,7 @@ After a real signed run, validate the exact generated artifact (substitute the v
 
 ### Pending release and manual proof
 
-Before calling a v0.3 artifact releasable, separately complete and record:
+Before calling a 1.0 artifact releasable, separately complete and record:
 
 - Developer ID signing, notarization, stapling, and Gatekeeper validation
 - installation and first-launch checks from the produced DMG on supported Apple-silicon Macs
@@ -175,9 +175,9 @@ Before calling a v0.3 artifact releasable, separately complete and record:
 
 ## Current blocker
 
-For the planned v0.3 candidate, the packaging path exists, but a public notarized DMG is not established by this preparation. Release time still requires verified credentials and fresh receipts:
+For the unreleased 1.0 candidate, the packaging path exists, but a public notarized DMG is not established by this preparation. Release time still requires verified credentials and fresh receipts:
 
 - an available `Developer ID Application` certificate must be verified
 - an available `notarytool` keychain profile must be verified
 
-Once those exist, `scripts/release-dmg.sh` is intended to be the end-to-end packaging path. This document does not claim that a v0.3 DMG has been signed, notarized, uploaded, or made available for download.
+Once those exist, `scripts/release-dmg.sh` is intended to be the end-to-end packaging path. This document does not claim that a 1.0 DMG has been signed, notarized, uploaded, or made available for download.

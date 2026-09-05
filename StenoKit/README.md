@@ -54,7 +54,7 @@ Key package interfaces include:
 - `StyleProfileService`
 - `SnippetService`
 
-## Planned 0.3 Package Changes
+## Unreleased 1.0 Package Changes
 
 - Retained local Whisper context between compatible dictations, using a private inherited-pipe helper with no HTTP server or network listener
 - Versioned retained-helper streaming for bounded provisional hypotheses, cooperative cancellation, final priority, and canonical PCM count/digest validation
@@ -129,7 +129,7 @@ The host app in `Steno/` still owns:
 - app lifecycle wiring
 - menu bar integration
 - final macOS presentation polish
-- the Record, History, Insights, and Settings tab presentation
+- the Dictate, History, Insights, and Settings navigation
 
 `StenoKit` intentionally keeps those concerns out of the package so the runtime and evaluation stack remain testable and reusable.
 
