@@ -55,11 +55,12 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     #if DEBUG
     private var hostedEvidenceHandler: ((WaveformOverlayHostedEvidenceEvent) -> Void)?
     private var hostedAccessibilityPreferencesOverride: OverlayAccessibilityPreferences?
+    private var rendersOffscreen = false
     #endif
 
     // MARK: - Constants
 
-    private static let compactCornerRadius: CGFloat = 26
+    private static let compactCornerRadius: CGFloat = 18
     private static let liveCornerRadius: CGFloat = 18
     private static let barCount = 5
     private static let barWidth: CGFloat = 3.5
@@ -140,7 +141,8 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
 
     // MARK: - Lifecycle
 
-    public init() {
+    public init(observeAccessibilityChanges: Bool = true) {
+        guard observeAccessibilityChanges else { return }
         accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
             object: nil,
@@ -517,9 +519,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
                 height: geometry.statusFrame.height
             )
             transcriptField?.frame = NSRect(
-                x: transcriptLeading,
+                x: Self.barClusterX,
                 y: geometry.transcriptFrame.minY,
-                width: textWidth,
+                width: max(0, size.width - 2 * Self.barClusterX),
                 height: geometry.transcriptFrame.height
             )
         } else {
@@ -776,6 +778,31 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             transcriptField?.attributedStringValue.string ?? "",
             transcriptField?.accessibilityValue() as? String ?? "",
         ].allSatisfy(\.isEmpty)
+    }
+
+    @MainActor
+    func hostedEvidenceRenderPNG(
+        state: OverlayState,
+        snapshot: LiveTranscriptionSnapshot? = nil
+    ) -> Data? {
+        // Render only this presenter's view tree. Never order a panel or
+        // announce synthetic content while generating visual fixtures.
+        rendersOffscreen = true
+        defer {
+            hide()
+            rendersOffscreen = false
+        }
+        show(state: state)
+        if let snapshot {
+            updateLiveTranscript(snapshot)
+            renderPendingLiveSnapshot()
+        }
+        stopTimer()
+        guard let content = contentBackground else { return nil }
+        content.layoutSubtreeIfNeeded()
+        guard let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return nil }
+        content.cacheDisplay(in: content.bounds, to: bitmap)
+        return bitmap.representation(using: .png, properties: [:])
     }
 
     @MainActor
@@ -1078,6 +1105,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
 
     @MainActor
     private func presentWindow() {
+        #if DEBUG
+        guard !rendersOffscreen else { return }
+        #endif
         guard let window else { return }
         window.alphaValue = 1
         window.orderFrontRegardless()
@@ -1146,6 +1176,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
 
     @MainActor
     private func announceOnce(_ announcement: OverlayAnnouncement, message: String) {
+        #if DEBUG
+        guard !rendersOffscreen else { return }
+        #endif
         guard announcementGate.accept(announcement),
               lastAnnouncement != announcement
         else { return }

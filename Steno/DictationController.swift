@@ -230,6 +230,13 @@ private final class CaptureStartHandoff: @unchecked Sendable {
 
 @MainActor
 final class DictationController: ObservableObject {
+    /// Preview controllers never access capture, permissions, personal storage, or system integrations.
+    let isIsolatedPreview: Bool
+    private let systemIntegrationsEnabled: Bool
+    private let appContextProvider: @MainActor () -> AppContext
+    private let targetDisplayPointProvider: (@MainActor () -> CGPoint)?
+    private let workspaceNotificationCenter: NotificationCenter?
+
     @Published var status: String = "Idle"
     @Published var lastTranscript: String = ""
     @Published var lastError: String = ""
@@ -253,7 +260,7 @@ final class DictationController: ObservableObject {
     @Published var isLoadingUsageAnalytics = false
 
     private let captureService = MacAudioCaptureService()
-    private let clipboardService: MacClipboardService
+    private let clipboardService: any ClipboardService
     private let historyStore: HistoryStore
     private let usageAnalyticsStore: any UsageAnalyticsStoreServicing
     private let legacyHistoryURL: URL
@@ -313,7 +320,7 @@ final class DictationController: ObservableObject {
 
     init(
         hotkey: any HotkeyService = MacHotkeyMonitor(),
-        clipboardService: MacClipboardService = MacClipboardService(),
+        clipboardService: any ClipboardService = MacClipboardService(),
         overlay: WaveformOverlayPresenter = WaveformOverlayPresenter(),
         mediaInterruption: MediaInterruptionService = MacMediaInterruptionService(),
         preferencesStore: AppPreferencesStore = AppPreferencesStore(),
@@ -326,8 +333,19 @@ final class DictationController: ObservableObject {
         overlayDismissAction: (@MainActor @Sendable () -> Void)? = nil,
         historyStore: HistoryStore? = nil,
         usageAnalyticsStore: (any UsageAnalyticsStoreServicing)? = nil,
-        legacyHistoryURL: URL? = nil
+        legacyHistoryURL: URL? = nil,
+        systemIntegrationsEnabled: Bool = true,
+        isIsolatedPreview: Bool = false,
+        appContextProvider: @escaping @MainActor () -> AppContext = { AppContextProvider.current() },
+        targetDisplayPointProvider: (@MainActor () -> CGPoint)? = nil,
+        workspaceNotificationCenter: NotificationCenter? = nil
     ) {
+        self.isIsolatedPreview = isIsolatedPreview
+        self.systemIntegrationsEnabled = systemIntegrationsEnabled
+        self.appContextProvider = appContextProvider
+        self.targetDisplayPointProvider = targetDisplayPointProvider
+        self.workspaceNotificationCenter = workspaceNotificationCenter
+            ?? (systemIntegrationsEnabled && !isIsolatedPreview ? NSWorkspace.shared.notificationCenter : nil)
         self.hotkey = hotkey
         self.clipboardService = clipboardService
         self.overlay = overlay
@@ -374,10 +392,12 @@ final class DictationController: ObservableObject {
                 self?.dismissOverlaySoon()
             }
         }
-        hotkey.start()
-        menuBar.setup(controller: self)
+        if systemIntegrationsEnabled && !isIsolatedPreview {
+            hotkey.start()
+            menuBar.setup(controller: self)
+        }
 
-        workspaceSleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        workspaceSleepObserver = self.workspaceNotificationCenter?.addObserver(
             forName: NSWorkspace.willSleepNotification,
             object: nil,
             queue: .main
@@ -386,7 +406,7 @@ final class DictationController: ObservableObject {
                 await self?.unloadRetainedRuntimeForSystemEvent()
             }
         }
-        workspaceWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        workspaceWakeObserver = self.workspaceNotificationCenter?.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
@@ -396,6 +416,7 @@ final class DictationController: ObservableObject {
             }
         }
 
+        guard systemIntegrationsEnabled, !isIsolatedPreview else { return }
         let memoryPressureSource = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical],
             queue: .main
@@ -432,11 +453,11 @@ final class DictationController: ObservableObject {
         terminationTask?.cancel()
         terminationTask = nil
         if let workspaceSleepObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(workspaceSleepObserver)
+            workspaceNotificationCenter?.removeObserver(workspaceSleepObserver)
             self.workspaceSleepObserver = nil
         }
         if let workspaceWakeObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(workspaceWakeObserver)
+            workspaceNotificationCenter?.removeObserver(workspaceWakeObserver)
             self.workspaceWakeObserver = nil
         }
         memoryPressureSource?.cancel()
@@ -529,6 +550,14 @@ final class DictationController: ObservableObject {
     }
 
     #if DEBUG
+    func stageIsolatedPreviewLifecycle(_ state: RecordingLifecycleState) {
+        guard isIsolatedPreview else { return }
+        recordingStateMachine = RecordingStateMachine(initialState: state)
+        isRecording = state == .recordingPressToTalk || state == .recordingHandsFree
+        handsFreeOn = state == .recordingHandsFree
+        recordingElapsed = isRecording ? 72 : 0
+    }
+
     func replaceCoordinatorForLifecycleTesting(
         _ replacement: any DictationSessionCoordinating
     ) {
@@ -545,7 +574,14 @@ final class DictationController: ObservableObject {
     #endif
 
     var whisperModelOptions: [WhisperModelOption] {
-        WhisperModelLibrary.installedOptions(
+        if isIsolatedPreview {
+            return WhisperModelLibrary.managedModelIDs.map {
+                WhisperModelOption(modelID: $0, source: $0 == .smallEn ? .bundled : nil,
+                    path: nil, isInstalled: $0 == .smallEn, isActive: $0 == .smallEn,
+                    isRecommended: $0 == .smallEn)
+            }
+        }
+        return WhisperModelLibrary.installedOptions(
             preferences: preferences,
             compatibilityService: compatibilityService
         )
@@ -556,6 +592,7 @@ final class DictationController: ObservableObject {
     }
 
     var currentHardwareSummary: String? {
+        if isIsolatedPreview { return "Preview device" }
         guard let hardwareProfile = WhisperCompatibilityService.currentHardwareProfile() else {
             return nil
         }
@@ -563,6 +600,7 @@ final class DictationController: ObservableObject {
     }
 
     var recommendedWhisperModelNote: String? {
+        if isIsolatedPreview { return "Sample model selection. No model is loaded in this preview." }
         guard let hardwareProfile = WhisperCompatibilityService.currentHardwareProfile(),
               let row = compatibilityService?.recommendation(for: hardwareProfile)
         else {
@@ -577,6 +615,7 @@ final class DictationController: ObservableObject {
     }
 
     func bootstrap() async {
+        guard !isIsolatedPreview else { hasBootstrapped = true; return }
         var loaded = await preferencesStore.load()
         loaded.normalize()
 
@@ -593,6 +632,7 @@ final class DictationController: ObservableObject {
     }
 
     func savePreferences() {
+        guard !isIsolatedPreview else { status = "Preview settings updated."; return }
         var snapshot = preferences
         snapshot.normalize()
         applyPreferencesLocally(snapshot)
@@ -611,6 +651,7 @@ final class DictationController: ObservableObject {
     }
 
     func applySettingsDraft(preferences draft: AppPreferences) {
+        guard !isIsolatedPreview else { preferences = draft; status = "Preview settings updated."; return }
         var snapshot = draft
         snapshot.normalize()
         applyPreferencesLocally(snapshot)
@@ -629,6 +670,7 @@ final class DictationController: ObservableObject {
     }
 
     func saveAppearance(_ appearance: AppPreferences.Appearance) {
+        guard !isIsolatedPreview else { preferences.appearance = appearance; return }
         var snapshot = preferences
         snapshot.appearance = appearance
         snapshot.normalize()
@@ -659,6 +701,7 @@ final class DictationController: ObservableObject {
     }
 
     func activateWhisperModel(_ modelID: WhisperModelID) {
+        guard !isIsolatedPreview else { return }
         guard let option = whisperModelOptions.first(where: { $0.modelID == modelID }),
               let path = option.path
         else { return }
@@ -679,6 +722,7 @@ final class DictationController: ObservableObject {
     }
 
     func downloadWhisperModel(_ modelID: WhisperModelID) {
+        guard !isIsolatedPreview else { return }
         guard activeModelDownloadID == nil else { return }
 
         activeModelDownloadID = modelID
@@ -727,6 +771,7 @@ final class DictationController: ObservableObject {
     }
 
     func requestMicrophonePermission() {
+        guard !isIsolatedPreview else { return }
         Task {
             _ = await PermissionDiagnostics.requestMicrophonePermission()
             await MainActor.run {
@@ -736,23 +781,28 @@ final class DictationController: ObservableObject {
     }
 
     func openMicrophoneSettings() {
+        guard !isIsolatedPreview else { return }
         PermissionDiagnostics.openMicrophoneSettings()
     }
 
     func openAccessibilitySettings() {
+        guard !isIsolatedPreview else { return }
         PermissionDiagnostics.openAccessibilitySettings()
     }
 
     func openInputMonitoringSettings() {
+        guard !isIsolatedPreview else { return }
         PermissionDiagnostics.openInputMonitoringSettings()
     }
 
     func requestAccessibilityPermission() {
+        guard !isIsolatedPreview else { return }
         _ = PermissionDiagnostics.requestAccessibilityPermission()
         refreshPermissionStatuses()
     }
 
     func requestInputMonitoringPermission() {
+        guard !isIsolatedPreview else { return }
         _ = PermissionDiagnostics.requestInputMonitoringPermission()
         refreshPermissionStatuses()
         Task { @MainActor in
@@ -762,10 +812,12 @@ final class DictationController: ObservableObject {
     }
 
     func revealCurrentAppInFinder() {
+        guard !isIsolatedPreview else { return }
         PermissionDiagnostics.revealCurrentAppInFinder()
     }
 
     func refreshPermissionStatuses() {
+        guard !isIsolatedPreview else { return }
         microphonePermissionStatus = PermissionDiagnostics.microphoneStatus()
         accessibilityPermissionStatus = PermissionDiagnostics.accessibilityStatus()
         inputMonitoringPermissionStatus = PermissionDiagnostics.inputMonitoringStatus()
@@ -780,6 +832,7 @@ final class DictationController: ObservableObject {
     }
 
     func pressToTalkStart() {
+        guard !isIsolatedPreview else { return }
         guard !isTearingDown else { return }
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
         if sessionCleanupStartGate.deferPressToTalkStart() {
@@ -790,6 +843,7 @@ final class DictationController: ObservableObject {
     }
 
     func pressToTalkStop() {
+        guard !isIsolatedPreview else { return }
         guard !isTearingDown else { return }
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
         if sessionCleanupStartGate.cancelDeferredPressToTalkStart() {
@@ -799,7 +853,20 @@ final class DictationController: ObservableObject {
         apply(transition: recordingStateMachine.handleOptionKeyUp())
     }
 
+    func stopRecording() {
+        guard !isIsolatedPreview, !isTearingDown else { return }
+        switch recordingStateMachine.state {
+        case .recordingPressToTalk:
+            apply(transition: recordingStateMachine.handleOptionKeyUp())
+        case .recordingHandsFree:
+            apply(transition: recordingStateMachine.handleHandsFreeToggle())
+        default:
+            break
+        }
+    }
+
     func toggleHandsFree() {
+        guard !isIsolatedPreview else { return }
         guard !isTearingDown else { return }
         if sessionCleanupStartGate.deferHandsFreeToggle() {
             status = sessionCleanupStartGate.deferredMode == .handsFree
@@ -811,11 +878,13 @@ final class DictationController: ObservableObject {
     }
 
     func cancelActiveRecording() {
+        guard !isIsolatedPreview else { return }
         guard !isTearingDown else { return }
         apply(transition: recordingStateMachine.handleCancel())
     }
 
     func pasteLastTranscript() {
+        guard !isIsolatedPreview else { return }
         Task {
             do {
                 if let entry = try await historyStore.pasteLast() {
@@ -834,6 +903,7 @@ final class DictationController: ObservableObject {
     }
 
     func deleteEntry(_ entry: TranscriptEntry) {
+        guard !isIsolatedPreview else { return }
         Task {
             do {
                 try await historyStore.delete(entryID: entry.id)
@@ -847,6 +917,7 @@ final class DictationController: ObservableObject {
     }
 
     func retryCleanup(for entry: TranscriptEntry) {
+        guard !isIsolatedPreview else { return }
         Task {
             let context = appContext(for: entry.appBundleID)
             let profile = await styleProfileService.resolve(for: context)
@@ -876,6 +947,7 @@ final class DictationController: ObservableObject {
     }
 
     func pasteEntry(_ entry: TranscriptEntry) {
+        guard !isIsolatedPreview else { return }
         Task {
             do {
                 let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
@@ -889,6 +961,7 @@ final class DictationController: ObservableObject {
     }
 
     func copyEntry(_ entry: TranscriptEntry) {
+        guard !isIsolatedPreview else { return }
         Task {
             do {
                 try await clipboardService.setString(entry.cleanText)
@@ -901,6 +974,7 @@ final class DictationController: ObservableObject {
     }
 
     func refreshHistory() async {
+        guard !isIsolatedPreview else { return }
         let all = await historyStore.recent(limit: 500)
         let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         recentEntries = all.filter { $0.createdAt >= thirtyDaysAgo }
@@ -911,6 +985,7 @@ final class DictationController: ObservableObject {
         calendar: Calendar = .current,
         forceHistoryReconciliation: Bool = false
     ) async {
+        guard !isIsolatedPreview else { return }
         let request = UsageAnalyticsRefreshRequest(
             now: now,
             calendar: calendar,
@@ -1041,7 +1116,7 @@ final class DictationController: ObservableObject {
         // Capture the lightweight app identity at keydown, then start audio.
         // Display enumeration, overlay presentation, and recording UI wait for
         // the coordinator's post-capture acknowledgement.
-        let capturedContext = AppContextProvider.current()
+        let capturedContext = appContextProvider()
         let generation = UUID()
         activeSessionGeneration = generation
         let captureHandoff = CaptureStartHandoff()
@@ -1871,6 +1946,7 @@ final class DictationController: ObservableObject {
     }
 
     private func applyLaunchAtLoginPreference(requestedPreference: Bool, userInitiated: Bool) {
+        guard systemIntegrationsEnabled else { return }
         let decision = LaunchAtLoginMutationPolicy.decision(
             currentPreference: launchAtLoginServicePreference,
             requestedPreference: requestedPreference,
@@ -1916,6 +1992,7 @@ final class DictationController: ObservableObject {
     }
 
     private func applyDockVisibility(showDockIcon: Bool) {
+        guard systemIntegrationsEnabled else { return }
         let policy: NSApplication.ActivationPolicy = showDockIcon ? .regular : .accessory
         NSApp.setActivationPolicy(policy)
     }
@@ -1957,6 +2034,7 @@ final class DictationController: ObservableObject {
     /// Selects a display from content-free frontmost-window geometry captured at
     /// session start. Window names, text, and pixels are never requested.
     private func captureStartTargetDisplayPoint() -> CGPoint {
+        if let targetDisplayPointProvider { return targetDisplayPointProvider() }
         let fallback = NSEvent.mouseLocation
         guard let processID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
               let rawWindows = CGWindowListCopyWindowInfo(

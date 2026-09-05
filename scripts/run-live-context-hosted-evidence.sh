@@ -39,6 +39,10 @@ cleanup() {
 trap cleanup EXIT
 
 SOURCE_PATHS=(
+  "Steno/StenoApp.swift"
+  "Steno/PreviewSupport.swift"
+  "Steno/AppPreferencesStore.swift"
+  "StenoTests/IsolatedControllerFixture.swift"
   "Steno/DictationController.swift"
   "StenoKit/Sources/StenoKit/Services/SessionCoordinator.swift"
   "StenoKit/Sources/StenoKit/Services/CanonicalWAVFrameStreamer.swift"

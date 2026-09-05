@@ -3,215 +3,154 @@ import SwiftUI
 import StenoKit
 
 enum StenoTab: String, CaseIterable {
-    case record = "Record"
+    case record = "Dictate"
     case history = "History"
     case insights = "Insights"
     case settings = "Settings"
+
+    var shortcut: KeyEquivalent {
+        switch self {
+        case .record: return "1"
+        case .history: return "2"
+        case .insights: return "3"
+        case .settings: return ","
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .record: return "mic"
+        case .history: return "text.alignleft"
+        case .insights: return "chart.bar"
+        case .settings: return "gearshape"
+        }
+    }
 }
 
 struct ContentView: View {
     @EnvironmentObject private var controller: DictationController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var selectedTab: StenoTab
+    @State private var selectedSettingsSection: SettingsSection
 
-    @State private var selectedTab: StenoTab = .record
-    @State private var selectedSettingsSection: SettingsSection = .appearance
-    @State private var keyMonitor: Any?
-
-    private var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.3.0"
+    init(initialTab: StenoTab = .record, initialSettingsSection: SettingsSection = .recording) {
+        _selectedTab = State(initialValue: initialTab)
+        _selectedSettingsSection = State(initialValue: initialSettingsSection)
     }
 
     var body: some View {
         let theme = StenoDesign.theme(for: controller.preferences)
-
-        shell(theme: theme)
-        .task {
-            await controller.refreshHistory()
-        }
-        .onAppear {
-            installSpacebarMonitor()
-        }
-        .onDisappear {
-            removeSpacebarMonitor()
-        }
-    }
-
-    private func shell(theme: StenoTheme) -> some View {
         VStack(spacing: 0) {
-            titleBar(theme: theme)
+            HStack {
+                Color.clear.frame(width: 64, height: 1)
+                Text("Steno").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Label(controller.isRecording ? "Listening" : controller.recordingLifecycleState == .transcribing ? "Transcribing" : "On this Mac", systemImage: controller.isRecording ? "record.circle" : "lock")
+                    .font(.system(size: 12))
+                    .foregroundStyle(controller.isRecording ? theme.accent : theme.textDim)
+            }
+            .padding(.horizontal, 20)
+            .frame(height: StenoDesign.titleBarHeight)
+            .background(theme.ink1)
 
             Divider()
-                .overlay(theme.line)
-
-            Group {
-                switch selectedTab {
-                case .record:
-                    RecordTab()
-                case .history:
-                    HistoryTab()
-                case .insights:
-                    InsightsTab()
-                case .settings:
-                    SettingsView(selectedSection: $selectedSettingsSection)
+            HStack(spacing: 0) {
+                navigation(theme: theme)
+                Divider()
+                ZStack {
+                    if selectedTab != .settings {
+                        Group {
+                            switch selectedTab {
+                            case .record:
+                                RecordTab(onOpenSettings: openSettings, onOpenHistory: { selectedTab = .history })
+                            case .history: HistoryTab()
+                            case .insights: InsightsTab()
+                            case .settings: EmptyView()
+                            }
+                        }
+                        .id(selectedTab)
+                        .transition(.opacity)
+                    }
+                    SettingsView(selectedSection: $selectedSettingsSection, showsSidebar: true)
+                        .opacity(selectedTab == .settings ? 1 : 0)
+                        .allowsHitTesting(selectedTab == .settings)
+                        .disabled(selectedTab != .settings)
+                        .accessibilityHidden(selectedTab != .settings)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(shellBackdrop(theme: theme))
-            .id(selectedTab)
-            .transition(.opacity)
-            .animation(reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationNormal), value: selectedTab)
         }
+        .foregroundStyle(theme.text)
+        .background(theme.ink0)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: selectedTab)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task { await controller.refreshHistory() }
     }
 
-    private func titleBar(theme: StenoTheme) -> some View {
-        HStack(spacing: 14) {
-            Color.clear
-                .frame(width: 64, height: 1)
-
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Steno")
-                    .font(StenoDesign.heroSerif(size: 21))
-                    .foregroundStyle(theme.text)
-                    .lineLimit(1)
-                Text("v\(appVersion)")
-                    .font(StenoDesign.mono(size: 9.5, weight: .medium))
-                    .tracking(0.8)
-                    .foregroundStyle(theme.textMuted.opacity(0.88))
-                    .fixedSize()
-            }
-            .frame(minWidth: 148, alignment: .leading)
-
-            Spacer()
-
-            StenoSegmentedTabBar(selection: $selectedTab, theme: theme)
-
-            Spacer()
-
-            HStack(spacing: 10) {
-                HeaderStatusChip(isRecording: controller.isRecording, theme: theme)
-
-                Button {
-                    selectedTab = .settings
-                    selectedSettingsSection = .appearance
-                } label: {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(theme.textDim)
-                        .frame(width: 28, height: 28)
-                        .background(theme.chromeButtonFill)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(theme.lineStrong, lineWidth: StenoDesign.borderThin)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    private func navigation(theme: StenoTheme) -> some View {
+        let direction = StenoDesign.direction
+        let isEditorial = direction == .manuscript
+        return VStack(alignment: direction == .signal ? .center : .leading, spacing: direction == .signal ? 12 : 8) {
+            Text(direction == .signal ? "st." : "steno.")
+                .font(direction == .signal ? .system(size: 32, weight: .heavy) : StenoDesign.display(size: 34))
+                .tracking(direction == .signal ? -2 : -1.3)
+                .foregroundStyle(isEditorial ? .white : theme.text)
+                .padding(.horizontal, direction == .signal ? 0 : 12)
+                .padding(.top, 23)
+                .padding(.bottom, 19)
+                .accessibilityHidden(true)
+            ForEach(StenoTab.allCases, id: \.self) { tab in
+                Button { selectedTab = tab } label: {
+                    Group {
+                        if direction == .signal {
+                            VStack(spacing: 9) {
+                                Image(systemName: tab.symbol)
+                                    .font(.system(size: 19, weight: .medium))
+                                    .frame(height: 23)
+                                Text(tab.rawValue).font(.system(size: 10, weight: .semibold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 66)
+                        } else {
+                            HStack(spacing: 12) {
+                                Image(systemName: tab.symbol)
+                                    .font(.system(size: 15, weight: .medium))
+                                    .frame(width: 19)
+                                Text(tab.rawValue)
+                                    .font(.system(size: 13, weight: selectedTab == tab ? .semibold : .regular))
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 13)
+                            .frame(height: 44)
+                        }
+                    }
+                    .foregroundStyle(isEditorial ? Color.white.opacity(selectedTab == tab ? 1 : 0.72) : selectedTab == tab ? theme.accentInk : theme.textDim)
+                    .background(selectedTab == tab ? isEditorial ? Color.white.opacity(0.12) : theme.accent : .clear)
+                    .clipShape(RoundedRectangle(cornerRadius: direction == .current ? 24 : direction == .manuscript ? 5 : 9))
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Open Appearance")
+                .keyboardShortcut(tab.shortcut, modifiers: .command)
+                .accessibilityIdentifier("nav.\(tab.rawValue.lowercased())")
+                .help("\(tab.rawValue) (Command-\(tab.shortcut.character))")
+                .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
             }
+            Spacer(minLength: 24)
+            Image(systemName: "lock")
+                .font(.system(size: 12))
+                .foregroundStyle(isEditorial ? Color.white.opacity(0.6) : theme.textDim)
+                .accessibilityLabel("Local transcription")
+                .padding(.horizontal, direction == .signal ? 0 : 13)
+                .padding(.bottom, 22)
         }
-        .padding(.horizontal, 14)
-        .frame(height: StenoDesign.titleBarHeight)
-        .background(titleBarBackground(theme: theme))
+        .padding(.horizontal, 12)
+        .frame(width: StenoDesign.navigationWidth)
+        .background(isEditorial ? Color(red: 0.145, green: 0.212, blue: 0.314) : theme.ink1)
     }
 
-    private func titleBarBackground(theme: StenoTheme) -> some View {
-        ZStack {
-            theme.titleBarGradient
-
-            RadialGradient(
-                colors: [theme.chromeAccentWash, .clear],
-                center: .topTrailing,
-                startRadius: 0,
-                endRadius: 320
-            )
-            .offset(x: 90, y: -90)
-
-            RadialGradient(
-                colors: [theme.accent.opacity(theme.isLight ? 0.04 : 0.08), .clear],
-                center: .topLeading,
-                startRadius: 0,
-                endRadius: 220
-            )
-            .offset(x: -80, y: -120)
-
-            LinearGradient(
-                colors: [Color.white.opacity(theme.isLight ? 0.18 : 0.05), .clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
+    private func openSettings(_ section: SettingsSection) {
+        selectedSettingsSection = section
+        selectedTab = .settings
     }
 
-    private func shellBackdrop(theme: StenoTheme) -> some View {
-        ZStack {
-            theme.shellGradient
-
-            RadialGradient(
-                colors: [theme.accent.opacity(0.18 * theme.spotlightOpacity), .clear],
-                center: .topTrailing,
-                startRadius: 0,
-                endRadius: 360
-            )
-
-            RadialGradient(
-                colors: [theme.stageGlowLeading.opacity(0.18 * theme.spotlightOpacity), .clear],
-                center: .bottomLeading,
-                startRadius: 0,
-                endRadius: 340
-            )
-        }
-    }
-
-    private func installSpacebarMonitor() {
-        guard keyMonitor == nil else { return }
-
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
-            guard selectedTab == .record, event.keyCode == 49 else {
-                return event
-            }
-
-            if let firstResponder = NSApp.keyWindow?.firstResponder,
-               firstResponder is NSTextView || firstResponder is NSTextField {
-                return event
-            }
-
-            controller.toggleHandsFree()
-            return nil
-        }
-    }
-
-    private func removeSpacebarMonitor() {
-        guard let keyMonitor else { return }
-        NSEvent.removeMonitor(keyMonitor)
-        self.keyMonitor = nil
-    }
-}
-
-private struct HeaderStatusChip: View {
-    let isRecording: Bool
-    let theme: StenoTheme
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Circle()
-                .fill(isRecording ? theme.accent : theme.textMuted)
-                .frame(width: 7, height: 7)
-                .shadow(color: isRecording ? theme.accentGlow : .clear, radius: 8)
-
-            Text(isRecording ? "Listening" : "Idle")
-                .font(StenoDesign.mono(size: 10, weight: .medium))
-                .tracking(0.4)
-        }
-        .foregroundStyle(theme.textDim)
-        .padding(.leading, 8)
-        .padding(.trailing, 10)
-        .padding(.vertical, 5)
-        .background(isRecording ? theme.accentSoft : Color.white.opacity(theme.isLight ? 0.72 : 0.03))
-        .overlay(
-            Capsule(style: .continuous)
-                .stroke(theme.lineStrong, lineWidth: StenoDesign.borderThin)
-        )
-        .clipShape(Capsule(style: .continuous))
-    }
 }

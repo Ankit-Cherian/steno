@@ -82,13 +82,7 @@ struct StenoTheme: Sendable {
     }
 
     var titleBarGradient: LinearGradient {
-        LinearGradient(
-            colors: isLight
-                ? [Color(hex: 0xFBFCFE), Color(hex: 0xF2F5FA)]
-                : [Color(hex: 0x11161F), Color(hex: 0x0C1017)],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        LinearGradient(colors: [ink1, ink1], startPoint: .top, endPoint: .bottom)
     }
 
     var shellGradient: LinearGradient {
@@ -101,10 +95,7 @@ struct StenoTheme: Sendable {
 
     var panelGradient: LinearGradient {
         LinearGradient(
-            colors: [
-                Color.white.opacity(isLight ? 0.78 : 0.035),
-                ink3
-            ],
+            colors: [ink3, ink3],
             startPoint: .top,
             endPoint: .bottom
         )
@@ -112,10 +103,7 @@ struct StenoTheme: Sendable {
 
     var cardGradient: LinearGradient {
         LinearGradient(
-            colors: [
-                Color.white.opacity(isLight ? 0.82 : 0.045),
-                ink2
-            ],
+            colors: [ink2, ink2],
             startPoint: .top,
             endPoint: .bottom
         )
@@ -151,8 +139,56 @@ enum AppFontRegistry {
     }
 }
 
+@MainActor
 enum StenoDesign {
     private static let fallbackAppearance = AppPreferences.Appearance()
+
+    #if DEBUG
+    static var reviewDirectionOverride: StenoDesignDirection?
+    #endif
+
+    static var direction: StenoDesignDirection {
+        #if DEBUG
+        if let reviewDirectionOverride { return reviewDirectionOverride }
+        if let value = Bundle.main.object(forInfoDictionaryKey: "StenoDesignDirection") as? String,
+           let direction = StenoDesignDirection(rawValue: value) { return direction }
+        #endif
+        return .signal
+    }
+
+    static var cardCornerRadius: CGFloat { direction == .signal ? 10 : direction == .manuscript ? 2 : 20 }
+
+    static var navigationWidth: CGFloat {
+        switch direction {
+        case .signal: return 104
+        case .manuscript: return 172
+        case .current: return 190
+        }
+    }
+
+    private static var canvas: Color {
+        switch direction {
+        case .signal: return dynamicColor(light: Color(hex: 0xF1F3EE), dark: Color(hex: 0x181D20))
+        case .manuscript: return dynamicColor(light: Color(hex: 0xF5F0E7), dark: Color(hex: 0x202329))
+        case .current: return dynamicColor(light: Color(hex: 0xF0F5F2), dark: Color(hex: 0x16282A))
+        }
+    }
+
+    private static var rail: Color {
+        switch direction {
+        case .signal: return dynamicColor(light: Color(hex: 0xE7EBE5), dark: Color(hex: 0x111619))
+        case .manuscript: return dynamicColor(light: Color(hex: 0xE8E2D7), dark: Color(hex: 0x171C23))
+        case .current: return dynamicColor(light: Color(hex: 0xDEEAE6), dark: Color(hex: 0x112023))
+        }
+    }
+
+    private static var readingSurface: Color {
+        switch direction {
+        case .signal: return dynamicColor(light: .white, dark: Color(hex: 0x242C2E))
+        case .manuscript: return dynamicColor(light: Color(hex: 0xFFFCF5), dark: Color(hex: 0x292D33))
+        case .current: return dynamicColor(light: Color(hex: 0xFAFDFC), dark: Color(hex: 0x223739))
+        }
+    }
 
     static let xxs: CGFloat = 2
     static let xs: CGFloat = 4
@@ -191,62 +227,58 @@ enum StenoDesign {
     static let micButtonOuterRingSize: CGFloat = 120
     static let micButtonSize: CGFloat = 88
     static let micButtonIconSize: CGFloat = 32
-    static let windowMinWidth: CGFloat = 1040
+    static let windowMinWidth: CGFloat = 940
     static let windowIdealWidth: CGFloat = 1120
-    static let windowMinHeight: CGFloat = 720
+    static let windowMinHeight: CGFloat = 640
     static let windowIdealHeight: CGFloat = 760
     static let pickerWidth: CGFloat = 260
     static let searchBarMaxWidth: CGFloat = 280
     static let insertionListHeight: CGFloat = 120
 
     static func theme(for appearance: AppPreferences.Appearance) -> StenoTheme {
-        let accentPalette = accentPalette(for: appearance.accent)
-
-        if appearance.mode == .light {
-            return StenoTheme(
-                appearance: appearance,
-                ink0: Color(hex: 0xEEF1F6),
-                ink1: Color(hex: 0xF5F7FB),
-                ink2: Color(hex: 0xFFFFFF),
-                ink3: Color(hex: 0xFFFFFF),
-                ink4: Color(hex: 0xF0F3F9),
-                line: Color(.sRGB, red: 10.0 / 255.0, green: 15.0 / 255.0, blue: 25.0 / 255.0, opacity: 0.07),
-                lineStrong: Color(.sRGB, red: 10.0 / 255.0, green: 15.0 / 255.0, blue: 25.0 / 255.0, opacity: 0.12),
-                text: Color(hex: 0x0E1420),
-                textDim: Color(hex: 0x4A5568),
-                textMuted: Color(hex: 0x6B7384),
-                accentPalette: accentPalette,
-                amber: Color(hex: 0xE0B771),
-                amberSoft: Color(hex: 0xE0B771, opacity: 0.20),
-                green: Color(hex: 0x6EBF8C),
-                greenSoft: Color(hex: 0x6EBF8C, opacity: 0.15),
-                danger: Color(hex: 0xF2716A)
-            )
-        }
-
-        return StenoTheme(
+        StenoTheme(
             appearance: appearance,
-            ink0: Color(hex: 0x07090D),
-            ink1: Color(hex: 0x0B0E14),
-            ink2: Color(hex: 0x11151D),
-            ink3: Color(hex: 0x171C26),
-            ink4: Color(hex: 0x1F2532),
-            line: Color.white.opacity(0.07),
-            lineStrong: Color.white.opacity(0.11),
-            text: Color(hex: 0xE8ECF2),
-            textDim: Color(hex: 0x9AA3B2),
-            textMuted: Color(hex: 0x6B7384),
-            accentPalette: accentPalette,
-            amber: Color(hex: 0xE0B771),
-            amberSoft: Color(hex: 0xE0B771, opacity: 0.15),
-            green: Color(hex: 0x6EBF8C),
-            greenSoft: Color(hex: 0x6EBF8C, opacity: 0.15),
-            danger: Color(hex: 0xF2716A)
+            ink0: canvas,
+            ink1: rail,
+            ink2: readingSurface,
+            ink3: rail,
+            ink4: Color(nsColor: .quaternaryLabelColor).opacity(0.15),
+            line: Color(nsColor: .separatorColor),
+            lineStrong: Color(nsColor: .separatorColor),
+            text: .primary,
+            textDim: .secondary,
+            textMuted: .secondary,
+            accentPalette: accentPalette(for: appearance.accent),
+            amber: dynamicColor(light: Color(hex: 0x855400), dark: Color(hex: 0xE8BE75)),
+            amberSoft: dynamicColor(light: Color(hex: 0xFFF2D4), dark: Color(hex: 0x3D321F)),
+            green: dynamicColor(light: Color(hex: 0x176849), dark: Color(hex: 0x8BD4AF)),
+            greenSoft: dynamicColor(light: Color(hex: 0xE3F3E9), dark: Color(hex: 0x20382D)),
+            danger: dynamicColor(light: Color(hex: 0xAD322D), dark: Color(hex: 0xFF9C94))
         )
     }
 
     static func theme(for preferences: AppPreferences) -> StenoTheme {
         theme(for: preferences.appearance)
+    }
+
+    static func pageTitle(size: CGFloat = 38) -> Font {
+        switch direction {
+        case .signal: return .system(size: size, weight: .bold)
+        case .manuscript: return .custom("Fraunces", fixedSize: size).weight(.regular)
+        case .current: return .system(size: size, weight: .semibold, design: .rounded)
+        }
+    }
+
+    static func display(size: CGFloat = 56) -> Font {
+        switch direction {
+        case .signal: return .system(size: size, weight: .heavy)
+        case .manuscript: return .custom("Fraunces", fixedSize: size).weight(.regular)
+        case .current: return .system(size: size, weight: .medium, design: .rounded)
+        }
+    }
+
+    static func reading(size: CGFloat) -> Font {
+        direction == .manuscript ? .custom("Fraunces", fixedSize: size).weight(.regular) : .system(size: size)
     }
 
     static func heading1() -> Font { system(size: 18, weight: .semibold) }
@@ -266,11 +298,11 @@ enum StenoDesign {
     }
 
     static func mono(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        return Font.custom("JetBrains Mono", fixedSize: size).weight(weight)
+        return .system(size: size, weight: weight, design: .monospaced)
     }
 
     static func monoItalic(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        return Font.custom("JetBrainsMonoItalic-Regular", fixedSize: size).weight(weight)
+        return .system(size: size, weight: weight, design: .monospaced).italic()
     }
 
     static func heroSerif(size: CGFloat) -> Font {
@@ -305,19 +337,19 @@ enum StenoDesign {
     }
 
     static var accent: Color { theme(for: fallbackAppearance).accent }
-    static var background: Color { dynamicColor(light: Color(hex: 0xF5F7FB), dark: Color(hex: 0x0B0E14)) }
-    static var surface: Color { dynamicColor(light: Color(hex: 0xFFFFFF), dark: Color(hex: 0x11151D)) }
-    static var surfaceSecondary: Color { dynamicColor(light: Color(hex: 0xF0F3F9), dark: Color(hex: 0x171C26)) }
-    static var textPrimary: Color { dynamicColor(light: Color(hex: 0x0E1420), dark: Color(hex: 0xE8ECF2)) }
-    static var textSecondary: Color { dynamicColor(light: Color(hex: 0x4A5568), dark: Color(hex: 0x9AA3B2)) }
+    static var background: Color { theme(for: fallbackAppearance).ink0 }
+    static var surface: Color { theme(for: fallbackAppearance).ink2 }
+    static var surfaceSecondary: Color { theme(for: fallbackAppearance).ink3 }
+    static var textPrimary: Color { .primary }
+    static var textSecondary: Color { .secondary }
     static var border: Color { dynamicColor(light: Color.black.opacity(0.08), dark: Color.white.opacity(0.09)) }
-    static var success: Color { Color(hex: 0x6EBF8C) }
+    static var success: Color { theme(for: fallbackAppearance).green }
     static var successBackground: Color { Color(hex: 0x6EBF8C, opacity: 0.15) }
     static var successBorder: Color { Color(hex: 0x6EBF8C, opacity: 0.30) }
-    static var warning: Color { Color(hex: 0xE0B771) }
+    static var warning: Color { theme(for: fallbackAppearance).amber }
     static var warningBackground: Color { Color(hex: 0xE0B771, opacity: 0.15) }
     static var warningBorder: Color { Color(hex: 0xE0B771, opacity: 0.28) }
-    static var error: Color { Color(hex: 0xF2716A) }
+    static var error: Color { theme(for: fallbackAppearance).danger }
     static var errorBackground: Color { Color(hex: 0xF2716A, opacity: 0.15) }
     static var errorBorder: Color { Color(hex: 0xF2716A, opacity: 0.25) }
 
@@ -335,44 +367,26 @@ enum StenoDesign {
     }
 
     private static func accentPalette(for style: StenoAccentStyle) -> StenoAccentPalette {
+        let light: Int
+        let dark: Int
         switch style {
-        case .dodger:
-            return StenoAccentPalette(
-                accent: Color(hex: 0x1E90FF),
-                accentSoft: Color(hex: 0x1E90FF, opacity: 0.18),
-                accentGlow: Color(hex: 0x1E90FF, opacity: 0.45),
-                accentInk: Color(hex: 0x0A2540)
-            )
-        case .cyan:
-            return StenoAccentPalette(
-                accent: Color(hex: 0x12CBF5),
-                accentSoft: Color(hex: 0x12CBF5, opacity: 0.18),
-                accentGlow: Color(hex: 0x12CBF5, opacity: 0.35),
-                accentInk: Color(hex: 0x0C4C5B)
-            )
-        case .violet:
-            return StenoAccentPalette(
-                accent: Color(hex: 0xA58DFF),
-                accentSoft: Color(hex: 0xA58DFF, opacity: 0.20),
-                accentGlow: Color(hex: 0xA58DFF, opacity: 0.40),
-                accentInk: Color(hex: 0x332857)
-            )
-        case .emerald:
-            return StenoAccentPalette(
-                accent: Color(hex: 0x3CC998),
-                accentSoft: Color(hex: 0x3CC998, opacity: 0.18),
-                accentGlow: Color(hex: 0x3CC998, opacity: 0.35),
-                accentInk: Color(hex: 0x114639)
-            )
-        case .rose:
-            return StenoAccentPalette(
-                accent: Color(hex: 0xF87584),
-                accentSoft: Color(hex: 0xF87584, opacity: 0.20),
-                accentGlow: Color(hex: 0xF87584, opacity: 0.40),
-                accentInk: Color(hex: 0x5C1E2D)
-            )
+        case .citron: (light, dark) = (0x526500, 0xD4EB6D)
+        case .terracotta: (light, dark) = (0xB7492C, 0xEEA080)
+        case .dodger: (light, dark) = (0x155DA8, 0x86BFFF)
+        case .cyan: (light, dark) = (0x00697C, 0x74DAEB)
+        case .violet: (light, dark) = (0x6544AB, 0xC4ADFF)
+        case .emerald: (light, dark) = (0x176849, 0x87DAB6)
+        case .rose: (light, dark) = (0xA33753, 0xFBA2B7)
         }
+        let accent = dynamicColor(light: Color(hex: light), dark: Color(hex: dark))
+        return StenoAccentPalette(
+            accent: accent,
+            accentSoft: accent.opacity(0.12),
+            accentGlow: .clear,
+            accentInk: dynamicColor(light: .white, dark: Color(hex: 0x152026))
+        )
     }
+
 }
 
 struct ShadowStyle {
@@ -393,31 +407,32 @@ struct CardStyle: ViewModifier {
         content
             .padding(padding)
             .background(StenoDesign.surface)
-            .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusMedium))
+            .clipShape(RoundedRectangle(cornerRadius: StenoDesign.cardCornerRadius))
             .overlay(
-                RoundedRectangle(cornerRadius: StenoDesign.radiusMedium)
+                RoundedRectangle(cornerRadius: StenoDesign.cardCornerRadius)
                     .stroke(StenoDesign.border, lineWidth: StenoDesign.borderThin)
             )
-            .shadow(color: ShadowStyle.soft.color, radius: ShadowStyle.soft.radius, x: ShadowStyle.soft.x, y: ShadowStyle.soft.y)
+
     }
 }
 
 struct InteractiveCardStyle: ViewModifier {
     var padding: CGFloat = StenoDesign.md
     @State private var isHovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
             .padding(padding)
             .background(StenoDesign.surface)
-            .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusMedium))
+            .clipShape(RoundedRectangle(cornerRadius: StenoDesign.cardCornerRadius))
             .overlay(
-                RoundedRectangle(cornerRadius: StenoDesign.radiusMedium)
+                RoundedRectangle(cornerRadius: StenoDesign.cardCornerRadius)
                     .stroke(StenoDesign.border.opacity(isHovering ? 1 : 0.75), lineWidth: StenoDesign.borderThin)
             )
             .shadow(color: .black.opacity(isHovering ? 0.26 : 0.18), radius: isHovering ? 18 : 12, x: 0, y: isHovering ? 12 : 8)
-            .scaleEffect(isHovering ? 1.004 : 1)
-            .animation(.easeInOut(duration: StenoDesign.animationFast), value: isHovering)
+            .scaleEffect(isHovering && !reduceMotion ? 1.004 : 1)
+            .animation(reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationFast), value: isHovering)
             .onHover { isHovering = $0 }
     }
 }

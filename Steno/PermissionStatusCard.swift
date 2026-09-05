@@ -48,7 +48,7 @@ struct PermissionStatusCard: View {
             RoundedRectangle(cornerRadius: StenoDesign.radiusSmall)
                 .stroke(statusBorderColor, lineWidth: StenoDesign.borderNormal)
         )
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title), \(status.rawValue). \(description)")
     }
 

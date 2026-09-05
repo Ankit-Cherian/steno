@@ -4,28 +4,14 @@ import SwiftUI
 struct StenoStageBackground: View {
     let theme: StenoTheme
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     var body: some View {
         ZStack {
-            theme.stageGradient
-
-            RadialGradient(
-                colors: [theme.stageGlowLeading, .clear],
-                center: .bottomLeading,
-                startRadius: 0,
-                endRadius: 520
-            )
-            .opacity(0.95 * theme.spotlightOpacity)
-
-            RadialGradient(
-                colors: [theme.stageGlowTrailing, .clear],
-                center: .bottomTrailing,
-                startRadius: 0,
-                endRadius: 560
-            )
-            .opacity(0.9 * theme.spotlightOpacity)
-
-            StenoNoiseOverlay(opacity: 0.08 + (0.14 * theme.spotlightOpacity))
-                .blendMode(theme.isLight ? .overlay : .screen)
+            theme.ink1
+            if !reduceTransparency {
+                theme.accent.opacity(0.025 * theme.spotlightOpacity)
+            }
         }
         .ignoresSafeArea()
     }
@@ -171,6 +157,7 @@ struct StenoActionButtonStyle: ButtonStyle {
     let tone: Tone
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -185,12 +172,12 @@ struct StenoActionButtonStyle: ButtonStyle {
             )
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .shadow(
-                color: tone == .primary ? theme.accentGlow.opacity(configuration.isPressed ? 0.20 : 0.34) : .clear,
+                color: isEnabled && tone == .primary ? theme.accentGlow.opacity(configuration.isPressed ? 0.20 : 0.34) : .clear,
                 radius: 12,
                 x: 0,
                 y: 4
             )
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.985 : 1)
+            .scaleEffect(configuration.isPressed && isEnabled && !reduceMotion ? 0.985 : 1)
             .animation(
                 reduceMotion ? nil : .interactiveSpring(response: 0.18, dampingFraction: 0.82),
                 value: configuration.isPressed
@@ -198,6 +185,7 @@ struct StenoActionButtonStyle: ButtonStyle {
     }
 
     private var foreground: Color {
+        guard isEnabled else { return Color(nsColor: .disabledControlTextColor) }
         switch tone {
         case .primary:
             return theme.accentInk
@@ -211,6 +199,7 @@ struct StenoActionButtonStyle: ButtonStyle {
     }
 
     private var border: Color {
+        guard isEnabled else { return theme.line }
         switch tone {
         case .primary:
             return theme.accent.opacity(0.75)
@@ -220,6 +209,7 @@ struct StenoActionButtonStyle: ButtonStyle {
     }
 
     private func background(isPressed: Bool) -> some ShapeStyle {
+        guard isEnabled else { return AnyShapeStyle(theme.ink4) }
         switch tone {
         case .primary:
             return AnyShapeStyle(isPressed ? theme.accent.opacity(0.92) : theme.accent)
@@ -363,5 +353,21 @@ struct AppGlyphView: View {
             return nil
         }
         return NSWorkspace.shared.icon(forFile: url.path)
+    }
+}
+
+/// Shared display hierarchy; metadata and native controls keep their compact sizing.
+struct StenoPageTitle: View {
+    let title: String
+    @ScaledMetric(relativeTo: .largeTitle) private var pointSize: CGFloat = 38
+
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        Text(title)
+            .font(StenoDesign.pageTitle(size: min(pointSize, 54)))
+            .tracking(-1.2)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityAddTraits(.isHeader)
     }
 }

@@ -56,7 +56,7 @@ func captureDisplayFallsBackWithoutMatchingWindow() {
 @Test("Controller forwards one capture generation and both privacy controls")
 func controllerForwardsLiveContextStartOptions() async {
     let coordinator = LiveContextOptionsCoordinator()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: LiveContextHotkeyService(),
         mediaInterruption: LiveContextMediaInterruptionService(),
         coordinator: coordinator
@@ -85,7 +85,7 @@ func controllerForwardsLiveContextStartOptions() async {
 @Test("Controller waits for capture acknowledgement before presenting listening UI")
 func controllerPresentsOnlyAfterCaptureAcknowledgement() async {
     let coordinator = GatedCaptureAcknowledgementCoordinator()
-    let presenter = WaveformOverlayPresenter()
+    let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
     presenter.prepareWindow()
     var listeningPresentationCount = 0
     presenter.setHostedEvidenceHandler { event in
@@ -93,7 +93,7 @@ func controllerPresentsOnlyAfterCaptureAcknowledgement() async {
             listeningPresentationCount += 1
         }
     }
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: LiveContextHotkeyService(),
         overlay: presenter,
         mediaInterruption: LiveContextMediaInterruptionService(),
@@ -125,7 +125,7 @@ func exactTargetDriftUsesTruthfulCopiedStatus() async {
             errorMessage: "Exact editor target is unavailable: selectionChanged."
         )
     )
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: LiveContextHotkeyService(),
         mediaInterruption: LiveContextMediaInterruptionService(),
         coordinator: coordinator
@@ -155,7 +155,7 @@ func controllerFinalizesStopRequestedBeforeCapabilityPublication() async {
         capture: capture,
         beforePublicationGate: publicationGate
     )
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: LiveContextHotkeyService(),
         mediaInterruption: LiveContextMediaInterruptionService(),
         coordinator: coordinator
@@ -186,7 +186,7 @@ func controllerCancelsBeforeCapabilityPublication() async {
         capture: capture,
         beforePublicationGate: publicationGate
     )
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: LiveContextHotkeyService(),
         mediaInterruption: LiveContextMediaInterruptionService(),
         coordinator: coordinator
@@ -214,7 +214,7 @@ func controllerStopsCaptureBeforeBlockedStartReturns() async {
         capture: capture,
         afterPublicationGate: blockedStartGate
     )
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: LiveContextHotkeyService(),
         mediaInterruption: LiveContextMediaInterruptionService(),
         coordinator: coordinator
@@ -248,7 +248,7 @@ func controllerStopsCaptureBeforeBlockedMediaBeginSettles() async {
         gate: mediaGate,
         capture: capture
     )
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: LiveContextHotkeyService(),
         mediaInterruption: media,
         coordinator: coordinator
@@ -288,7 +288,7 @@ func controllerCancelAndTeardownCloseBlockedCapture() async {
         capture: cancelCapture,
         afterPublicationGate: cancelGate
     )
-    let cancelController = DictationController(
+    let cancelController = makeTestDictationController(
         hotkey: LiveContextHotkeyService(),
         mediaInterruption: LiveContextMediaInterruptionService(),
         coordinator: cancelCoordinator
@@ -310,7 +310,7 @@ func controllerCancelAndTeardownCloseBlockedCapture() async {
         capture: teardownCapture,
         afterPublicationGate: teardownGate
     )
-    let teardownController = DictationController(
+    let teardownController = makeTestDictationController(
         hotkey: LiveContextHotkeyService(),
         mediaInterruption: LiveContextMediaInterruptionService(),
         coordinator: teardownCoordinator

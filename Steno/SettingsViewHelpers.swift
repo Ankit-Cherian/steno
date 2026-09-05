@@ -36,6 +36,7 @@ func settingsCardWithSubtitle<Content: View>(
     .cardStyle()
 }
 
+@MainActor
 func entryRow(
     leading: String,
     trailing: String? = nil,
@@ -66,6 +67,7 @@ func entryRow(
     .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusSmall))
 }
 
+@MainActor
 func scopeBadge(_ scope: Scope) -> some View {
     Text(scopeLabel(scope))
         .font(StenoDesign.label())
@@ -85,6 +87,7 @@ func scopeLabel(_ scope: Scope) -> String {
     }
 }
 
+@MainActor
 func describedPicker<T: Hashable & CaseIterable & RawRepresentable>(
     _ label: String,
     description: String,

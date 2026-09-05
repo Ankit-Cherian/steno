@@ -53,9 +53,16 @@ struct UsageCalendarView: View {
         GeometryReader { proxy in
             let cellSize = resolvedCellSize(for: proxy.size.width)
 
-            calendarGrid(cellSize: cellSize)
-                .frame(width: calendarGridWidth(cellSize: cellSize), alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .center)
+            ScrollViewReader { scroll in
+                ScrollView(.horizontal) {
+                    calendarGrid(cellSize: cellSize)
+                        .frame(width: calendarGridWidth(cellSize: cellSize), alignment: .leading)
+                        .frame(minWidth: proxy.size.width, alignment: .leading)
+                }
+                .onChange(of: focusedDate) { date in
+                    if let date { scroll.scrollTo(date, anchor: .center) }
+                }
+            }
         }
         .frame(height: calendarGridHeight(cellSize: maximumCellSize))
     }
@@ -106,6 +113,7 @@ struct UsageCalendarView: View {
                                 }
                             )
                             .focused($focusedDate, equals: cell.date)
+                            .id(cell.date)
                         }
                     }
                 }

@@ -59,8 +59,8 @@ struct InsightsTab: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 22)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 32)
         }
         .task {
             guard usesControllerData else { return }
@@ -70,13 +70,22 @@ struct InsightsTab: View {
 
     @ViewBuilder
     private func loadedContent(snapshot: UsageAnalyticsSnapshot, theme: StenoTheme) -> some View {
-        calendarCard(snapshot: snapshot, theme: theme)
+        switch StenoDesign.direction {
+        case .signal:
+            InsightsMetricStrip(metrics: metrics(for: snapshot), theme: theme)
+            calendarCard(snapshot: snapshot, theme: theme)
+            secondaryDetails(snapshot: snapshot, theme: theme)
+        case .manuscript:
+            ManuscriptInsightsLayout(metrics: InsightsMetricStrip(metrics: metrics(for: snapshot), theme: theme),
+                calendar: calendarCard(snapshot: snapshot, theme: theme), details: secondaryDetails(snapshot: snapshot, theme: theme), theme: theme)
+        case .current:
+            CurrentInsightsLayout(metrics: InsightsMetricStrip(metrics: metrics(for: snapshot), theme: theme),
+                calendar: calendarCard(snapshot: snapshot, theme: theme), details: secondaryDetails(snapshot: snapshot, theme: theme), theme: theme)
+        }
+    }
 
-        InsightsMetricStrip(
-            metrics: metrics(for: snapshot),
-            theme: theme
-        )
-
+    private func secondaryDetails(snapshot: UsageAnalyticsSnapshot, theme: StenoTheme) -> some View {
+        ViewThatFits(in: .horizontal) {
         HStack(alignment: .top, spacing: 16) {
             AppUsageBreakdownView(
                 apps: appUsage(from: snapshot),
@@ -89,20 +98,19 @@ struct InsightsTab: View {
                 summary: cleanupSummary(from: snapshot),
                 theme: theme
             )
-            .frame(width: 360)
+            .frame(width: 320)
+        }
+        VStack(alignment: .leading, spacing: 16) {
+            AppUsageBreakdownView(apps: appUsage(from: snapshot), theme: theme)
+            CleanupCoverageView(summary: cleanupSummary(from: snapshot), theme: theme)
+        }
         }
     }
 
     private func pageHeader(snapshot: UsageAnalyticsSnapshot?, theme: StenoTheme) -> some View {
         HStack(alignment: .bottom, spacing: 20) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("USAGE")
-                    .font(StenoDesign.mono(size: 10, weight: .medium))
-                    .tracking(2.2)
-                    .foregroundStyle(theme.textMuted)
-
-                Text("Insights")
-                    .font(StenoDesign.system(size: 24, weight: .semibold))
+                StenoPageTitle("Insights")
                     .foregroundStyle(theme.text)
 
                 Text("Your dictation, over time.")
@@ -138,16 +146,16 @@ struct InsightsTab: View {
     private func calendarCard(snapshot: UsageAnalyticsSnapshot, theme: StenoTheme) -> some View {
         InsightsCard(theme: theme, padding: 20) {
             VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top, spacing: 20) {
+                VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("ACTIVITY")
+                        Text("Activity")
                             .font(StenoDesign.mono(size: 10, weight: .medium))
                             .tracking(2)
                             .foregroundStyle(theme.textMuted)
                         Text("Usage calendar")
                             .font(StenoDesign.system(size: 20, weight: .semibold))
                             .foregroundStyle(theme.text)
-                        Text("Each square is one local day. Intensity reflects known dictated time; markers identify estimates and gaps.")
+                        Text("See when you dictate. Darker squares mean more recorded time; markers show estimates and gaps.")
                             .font(StenoDesign.subheadline())
                             .foregroundStyle(theme.textMuted)
                     }

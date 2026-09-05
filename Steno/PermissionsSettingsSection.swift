@@ -7,7 +7,7 @@ struct PermissionsSettingsSection: View {
         VStack(alignment: .leading, spacing: StenoDesign.lg) {
             settingsCardWithSubtitle(
                 "Permissions",
-                subtitle: "Grant these once. Steno only reads what you explicitly record."
+                subtitle: "Review access used for audio, shortcuts, and inserting your words."
             ) {
                 PermissionStatusCard(
                     title: "Microphone",
@@ -35,10 +35,10 @@ struct PermissionsSettingsSection: View {
             }
 
             HStack(spacing: StenoDesign.md) {
-                Image(systemName: "sparkles")
+                Image(systemName: allPermissionsGranted ? "checkmark.circle" : "info.circle")
                     .foregroundStyle(StenoDesign.accent)
 
-                Text("You're fully set up. Steno can capture, transcribe, and insert text without further prompts.")
+                Text(allPermissionsGranted ? "All permissions are allowed. You can change access at any time in System Settings." : "Review the permissions above. Microphone access is needed to record; the other permissions support shortcuts and text insertion.")
                     .font(StenoDesign.caption())
                     .foregroundStyle(StenoDesign.textSecondary)
 
@@ -60,4 +60,10 @@ struct PermissionsSettingsSection: View {
             )
         }
     }
+    private var allPermissionsGranted: Bool {
+        controller.microphonePermissionStatus == .granted
+            && controller.accessibilityPermissionStatus == .granted
+            && controller.inputMonitoringPermissionStatus == .granted
+    }
+
 }

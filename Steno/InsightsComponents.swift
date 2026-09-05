@@ -54,16 +54,11 @@ struct InsightsCard<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(theme.cardGradient)
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: StenoDesign.cardCornerRadius, style: .continuous)
                     .stroke(theme.lineStrong, lineWidth: StenoDesign.borderThin)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .shadow(
-                color: .black.opacity(theme.isLight ? 0.10 : 0.22),
-                radius: 16,
-                x: 0,
-                y: 7
-            )
+            .clipShape(RoundedRectangle(cornerRadius: StenoDesign.cardCornerRadius, style: .continuous))
+
     }
 }
 
@@ -93,16 +88,9 @@ struct InsightsMetricStrip: View {
                     .fill(theme.line)
                     .frame(height: 1)
 
-                HStack(spacing: 0) {
-                    ForEach(Array(metrics.enumerated()), id: \.element.id) { index, metric in
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 0)], spacing: 0) {
+                    ForEach(metrics) { metric in
                         InsightMetricCell(metric: metric, theme: theme)
-
-                        if index < metrics.count - 1 {
-                            Rectangle()
-                                .fill(theme.line)
-                                .frame(width: 1)
-                                .padding(.vertical, 16)
-                        }
                     }
                 }
             }
@@ -128,7 +116,7 @@ private struct InsightMetricCell: View {
             }
 
             Text(metric.value)
-                .font(StenoDesign.system(size: 28, weight: .semibold).monospacedDigit())
+                .font(StenoDesign.pageTitle(size: 30).monospacedDigit())
                 .foregroundStyle(theme.text)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)

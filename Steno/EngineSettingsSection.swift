@@ -4,13 +4,21 @@ import StenoKit
 struct EngineSettingsSection: View {
     @Binding var preferences: AppPreferences
     let controller: DictationController
+    var hasUnsavedChanges = false
     @State private var testResult: String?
     @State private var testResultIsError = false
     @State private var isTesting = false
     private let compatibilityService = try? WhisperCompatibilityService.bundled()
 
     var body: some View {
-        settingsCard("Engine") {
+        VStack(alignment: .leading, spacing: 24) {
+            StenoPageTitle("Speech model")
+                .accessibilityAddTraits(.isHeader)
+            Text("Choose the balance of speed, accuracy, and memory that suits your Mac.")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+            settingsCard("Available models") { modelLibraryPanel }
+            DisclosureGroup("Advanced setup and diagnostics") {
+            VStack(alignment: .leading, spacing: 14) {
             TextField("whisper-cli path", text: $preferences.dictation.whisperCLIPath)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.body, design: .monospaced))
@@ -36,7 +44,6 @@ struct EngineSettingsSection: View {
             }
 
             compatibilityPanel
-            modelLibraryPanel
 
             Divider()
 
@@ -81,6 +88,9 @@ struct EngineSettingsSection: View {
                         .foregroundStyle(testResultIsError ? StenoDesign.error : StenoDesign.success)
                 }
             }
+            }
+            .padding(.top, 16)
+            }
         }
     }
 
@@ -94,6 +104,11 @@ struct EngineSettingsSection: View {
             Text("Start with the included Small model, then download Medium or Large V3 Turbo here when your Mac can handle them.")
                 .font(StenoDesign.caption())
                 .foregroundStyle(StenoDesign.textSecondary)
+
+            if hasUnsavedChanges {
+                Text("Save or discard your pending changes before switching models.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
 
             ForEach(controller.whisperModelOptions) { option in
                 HStack(alignment: .center, spacing: StenoDesign.md) {
@@ -155,7 +170,7 @@ struct EngineSettingsSection: View {
                         }
                     }
                     .buttonStyle(.bordered)
-                    .disabled(option.isActive || (controller.activeModelDownloadID != nil && controller.activeModelDownloadID != option.modelID))
+                    .disabled(hasUnsavedChanges || option.isActive || (controller.activeModelDownloadID != nil && controller.activeModelDownloadID != option.modelID))
                 }
                 .padding(.vertical, StenoDesign.xs)
                 .padding(.horizontal, StenoDesign.sm)
@@ -216,12 +231,14 @@ struct EngineSettingsSection: View {
     }
 
     private var whisperCLIPathError: String? {
+        guard !controller.isIsolatedPreview else { return nil }
         let path = preferences.dictation.whisperCLIPath
         guard !path.isEmpty else { return nil }
         return FileManager.default.fileExists(atPath: path) ? nil : "File not found at this path"
     }
 
     private var modelPathError: String? {
+        guard !controller.isIsolatedPreview else { return nil }
         let path = preferences.dictation.modelPath
         guard !path.isEmpty else { return nil }
         return FileManager.default.fileExists(atPath: path) ? nil : "File not found at this path"
@@ -235,6 +252,7 @@ struct EngineSettingsSection: View {
     }
 
     private var vadModelPathError: String? {
+        guard !controller.isIsolatedPreview else { return nil }
         let path = preferences.dictation.vadModelPath
         guard !path.isEmpty else {
             return "VAD model path is empty. Download with: ./models/download-vad-model.sh silero-v6.2.0"
@@ -244,6 +262,7 @@ struct EngineSettingsSection: View {
     }
 
     private var compatibilityAssessment: WhisperCompatibilityAssessment? {
+        guard !controller.isIsolatedPreview else { return nil }
         guard let compatibilityService else { return nil }
         return compatibilityService.assessment(
             forModelPath: preferences.dictation.modelPath,
@@ -308,6 +327,10 @@ struct EngineSettingsSection: View {
     }
 
     private func runTestSetup() {
+        guard !controller.isIsolatedPreview else {
+            testResult = "Setup testing is unavailable in preview."
+            return
+        }
         isTesting = true
         testResult = nil
 

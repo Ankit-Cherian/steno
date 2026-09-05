@@ -44,7 +44,7 @@ func insightsRefreshBackfillsAllRecoverableHistory() async throws {
     let analyticsStore = UsageAnalyticsStore(
         storageURL: directory.appendingPathComponent("usage-analytics.json")
     )
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: InsightsTestHotkeyService(),
         historyStore: currentHistory,
         usageAnalyticsStore: analyticsStore,
@@ -102,7 +102,7 @@ func unreadableLegacyHistoryDoesNotBlockInsights() async throws {
         to: legacyURL,
         options: .atomic
     )
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: InsightsTestHotkeyService(),
         historyStore: currentHistory,
         usageAnalyticsStore: UsageAnalyticsStore(
@@ -164,7 +164,7 @@ func currentHistoryWinsOverDuplicateLegacySession() async throws {
     try Data(legacyJSON.utf8).write(to: legacyURL, options: .atomic)
 
     let analyticsURL = directory.appendingPathComponent("usage-analytics.json")
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: InsightsTestHotkeyService(),
         historyStore: currentHistory,
         usageAnalyticsStore: UsageAnalyticsStore(storageURL: analyticsURL),
@@ -218,7 +218,7 @@ func corruptAnalyticsAreQuarantinedAndRebuilt() async throws {
     let analyticsURL = directory.appendingPathComponent("usage-analytics.json")
     let corruptBytes = Data("corrupt analytics sentinel 93741".utf8)
     try corruptBytes.write(to: analyticsURL, options: .atomic)
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: InsightsTestHotkeyService(),
         historyStore: currentHistory,
         usageAnalyticsStore: UsageAnalyticsStore(storageURL: analyticsURL),
@@ -256,7 +256,7 @@ func analyticsWriteWarningSurvivesRefresh() async throws {
         storageURL: directory.appendingPathComponent("current-history.json"),
         clipboardService: MemoryClipboardService()
     )
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: InsightsTestHotkeyService(),
         mediaInterruption: InsightsNoopMediaInterruptionService(),
         coordinator: InsightsWarningCoordinator(
@@ -315,7 +315,7 @@ func cleanupRetryRefreshesUsageAnalytics() async throws {
     )
     try await historyStore.append(entry: entry)
 
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: InsightsTestHotkeyService(),
         historyStore: historyStore,
         usageAnalyticsStore: UsageAnalyticsStore(
@@ -377,7 +377,7 @@ func overlappingForcedInsightsRefreshIsCoalesced() async throws {
     let analyticsStore = BlockingUsageAnalyticsStore(
         storageURL: directory.appendingPathComponent("usage-analytics.json")
     )
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: InsightsTestHotkeyService(),
         historyStore: history,
         usageAnalyticsStore: analyticsStore,
@@ -419,6 +419,61 @@ func overlappingForcedInsightsRefreshIsCoalesced() async throws {
 
     #expect(controller.usageAnalyticsSnapshot.totalSessions == 2)
     #expect(await analyticsStore.reconciliationCount() == 2)
+}
+
+@MainActor
+@Test("An app upgrade preserves existing lifetime usage and pending events without history")
+func appUpgradeRetainsExistingUsageLedger() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StenoUsageUpgrade-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let analyticsURL = directory.appendingPathComponent("usage-analytics.json")
+    let historyURL = directory.appendingPathComponent("history.json")
+    let now = insightTestDate(2026, 9, 5)
+    func event(_ id: String, date: Date, words: Int) -> UsageEvent {
+        UsageEvent(id: UUID(uuidString: id)!, createdAt: date,
+            appBundleID: "com.example.Editor", rawWordCount: words, finalWordCount: words,
+            durationMS: words * 1_000, durationQuality: .captureExact,
+            cleanupChanges: .zero, cleanupQuality: .exact, insertionStatus: .inserted)
+    }
+    let old = event("A0000000-0000-0000-0000-000000000001", date: insightTestDate(2025, 12, 1), words: 40)
+    let recent = event("A0000000-0000-0000-0000-000000000002", date: insightTestDate(2026, 9, 1), words: 20)
+    let pending = event("A0000000-0000-0000-0000-000000000003", date: insightTestDate(2026, 9, 4), words: 10)
+    let previousStore = UsageAnalyticsStore(storageURL: analyticsURL)
+    try await previousStore.importBackfill(events: [old, recent],
+        coverage: UsageCoverageInterval(start: old.createdAt, end: nil))
+    try await previousStore.record(event: pending)
+    let archive = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: analyticsURL)) as? [String: Any])
+    #expect(archive["version"] as? Int == 2)
+    let segments = directory.appendingPathComponent("usage-analytics-events")
+    #expect(!(try FileManager.default.contentsOfDirectory(atPath: segments.path)).isEmpty)
+
+    // Each launch uses a fresh store, with no transcript history to reconstruct totals.
+    for _ in 0..<2 {
+        let controller = makeTestDictationController(hotkey: InsightsTestHotkeyService(),
+            historyStore: HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService()),
+            usageAnalyticsStore: UsageAnalyticsStore(storageURL: analyticsURL),
+            legacyHistoryURL: directory.appendingPathComponent("missing-legacy.json"))
+        await controller.refreshUsageAnalytics(now: now, calendar: insightTestCalendar())
+        #expect(controller.usageAnalyticsError.isEmpty)
+        #expect(controller.usageAnalyticsSnapshot.totalSessions == 3)
+        #expect(controller.usageAnalyticsSnapshot.totalWords == 70)
+        #expect(controller.usageAnalyticsSnapshot.totalDurationMS == 70_000)
+        #expect(!controller.usageAnalyticsSnapshot.dailyUsage.contains {
+            insightTestCalendar().isDate($0.date, inSameDayAs: old.createdAt)
+        })
+        await controller.teardownAndWait()
+    }
+    let next = event("A0000000-0000-0000-0000-000000000004", date: now, words: 5)
+    try await UsageAnalyticsStore(storageURL: analyticsURL).record(event: next)
+    let final = try await UsageAnalyticsStore(storageURL: analyticsURL)
+        .snapshot(now: now, calendar: insightTestCalendar(), months: 6)
+    #expect(final.totalSessions == 4)
+    #expect(final.totalWords == 75)
+    #expect(final.totalDurationMS == 75_000)
+    #expect(!(try FileManager.default.contentsOfDirectory(atPath: directory.path))
+        .contains { $0.contains("corrupt-") })
 }
 
 @MainActor
