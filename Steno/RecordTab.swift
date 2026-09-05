@@ -1,802 +1,388 @@
 import SwiftUI
 import StenoKit
 
-private enum RecordHeroState {
-    case idle
-    case recording
-    case transcribing
-}
-
 struct RecordTab: View {
     @EnvironmentObject private var controller: DictationController
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .largeTitle) private var displayPointSize: CGFloat = 52
+    @ScaledMetric(relativeTo: .body) private var transcriptPointSize: CGFloat = 21
+    var onOpenSettings: (SettingsSection) -> Void = { _ in }
+    var onOpenHistory: () -> Void = {}
 
-    @State private var copied = false
+    private var isProcessing: Bool { controller.recordingLifecycleState == .transcribing }
+    private var latestEntry: TranscriptEntry? { controller.recentEntries.first }
+    private var needsMicrophone: Bool { controller.microphonePermissionStatus != .granted }
 
     var body: some View {
         let theme = StenoDesign.theme(for: controller.preferences)
-        let heroState = currentHeroState
-
-        VStack(spacing: 0) {
-            if hasError {
-                errorBanner(theme: theme)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .padding(.bottom, 12)
-            }
-
-            VStack(spacing: 0) {
-                topRail(theme: theme)
-                    .padding(.top, 8)
-                    .padding(.horizontal, 24)
-
-                heroArea(theme: theme, heroState: heroState)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                hintStrip(theme: theme)
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 12)
-
-                composerDock(theme: theme)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 16)
-            }
-        }
-    }
-
-    private var hasError: Bool {
-        !controller.lastError.isEmpty || !controller.hotkeyRegistrationMessage.isEmpty
-    }
-
-    private var currentHeroState: RecordHeroState {
-        if controller.recordingLifecycleState == .transcribing {
-            return .transcribing
-        }
-        return controller.isRecording ? .recording : .idle
-    }
-
-    private var latestEntry: TranscriptEntry? {
-        controller.recentEntries.first
-    }
-
-    private func topRail(theme: StenoTheme) -> some View {
-        HStack(alignment: .center) {
-            HStack(spacing: 10) {
-                Text("SESSION")
-                    .font(StenoDesign.mono(size: 10, weight: .medium))
-                    .tracking(2)
-                    .foregroundStyle(theme.textMuted)
-                Text(Date.now.formatted(.dateTime.month(.abbreviated).day().year()))
-                    .font(StenoDesign.mono(size: 11, weight: .regular))
-                    .foregroundStyle(theme.textMuted)
-                Text("·")
-                    .font(StenoDesign.mono(size: 11, weight: .regular))
-                    .foregroundStyle(theme.textMuted)
-                Text(Date.now.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))
-                    .font(StenoDesign.mono(size: 11, weight: .regular))
-                    .foregroundStyle(theme.textMuted)
-            }
-
-            Spacer()
-
-            HStack(spacing: 16) {
-                InlineMeterView(label: "MIC", value: micMeterValue, theme: theme)
-                InlineMeterView(label: "VAD", value: vadMeterValue, theme: theme)
-                HStack(spacing: 6) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 10, weight: .medium))
-                    Text("Whisper · \(StenoDesign.whisperModelDisplayName(for: controller.preferences.dictation.modelPath))")
-                        .font(StenoDesign.subheadline())
-                }
-                .foregroundStyle(theme.textMuted)
-            }
-        }
-    }
-
-    private func heroArea(theme: StenoTheme, heroState: RecordHeroState) -> some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !shouldAnimateContinuously(heroState: heroState))) { context in
-            let phase = context.date.timeIntervalSinceReferenceDate
-            let preciseElapsed = preciseElapsed(at: context.date)
-
-            ZStack {
-                if heroState == .recording {
-                    VStack(spacing: 4) {
-                        Text(timerText(for: preciseElapsed))
-                            .font(StenoDesign.mono(size: 22, weight: .medium))
-                            .foregroundStyle(theme.accent)
-                        Text(".\(tenthsText(for: preciseElapsed))")
-                            .font(StenoDesign.mono(size: 13, weight: .regular))
-                            .foregroundStyle(theme.accent.opacity(0.62))
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    HStack {
+                        Text("DICTATE")
+                            .font(StenoDesign.mono(size: 10, weight: .semibold))
+                            .tracking(1.5)
+                        Spacer()
+                        Label("On this Mac", systemImage: "lock")
+                            .font(.system(size: 11))
                     }
-                    .padding(.top, 18)
-                    .frame(maxHeight: .infinity, alignment: .top)
-                }
-
-                if controller.preferences.appearance.recordHeroStyle == .ring {
-                    RingHeroView(
-                        state: heroState,
-                        theme: theme,
-                        phase: phase,
-                        reduceMotion: reduceMotion,
-                        showsCancelControl: showsCancelControl,
-                        onToggle: toggleRecord,
-                        onCancel: controller.cancelActiveRecording
-                    )
-                } else {
-                    PillHeroView(
-                        state: heroState,
-                        theme: theme,
-                        phase: phase,
-                        reduceMotion: reduceMotion,
-                        showsCancelControl: showsCancelControl,
-                        onToggle: toggleRecord,
-                        onCancel: controller.cancelActiveRecording
-                    )
-                }
-            }
-            .padding(.top, 26)
-            .padding(.bottom, 18)
-        }
-    }
-
-    private func hintStrip(theme: StenoTheme) -> some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 16) {
-                HintChip(theme: theme, label: "Hold to talk", keys: ["⌥"])
-                HintChip(theme: theme, label: "Hands-free", keys: [controller.preferences.hotkeys.handsFreeGlobalKeyCode.flatMap(keyLabel(for:)) ?? "F5"])
-                HintChip(theme: theme, label: "Clear", keys: ["⌘", "⌫"])
-            }
-
-            Spacer()
-
-            StenoBadge(
-                text: "Local · 0 bytes uploaded",
-                tone: .neutral,
-                theme: theme,
-                icon: "circle.fill",
-                compact: true
-            )
-        }
-        .font(StenoDesign.subheadline())
-        .foregroundStyle(theme.textMuted)
-    }
-
-    private func composerDock(theme: StenoTheme) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Text("LAST TRANSCRIPT")
-                    .font(StenoDesign.mono(size: 10, weight: .medium))
-                    .tracking(1.8)
-                    .foregroundStyle(theme.textMuted)
-
-                if let latestEntry {
-                    StenoBadge(
-                        text: StenoDesign.appDisplayName(for: latestEntry.appBundleID),
-                        tone: .neutral,
-                        theme: theme,
-                        icon: "circle.fill",
-                        compact: true
-                    )
-
-                    StenoBadge(
-                        text: copied ? "Copied" : "\(StenoDesign.timeText(for: latestEntry.createdAt)) · \(StenoDesign.relativeDateText(for: latestEntry.createdAt))",
-                        tone: copied ? .amber : .neutral,
-                        theme: theme,
-                        icon: copied ? "checkmark" : "clock",
-                        compact: true
-                    )
-                }
-
-                Spacer()
-
-                if let latestEntry {
-                    Text("\(wordCount(for: latestEntry)) words · \(durationText(for: latestEntry.durationMS))")
-                        .font(StenoDesign.mono(size: 10, weight: .regular))
-                        .foregroundStyle(theme.textMuted)
-
-                    Button {
-                        controller.copyEntry(latestEntry)
-                        copied = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            copied = false
-                        }
-                    } label: {
-                        Label("Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    .foregroundStyle(theme.textDim)
+                    if !controller.lastError.isEmpty || !controller.hotkeyRegistrationMessage.isEmpty {
+                        recoveryNotice(theme: theme)
                     }
-                    .buttonStyle(StenoActionButtonStyle(theme: theme, tone: .ghost))
+                    dictationLayout(theme: theme, availableSize: geometry.size)
+
                 }
+                .padding(32)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
+        }
+    }
 
-            Divider()
-                .overlay(theme.line)
+    @ViewBuilder
+    private func dictationLayout(theme: StenoTheme, availableSize: CGSize) -> some View {
+        switch StenoDesign.direction {
+        case .signal:
+            HStack(alignment: .top, spacing: 28) {
+                VStack(alignment: .leading, spacing: 26) {
+                    captureHeader(theme: theme)
+                    recordingControls(theme: theme)
+                    shortcutSection(theme: theme)
+                }
+                .frame(width: min(350, max(285, (availableSize.width - 92) * 0.45)), alignment: .leading)
+                transcriptSurface(theme: theme, availableHeight: availableSize.height)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        case .manuscript:
+            ManuscriptDictationLayout(header: captureHeader(theme: theme), controls: recordingControls(theme: theme),
+                shortcuts: shortcutSection(theme: theme), transcript: transcriptSurface(theme: theme, availableHeight: availableSize.height),
+                theme: theme, availableSize: availableSize)
+        case .current:
+            CurrentDictationLayout(header: captureHeader(theme: theme), controls: recordingControls(theme: theme),
+                shortcuts: shortcutSection(theme: theme), transcript: transcriptSurface(theme: theme, availableHeight: availableSize.height),
+                theme: theme, availableSize: availableSize)
+        }
+    }
 
-            Text(dockBodyText)
-                .font(StenoDesign.body())
-                .foregroundStyle(theme.text)
+    private func captureHeader(theme: StenoTheme) -> some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Text(captureTitle)
+                .font(StenoDesign.display(size: min(displayPointSize, 68)))
+                .tracking(StenoDesign.direction == .signal ? -2.2 : -1.5)
+                .lineSpacing(-3)
+                .lineLimit(3)
+                .minimumScaleFactor(0.8)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
+            Text(captureExplanation)
+                .font(.system(size: 13))
                 .lineSpacing(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
-        }
-        .background(theme.cardGradient)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(theme.lineStrong, lineWidth: StenoDesign.borderThin)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: theme.accentGlow.opacity(0.18), radius: 24, x: 0, y: -10)
-        .overlay(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 1, style: .continuous)
-                .fill(theme.accent)
-                .frame(width: 42, height: 1)
-                .shadow(color: theme.accentGlow, radius: 12)
-                .padding(.leading, 16)
+                .foregroundStyle(theme.textDim)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private func errorBanner(theme: StenoTheme) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !controller.hotkeyRegistrationMessage.isEmpty {
-                Text(controller.hotkeyRegistrationMessage)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(theme.danger)
-            }
+    private var captureActionText: String {
+        isProcessing ? "Transcribing" : controller.isRecording ? "Stop & transcribe" : needsMicrophone ? "Review permissions" : "Start dictation"
+    }
 
-            if !controller.lastError.isEmpty {
-                Text(controller.lastError)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(theme.danger)
+    private func recordingControls(theme: StenoTheme) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                if needsMicrophone && !controller.isRecording && !isProcessing {
+                    onOpenSettings(.permissions)
+                } else if controller.isRecording {
+                    controller.stopRecording()
+                } else {
+                    controller.toggleHandsFree()
+                }
+            } label: {
+                if StenoDesign.direction == .signal {
+                    HStack(spacing: 16) {
+                        captureGlyph
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(captureActionText).font(.system(size: 15, weight: .semibold))
+                            controlDetail
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(22)
+                    .frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
+                    .contentShape(Rectangle())
+                } else {
+                    VStack(spacing: 12) {
+                        captureGlyph
+                        Text(captureActionText)
+                            .font(.system(size: 13, weight: .semibold))
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if controller.isRecording { controlDetail }
+                    }
+                    .padding(18)
+                    .frame(width: 156, height: 156)
+                    .contentShape(Circle())
+                }
+            }
+            .buttonStyle(StenoCaptureButtonStyle(theme: theme, isRecording: controller.isRecording,
+                heroStyle: controller.preferences.appearance.recordHeroStyle))
+            .disabled(isProcessing)
+            .keyboardShortcut(.space, modifiers: [])
+            .accessibilityIdentifier("record.primary")
+            if controller.isRecording {
+                Button("Cancel recording", role: .cancel) { controller.cancelActiveRecording() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(theme.textDim)
+                    .help("Discard this recording without inserting text")
             }
         }
+        .frame(maxWidth: .infinity, alignment: StenoDesign.direction == .signal ? .leading : .center)
+    }
+
+    @ViewBuilder
+    private var captureGlyph: some View {
+        if isProcessing {
+            ProgressView().controlSize(.small).accessibilityHidden(true)
+        } else {
+            Image(systemName: controller.isRecording ? "stop.fill" : needsMicrophone ? "mic.slash" : "mic")
+                .font(.system(size: StenoDesign.direction == .signal ? 27 : 31, weight: .medium))
+                .frame(width: 34, height: 34)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private var controlDetail: some View {
+        if controller.isRecording {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(elapsedText(at: context.date))
+                    .font(StenoDesign.mono(size: 12)).monospacedDigit()
+            }
+        } else {
+            Text(isProcessing ? "Recording has stopped" : needsMicrophone ? "Microphone access needed" : "Hands-free")
+                .font(.system(size: 12))
+        }
+    }
+
+    private func shortcutSection(theme: StenoTheme) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            shortcutGuide(theme: theme)
+            if !controller.isRecording && !isProcessing && controller.status != "Idle" && !controller.status.isEmpty {
+                Label(controller.status, systemImage: "info.circle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .accessibilityLabel("Last activity: \(controller.status)")
+            }
+            Text("Audio and transcription stay on your Mac.")
+                .font(.system(size: 11)).foregroundStyle(theme.textDim)
+        }
+    }
+
+    private var captureTitle: String {
+        if StenoDesign.direction == .signal {
+            if isProcessing { return "PREPARING\nYOUR TEXT." }
+            if controller.isRecording { return "LISTENING." }
+            if needsMicrophone { return "SET UP\nYOUR MIC." }
+            return "READY TO\nDICTATE."
+        }
+        if isProcessing { return "Preparing your\ntranscript." }
+        if controller.isRecording { return "Listening." }
+        if needsMicrophone { return "Set up\nyour mic." }
+        return "Ready to\ndictate."
+    }
+
+    private var captureExplanation: String {
+        if isProcessing { return "Preparing your final transcript locally. Your microphone is no longer recording." }
+        if controller.isRecording { return "Speak naturally. Stop to insert your words, or cancel to discard this recording." }
+        if needsMicrophone { return "Allow microphone access to start your first dictation." }
+        return "Hold a shortcut in the app you're writing in, or start a hands-free dictation here."
+    }
+
+    private func shortcutGuide(theme: StenoTheme) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("From any app").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("Recording settings") { onOpenSettings(.recording) }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
+            }
+            if controller.preferences.hotkeys.optionPressToTalkEnabled {
+                shortcutRow(key: "Option", instruction: "Hold to speak. Release to finish.", theme: theme)
+            }
+            if let key = controller.preferences.hotkeys.handsFreeGlobalKeyCode.flatMap(keyLabel(for:)) {
+                shortcutRow(key: key, instruction: "Press to start. Press again to finish.", theme: theme)
+            }
+            if !controller.preferences.hotkeys.optionPressToTalkEnabled && controller.preferences.hotkeys.handsFreeGlobalKeyCode == nil {
+                Text("Global shortcuts are off. Set one in Recording settings to dictate without opening Steno.")
+                    .font(.system(size: 13)).foregroundStyle(theme.textDim)
+            }
+        }
+    }
+
+    private func shortcutRow(key: String, instruction: String, theme: StenoTheme) -> some View {
+        HStack(spacing: 14) {
+            Text(key)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .frame(minWidth: 68)
+                .padding(.vertical, 5)
+                .background(theme.ink2)
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(theme.lineStrong, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            Text(instruction).font(.system(size: 13)).foregroundStyle(theme.textDim)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func transcriptSurface(theme: StenoTheme, availableHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("LATEST TRANSCRIPT")
+                    .font(StenoDesign.mono(size: 10, weight: .medium))
+                    .tracking(1.2)
+                    .foregroundStyle(theme.textDim)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 8)
+                Button(action: onOpenHistory) {
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open History")
+                .help("Open History")
+            }
+            if let entry = latestEntry {
+                ScrollView {
+                    Text(entry.cleanText.isEmpty ? entry.rawText : entry.cleanText)
+                        .font(StenoDesign.reading(size: min(transcriptPointSize, 34)))
+                        .tracking(-0.25)
+                        .lineSpacing(7)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: StenoDesign.direction == .signal ? max(220, min(430, availableHeight - 290)) : max(140, min(280, availableHeight - 440)))
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(outcomeLabel(entry.insertionStatus), systemImage: outcomeSymbol(entry.insertionStatus))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(entry.insertionStatus == .failed ? theme.danger : theme.text)
+                    Text("\(StenoDesign.appDisplayName(for: entry.appBundleID)) · \(entry.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if entry.insertionStatus == .failed || entry.insertionStatus == .copiedOnly {
+                        Text("Copy and paste these words where you need them.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(theme.textDim)
+                    }
+                }
+                Button { controller.pasteEntry(entry) } label: {
+                    Label("Copy transcript", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            } else {
+                Image(systemName: "text.alignleft")
+                    .font(.system(size: 25, weight: .light))
+                    .foregroundStyle(theme.textDim)
+                    .padding(.top, 18)
+                Text("Your next words\nstart here.")
+                    .font(.system(size: 26, weight: .medium))
+                    .tracking(-0.6)
+                    .lineSpacing(3)
+                Text("After dictation, your completed text appears here and in History. Steno inserts it into the app you were using.")
+                    .font(.system(size: 13))
+                    .lineSpacing(4)
+                    .foregroundStyle(theme.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 24)
+                Divider()
+                Label("Only completed dictations are saved", systemImage: "checkmark.circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.textDim)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: StenoDesign.direction == .signal ? 370 : 0, alignment: .topLeading)
+        .padding(StenoDesign.direction == .signal ? 24 : 0)
+        .background(StenoDesign.direction == .signal ? theme.ink2 : .clear)
+        .clipShape(RoundedRectangle(cornerRadius: StenoDesign.direction == .signal ? 12 : 0))
+    }
+
+    private func recoveryNotice(theme: StenoTheme) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Something needs your attention", systemImage: "exclamationmark.triangle")
+                .font(.system(size: 13, weight: .semibold))
+            if !controller.lastError.isEmpty { Text(controller.lastError).textSelection(.enabled) }
+            if !controller.hotkeyRegistrationMessage.isEmpty { Text(controller.hotkeyRegistrationMessage) }
+            Button("Review settings") { onOpenSettings(needsMicrophone ? .permissions : .recording) }
+                .buttonStyle(.link)
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(theme.text)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(theme.danger.opacity(0.12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(theme.danger.opacity(0.28), lineWidth: StenoDesign.borderThin)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(16)
+        .background(theme.amberSoft)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.amber, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private var dockBodyText: String {
-        if let latestEntry {
-            let text = latestEntry.cleanText.isEmpty ? latestEntry.rawText : latestEntry.cleanText
-            return text.isEmpty ? emptyStateHint : text
+    private func elapsedText(at date: Date) -> String {
+        let elapsed = controller.recordingStartedAt.map { max(0, date.timeIntervalSince($0)) } ?? controller.recordingElapsed
+        let seconds = Int(elapsed)
+        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
+    }
+
+    private func outcomeLabel(_ status: InsertionStatus) -> String {
+        switch status {
+        case .inserted: return "Inserted"
+        case .copiedOnly: return "Copied to clipboard"
+        case .failed: return "Insertion failed"
+        case .noSpeech: return "No speech detected"
         }
-        return emptyStateHint
     }
 
-    private var emptyStateHint: String {
-        if controller.microphonePermissionStatus == .denied {
-            return "Microphone access denied. Grant access in Settings to start dictating."
-        }
-
-        if controller.microphonePermissionStatus == .unknown {
-            return "Grant microphone access to start dictating."
-        }
-
-        if let hotkey = controller.preferences.hotkeys.handsFreeGlobalKeyCode.flatMap(keyLabel(for:)) {
-            return "Hold Option to dictate, or press \(hotkey) for hands-free."
-        }
-
-        return "Hold Option to start dictating."
-    }
-
-    private var micMeterValue: Double {
-        controller.isRecording ? 0.72 : 0.06
-    }
-
-    private var vadMeterValue: Double {
-        controller.isRecording ? 0.84 : 0.08
-    }
-
-    private func shouldAnimateContinuously(heroState: RecordHeroState) -> Bool {
-        !reduceMotion && heroState == .recording
-    }
-
-    private func preciseElapsed(at date: Date) -> TimeInterval {
-        guard let startedAt = controller.recordingStartedAt else {
-            return controller.recordingElapsed
-        }
-        return max(0, date.timeIntervalSince(startedAt))
-    }
-
-    private func timerText(for interval: TimeInterval) -> String {
-        let totalSeconds = Int(interval)
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-
-    private func tenthsText(for interval: TimeInterval) -> String {
-        String(Int((interval * 10).rounded(.down)) % 10)
-    }
-
-    private func durationText(for durationMS: Int) -> String {
-        guard durationMS > 0 else { return "0s" }
-        let seconds = Int(round(Double(durationMS) / 1000))
-        if seconds >= 60 {
-            return "\(seconds / 60)m \(seconds % 60)s"
-        }
-        return "\(seconds)s"
-    }
-
-    private func wordCount(for entry: TranscriptEntry) -> Int {
-        let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
-        return text.split(whereSeparator: \.isWhitespace).count
-    }
-
-    private func toggleRecord() {
-        guard controller.recordingLifecycleState != .transcribing else { return }
-        controller.toggleHandsFree()
-    }
-
-    private var showsCancelControl: Bool {
-        switch controller.recordingLifecycleState {
-        case .recordingHandsFree, .recordingPressToTalk:
-            return true
-        case .idle, .transcribing:
-            return false
+    private func outcomeSymbol(_ status: InsertionStatus) -> String {
+        switch status {
+        case .inserted: return "checkmark.circle"
+        case .copiedOnly: return "doc.on.clipboard"
+        case .failed: return "exclamationmark.circle"
+        case .noSpeech: return "mic.slash"
         }
     }
 
     private func keyLabel(for keyCode: UInt16) -> String? {
-        switch keyCode {
-        case 122: return "F1"
-        case 120: return "F2"
-        case 160: return "F3"
-        case 131: return "F4"
-        case 96: return "F5"
-        case 97: return "F6"
-        case 98: return "F7"
-        case 100: return "F8"
-        case 101: return "F9"
-        case 109: return "F10"
-        case 103: return "F11"
-        case 111: return "F12"
-        case 105: return "F13"
-        case 107: return "F14"
-        case 113: return "F15"
-        case 106: return "F16"
-        case 64: return "F17"
-        case 79: return "F18"
-        case 80: return "F19"
-        case 90: return "F20"
-        default: return nil
-        }
+        let codes: [UInt16] = [122, 120, 160, 131, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90]
+        return codes.firstIndex(of: keyCode).map { "F\($0 + 1)" }
     }
 }
 
-private struct RecordingCancelButton: View {
+private struct StenoCaptureButtonStyle: ButtonStyle {
     let theme: StenoTheme
-    var size: CGFloat = 30
-    let action: () -> Void
+    let isRecording: Bool
+    let heroStyle: StenoRecordHeroStyle
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
 
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: size * 0.34, weight: .semibold))
-                .foregroundStyle(theme.textDim)
-                .frame(width: size, height: size)
-                .background(Color.white.opacity(theme.isLight ? 0.84 : 0.08))
-                .overlay(
-                    Circle()
-                        .stroke(theme.lineStrong, lineWidth: StenoDesign.borderThin)
-                )
-                .clipShape(Circle())
-                .contentShape(Circle())
-                .shadow(color: .black.opacity(theme.isLight ? 0.12 : 0.28), radius: 10, x: 0, y: 4)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Cancel dictation")
-        .help("Cancel and discard this transcript")
-    }
-}
-
-private struct InlineMeterView: View {
-    let label: String
-    let value: Double
-    let theme: StenoTheme
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(label)
-                .font(StenoDesign.mono(size: 10, weight: .medium))
-                .tracking(1.6)
-                .foregroundStyle(theme.textMuted)
-
-            ZStack(alignment: .leading) {
-                Capsule(style: .continuous)
-                    .fill(Color.white.opacity(theme.isLight ? 0.55 : 0.06))
-                    .frame(width: 46, height: 3)
-                Capsule(style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [theme.accent.opacity(0.45), theme.accent],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: max(2, 46 * value), height: 3)
-            }
-        }
-    }
-}
-
-private struct HintChip: View {
-    let theme: StenoTheme
-    let label: String
-    let keys: [String]
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(label)
-            ForEach(keys, id: \.self) { key in
-                StenoKeyCapsule(text: key, theme: theme)
-            }
-        }
-    }
-}
-
-private struct PillHeroView: View {
-    let state: RecordHeroState
-    let theme: StenoTheme
-    let phase: TimeInterval
-    let reduceMotion: Bool
-    let showsCancelControl: Bool
-    let onToggle: () -> Void
-    let onCancel: () -> Void
-
-    var body: some View {
-        HStack(spacing: 28) {
-            Button {
-                onToggle()
-            } label: {
-                HStack(spacing: 16) {
-                    ZStack {
-                        Circle()
-                            .fill(state == .recording ? theme.accent : theme.heroIdleFill)
-                            .frame(width: 56, height: 56)
-                            .shadow(color: state == .recording ? theme.accentGlow : .clear, radius: 18)
-
-                        if state == .recording {
-                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                .fill(theme.accentInk)
-                                .frame(width: 14, height: 14)
-                        } else {
-                            Image(systemName: state == .transcribing ? "waveform.badge.magnifyingglass" : "mic")
-                                .font(.system(size: 22, weight: .medium))
-                                .foregroundStyle(theme.text)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(primaryText)
-                            .font(StenoDesign.heroSerif(size: 22))
-                            .foregroundStyle(theme.heroText)
-                        Text(secondaryText)
-                            .font(StenoDesign.mono(size: 10, weight: .medium))
-                            .tracking(1.8)
-                            .foregroundStyle(theme.heroSubtext)
-                    }
-                }
-                .padding(.horizontal, 28)
-                .frame(height: 96)
-                .background(
-                    ZStack {
-                        LinearGradient(
-                            colors: [theme.heroSurfaceStart, theme.heroSurfaceEnd],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                        RadialGradient(
-                            colors: [Color.white.opacity(0.14), .clear],
-                            center: .topLeading,
-                            startRadius: 0,
-                            endRadius: 150
-                        )
-                    }
-                )
-                .overlay(
-                    Capsule(style: .continuous)
-                        .stroke(theme.heroOutline, lineWidth: StenoDesign.borderThin)
-                )
-                .clipShape(Capsule(style: .continuous))
-                .shadow(color: .black.opacity(theme.isLight ? 0.18 : 0.35), radius: 24, x: 0, y: 18)
-                .shadow(color: theme.accentGlow.opacity(state == .recording ? 0.35 : 0.12), radius: 38, x: 0, y: 0)
-            }
-            .buttonStyle(PressableButtonStyle())
-
-            HStack(spacing: 14) {
-                TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: !shouldAnimate)) { context in
-                    let samples = waveformSamples(at: context.date.timeIntervalSinceReferenceDate)
-                    Canvas { graphicsContext, size in
-                        let barWidth: CGFloat = 2
-                        let gap: CGFloat = 3
-                        let totalWidth = CGFloat(samples.count) * barWidth + CGFloat(samples.count - 1) * gap
-                        let startX = (size.width - totalWidth) / 2
-
-                        for (index, value) in samples.enumerated() {
-                            let barHeight = CGFloat(max(3, value * 64))
-                            let rect = CGRect(
-                                x: startX + CGFloat(index) * (barWidth + gap),
-                                y: (size.height - barHeight) / 2,
-                                width: barWidth,
-                                height: barHeight
-                            )
-                            let color = state == .recording ? theme.accent.opacity(0.42 + (0.58 * value)) : theme.textDim.opacity(0.34)
-                            graphicsContext.fill(RoundedRectangle(cornerRadius: 1.2).path(in: rect), with: .color(color))
-                        }
-                    }
-                }
-                .frame(width: 280, height: 96)
-                .background(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(theme.isLight ? 0.96 : 0.03),
-                            Color.white.opacity(theme.isLight ? 0.88 : 0.01)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(theme.lineStrong, lineWidth: StenoDesign.borderThin)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-
-                if showsCancelControl {
-                    VStack {
-                        RecordingCancelButton(theme: theme, size: 28) {
-                            onCancel()
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .frame(width: 40, height: 96)
-                }
-            }
+    private var cornerRadius: CGFloat {
+        switch StenoDesign.direction {
+        case .signal: return isRecording ? 22 : heroStyle == .ring ? 44 : 10
+        case .manuscript: return isRecording ? 46 : 78
+        case .current: return isRecording ? 30 : heroStyle == .ring ? 78 : 52
         }
     }
 
-    private var shouldAnimate: Bool {
-        !reduceMotion && state == .recording
-    }
-
-    private var primaryText: String {
-        switch state {
-        case .idle:
-            return "Press to record"
-        case .recording:
-            return "Listening"
-        case .transcribing:
-            return "Transcribing"
-        }
-    }
-
-    private var secondaryText: String {
-        switch state {
-        case .idle:
-            return "OR HOLD ⌥ ANYWHERE"
-        case .recording:
-            return "SPEAK NATURALLY — PAUSE TO FINISH"
-        case .transcribing:
-            return "PLEASE WAIT"
-        }
-    }
-
-    private func waveformSamples(at phase: TimeInterval) -> [Double] {
-        (0..<56).map { index in
-            if state != .recording {
-                return 0.08 + (Double(index % 3) * 0.01)
-            }
-            let value = 0.35 + 0.58 * abs(sin(phase * 2.8 + Double(index) * 0.38))
-            return reduceMotion ? min(value, 0.55) : value
-        }
-    }
-}
-
-private struct RingHeroView: View {
-    let state: RecordHeroState
-    let theme: StenoTheme
-    let phase: TimeInterval
-    let reduceMotion: Bool
-    let showsCancelControl: Bool
-    let onToggle: () -> Void
-    let onCancel: () -> Void
-
-    var body: some View {
-        ZStack {
-            ZStack {
-                ambientGlow
-                dialCanvas
-                centerButton
-            }
-
-            if showsCancelControl {
-                RecordingCancelButton(theme: theme, size: 28) {
-                    onCancel()
-                }
-                .offset(x: ringCancelOffset.width, y: ringCancelOffset.height)
-            }
-        }
-        .frame(width: 380, height: 380)
-    }
-
-    private var ringCancelOffset: CGSize {
-        CGSize(width: 208, height: -86)
-    }
-
-    private var ambientGlow: some View {
-        Group {
-            if state == .recording {
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [theme.accentGlow.opacity(0.36), .clear],
-                            center: .center,
-                            startRadius: 0,
-                            endRadius: 170
-                        )
-                    )
-                    .frame(width: 320, height: 320)
-                    .blur(radius: 12)
-            }
-        }
-    }
-
-    private var dialCanvas: some View {
-        Canvas { graphicsContext, size in
-            let center = CGPoint(x: size.width / 2, y: size.height / 2)
-            drawTicks(in: &graphicsContext, center: center)
-            drawDashedRing(in: &graphicsContext, center: center)
-            drawInnerRing(in: &graphicsContext, center: center)
-        }
-        .frame(width: 380, height: 380)
-    }
-
-    private var centerButton: some View {
-        Button {
-            onToggle()
-        } label: {
-            VStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(coreFill)
-                        .frame(width: 56, height: 56)
-                        .shadow(color: state == .recording ? theme.accentGlow : .clear, radius: 20)
-                    coreGlyph
-                }
-
-                Text(statusText)
-                    .font(StenoDesign.mono(size: 10, weight: .medium))
-                    .tracking(2)
-                    .foregroundStyle(state == .recording ? theme.accent : theme.textMuted)
-            }
-            .frame(width: 180, height: 180)
-            .background(
-                ZStack {
-                    LinearGradient(
-                        colors: [theme.heroOrbSurfaceStart, theme.heroOrbSurfaceEnd],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    RadialGradient(
-                        colors: [Color.white.opacity(0.12), .clear],
-                        center: .topLeading,
-                        startRadius: 0,
-                        endRadius: 120
-                    )
-                }
-            )
-            .overlay(
-                Circle()
-                    .stroke(theme.heroOutline, lineWidth: StenoDesign.borderThin)
-            )
-            .clipShape(Circle())
-            .scaleEffect(coreScale)
-            .shadow(color: .black.opacity(theme.isLight ? 0.18 : 0.38), radius: 30, x: 0, y: 20)
-            .shadow(color: theme.accentGlow.opacity(state == .recording ? 0.36 : 0.10), radius: 44, x: 0, y: 0)
-        }
-        .buttonStyle(PressableButtonStyle())
-    }
-
-    private var coreFill: Color {
-        state == .recording ? theme.accent : theme.heroIdleFill
-    }
-
-    @ViewBuilder
-    private var coreGlyph: some View {
-        if state == .recording {
-            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(theme.accentInk)
-                .frame(width: 14, height: 14)
-        } else {
-            Image(systemName: state == .transcribing ? "waveform.badge.magnifyingglass" : "mic")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(theme.text)
-        }
-    }
-
-    private var statusText: String {
-        switch state {
-        case .recording:
-            return "CAPTURING"
-        case .transcribing:
-            return "PROCESSING"
-        case .idle:
-            return "IDLE"
-        }
-    }
-
-    private var coreScale: CGFloat {
-        guard state == .recording, !reduceMotion else { return 1 }
-        return 1 + CGFloat(0.04 * ((sin(phase * 2) + 1) / 2))
-    }
-
-    private func drawTicks(in context: inout GraphicsContext, center: CGPoint) {
-        let outerRadius: CGFloat = 168
-        let ticks = 60
-
-        for index in 0..<ticks {
-            let angle = (Double(index) / Double(ticks)) * .pi * 2 - (.pi / 2)
-            let start = CGPoint(
-                x: center.x + cos(angle) * 150,
-                y: center.y + sin(angle) * 150
-            )
-            let end = CGPoint(
-                x: center.x + cos(angle) * outerRadius,
-                y: center.y + sin(angle) * outerRadius
-            )
-            let isActive = state == .recording && ((sin(phase * 2 + Double(index) * 0.25) + 1) / 2) > 0.45
-
-            var tick = Path()
-            tick.move(to: start)
-            tick.addLine(to: end)
-            context.stroke(
-                tick,
-                with: .color(isActive ? theme.accent : theme.lineStrong),
-                lineWidth: 1.5
-            )
-        }
-    }
-
-    private func drawDashedRing(in context: inout GraphicsContext, center: CGPoint) {
-        let ringRadius: CGFloat = 148
-        let dashPath = Path(ellipseIn: CGRect(
-            x: center.x - ringRadius,
-            y: center.y - ringRadius,
-            width: ringRadius * 2,
-            height: ringRadius * 2
-        ))
-
-        context.stroke(
-            dashPath,
-            with: .color(theme.accent.opacity(state == .recording ? 0.65 : 0.18)),
-            style: StrokeStyle(
-                lineWidth: 1,
-                lineCap: .round,
-                dash: [2, 4],
-                dashPhase: reduceMotion || state != .recording ? 0 : -phase * 18
-            )
-        )
-    }
-
-    private func drawInnerRing(in context: inout GraphicsContext, center: CGPoint) {
-        let rect = CGRect(
-            x: center.x - 120,
-            y: center.y - 120,
-            width: 240,
-            height: 240
-        )
-        context.stroke(
-            Path(ellipseIn: rect),
-            with: .color(theme.lineStrong),
-            lineWidth: 0.5
-        )
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(isEnabled ? theme.accentInk : theme.textDim)
+            .background(isEnabled ? theme.accent : theme.ink3)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay(RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(theme.text.opacity(isHovered && isEnabled ? 0.16 : 0), lineWidth: 1))
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.985 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: isRecording)
+            .onHover { isHovered = $0 }
     }
 }

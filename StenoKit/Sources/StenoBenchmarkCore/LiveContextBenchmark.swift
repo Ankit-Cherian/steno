@@ -1271,6 +1271,10 @@ public enum LiveContextReceiptManifest {
     ]
 
     public static let hostedEvidenceRelativePaths = [
+        "Steno/StenoApp.swift",
+        "Steno/PreviewSupport.swift",
+        "Steno/AppPreferencesStore.swift",
+        "StenoTests/IsolatedControllerFixture.swift",
         "StenoKit/Sources/StenoBenchmarkCore/LiveContextBenchmark.swift",
         "StenoKit/Sources/StenoBenchmarkCore/LiveContextBenchmarkRunner.swift",
         "StenoTests/LiveContextHostedEvidenceTests.swift",

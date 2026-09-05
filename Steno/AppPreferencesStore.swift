@@ -3,15 +3,17 @@ import OSLog
 
 actor AppPreferencesStore {
     private let storageURL: URL
+    private let migratesLegacyStorage: Bool
     private var hasPreparedStorageDirectory = false
     private static let logger = Logger(subsystem: "io.stenoapp.steno", category: "AppPreferencesStore")
 
-    init(storageURL: URL = AppPreferencesStore.defaultStorageURL()) {
-        self.storageURL = storageURL
+    init(storageURL: URL? = nil) {
+        self.storageURL = storageURL ?? Self.defaultStorageURL()
+        self.migratesLegacyStorage = storageURL == nil
     }
 
     func load() -> AppPreferences {
-        Self.migrateIfNeeded()
+        if migratesLegacyStorage { Self.migrateIfNeeded() }
         guard FileManager.default.fileExists(atPath: storageURL.path) else {
             return .default
         }

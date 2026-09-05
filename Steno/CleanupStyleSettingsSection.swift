@@ -32,7 +32,7 @@ struct CleanupStyleSettingsSection: View {
                 Divider()
                 pickerRow(
                     "Filler removal",
-                    description: "How aggressively fillers like \u{201C}um\u{201D}, \u{201C}you know\u{201D}, and \u{201C}like\u{201D} are removed",
+                    description: "Minimal and Balanced preserve your spoken words, including phrases such as “like” and “you know.” Aggressive removal is an explicit opt-in and can remove more fillers.",
                     selection: $preferences.globalStyleProfile.fillerPolicy
                 )
                 Divider()

@@ -4,10 +4,48 @@ import SwiftUI
 @main
 struct StenoApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var controller = DictationController()
+    @StateObject private var controller: DictationController
+
+    init() {
+        #if DEBUG
+        if IsolatedAppPreview.isTestHost || IsolatedAppPreview.isRequested {
+            _controller = StateObject(wrappedValue: IsolatedAppPreview.makeController(
+                populated: !ProcessInfo.processInfo.arguments.contains("--preview-empty")
+            ))
+        } else {
+            _controller = StateObject(wrappedValue: DictationController())
+        }
+        #else
+        _controller = StateObject(wrappedValue: DictationController())
+        #endif
+    }
+
+    private var isHostedTest: Bool {
+        #if DEBUG
+        IsolatedAppPreview.isTestHost
+        #else
+        false
+        #endif
+    }
 
     var body: some Scene {
         WindowGroup("Steno") {
+            Group {
+                if isHostedTest {
+                    Color.clear.frame(width: 1, height: 1)
+                } else {
+                    appContent
+                }
+            }
+        }
+        .defaultSize(width: StenoDesign.windowIdealWidth, height: StenoDesign.windowIdealHeight)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+        }
+    }
+
+    private var appContent: some View {
+        VStack(spacing: 0) {
             Group {
                 if !controller.hasBootstrapped {
                     StenoStageBackground(theme: StenoDesign.theme(for: controller.preferences))
@@ -19,16 +57,18 @@ struct StenoApp: App {
                         .environmentObject(controller)
                 }
             }
-            .background(WindowConfigurator().frame(width: 0, height: 0))
+            .background(WindowConfigurator(savesWindowFrame: !controller.isIsolatedPreview).frame(width: 0, height: 0))
             .preferredColorScheme(controller.preferences.appearance.mode.colorScheme)
             .task {
                 appDelegate.controller = controller
                 await controller.bootstrapIfNeeded()
             }
-        }
-        .defaultSize(width: StenoDesign.windowIdealWidth, height: StenoDesign.windowIdealHeight)
-        .commands {
-            CommandGroup(replacing: .newItem) {}
+            #if DEBUG
+            if controller.isIsolatedPreview {
+                Divider()
+                IsolatedReviewControls().environmentObject(controller)
+            }
+            #endif
         }
     }
 }

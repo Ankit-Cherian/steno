@@ -585,10 +585,10 @@ private struct HostedControllerListeningMeasurement {
 private func measureControllerListening(
     trialCount: Int
 ) async throws -> HostedControllerListeningMeasurement {
-    let presenter = WaveformOverlayPresenter()
+    let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
     presenter.prepareWindow()
     let coordinator = HostedControllerCoordinator()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: HostedControllerHotkeyService(),
         overlay: presenter,
         mediaInterruption: HostedControllerMediaInterruptionService(),
@@ -762,7 +762,7 @@ private func hostedMaximumBurstUpdatesPerSecond(_ timestampsMS: [Double]) -> Dou
 
 @MainActor
 private func measureOverlay(sentinels: HostedSentinels) async throws -> HostedOverlayMeasurement {
-    let presenter = WaveformOverlayPresenter()
+    let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
     let recorder = HostedOverlayRecorder()
     presenter.setHostedEvidenceHandler { recorder.record($0) }
     presenter.setLiveTranscriptEnabled(true)
@@ -858,7 +858,7 @@ private func measureOverlayLifecycleRegression(
     var retainedTextLeaks = 0
     var controlViolations = 0
     for (index, terminal) in terminalStates.enumerated() {
-        let presenter = WaveformOverlayPresenter()
+        let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
         let recorder = HostedOverlayEpochRecorder()
         presenter.setHostedEvidenceHandler { recorder.record($0) }
         presenter.setLiveTranscriptEnabled(true)
@@ -894,7 +894,7 @@ private func measureOverlayLifecycleRegression(
     }
 
     do {
-        let presenter = WaveformOverlayPresenter()
+        let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
         presenter.setLiveTranscriptEnabled(true)
         presenter.show(state: .listening(handsFree: false, elapsedSeconds: 0))
         let session = makeHostedLiveSession(runtimeGeneration: 900)
@@ -931,7 +931,7 @@ private func measureOverlayLifecycleRegression(
 
     do {
         let preferredBodyPointSize: CGFloat = 52
-        let presenter = WaveformOverlayPresenter()
+        let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
         presenter.setLiveTranscriptEnabled(true)
         presenter.setHostedAccessibilityPreferences(.init(
             reduceMotion: true,
@@ -973,7 +973,7 @@ private func measureOverlayLifecycleRegression(
         presenter.hide()
     }
 
-    let presenter = WaveformOverlayPresenter()
+    let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
     let recorder = HostedOverlayEpochRecorder()
     presenter.setHostedEvidenceHandler { recorder.record($0) }
     presenter.setLiveTranscriptEnabled(true)
@@ -1982,7 +1982,7 @@ private func measureCoordinator(
     // through the production presenter and reach the actual render observer.
     do {
         let audioURL = try makeHostedWAV(silent: false)
-        let presenter = WaveformOverlayPresenter()
+        let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
         let recorder = HostedOverlayEpochRecorder()
         presenter.setHostedEvidenceHandler { recorder.record($0) }
         presenter.setLiveTranscriptEnabled(true)
@@ -2031,7 +2031,7 @@ private func measureCoordinator(
     // render callbacks, and its empty authoritative result must reach no sink.
     do {
         let audioURL = try makeHostedWAV(silent: true)
-        let presenter = WaveformOverlayPresenter()
+        let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
         let recorder = HostedOverlayEpochRecorder()
         presenter.setHostedEvidenceHandler { recorder.record($0) }
         presenter.setLiveTranscriptEnabled(true)

@@ -1,12 +1,21 @@
 import Foundation
 import SwiftUI
 
+enum StenoDesignDirection: String, CaseIterable, Sendable {
+    case signal
+    case manuscript
+    case current
+}
+
 enum StenoAppearanceMode: String, Codable, Sendable, CaseIterable {
+    case system
     case dark
     case light
 
-    var colorScheme: ColorScheme {
+    var colorScheme: ColorScheme? {
         switch self {
+        case .system:
+            return nil
         case .dark:
             return .dark
         case .light:
@@ -20,6 +29,8 @@ enum StenoAppearanceMode: String, Codable, Sendable, CaseIterable {
 }
 
 enum StenoAccentStyle: String, Codable, Sendable, CaseIterable, Identifiable {
+    case citron
+    case terracotta
     case dodger
     case cyan
     case violet
@@ -30,8 +41,12 @@ enum StenoAccentStyle: String, Codable, Sendable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .citron:
+            return "Citron"
+        case .terracotta:
+            return "Terracotta"
         case .dodger:
-            return "Dodger"
+            return "Blue"
         case .cyan:
             return "Cyan"
         case .violet:

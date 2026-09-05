@@ -12,7 +12,7 @@ func saveAndApplyUpdatesLiveHandsFreeHotkey() async throws {
     let preferencesURL = testDirectory.appendingPathComponent("preferences.json")
     let hotkey = FakeHotkeyService()
     hotkey.globalToggleKeyCode = 96
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: hotkey,
         preferencesStore: AppPreferencesStore(storageURL: preferencesURL)
     )
@@ -79,7 +79,7 @@ func handsFreeToggleDuringCleanupIsDeferred() {
 @Test("Press-to-talk starts capture before checking media")
 func pressToTalkStartsCaptureBeforeCheckingMedia() async {
     let events = LifecycleEventLog()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: FakeDictationCoordinator(events: events)
@@ -100,7 +100,7 @@ func pressToTalkStartsCaptureBeforeCheckingMedia() async {
 @Test("Hands-free starts capture before checking media")
 func handsFreeStartsCaptureBeforeCheckingMedia() async {
     let events = LifecycleEventLog()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: FakeDictationCoordinator(events: events)
@@ -118,6 +118,28 @@ func handsFreeStartsCaptureBeforeCheckingMedia() async {
 }
 
 @MainActor
+@Test("Explicit Stop finishes both modes after shortcut preferences change")
+func visibleStopActionFinishesBothCaptureModes() async throws {
+    for pressToTalk in [true, false] {
+        let events = LifecycleEventLog()
+        let controller = makeTestDictationController(hotkey: FakeHotkeyService(),
+            mediaInterruption: FakeMediaInterruptionService(events: events),
+            coordinator: FakeDictationCoordinator(events: events))
+        if pressToTalk { controller.pressToTalkStart() } else { controller.toggleHandsFree() }
+        #expect(await waitForLifecycleEvent("media.pause", in: events))
+        controller.preferences.hotkeys.optionPressToTalkEnabled = false
+        controller.stopRecording()
+        #expect(await waitForLifecycleEvent("capture.stop", in: events))
+        controller.stopRecording()
+        if pressToTalk { controller.pressToTalkStop() }
+        #expect(await waitForLifecycleEvent("media.release", in: events))
+        #expect(await waitForLifecycleEvent("transcription.start", in: events))
+        #expect((await events.snapshot()).filter { $0 == "transcription.start" }.count == 1)
+        await controller.teardownAndWait()
+    }
+}
+
+@MainActor
 @Test("Normal stop closes the capture before media ownership releases")
 func normalStopClosesCaptureBeforeMediaRelease() async {
     let events = LifecycleEventLog()
@@ -127,7 +149,7 @@ func normalStopClosesCaptureBeforeMediaRelease() async {
         stopEntryGate: stopEntryGate
     )
     let media = FakeMediaInterruptionService(events: events)
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: media,
         coordinator: coordinator
@@ -174,7 +196,7 @@ func mediaResumesImmediatelyAfterCaptureCloses() async {
         events: events,
         processingGate: processingGate
     )
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: coordinator
@@ -210,7 +232,7 @@ func mediaResumesImmediatelyAfterCaptureCloses() async {
 func teardownCancelsInFlightTranscription() async {
     let events = LifecycleEventLog()
     let processingGate = LifecycleGate()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: FakeDictationCoordinator(
@@ -252,7 +274,7 @@ func teardownCancelsInFlightTranscription() async {
 func explicitCancelDuringTranscriptionEmitsNoLateCompletion() async {
     let events = LifecycleEventLog()
     let processingGate = LifecycleGate()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: FakeDictationCoordinator(
@@ -296,7 +318,7 @@ func systemUnloadWaitsForAllCompletionTasks() async {
     let oldGate = LifecycleGate()
     let newGate = LifecycleGate()
     let unloadCompletions = AsyncCounter()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: FakeDictationCoordinator(
@@ -366,7 +388,7 @@ func staleOverlayDismissalCannotHideRapidRestart() async {
     let events = LifecycleEventLog()
     let dismissDelay = LifecycleGate()
     let dismissRecorder = OverlayDismissActionRecorder()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: FakeDictationCoordinator(events: events),
@@ -414,7 +436,7 @@ func staleOverlayDismissalCannotHideRapidRestart() async {
 @Test("Memory pressure defers runtime unload until press-to-talk finishes")
 func memoryPressureCannotReleaseMediaDuringPressToTalk() async {
     let events = LifecycleEventLog()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: FakeDictationCoordinator(events: events)
@@ -452,13 +474,15 @@ func memoryPressureCannotReleaseMediaDuringPressToTalk() async {
 @Test("Wake notification invalidates any retained runtime that survived sleep")
 func wakeNotificationUnloadsRetainedRuntime() async {
     let events = LifecycleEventLog()
-    let controller = DictationController(
+    let notifications = NotificationCenter()
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
-        coordinator: FakeDictationCoordinator(events: events)
+        coordinator: FakeDictationCoordinator(events: events),
+        workspaceNotificationCenter: notifications
     )
 
-    NSWorkspace.shared.notificationCenter.post(
+    notifications.post(
         name: NSWorkspace.didWakeNotification,
         object: nil
     )
@@ -484,7 +508,7 @@ func systemUnloadSerializesDeferredRuntimeRebuild() async {
         eventPrefix: "owner"
     )
     let replacement = FakeDictationCoordinator(events: events, eventPrefix: "replacement")
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         preferencesStore: AppPreferencesStore(
@@ -554,7 +578,7 @@ func stopFailureCancelsCaptureBeforeMediaRelease() async {
         cancelEntryGate: cancelEntryGate
     )
     let media = FakeMediaInterruptionService(events: events)
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: media,
         coordinator: coordinator
@@ -602,7 +626,7 @@ func explicitCancelClosesCaptureBeforeMediaRelease() async {
         cancelEntryGate: cancelEntryGate
     )
     let media = FakeMediaInterruptionService(events: events)
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: media,
         coordinator: coordinator
@@ -642,7 +666,7 @@ func teardownClosesCaptureBeforeMediaRelease() async {
         cancelEntryGate: cancelEntryGate
     )
     let media = FakeMediaInterruptionService(events: events)
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: media,
         coordinator: coordinator
@@ -674,7 +698,7 @@ func teardownClosesCaptureBeforeMediaRelease() async {
 func teardownDuringDeferredCleanupCannotRestartRecording() async {
     let events = LifecycleEventLog()
     let cancelGate = LifecycleGate()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: FakeDictationCoordinator(events: events, cancelGate: cancelGate)
@@ -712,7 +736,7 @@ func cancelUsesSessionOwningCoordinatorAfterReplacement() async {
     let events = LifecycleEventLog()
     let owner = FakeDictationCoordinator(events: events, eventPrefix: "owner")
     let replacement = FakeDictationCoordinator(events: events, eventPrefix: "replacement")
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: owner
@@ -759,7 +783,7 @@ func settingsRebuildWaitsForSessionCleanup() async {
         eventPrefix: "owner"
     )
     let replacement = FakeDictationCoordinator(events: events, eventPrefix: "replacement")
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         preferencesStore: AppPreferencesStore(
@@ -821,7 +845,7 @@ func newestSettingsRebuildOwnsInstalledRuntime() async {
     let latest = FakeDictationCoordinator(events: events, eventPrefix: "latest")
     let stale = FakeDictationCoordinator(events: events, eventPrefix: "stale")
     var rebuildCount = 0
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         preferencesStore: AppPreferencesStore(
@@ -878,7 +902,7 @@ func teardownInvalidatesPendingRuntimeRebuild() async {
     )
     let replacement = FakeDictationCoordinator(events: events, eventPrefix: "replacement")
     var rebuildCount = 0
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         preferencesStore: AppPreferencesStore(
@@ -922,7 +946,7 @@ func teardownInvalidatesPendingRuntimeRebuild() async {
 @Test("Failed start clears its completed task ownership")
 func failedStartClearsActiveStartTask() async {
     let events = LifecycleEventLog()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: FakeDictationCoordinator(events: events, startShouldFail: true)
@@ -938,7 +962,7 @@ func failedStartClearsActiveStartTask() async {
 @Test("Dependency cancellation during start is reported as a start failure")
 func dependencyCancellationDuringStartIsReportedAsFailure() async {
     let events = LifecycleEventLog()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         coordinator: FakeDictationCoordinator(
@@ -963,7 +987,7 @@ func failedStartAppliesDeferredSettingsRebuild() async {
     let events = LifecycleEventLog()
     let startGate = LifecycleGate()
     let rebuilds = AsyncCounter()
-    let controller = DictationController(
+    let controller = makeTestDictationController(
         hotkey: FakeHotkeyService(),
         mediaInterruption: FakeMediaInterruptionService(events: events),
         preferencesStore: AppPreferencesStore(

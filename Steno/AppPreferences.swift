@@ -10,7 +10,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         init(
             mode: StenoAppearanceMode = .dark,
-            accent: StenoAccentStyle = .dodger,
+            accent: StenoAccentStyle = .citron,
             recordHeroStyle: StenoRecordHeroStyle = .pill,
             atmosphereIntensity: Int = 100
         ) {
