@@ -766,7 +766,45 @@ def test_cancel_priority(executable: Path, model: Path, _: Path, pcm: bytes) -> 
         helper.terminate()
 
 
+def test_preview_silence_resumption_and_unknown(executable: Path, model: Path, _: Path, pcm: bytes) -> None:
+    """Confirmed silence emits no text; speech resumes and missing VAD stays unknown."""
+    speech = pcm[: SAMPLE_RATE_HZ * 3 * SAMPLE_WIDTH_BYTES]
+    silence = b"\x00\x00" * (SAMPLE_RATE_HZ // 5)
+    for use_vad in (True, False):
+        helper = Helper(executable, model, VERSION_2, use_vad=use_vad)
+        try:
+            stream_id = uuid.uuid4().bytes
+            generation = 790 if use_vad else 791
+            start_stream(helper, stream_id, generation)
+            offset = 0
+            sequence = 0
+            for revision, chunk in enumerate((silence, speech, silence, speech), start=1):
+                for byte_offset in range(0, len(chunk), MAXIMUM_APPEND_SAMPLES * 2):
+                    block = chunk[byte_offset : byte_offset + MAXIMUM_APPEND_SAMPLES * 2]
+                    helper.send(Frame(AUDIO_APPEND, stream_id, generation, append_payload(sequence, offset, block)))
+                    offset += len(block) // 2
+                    require(helper.expect(AUDIO_ACCEPTED, stream_id, generation).payload == u64(sequence) + u64(offset), "resumption append mismatch")
+                    sequence += 1
+                helper.send(Frame(STREAM_DECODE, stream_id, generation, u64(revision) + u64(offset)))
+                response = helper.expect(HYPOTHESIS, stream_id, generation, timeout=30.0)
+                observed_revision, watermark, _, evidence, text = parse_hypothesis(response.payload)
+                require((observed_revision, watermark) == (revision, offset), "resumption response correlation mismatch")
+                expected_evidence = (1 if revision % 2 else 2) if use_vad else 0
+                require(evidence == expected_evidence, "silence/resumption speech evidence mismatch")
+                if use_vad and evidence == 1:
+                    require(text == "", "confirmed silence unnecessarily produced provisional ASR text")
+                elif revision % 2 == 0:
+                    require(bool(text.strip()), "speech or unknown evidence lost provisional ASR text")
+            helper.send(Frame(STREAM_CANCEL, stream_id, generation))
+            helper.expect(CANCELLED, stream_id, generation)
+            helper.expect_no_frame(0.2)
+            helper.shutdown()
+        finally:
+            helper.terminate()
+
+
 def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: bytes) -> None:
+    test_preview_silence_resumption_and_unknown(executable, model, _, pcm)
     helper = Helper(executable, model, VERSION_2)
     try:
         def keyboard_click_fixture(sample_count: int) -> bytes:
