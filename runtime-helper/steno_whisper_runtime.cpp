@@ -1331,7 +1331,14 @@ void streaming_worker(whisper_context * context, StreamRuntime & runtime) {
                 runtime.abort_requested,
                 speech_evidence
             );
-            if (succeeded && !runtime.abort_requested.load(std::memory_order_relaxed)) {
+            // Silence evidence covers only audio appended since the previous
+            // preview. Its text is suppressed by the provisional reducer, so
+            // decoding the older rolling window cannot improve this response.
+            // Unknown evidence keeps the existing decoding path; only confirmed
+            // silence avoids allocating a decoder state and running ASR.
+            if (succeeded
+                && speech_evidence != PreviewSpeechEvidence::NoSpeech
+                && !runtime.abort_requested.load(std::memory_order_relaxed)) {
                 succeeded = transcribe_preview(
                     context,
                     preview->configuration,

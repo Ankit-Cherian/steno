@@ -269,6 +269,54 @@ func promptContaminationStripsRepeatedMetadataLabels() async throws {
     #expect(entries.first?.rawText == "Can you imagine why Buckingham has been so violent? I suspect.")
 }
 
+@Test("SessionCoordinator preserves spoken terms even when vocabulary prompting is active", arguments: [
+    "Terms, Terms, Terms.",
+    "The terms remain unchanged.",
+    "Terms: payment is due tomorrow.",
+    "I said terms, terms, terms."
+])
+func noSpeechGatePreservesSpokenTerms(_ text: String) async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("spoken-terms-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let audioURL = directory.appendingPathComponent("audio.wav")
+    try Data().write(to: audioURL)
+
+    let recorder = InsertCallRecorder()
+    let history = HistoryStore(
+        storageURL: directory.appendingPathComponent("history.json"),
+        clipboardService: MemoryClipboardService()
+    )
+    let lexicon = PersonalLexiconService()
+    await lexicon.upsert(term: "TURSO", preferred: "TURSO", scope: .global)
+    let coordinator = SessionCoordinator(
+        captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
+        transcriptionEngine: StaticTranscriptionEngine { _, _ in RawTranscript(text: text) },
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: InsertionService(transports: [
+            ClosureInsertionTransport(method: .direct) { insertedText, _ in
+                await recorder.record(insertedText)
+            }
+        ]),
+        historyStore: history,
+        lexiconService: lexicon,
+        styleProfileService: StyleProfileService()
+    )
+
+    let sessionID = try await coordinator.startPressToTalk(
+        appContext: AppContext(bundleIdentifier: "com.example.editor", appName: "Editor")
+    )
+    let result = try await coordinator.stopPressToTalk(sessionID: sessionID)
+
+    #expect(result.status == .inserted)
+    #expect(result.insertedText == text)
+    #expect(await recorder.callCount() == 1)
+    let entries = await history.recent(limit: 10)
+    #expect(entries.count == 1)
+    #expect(entries.first?.rawText == text)
+}
+
 private actor InsertCallRecorder {
     private var calls: [String] = []
 
