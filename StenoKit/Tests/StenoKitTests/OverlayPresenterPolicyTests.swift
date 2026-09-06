@@ -273,6 +273,7 @@ struct OverlayPresenterPolicyTests {
     @MainActor
     func productionPresenterUsesOneImmediateTranscriptSurfaceAndCalmUnavailableShell() {
         let presenter = WaveformOverlayPresenter()
+        presenter.hostedEvidencePrepareOffscreen()
         presenter.setLiveTranscriptEnabled(true)
         presenter.prepareWindow()
 
@@ -318,6 +319,7 @@ struct OverlayPresenterPolicyTests {
     @MainActor
     func productionPresenterFitsNewestSpeechAtLargePreferredTextAndRestoresAppearance() {
         let presenter = WaveformOverlayPresenter()
+        presenter.hostedEvidencePrepareOffscreen()
         presenter.setLiveTranscriptEnabled(true)
         presenter.setHostedAccessibilityPreferences(.init(
             reduceMotion: true,
@@ -371,6 +373,7 @@ struct OverlayPresenterPolicyTests {
 
         for terminalState in terminalStates {
             let presenter = WaveformOverlayPresenter()
+            presenter.hostedEvidencePrepareOffscreen()
             presenter.setLiveTranscriptEnabled(true)
             presenter.show(state: .listening(handsFree: false, elapsedSeconds: 0))
             presenter.show(state: terminalState)

@@ -3,6 +3,13 @@ import AppKit
 
 enum OverlayHitTesting {
     @MainActor
+    static func interactiveView(at point: NSPoint, in container: NSView, interactiveViews: [NSView]) -> NSView? {
+        interactiveViews.reversed().compactMap {
+            interactiveView(at: point, in: container, interactiveView: $0)
+        }.first
+    }
+
+    @MainActor
     static func interactiveView(
         at point: NSPoint,
         in container: NSView,
@@ -11,6 +18,7 @@ enum OverlayHitTesting {
         guard let interactiveView,
               interactiveView.isDescendant(of: container),
               !interactiveView.isHiddenOrHasHiddenAncestor,
+              (interactiveView as? NSControl)?.isEnabled != false,
               let containerSuperview = container.superview else {
             return nil
         }

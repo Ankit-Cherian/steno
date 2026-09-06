@@ -72,4 +72,28 @@ func overlayHitTestingIgnoresHiddenButtons() {
 
     #expect(hit == nil)
 }
+
+@MainActor
+@Test("Overlay routes Stop and Cancel independently and rejects disabled or blank regions")
+func overlayHitTestingSupportsSeparateStopAndCancel() {
+    let root = NSView(frame: CGRect(x: 0, y: 0, width: 700, height: 400))
+    let container = NSView(frame: CGRect(x: 70, y: 80, width: 440, height: 146))
+    root.addSubview(container)
+    let content = NSView(frame: container.bounds)
+    container.addSubview(content)
+    let stop = NSButton(frame: CGRect(x: 362, y: 107, width: 28, height: 28))
+    let cancel = NSButton(frame: CGRect(x: 398, y: 107, width: 28, height: 28))
+    content.addSubview(stop)
+    content.addSubview(cancel)
+    let stopPoint = CGPoint(x: 446, y: 201)
+    let cancelPoint = CGPoint(x: 482, y: 201)
+    #expect(OverlayHitTesting.interactiveView(at: stopPoint, in: container, interactiveViews: [stop, cancel]) === stop)
+    #expect(OverlayHitTesting.interactiveView(at: cancelPoint, in: container, interactiveViews: [stop, cancel]) === cancel)
+    #expect(OverlayHitTesting.interactiveView(at: CGPoint(x: 463, y: 201), in: container, interactiveViews: [stop, cancel]) == nil)
+    #expect(OverlayHitTesting.interactiveView(at: CGPoint(x: 200, y: 125), in: container, interactiveViews: [stop, cancel]) == nil)
+    stop.isEnabled = false
+    cancel.isHidden = true
+    #expect(OverlayHitTesting.interactiveView(at: stopPoint, in: container, interactiveViews: [stop, cancel]) == nil)
+    #expect(OverlayHitTesting.interactiveView(at: cancelPoint, in: container, interactiveViews: [stop, cancel]) == nil)
+}
 #endif
