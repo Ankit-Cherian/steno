@@ -20,7 +20,7 @@ struct MediaSettingsSection: View {
                 Text("Steno resumes only media it verified that it paused. Media that was already paused stays paused.")
                     .fixedSize(horizontal: false, vertical: true)
             } icon: {
-                Image(systemName: "play.pause")
+                Image(systemName: "playpause")
             }
             .font(StenoDesign.caption())
             .foregroundStyle(StenoDesign.textSecondary)
