@@ -305,7 +305,7 @@ struct UsageCalendarView: View {
         let opacities: [Double] = theme.isLight
             ? [0.58, 0.70, 0.82, 0.94]
             : [0.52, 0.66, 0.80, 0.94]
-        let color = theme.isLight ? theme.accentInk : theme.accent
+        let color = theme.accent
         return color.opacity(opacities[level - 1])
     }
 
@@ -329,7 +329,7 @@ struct UsageCalendarView: View {
     }
 
     private var unavailableDurationStroke: Color {
-        theme.isLight ? theme.accentInk.opacity(0.96) : theme.accent.opacity(0.88)
+        theme.isLight ? theme.accent.opacity(0.96) : theme.accent.opacity(0.88)
     }
 
     private var estimatedDurationStroke: Color {
@@ -594,14 +594,14 @@ private struct UsageCalendarCellView: View {
         }
         if hasOnlyUnavailableDuration {
             return theme.isLight
-                ? theme.accentInk.opacity(0.32)
+                ? theme.accent.opacity(0.32)
                 : theme.accent.opacity(0.34)
         }
 
         let opacities: [Double] = theme.isLight
             ? [0.58, 0.70, 0.82, 0.94]
             : [0.52, 0.66, 0.80, 0.94]
-        let color = theme.isLight ? theme.accentInk : theme.accent
+        let color = theme.accent
         return color.opacity(opacities[intensityLevel - 1])
     }
 
@@ -661,7 +661,7 @@ private struct UsageCalendarCellView: View {
     }
 
     private var unavailableDurationStroke: Color {
-        theme.isLight ? theme.accentInk.opacity(0.96) : theme.accent.opacity(0.88)
+        theme.isLight ? theme.accent.opacity(0.96) : theme.accent.opacity(0.88)
     }
 
     private var estimatedDurationStroke: Color {
