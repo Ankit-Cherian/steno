@@ -75,8 +75,7 @@ struct UsageCalendarView: View {
 
                 ForEach(Array(weeks.enumerated()), id: \.element.id) { index, week in
                     Text(monthLabel(for: week, at: index) ?? "")
-                        .font(StenoDesign.mono(size: 9.5, weight: .medium))
-                        .tracking(0.6)
+                        .font(StenoDesign.system(size: 11, weight: .medium))
                         .foregroundStyle(theme.textDim)
                         .fixedSize()
                         .frame(width: cellSize, height: 14, alignment: .leading)
@@ -88,7 +87,7 @@ struct UsageCalendarView: View {
                 VStack(spacing: cellSpacing) {
                     ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
                         Text(symbol)
-                            .font(StenoDesign.mono(size: 9, weight: .regular))
+                            .font(StenoDesign.system(size: 10))
                             .foregroundStyle(theme.textDim)
                             .frame(width: weekdayLabelWidth, height: cellSize, alignment: .leading)
                             .accessibilityHidden(true)
@@ -124,31 +123,18 @@ struct UsageCalendarView: View {
     private var selectedDayDetail: some View {
         Group {
             if let day = selectedDay {
-                HStack(spacing: 18) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(day.date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day().year()))
-                            .font(StenoDesign.bodyEmphasis())
-                            .foregroundStyle(theme.text)
-                        Text(selectedDayStatus(day))
-                            .font(StenoDesign.caption())
-                            .foregroundStyle(theme.textMuted)
-                            .lineLimit(1)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 18) {
+                        selectedDayHeading(day)
+                            .fixedSize(horizontal: true, vertical: false)
+                        Spacer(minLength: 16)
+                        selectedDayMetrics(day)
                     }
-
-                    Spacer(minLength: 16)
-
-                    dailyDetailMetric(
-                        label: selectedDayTimeLabel(day),
-                        value: selectedDayDuration(day)
-                    )
-                    dailyDetailMetric(
-                        label: "WORDS",
-                        value: day.isTracked ? day.wordCount.formatted() : "—"
-                    )
-                    dailyDetailMetric(
-                        label: "SESSIONS",
-                        value: day.isTracked ? day.sessionCount.formatted() : "—"
-                    )
+                    VStack(alignment: .leading, spacing: 14) {
+                        selectedDayHeading(day)
+                        selectedDayMetrics(day)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             } else {
                 Text("Choose a day to inspect its usage.")
@@ -168,14 +154,34 @@ struct UsageCalendarView: View {
         .accessibilityElement(children: .combine)
     }
 
+    private func selectedDayHeading(_ day: UsageCalendarDay) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(day.date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day().year()))
+                .font(StenoDesign.bodyEmphasis())
+                .foregroundStyle(theme.text)
+            Text(selectedDayStatus(day))
+                .font(StenoDesign.caption())
+                .foregroundStyle(theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func selectedDayMetrics(_ day: UsageCalendarDay) -> some View {
+        HStack(spacing: 18) {
+            dailyDetailMetric(label: selectedDayTimeLabel(day), value: selectedDayDuration(day))
+            dailyDetailMetric(label: "Words", value: day.isTracked ? day.wordCount.formatted() : "—")
+            dailyDetailMetric(label: "Sessions", value: day.isTracked ? day.sessionCount.formatted() : "—")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
     private func dailyDetailMetric(label: String, value: String) -> some View {
         VStack(alignment: .trailing, spacing: 2) {
             Text(value)
                 .font(StenoDesign.system(size: 15, weight: .semibold).monospacedDigit())
                 .foregroundStyle(theme.text)
             Text(label)
-                .font(StenoDesign.mono(size: 8.5, weight: .medium))
-                .tracking(0.9)
+                .font(StenoDesign.system(size: 11))
                 .foregroundStyle(theme.textDim)
         }
         .frame(minWidth: 70, alignment: .trailing)
@@ -199,7 +205,7 @@ struct UsageCalendarView: View {
     private var intensityLegend: some View {
         HStack(spacing: 8) {
             Text("Less")
-                .font(StenoDesign.mono(size: 9.5, weight: .regular))
+                .font(StenoDesign.system(size: 11))
                 .foregroundStyle(theme.textDim)
 
             HStack(spacing: 4) {
@@ -217,13 +223,13 @@ struct UsageCalendarView: View {
             .accessibilityLabel("Known dictated time intensity from less to more")
 
             Text("More")
-                .font(StenoDesign.mono(size: 9.5, weight: .regular))
+                .font(StenoDesign.system(size: 11))
                 .foregroundStyle(theme.textDim)
         }
     }
 
     private var provenanceLegend: some View {
-        HStack(spacing: 8) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)], alignment: .leading, spacing: 8) {
             legendKey(
                 label: "Current streak",
                 stroke: currentStreakStroke,
@@ -285,7 +291,7 @@ struct UsageCalendarView: View {
                 .frame(width: 12, height: 12)
 
             Text(label)
-                .font(StenoDesign.mono(size: 9.5, weight: .regular))
+                .font(StenoDesign.system(size: 11))
                 .foregroundStyle(theme.textDim)
         }
         .accessibilityElement(children: .combine)
@@ -436,12 +442,12 @@ struct UsageCalendarView: View {
 
     private func selectedDayTimeLabel(_ day: UsageCalendarDay) -> String {
         if day.unavailableDurationSessionCount > 0 {
-            return "KNOWN TIME"
+            return "Known time"
         }
         if day.estimatedDurationSessionCount > 0 {
-            return "EST. TIME"
+            return "Est. time"
         }
-        return "TIME"
+        return "Time"
     }
 
     private var weekdaySymbols: [String] {

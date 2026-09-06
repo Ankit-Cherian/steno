@@ -70,14 +70,12 @@ struct InsightsMetricStrip: View {
         InsightsCard(theme: theme, padding: 0) {
             VStack(spacing: 0) {
                 HStack {
-                    Text("LIFETIME TOTALS")
-                        .font(StenoDesign.mono(size: 9.5, weight: .medium))
-                        .tracking(1.6)
+                    Text("Lifetime totals")
+                        .font(StenoDesign.system(size: 12, weight: .medium))
                         .foregroundStyle(theme.textDim)
                     Spacer()
-                    Text("LOCAL USAGE HISTORY")
-                        .font(StenoDesign.mono(size: 9, weight: .regular))
-                        .tracking(1.1)
+                    Text("Local usage history")
+                        .font(StenoDesign.system(size: 12, weight: .regular))
                         .foregroundStyle(theme.textDim)
                 }
                 .padding(.horizontal, 18)
@@ -88,9 +86,17 @@ struct InsightsMetricStrip: View {
                     .fill(theme.line)
                     .frame(height: 1)
 
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 0)], spacing: 0) {
-                    ForEach(metrics) { metric in
-                        InsightMetricCell(metric: metric, theme: theme)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 0) {
+                        ForEach(metrics) { metric in
+                            InsightMetricCell(metric: metric, theme: theme)
+                                .frame(minWidth: 180)
+                        }
+                    }
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 0), GridItem(.flexible(), spacing: 0)], alignment: .leading, spacing: 0) {
+                        ForEach(metrics) { metric in
+                            InsightMetricCell(metric: metric, theme: theme)
+                        }
                     }
                 }
             }
@@ -109,14 +115,13 @@ private struct InsightMetricCell: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(theme.accent)
 
-                Text(metric.label.uppercased())
-                    .font(StenoDesign.mono(size: 9.5, weight: .medium))
-                    .tracking(1.4)
+                Text(metric.label)
+                    .font(StenoDesign.system(size: 12, weight: .medium))
                     .foregroundStyle(theme.textDim)
             }
 
             Text(metric.value)
-                .font(StenoDesign.pageTitle(size: 30).monospacedDigit())
+                .font(StenoDesign.pageTitle(size: 28).monospacedDigit())
                 .foregroundStyle(theme.text)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
@@ -124,7 +129,7 @@ private struct InsightMetricCell: View {
             Text(metric.detail)
                 .font(StenoDesign.subheadline())
                 .foregroundStyle(theme.textDim)
-                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -171,13 +176,13 @@ struct AppUsageBreakdownView: View {
     private var sectionHeading: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("TOP APPS")
-                    .font(StenoDesign.mono(size: 10, weight: .medium))
-                    .tracking(2)
+                Text("Top apps")
+                    .font(StenoDesign.system(size: 12, weight: .medium))
                     .foregroundStyle(theme.textMuted)
                 Text("Where you dictate")
-                    .font(StenoDesign.system(size: 18, weight: .semibold))
+                    .font(StenoDesign.reading(size: 22))
                     .foregroundStyle(theme.text)
+                    .accessibilityAddTraits(.isHeader)
                 Text("Local usage history, ranked by sessions with known dictated time shown.")
                     .font(StenoDesign.subheadline())
                     .foregroundStyle(theme.textMuted)
@@ -185,9 +190,8 @@ struct AppUsageBreakdownView: View {
 
             Spacer()
 
-            Text("\(apps.count) APPS")
-                .font(StenoDesign.mono(size: 9.5, weight: .medium))
-                .tracking(1.2)
+            Text("\(apps.count) \(apps.count == 1 ? "app" : "apps")")
+                .font(StenoDesign.system(size: 12, weight: .medium))
                 .foregroundStyle(theme.textDim)
         }
     }
@@ -206,7 +210,7 @@ private struct AppUsageRow: View {
     var body: some View {
         HStack(spacing: 11) {
             Text("\(rank)")
-                .font(StenoDesign.mono(size: 9.5, weight: .medium))
+                .font(StenoDesign.system(size: 12, weight: .medium))
                 .foregroundStyle(theme.textMuted)
                 .frame(width: 14, alignment: .trailing)
 
@@ -217,18 +221,16 @@ private struct AppUsageRow: View {
             )
 
             VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(appName)
-                        .font(StenoDesign.bodyEmphasis())
-                        .foregroundStyle(theme.text)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    Text(summaryText)
-                        .font(StenoDesign.mono(size: 9.5, weight: .regular))
-                        .foregroundStyle(theme.textDim)
-                        .lineLimit(1)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        appNameLabel.fixedSize()
+                        Spacer(minLength: 8)
+                        usageLabel.fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        appNameLabel
+                        usageLabel
+                    }
                 }
 
                 GeometryReader { proxy in
@@ -246,6 +248,20 @@ private struct AppUsageRow: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Number \(rank), \(appName), \(durationDescription), \(app.wordCount) words, \(app.sessionCount) sessions")
+    }
+
+    private var appNameLabel: some View {
+        Text(appName)
+            .font(StenoDesign.bodyEmphasis())
+            .foregroundStyle(theme.text)
+            .lineLimit(1)
+    }
+
+    private var usageLabel: some View {
+        Text(summaryText)
+            .font(StenoDesign.system(size: 12))
+            .foregroundStyle(theme.textDim)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var appName: String {
@@ -283,9 +299,8 @@ struct CleanupCoverageView: View {
 
                 if summary.exactSessionCount > 0 {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("RECORDED EXACT ACTIONS")
-                            .font(StenoDesign.mono(size: 9.5, weight: .medium))
-                            .tracking(1.4)
+                        Text("Recorded exact actions")
+                            .font(StenoDesign.system(size: 12, weight: .medium))
                             .foregroundStyle(theme.textDim)
 
                         VStack(spacing: 0) {
@@ -354,25 +369,24 @@ struct CleanupCoverageView: View {
     }
 
     private var heading: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("CLEANUP · USAGE HISTORY")
-                    .font(StenoDesign.mono(size: 10, weight: .medium))
-                    .tracking(2)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("Cleanup history")
+                    .font(StenoDesign.system(size: 12, weight: .medium))
                     .foregroundStyle(theme.textDim)
-                Text(headlineText)
-                    .font(StenoDesign.system(size: 20, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(theme.text)
+                Spacer(minLength: 0)
+                StenoBadge(
+                    text: coverageBadgeText,
+                    tone: coverageIsComplete ? .green : .amber,
+                    theme: theme,
+                    compact: true
+                )
             }
-
-            Spacer()
-
-            StenoBadge(
-                text: coverageBadgeText,
-                tone: coverageIsComplete ? .green : .amber,
-                theme: theme,
-                compact: true
-            )
+            Text(headlineText)
+                .font(StenoDesign.reading(size: 22).monospacedDigit())
+                .foregroundStyle(theme.text)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
         }
     }
 
@@ -383,7 +397,7 @@ struct CleanupCoverageView: View {
                 .foregroundStyle(theme.textDim)
             Spacer()
             Text(InsightsFormatting.compactCount(value))
-                .font(StenoDesign.mono(size: 10.5, weight: .medium))
+                .font(StenoDesign.system(size: 12, weight: .medium))
                 .foregroundStyle(theme.text)
         }
         .padding(.vertical, 9)
@@ -399,13 +413,12 @@ struct CleanupCoverageView: View {
     private var coverageSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("CALENDAR COVERAGE")
-                    .font(StenoDesign.mono(size: 9.5, weight: .medium))
-                    .tracking(1.4)
+                Text("Calendar coverage")
+                    .font(StenoDesign.system(size: 12, weight: .medium))
                     .foregroundStyle(theme.textDim)
                 Spacer()
                 Text("\(summary.trackedDayCount) of \(summary.totalDayCount) days")
-                    .font(StenoDesign.mono(size: 9.5, weight: .regular))
+                    .font(StenoDesign.system(size: 12, weight: .regular))
                     .foregroundStyle(theme.textMuted)
             }
 
