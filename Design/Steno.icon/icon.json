@@ -1,0 +1,29 @@
+{
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.07451,0.14510,0.22353,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "Artwork.png",
+          "name": "Ribbon S"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared",
+    "circles": [
+      "watchOS"
+    ]
+  }
+}

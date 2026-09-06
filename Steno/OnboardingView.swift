@@ -22,9 +22,11 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             HStack {
                 Color.clear.frame(width: 64, height: 1)
-                Text("Steno")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(theme.text)
+                Image("StenoMark")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 36, height: 36)
+                    .accessibilityHidden(true)
                 Spacer()
                 Text("Setup")
                     .font(StenoDesign.caption())
