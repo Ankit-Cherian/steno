@@ -12,83 +12,79 @@ struct EngineSettingsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            StenoPageTitle("Speech model")
-                .accessibilityAddTraits(.isHeader)
-            Text("Choose the balance of speed, accuracy, and memory that suits your Mac.")
-                .font(.system(size: 13)).foregroundStyle(.secondary)
             settingsCard("Available models") { modelLibraryPanel }
             DisclosureGroup("Advanced setup and diagnostics") {
-            VStack(alignment: .leading, spacing: 14) {
-            TextField("whisper-cli path", text: $preferences.dictation.whisperCLIPath)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .truncationMode(.middle)
-            if let error = whisperCLIPathError {
-                Text(error)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.error)
-            }
-
-            TextField("Model path", text: modelPathBinding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .truncationMode(.middle)
-            if let error = modelPathError {
-                Text(error)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.error)
-            }
-
-            Stepper(value: $preferences.dictation.threadCount, in: 1...16) {
-                Text("Thread count: \(preferences.dictation.threadCount)")
-            }
-
-            compatibilityPanel
-
-            Divider()
-
-            Toggle("Voice Activity Detection (VAD)", isOn: $preferences.dictation.vadEnabled)
-                .font(StenoDesign.bodyEmphasis())
-
-            if preferences.dictation.vadEnabled {
-                TextField("VAD model path", text: $preferences.dictation.vadModelPath)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                    .truncationMode(.middle)
-                if let error = vadModelPathError {
-                    HStack(spacing: StenoDesign.xs) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(StenoDesign.caption())
+                VStack(alignment: .leading, spacing: 14) {
+                    TextField("whisper-cli path", text: $preferences.dictation.whisperCLIPath)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .truncationMode(.middle)
+                    if let error = whisperCLIPathError {
                         Text(error)
                             .font(StenoDesign.caption())
+                            .foregroundStyle(StenoDesign.error)
                     }
-                    .foregroundStyle(StenoDesign.warning)
-                }
-            }
 
-            HStack(spacing: StenoDesign.sm) {
-                Button {
-                    runTestSetup()
-                } label: {
-                    if isTesting {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
-                    } else {
-                        Text("Test Setup")
+                    TextField("Model path", text: modelPathBinding)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .truncationMode(.middle)
+                    if let error = modelPathError {
+                        Text(error)
+                            .font(StenoDesign.caption())
+                            .foregroundStyle(StenoDesign.error)
+                    }
+
+                    Stepper(value: $preferences.dictation.threadCount, in: 1...16) {
+                        Text("Thread count: \(preferences.dictation.threadCount)")
+                    }
+
+                    compatibilityPanel
+
+                    Divider()
+
+                    Toggle("Voice activity detection (VAD)", isOn: $preferences.dictation.vadEnabled)
+                        .font(StenoDesign.bodyEmphasis())
+
+                    if preferences.dictation.vadEnabled {
+                        TextField("VAD model path", text: $preferences.dictation.vadModelPath)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .truncationMode(.middle)
+                        if let error = vadModelPathError {
+                            HStack(spacing: StenoDesign.xs) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(StenoDesign.caption())
+                                Text(error)
+                                    .font(StenoDesign.caption())
+                            }
+                            .foregroundStyle(StenoDesign.warning)
+                        }
+                    }
+
+                    HStack(spacing: StenoDesign.sm) {
+                        Button {
+                            runTestSetup()
+                        } label: {
+                            if isTesting {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
+                            } else {
+                                Text("Test setup")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isTesting || whisperCLIPathError != nil || modelPathError != nil)
+                        .accessibilityLabel("Test whisper setup")
+
+                        if let result = testResult {
+                            Text(result)
+                                .font(StenoDesign.caption())
+                                .foregroundStyle(testResultIsError ? StenoDesign.error : StenoDesign.success)
+                        }
                     }
                 }
-                .buttonStyle(.bordered)
-                .disabled(isTesting || whisperCLIPathError != nil || modelPathError != nil)
-                .accessibilityLabel("Test whisper setup")
-
-                if let result = testResult {
-                    Text(result)
-                        .font(StenoDesign.caption())
-                        .foregroundStyle(testResultIsError ? StenoDesign.error : StenoDesign.success)
-                }
-            }
-            }
             .padding(.top, 16)
             }
         }
@@ -97,10 +93,6 @@ struct EngineSettingsSection: View {
     @ViewBuilder
     private var modelLibraryPanel: some View {
         VStack(alignment: .leading, spacing: StenoDesign.sm) {
-            Text("Model Library")
-                .font(StenoDesign.bodyEmphasis())
-                .foregroundStyle(StenoDesign.textPrimary)
-
             Text("Start with the included Small model, then download Medium or Large V3 Turbo here when your Mac can handle them.")
                 .font(StenoDesign.caption())
                 .foregroundStyle(StenoDesign.textSecondary)
@@ -113,47 +105,50 @@ struct EngineSettingsSection: View {
             ForEach(controller.whisperModelOptions) { option in
                 HStack(alignment: .center, spacing: StenoDesign.md) {
                     VStack(alignment: .leading, spacing: StenoDesign.xxs) {
-                        HStack(spacing: StenoDesign.xs) {
+                        VStack(alignment: .leading, spacing: 6) {
                             Text(option.title)
-                                .font(StenoDesign.callout())
+                                .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(StenoDesign.textPrimary)
 
-                            if option.isRecommended {
-                                StenoBadge(
-                                    text: "Recommended",
-                                    tone: .accent,
-                                    theme: StenoDesign.theme(for: preferences),
-                                    compact: true
-                                )
-                            }
+                            HStack(spacing: 6) {
+                                if option.isRecommended {
+                                    StenoBadge(
+                                        text: "Recommended",
+                                        tone: .accent,
+                                        theme: StenoDesign.theme(for: preferences),
+                                        compact: true
+                                    )
+                                }
 
-                            if option.isActive {
-                                StenoBadge(
-                                    text: "Using",
-                                    tone: .green,
-                                    theme: StenoDesign.theme(for: preferences),
-                                    compact: true
-                                )
-                            } else if option.source == .bundled {
-                                StenoBadge(
-                                    text: "Included",
-                                    tone: .neutral,
-                                    theme: StenoDesign.theme(for: preferences),
-                                    compact: true
-                                )
-                            } else if option.source == .downloaded {
-                                StenoBadge(
-                                    text: "Downloaded",
-                                    tone: .neutral,
-                                    theme: StenoDesign.theme(for: preferences),
-                                    compact: true
-                                )
+                                if option.isActive {
+                                    StenoBadge(
+                                        text: "Using",
+                                        tone: .green,
+                                        theme: StenoDesign.theme(for: preferences),
+                                        compact: true
+                                    )
+                                } else if option.source == .bundled {
+                                    StenoBadge(
+                                        text: "Included",
+                                        tone: .neutral,
+                                        theme: StenoDesign.theme(for: preferences),
+                                        compact: true
+                                    )
+                                } else if option.source == .downloaded {
+                                    StenoBadge(
+                                        text: "Downloaded",
+                                        tone: .neutral,
+                                        theme: StenoDesign.theme(for: preferences),
+                                        compact: true
+                                    )
+                                }
                             }
                         }
 
                         Text(option.summary)
                             .font(StenoDesign.caption())
                             .foregroundStyle(StenoDesign.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Spacer()
@@ -170,10 +165,11 @@ struct EngineSettingsSection: View {
                         }
                     }
                     .buttonStyle(.bordered)
+                    .fixedSize()
                     .disabled(hasUnsavedChanges || option.isActive || (controller.activeModelDownloadID != nil && controller.activeModelDownloadID != option.modelID))
                 }
-                .padding(.vertical, StenoDesign.xs)
-                .padding(.horizontal, StenoDesign.sm)
+                .padding(.vertical, 12)
+                .padding(.horizontal, 12)
                 .background(StenoDesign.surfaceSecondary)
                 .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusSmall))
             }

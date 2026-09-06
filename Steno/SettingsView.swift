@@ -168,37 +168,24 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
     private func settingsLayout(theme: StenoTheme) -> some View {
-        switch StenoDesign.direction {
-        case .signal:
-            VStack(spacing: 0) {
-                ScrollView {
-                    settingsContent(theme: theme)
-                        .frame(maxWidth: 760, alignment: .leading)
-                        .padding(32)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if selectedSection != .appearance || preferencesDraft != controller.preferences {
-                    Divider()
-                    footer(theme: theme).padding(.horizontal, 32).padding(.vertical, 20)
-                }
-            }
-        case .manuscript:
-            ManuscriptSettingsLayout(content: settingsContent(theme: theme), footer: conditionalFooter(theme: theme), theme: theme)
-        case .current:
-            CurrentSettingsLayout(content: settingsContent(theme: theme), footer: conditionalFooter(theme: theme), theme: theme)
-        }
+        ManuscriptSettingsLayout(
+            content: settingsContent(theme: theme),
+            footer: conditionalFooter(theme: theme),
+            theme: theme,
+            showsFooter: selectedSection != .appearance || preferencesDraft != controller.preferences
+        )
     }
 
     private func settingsContent(theme: StenoTheme) -> some View {
         VStack(alignment: .leading, spacing: 28) {
-            if selectedSection != .appearance && selectedSection != .engine {
-                VStack(alignment: .leading, spacing: 10) {
-                    StenoPageTitle(selectedSection.title)
-                    Text(selectedSection.summary)
-                        .font(.system(size: 13)).foregroundStyle(theme.textDim)
-                }
+            VStack(alignment: .leading, spacing: 8) {
+                StenoPageTitle(selectedSection.title)
+                    .accessibilityAddTraits(.isHeader)
+                Text(selectedSection.summary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             sectionContent(theme: theme)
         }
@@ -213,9 +200,8 @@ struct SettingsView: View {
 
     private func sidebar(theme: StenoTheme) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("SETTINGS")
-                .font(StenoDesign.mono(size: 10, weight: .semibold))
-                .tracking(1.3)
+            Text("Settings")
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(theme.textDim)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 31)
@@ -224,7 +210,7 @@ struct SettingsView: View {
                     ForEach(SettingsSection.allCases) { section in
                         Button { selectedSection = section } label: {
                             Text(section.title)
-                                .font(.system(size: 12, weight: selectedSection == section ? .semibold : .regular))
+                                .font(.system(size: 13, weight: selectedSection == section ? .medium : .regular))
                                 .foregroundStyle(selectedSection == section ? theme.text : theme.textDim)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 12)
@@ -247,23 +233,6 @@ struct SettingsView: View {
         }
         .frame(width: 184)
         .background(theme.ink0)
-    }
-
-    private func selectedBackground(for selected: Bool, theme: StenoTheme) -> some ShapeStyle {
-        guard selected else {
-            return AnyShapeStyle(Color.clear)
-        }
-
-        return AnyShapeStyle(
-            LinearGradient(
-                colors: [
-                    theme.selectedAccentFill,
-                    Color.white.opacity(theme.isLight ? 0.02 : 0.02)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
     }
 
     @ViewBuilder
@@ -338,6 +307,7 @@ struct SettingsView: View {
             .buttonStyle(StenoActionButtonStyle(theme: theme, tone: .primary))
             .disabled(hasConflictingUpdate || preferencesDraft == controller.preferences)
             .accessibilityIdentifier("settings.save")
+            .keyboardShortcut("s", modifiers: .command)
         }
         .fixedSize()
     }
