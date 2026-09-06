@@ -58,9 +58,10 @@ struct InsightsTab: View {
                     unavailableState(theme: theme)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 32)
-            .padding(.vertical, 32)
+            .frame(maxWidth: 960, alignment: .leading)
+            .padding(.horizontal, 28)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 24)
         }
         .task {
             guard usesControllerData else { return }
@@ -70,18 +71,12 @@ struct InsightsTab: View {
 
     @ViewBuilder
     private func loadedContent(snapshot: UsageAnalyticsSnapshot, theme: StenoTheme) -> some View {
-        switch StenoDesign.direction {
-        case .signal:
-            InsightsMetricStrip(metrics: metrics(for: snapshot), theme: theme)
-            calendarCard(snapshot: snapshot, theme: theme)
-            secondaryDetails(snapshot: snapshot, theme: theme)
-        case .manuscript:
-            ManuscriptInsightsLayout(metrics: InsightsMetricStrip(metrics: metrics(for: snapshot), theme: theme),
-                calendar: calendarCard(snapshot: snapshot, theme: theme), details: secondaryDetails(snapshot: snapshot, theme: theme), theme: theme)
-        case .current:
-            CurrentInsightsLayout(metrics: InsightsMetricStrip(metrics: metrics(for: snapshot), theme: theme),
-                calendar: calendarCard(snapshot: snapshot, theme: theme), details: secondaryDetails(snapshot: snapshot, theme: theme), theme: theme)
-        }
+        ManuscriptInsightsLayout(
+            metrics: InsightsMetricStrip(metrics: metrics(for: snapshot), theme: theme),
+            calendar: calendarCard(snapshot: snapshot, theme: theme),
+            details: secondaryDetails(snapshot: snapshot, theme: theme),
+            theme: theme
+        )
     }
 
     private func secondaryDetails(snapshot: UsageAnalyticsSnapshot, theme: StenoTheme) -> some View {
@@ -91,7 +86,7 @@ struct InsightsTab: View {
                 apps: appUsage(from: snapshot),
                 theme: theme
             )
-            .frame(maxWidth: .infinity)
+            .frame(minWidth: 300, maxWidth: .infinity)
             .layoutPriority(1)
 
             CleanupCoverageView(
@@ -108,79 +103,61 @@ struct InsightsTab: View {
     }
 
     private func pageHeader(snapshot: UsageAnalyticsSnapshot?, theme: StenoTheme) -> some View {
-        HStack(alignment: .bottom, spacing: 20) {
-            VStack(alignment: .leading, spacing: 5) {
-                StenoPageTitle("Insights")
-                    .foregroundStyle(theme.text)
-
-                Text("Your dictation, over time.")
-                    .font(StenoDesign.subheadline())
-                    .foregroundStyle(theme.textMuted)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .bottom, spacing: 20) {
+                headerTitle(theme: theme)
+                    .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 12)
+                headerBadges(snapshot: snapshot, theme: theme)
+                    .fixedSize()
             }
+            VStack(alignment: .leading, spacing: 12) {
+                headerTitle(theme: theme)
+                headerBadges(snapshot: snapshot, theme: theme)
+            }
+        }
+    }
 
-            Spacer()
+    private func headerTitle(theme: StenoTheme) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            StenoPageTitle("Insights")
+                .foregroundStyle(theme.text)
+            Text("Your dictation, over time.")
+                .font(StenoDesign.subheadline())
+                .foregroundStyle(theme.textMuted)
+        }
+    }
 
-            HStack(spacing: 8) {
-                if let snapshot {
-                    StenoBadge(
-                        text: rangeLabel(for: snapshot),
-                        tone: .neutral,
-                        theme: theme,
-                        icon: "calendar",
-                        compact: true
-                    )
-                }
-
-                StenoBadge(
-                    text: "Local only",
-                    tone: .green,
-                    theme: theme,
-                    icon: "lock.fill",
-                    compact: true
-                )
+    private func headerBadges(snapshot: UsageAnalyticsSnapshot?, theme: StenoTheme) -> some View {
+        HStack(spacing: 8) {
+            if let snapshot {
+                StenoBadge(text: rangeLabel(for: snapshot), tone: .neutral, theme: theme,
+                    icon: "calendar", compact: true)
+            }
+            StenoBadge(text: "Local only", tone: .green, theme: theme,
+                icon: "lock.fill", compact: true)
                 .help("Aggregate Insights history is calculated and retained on this Mac, separately from transcript history.")
-            }
         }
     }
 
     private func calendarCard(snapshot: UsageAnalyticsSnapshot, theme: StenoTheme) -> some View {
         InsightsCard(theme: theme, padding: 20) {
             VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Activity")
-                            .font(StenoDesign.mono(size: 10, weight: .medium))
-                            .tracking(2)
-                            .foregroundStyle(theme.textMuted)
                         Text("Usage calendar")
-                            .font(StenoDesign.system(size: 20, weight: .semibold))
+                            .font(StenoDesign.reading(size: 22))
                             .foregroundStyle(theme.text)
-                        Text("See when you dictate. Darker squares mean more recorded time; markers show estimates and gaps.")
+                            .accessibilityAddTraits(.isHeader)
+                        Text("Darker squares mean more recorded time. Markers distinguish estimates and gaps.")
                             .font(StenoDesign.subheadline())
                             .foregroundStyle(theme.textMuted)
                     }
 
-                    Spacer()
-
-                    HStack(spacing: 22) {
-                        streakStat(
-                            value: snapshot.currentStreak,
-                            label: "CURRENT STREAK",
-                            suffix: "days",
-                            theme: theme
-                        )
-                        streakStat(
-                            value: snapshot.longestKnownStreak,
-                            label: "LONGEST KNOWN",
-                            suffix: "days",
-                            theme: theme
-                        )
-                        streakStat(
-                            value: snapshot.dailyUsage.filter(\.isActive).count,
-                            label: "RANGE ACTIVE DAYS",
-                            suffix: nil,
-                            theme: theme
-                        )
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), alignment: .leading)], alignment: .leading, spacing: 12) {
+                        streakStat(value: snapshot.currentStreak, label: "Current streak", suffix: "days", theme: theme)
+                        streakStat(value: snapshot.longestKnownStreak, label: "Longest known", suffix: "days", theme: theme)
+                        streakStat(value: snapshot.dailyUsage.filter(\.isActive).count, label: "Active days in range", suffix: nil, theme: theme)
                     }
                 }
 
@@ -202,7 +179,7 @@ struct InsightsTab: View {
         suffix: String?,
         theme: StenoTheme
     ) -> some View {
-        VStack(alignment: .trailing, spacing: 3) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(value.formatted())
                     .font(StenoDesign.system(size: 22, weight: .semibold).monospacedDigit())
@@ -214,8 +191,7 @@ struct InsightsTab: View {
                 }
             }
             Text(label)
-                .font(StenoDesign.mono(size: 9, weight: .medium))
-                .tracking(1.1)
+                .font(StenoDesign.system(size: 12))
                 .foregroundStyle(theme.textMuted)
         }
         .accessibilityElement(children: .combine)
@@ -249,12 +225,13 @@ struct InsightsTab: View {
                     .font(StenoDesign.bodyEmphasis())
                     .foregroundStyle(theme.text)
                 Text(message)
+                    .textSelection(.enabled)
                     .font(StenoDesign.subheadline())
                     .foregroundStyle(theme.textMuted)
                     .multilineTextAlignment(.center)
 
                 if let retryAction {
-                    Button("Try Again", action: retryAction)
+                    Button("Try again", action: retryAction)
                         .buttonStyle(StenoActionButtonStyle(theme: theme, tone: .ghost))
                         .padding(.top, 4)
                 }
@@ -269,6 +246,7 @@ struct InsightsTab: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(theme.amber)
             Text(message)
+                .textSelection(.enabled)
                 .font(StenoDesign.caption())
                 .foregroundStyle(theme.textMuted)
             Spacer()
