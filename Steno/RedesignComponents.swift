@@ -359,14 +359,14 @@ struct AppGlyphView: View {
 /// Shared display hierarchy; metadata and native controls keep their compact sizing.
 struct StenoPageTitle: View {
     let title: String
-    @ScaledMetric(relativeTo: .largeTitle) private var pointSize: CGFloat = 38
+    @ScaledMetric(relativeTo: .largeTitle) private var pointSize: CGFloat = 32
 
     init(_ title: String) { self.title = title }
 
     var body: some View {
         Text(title)
-            .font(StenoDesign.pageTitle(size: min(pointSize, 54)))
-            .tracking(-1.2)
+            .font(StenoDesign.pageTitle(size: min(pointSize, 48)))
+            .tracking(-0.6)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityAddTraits(.isHeader)
     }

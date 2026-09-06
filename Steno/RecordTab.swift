@@ -3,8 +3,8 @@ import StenoKit
 
 struct RecordTab: View {
     @EnvironmentObject private var controller: DictationController
-    @ScaledMetric(relativeTo: .largeTitle) private var displayPointSize: CGFloat = 52
-    @ScaledMetric(relativeTo: .body) private var transcriptPointSize: CGFloat = 21
+    @ScaledMetric(relativeTo: .largeTitle) private var displayPointSize: CGFloat = 44
+    @ScaledMetric(relativeTo: .body) private var transcriptPointSize: CGFloat = 20
     var onOpenSettings: (SettingsSection) -> Void = { _ in }
     var onOpenHistory: () -> Void = {}
 
@@ -17,58 +17,32 @@ struct RecordTab: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    HStack {
-                        Text("DICTATE")
-                            .font(StenoDesign.mono(size: 10, weight: .semibold))
-                            .tracking(1.5)
-                        Spacer()
-                        Label("On this Mac", systemImage: "lock")
-                            .font(.system(size: 11))
-                    }
-                    .foregroundStyle(theme.textDim)
                     if !controller.lastError.isEmpty || !controller.hotkeyRegistrationMessage.isEmpty {
                         recoveryNotice(theme: theme)
                     }
                     dictationLayout(theme: theme, availableSize: geometry.size)
 
                 }
-                .padding(32)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .frame(maxWidth: 960, alignment: .topLeading)
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .top)
             }
         }
     }
 
     @ViewBuilder
     private func dictationLayout(theme: StenoTheme, availableSize: CGSize) -> some View {
-        switch StenoDesign.direction {
-        case .signal:
-            HStack(alignment: .top, spacing: 28) {
-                VStack(alignment: .leading, spacing: 26) {
-                    captureHeader(theme: theme)
-                    recordingControls(theme: theme)
-                    shortcutSection(theme: theme)
-                }
-                .frame(width: min(350, max(285, (availableSize.width - 92) * 0.45)), alignment: .leading)
-                transcriptSurface(theme: theme, availableHeight: availableSize.height)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-        case .manuscript:
-            ManuscriptDictationLayout(header: captureHeader(theme: theme), controls: recordingControls(theme: theme),
-                shortcuts: shortcutSection(theme: theme), transcript: transcriptSurface(theme: theme, availableHeight: availableSize.height),
-                theme: theme, availableSize: availableSize)
-        case .current:
-            CurrentDictationLayout(header: captureHeader(theme: theme), controls: recordingControls(theme: theme),
-                shortcuts: shortcutSection(theme: theme), transcript: transcriptSurface(theme: theme, availableHeight: availableSize.height),
-                theme: theme, availableSize: availableSize)
-        }
+        ManuscriptDictationLayout(header: captureHeader(theme: theme), controls: recordingControls(theme: theme),
+            shortcuts: shortcutSection(theme: theme), transcript: transcriptSurface(theme: theme, availableHeight: availableSize.height),
+            theme: theme, availableSize: availableSize)
     }
 
     private func captureHeader(theme: StenoTheme) -> some View {
-        VStack(alignment: .leading, spacing: 15) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(captureTitle)
-                .font(StenoDesign.display(size: min(displayPointSize, 68)))
-                .tracking(StenoDesign.direction == .signal ? -2.2 : -1.5)
-                .lineSpacing(-3)
+                .font(StenoDesign.display(size: min(displayPointSize, 56)))
+                .tracking(-0.8)
+                .lineSpacing(1)
                 .lineLimit(3)
                 .minimumScaleFactor(0.8)
                 .fixedSize(horizontal: false, vertical: true)
@@ -96,34 +70,20 @@ struct RecordTab: View {
                     controller.toggleHandsFree()
                 }
             } label: {
-                if StenoDesign.direction == .signal {
-                    HStack(spacing: 16) {
-                        captureGlyph
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(captureActionText).font(.system(size: 15, weight: .semibold))
-                            controlDetail
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(22)
-                    .frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
-                    .contentShape(Rectangle())
-                } else {
-                    VStack(spacing: 12) {
-                        captureGlyph
-                        Text(captureActionText)
-                            .font(.system(size: 13, weight: .semibold))
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if controller.isRecording { controlDetail }
-                    }
-                    .padding(18)
-                    .frame(width: 156, height: 156)
-                    .contentShape(Circle())
+                VStack(spacing: 12) {
+                    captureGlyph
+                    Text(captureActionText)
+                        .font(.system(size: 13, weight: .semibold))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if controller.isRecording { controlDetail }
                 }
+                .padding(18)
+                .frame(width: 156, height: 156)
+                .contentShape(RoundedRectangle(cornerRadius: controller.isRecording ? 46 : 78))
+
             }
-            .buttonStyle(StenoCaptureButtonStyle(theme: theme, isRecording: controller.isRecording,
-                heroStyle: controller.preferences.appearance.recordHeroStyle))
+            .buttonStyle(StenoCaptureButtonStyle(theme: theme, isRecording: controller.isRecording))
             .disabled(isProcessing)
             .keyboardShortcut(.space, modifiers: [])
             .accessibilityIdentifier("record.primary")
@@ -135,7 +95,7 @@ struct RecordTab: View {
                     .help("Discard this recording without inserting text")
             }
         }
-        .frame(maxWidth: .infinity, alignment: StenoDesign.direction == .signal ? .leading : .center)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     @ViewBuilder
@@ -144,7 +104,7 @@ struct RecordTab: View {
             ProgressView().controlSize(.small).accessibilityHidden(true)
         } else {
             Image(systemName: controller.isRecording ? "stop.fill" : needsMicrophone ? "mic.slash" : "mic")
-                .font(.system(size: StenoDesign.direction == .signal ? 27 : 31, weight: .medium))
+                .font(.system(size: 31, weight: .medium))
                 .frame(width: 34, height: 34)
                 .accessibilityHidden(true)
         }
@@ -164,9 +124,9 @@ struct RecordTab: View {
     }
 
     private func shortcutSection(theme: StenoTheme) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
             shortcutGuide(theme: theme)
-            if !controller.isRecording && !isProcessing && controller.status != "Idle" && !controller.status.isEmpty {
+            if !controller.isRecording && !isProcessing && controller.status != "Idle" && controller.status != "Ready" && !controller.status.isEmpty {
                 Label(controller.status, systemImage: "info.circle")
                     .font(.system(size: 12))
                     .foregroundStyle(theme.textDim)
@@ -174,22 +134,14 @@ struct RecordTab: View {
                     .textSelection(.enabled)
                     .accessibilityLabel("Last activity: \(controller.status)")
             }
-            Text("Audio and transcription stay on your Mac.")
-                .font(.system(size: 11)).foregroundStyle(theme.textDim)
         }
     }
 
     private var captureTitle: String {
-        if StenoDesign.direction == .signal {
-            if isProcessing { return "PREPARING\nYOUR TEXT." }
-            if controller.isRecording { return "LISTENING." }
-            if needsMicrophone { return "SET UP\nYOUR MIC." }
-            return "READY TO\nDICTATE."
-        }
-        if isProcessing { return "Preparing your\ntranscript." }
-        if controller.isRecording { return "Listening." }
-        if needsMicrophone { return "Set up\nyour mic." }
-        return "Ready to\ndictate."
+        if isProcessing { return "Preparing your text" }
+        if controller.isRecording { return "Listening" }
+        if needsMicrophone { return "Set up your mic" }
+        return "Ready to dictate"
     }
 
     private var captureExplanation: String {
@@ -208,11 +160,9 @@ struct RecordTab: View {
                     .buttonStyle(.link)
                     .font(.system(size: 12))
             }
-            if controller.preferences.hotkeys.optionPressToTalkEnabled {
-                shortcutRow(key: "Option", instruction: "Hold to speak. Release to finish.", theme: theme)
-            }
-            if let key = controller.preferences.hotkeys.handsFreeGlobalKeyCode.flatMap(keyLabel(for:)) {
-                shortcutRow(key: key, instruction: "Press to start. Press again to finish.", theme: theme)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 24) { shortcutRows(theme: theme) }
+                VStack(alignment: .leading, spacing: 10) { shortcutRows(theme: theme) }
             }
             if !controller.preferences.hotkeys.optionPressToTalkEnabled && controller.preferences.hotkeys.handsFreeGlobalKeyCode == nil {
                 Text("Global shortcuts are off. Set one in Recording settings to dictate without opening Steno.")
@@ -221,11 +171,21 @@ struct RecordTab: View {
         }
     }
 
+    @ViewBuilder
+    private func shortcutRows(theme: StenoTheme) -> some View {
+        if controller.preferences.hotkeys.optionPressToTalkEnabled {
+            shortcutRow(key: "Option", instruction: "Hold to speak. Release to finish.", theme: theme)
+        }
+        if let key = controller.preferences.hotkeys.handsFreeGlobalKeyCode.flatMap(keyLabel(for:)) {
+            shortcutRow(key: key, instruction: "Press to start or finish.", theme: theme)
+        }
+    }
+
     private func shortcutRow(key: String, instruction: String, theme: StenoTheme) -> some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             Text(key)
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .frame(minWidth: 68)
+                .frame(minWidth: 54)
                 .padding(.vertical, 5)
                 .background(theme.ink2)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(theme.lineStrong, lineWidth: 1))
@@ -236,17 +196,23 @@ struct RecordTab: View {
     }
 
     private func transcriptSurface(theme: StenoTheme, availableHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
-                Text("LATEST TRANSCRIPT")
-                    .font(StenoDesign.mono(size: 10, weight: .medium))
-                    .tracking(1.2)
+                Text("Latest transcript")
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(theme.textDim)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
+                if let entry = latestEntry {
+                    Button { controller.pasteEntry(entry) } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Copy transcript")
+                }
                 Button(action: onOpenHistory) {
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 12, weight: .semibold))
+                    Label("History", systemImage: "arrow.up.right")
+                        .font(.system(size: 12))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open History")
@@ -261,7 +227,7 @@ struct RecordTab: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(height: StenoDesign.direction == .signal ? max(220, min(430, availableHeight - 290)) : max(140, min(280, availableHeight - 440)))
+                .frame(height: max(72, min(180, availableHeight - 580)))
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     Label(outcomeLabel(entry.insertionStatus), systemImage: outcomeSymbol(entry.insertionStatus))
@@ -277,18 +243,13 @@ struct RecordTab: View {
                             .foregroundStyle(theme.textDim)
                     }
                 }
-                Button { controller.pasteEntry(entry) } label: {
-                    Label("Copy transcript", systemImage: "doc.on.doc")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
             } else {
                 Image(systemName: "text.alignleft")
                     .font(.system(size: 25, weight: .light))
                     .foregroundStyle(theme.textDim)
                     .padding(.top, 18)
-                Text("Your next words\nstart here.")
-                    .font(.system(size: 26, weight: .medium))
+                Text("Your words will appear here")
+                    .font(StenoDesign.reading(size: 24))
                     .tracking(-0.6)
                     .lineSpacing(3)
                 Text("After dictation, your completed text appears here and in History. Steno inserts it into the app you were using.")
@@ -303,10 +264,7 @@ struct RecordTab: View {
                     .foregroundStyle(theme.textDim)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: StenoDesign.direction == .signal ? 370 : 0, alignment: .topLeading)
-        .padding(StenoDesign.direction == .signal ? 24 : 0)
-        .background(StenoDesign.direction == .signal ? theme.ink2 : .clear)
-        .clipShape(RoundedRectangle(cornerRadius: StenoDesign.direction == .signal ? 12 : 0))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func recoveryNotice(theme: StenoTheme) -> some View {
@@ -360,17 +318,12 @@ struct RecordTab: View {
 private struct StenoCaptureButtonStyle: ButtonStyle {
     let theme: StenoTheme
     let isRecording: Bool
-    let heroStyle: StenoRecordHeroStyle
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
     private var cornerRadius: CGFloat {
-        switch StenoDesign.direction {
-        case .signal: return isRecording ? 22 : heroStyle == .ring ? 44 : 10
-        case .manuscript: return isRecording ? 46 : 78
-        case .current: return isRecording ? 30 : heroStyle == .ring ? 78 : 52
-        }
+        isRecording ? 46 : 78
     }
 
     func makeBody(configuration: Configuration) -> some View {

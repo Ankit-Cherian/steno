@@ -36,11 +36,7 @@ enum IsolatedAppPreview {
             systemIntegrationsEnabled: false,
             isIsolatedPreview: true
         )
-        controller.preferences.appearance.accent = switch StenoDesign.direction {
-        case .signal: .citron
-        case .manuscript: .terracotta
-        case .current: .cyan
-        }
+        controller.preferences.appearance.accent = .terracotta
         controller.preferences.general.showOnboarding = false
         controller.preferences.general.launchAtLoginEnabled = false
         controller.preferences.dictation.whisperCLIPath = "/preview/whisper-cli"

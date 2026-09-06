@@ -150,7 +150,7 @@ struct AppRenderingTests {
         }
         }
         try receipt.joined(separator: "\n").write(to: root.appendingPathComponent("render-matrix.csv"), atomically: true, encoding: .utf8)
-        #expect(receipt.count == 349)
+        #expect(receipt.count == 117)
     }
 
     @Test("Recording overlay renders every outcome and bounded long previews offscreen")
