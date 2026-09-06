@@ -147,6 +147,27 @@ enum StenoDesign {
     static var reviewDirectionOverride: StenoDesignDirection?
     #endif
 
+    #if DEBUG
+    enum WordmarkReviewStyle: String, CaseIterable {
+        case fraunces, italic, georgia, rounded
+    }
+    static var wordmarkReviewStyle: WordmarkReviewStyle = .fraunces
+    #endif
+
+    static var wordmarkFont: Font {
+        #if DEBUG
+        switch wordmarkReviewStyle {
+        case .italic: return .custom("Fraunces-Italic", fixedSize: 32).weight(.medium)
+        case .georgia: return .custom("Georgia-Bold", fixedSize: 29)
+        case .rounded: return .system(size: 30, weight: .bold, design: .rounded)
+        case .fraunces: break
+        }
+        #endif
+        return .custom("Fraunces", fixedSize: 32).weight(.semibold)
+    }
+
+    static var wordmarkTracking: CGFloat { -0.6 }
+
     static var direction: StenoDesignDirection { .manuscript }
 
     static var cardCornerRadius: CGFloat { 4 }
@@ -225,7 +246,7 @@ enum StenoDesign {
             accentPalette: accentPalette(for: appearance.accent),
             amber: dynamicColor(light: Color(hex: 0x855400), dark: Color(hex: 0xE8BE75)),
             amberSoft: dynamicColor(light: Color(hex: 0xFFF2D4), dark: Color(hex: 0x3D321F)),
-            green: dynamicColor(light: Color(hex: 0x176849), dark: Color(hex: 0x8BD4AF)),
+            green: dynamicColor(light: Color(hex: 0x3D7059), dark: Color(hex: 0x93C3A7)),
             greenSoft: dynamicColor(light: Color(hex: 0xE3F3E9), dark: Color(hex: 0x20382D)),
             danger: dynamicColor(light: Color(hex: 0xAD322D), dark: Color(hex: 0xFF9C94))
         )
@@ -303,6 +324,7 @@ enum StenoDesign {
     }
 
     static var accent: Color { theme(for: fallbackAppearance).accent }
+    static var accentInk: Color { theme(for: fallbackAppearance).accentInk }
     static var background: Color { theme(for: fallbackAppearance).ink0 }
     static var surface: Color { theme(for: fallbackAppearance).ink2 }
     static var surfaceSecondary: Color { theme(for: fallbackAppearance).ink3 }

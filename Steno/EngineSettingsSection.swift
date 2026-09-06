@@ -120,14 +120,7 @@ struct EngineSettingsSection: View {
                                     )
                                 }
 
-                                if option.isActive {
-                                    StenoBadge(
-                                        text: "Using",
-                                        tone: .green,
-                                        theme: StenoDesign.theme(for: preferences),
-                                        compact: true
-                                    )
-                                } else if option.source == .bundled {
+                                if option.source == .bundled {
                                     StenoBadge(
                                         text: "Included",
                                         tone: .neutral,
@@ -153,20 +146,27 @@ struct EngineSettingsSection: View {
 
                     Spacer()
 
-                    Button {
-                        controller.handleWhisperModelAction(for: option)
-                    } label: {
-                        if controller.activeModelDownloadID == option.modelID {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
-                        } else {
-                            Text(buttonLabel(for: option))
+                    if option.isActive && controller.activeModelDownloadID != option.modelID {
+                        Label("Using", systemImage: "checkmark")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(StenoDesign.textSecondary)
+                            .fixedSize()
+                    } else {
+                        Button {
+                            controller.handleWhisperModelAction(for: option)
+                        } label: {
+                            if controller.activeModelDownloadID == option.modelID {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
+                            } else {
+                                Text(buttonLabel(for: option))
+                            }
                         }
+                        .buttonStyle(.bordered)
+                        .fixedSize()
+                        .disabled(hasUnsavedChanges || option.isActive || (controller.activeModelDownloadID != nil && controller.activeModelDownloadID != option.modelID))
                     }
-                    .buttonStyle(.bordered)
-                    .fixedSize()
-                    .disabled(hasUnsavedChanges || option.isActive || (controller.activeModelDownloadID != nil && controller.activeModelDownloadID != option.modelID))
                 }
                 .padding(.vertical, 12)
                 .padding(.horizontal, 12)
@@ -214,9 +214,10 @@ struct EngineSettingsSection: View {
                 HStack(alignment: .top, spacing: StenoDesign.xs) {
                     Image(systemName: compatibilityIconName)
                         .font(StenoDesign.caption())
+                        .foregroundStyle(currentModelStatusColor)
                     Text(currentModelStatusText)
                         .font(StenoDesign.caption())
-                        .foregroundStyle(currentModelStatusColor)
+                        .foregroundStyle(StenoDesign.textSecondary)
                 }
             }
             .padding(.horizontal, StenoDesign.sm)

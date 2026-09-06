@@ -42,19 +42,6 @@ struct ContentView: View {
     var body: some View {
         let theme = StenoDesign.theme(for: controller.preferences)
         VStack(spacing: 0) {
-            HStack {
-                Color.clear.frame(width: 64, height: 1)
-                Text("Steno").font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Label(controller.isRecording ? "Listening" : controller.recordingLifecycleState == .transcribing ? "Transcribing" : "On this Mac", systemImage: controller.isRecording ? "record.circle" : "lock")
-                    .font(.system(size: 12))
-                    .foregroundStyle(controller.isRecording ? theme.accent : theme.textDim)
-            }
-            .padding(.horizontal, 20)
-            .frame(height: StenoDesign.titleBarHeight)
-            .background(theme.ink1)
-
-            Divider()
             HStack(spacing: 0) {
                 navigation(theme: theme)
                 Divider()
@@ -82,6 +69,7 @@ struct ContentView: View {
             }
         }
         .foregroundStyle(theme.text)
+        .tint(theme.accent)
         .background(theme.ink0)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: selectedTab)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -91,8 +79,8 @@ struct ContentView: View {
     private func navigation(theme: StenoTheme) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Steno")
-                .font(StenoDesign.display(size: 30))
-                .tracking(-0.7)
+                .font(StenoDesign.wordmarkFont)
+                .tracking(StenoDesign.wordmarkTracking)
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)
                 .padding(.top, 22)
@@ -123,11 +111,14 @@ struct ContentView: View {
                 .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
             }
             Spacer(minLength: 24)
-            Label("Local transcription", systemImage: "lock")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.white.opacity(0.65))
-                .padding(.horizontal, 12)
-                .padding(.bottom, 22)
+            if controller.isRecording || controller.recordingLifecycleState == .transcribing {
+                Label(controller.isRecording ? "Listening" : "Transcribing",
+                      systemImage: controller.isRecording ? "record.circle" : "waveform")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 20)
+            }
         }
         .padding(.horizontal, 12)
         .frame(width: StenoDesign.navigationWidth)

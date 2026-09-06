@@ -28,9 +28,6 @@ struct HistoryTab: View {
             HStack(alignment: .firstTextBaseline) {
                 StenoPageTitle("History")
                 Spacer()
-                Label("Stored on this Mac", systemImage: "lock")
-                    .font(.system(size: 12)).foregroundStyle(theme.textDim)
-                    .fixedSize()
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 24)
@@ -124,17 +121,17 @@ struct HistoryTab: View {
                 .padding(.horizontal, 16)
 
             if filteredEntries.isEmpty {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(controller.recentEntries.isEmpty ? "Your words will be here." : "No matching transcripts.")
-                        .font(.system(size: 15, weight: .semibold))
-                    Text(controller.recentEntries.isEmpty ? "Completed dictations are saved locally so you can return to them." : "Try a different search or show all transcripts.")
-                        .font(.system(size: 12)).foregroundStyle(theme.textDim)
-                    if !controller.recentEntries.isEmpty {
+                if !controller.recentEntries.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("No matching transcripts.")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text("Try a different search or show all transcripts.")
+                            .font(.system(size: 12)).foregroundStyle(theme.textDim)
                         Button("Clear search and filters") { searchQuery = ""; selectedFilter = .all }
                             .buttonStyle(.bordered)
                     }
+                    .padding(20)
                 }
-                .padding(20)
                 Spacer()
             } else {
                 List(selection: $selectedEntryID) {
@@ -181,22 +178,7 @@ struct HistoryTab: View {
         ScrollView {
             if let entry = selectedEntry {
                 VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label(statusLabel(entry.insertionStatus), systemImage: statusSymbol(entry.insertionStatus))
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(entry.insertionStatus == .failed ? theme.danger : theme.textDim)
-                        Text(StenoDesign.appDisplayName(for: entry.appBundleID))
-                            .font(StenoDesign.reading(size: 23))
-                            .accessibilityAddTraits(.isHeader)
-                        Text(entry.createdAt.formatted(date: .long, time: .shortened))
-                            .font(.system(size: 12)).foregroundStyle(theme.textDim)
-                        Text("\(transcriptText(entry).split(whereSeparator: \.isWhitespace).count) words · \(durationText(entry.durationMS))")
-                            .font(.system(size: 12)).foregroundStyle(theme.textDim)
-                    }
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 10) { detailActions(entry, theme: theme) }
-                        VStack(alignment: .leading, spacing: 10) { detailActions(entry, theme: theme) }
-                    }
+                    detailHeader(entry, theme: theme)
                     if entry.insertionStatus == .failed || entry.insertionStatus == .copiedOnly {
                         Text("Copy your transcript, then paste it into the app where you need it.")
                             .font(.system(size: 13)).foregroundStyle(theme.textDim)
@@ -224,10 +206,10 @@ struct HistoryTab: View {
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Image(systemName: "text.alignleft").font(.system(size: 28))
-                    Text(controller.recentEntries.isEmpty ? "A place for your words" : "Select a transcript")
+                    Text(controller.recentEntries.isEmpty ? "No transcripts yet" : "Select a transcript")
                         .font(StenoDesign.reading(size: 23))
                         .foregroundStyle(theme.text)
-                    Text(controller.recentEntries.isEmpty ? "Your saved dictations will be ready to read, copy, and revisit here." : "Read the full text, copy it, or compare the original recognition.")
+                    Text(controller.recentEntries.isEmpty ? "Completed dictations appear here." : "Read the full text, copy it, or compare the original recognition.")
                         .font(.system(size: 13))
                 }
                 .foregroundStyle(theme.textDim)
@@ -236,9 +218,60 @@ struct HistoryTab: View {
         }
     }
 
+    private func detailHeader(_ entry: TranscriptEntry, theme: StenoTheme) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
+                    detailApp(entry)
+                    Spacer(minLength: 8)
+                    detailStatus(entry, theme: theme)
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    detailApp(entry)
+                    detailStatus(entry, theme: theme)
+                }
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
+                    detailMetadata(entry, theme: theme).fixedSize()
+                    Spacer(minLength: 0)
+                    HStack(spacing: 10) { detailActions(entry, theme: theme) }.fixedSize()
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    detailMetadata(entry, theme: theme)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) { detailActions(entry, theme: theme) }
+                        VStack(alignment: .leading, spacing: 10) { detailActions(entry, theme: theme) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func detailApp(_ entry: TranscriptEntry) -> some View {
+        Text(StenoDesign.appDisplayName(for: entry.appBundleID))
+            .font(.system(size: 13, weight: .semibold))
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func detailStatus(_ entry: TranscriptEntry, theme: StenoTheme) -> some View {
+        Label(statusLabel(entry.insertionStatus), systemImage: statusSymbol(entry.insertionStatus))
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(entry.insertionStatus == .failed ? theme.danger : theme.textDim)
+            .fixedSize()
+    }
+
+    private func detailMetadata(_ entry: TranscriptEntry, theme: StenoTheme) -> some View {
+        Text("\(entry.createdAt.formatted(date: .long, time: .shortened)) · \(transcriptText(entry).split(whereSeparator: \.isWhitespace).count) words · \(durationText(entry.durationMS))")
+            .font(.system(size: 11))
+            .foregroundStyle(theme.textDim)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     @ViewBuilder
     private func detailActions(_ entry: TranscriptEntry, theme: StenoTheme) -> some View {
-        Button { controller.pasteEntry(entry) } label: { Label("Copy transcript", systemImage: "doc.on.doc") }
+        Button { controller.pasteEntry(entry) } label: { Label("Copy transcript", systemImage: "doc.on.doc").foregroundStyle(theme.accentInk) }
             .buttonStyle(.borderedProminent).tint(theme.accent)
             .help("Copy this transcript to the clipboard")
             .accessibilityIdentifier("history.copy")

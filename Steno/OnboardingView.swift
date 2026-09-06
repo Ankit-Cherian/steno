@@ -126,15 +126,15 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 28) {
             stepHeading(
                 "Welcome to Steno",
-                description: "Private dictation that types into your active app."
+                description: "Dictate into the app you’re using."
             )
 
             VStack(alignment: .leading, spacing: StenoDesign.lg) {
-                featureRow(icon: "lock.shield", title: "Private by default", detail: "Audio and transcript cleanup stay on your Mac.")
+                featureRow(icon: "mic", title: "Recording", detail: "Hold Option while speaking, or use hands-free dictation.")
                 Divider().overlay(StenoDesign.border)
-                featureRow(icon: "bolt", title: "Choose your pace", detail: "Pick a local speech model to balance speed and accuracy.")
+                featureRow(icon: "waveform", title: "Speech model", detail: "Choose the recognition model that fits your Mac.")
                 Divider().overlay(StenoDesign.border)
-                featureRow(icon: "text.cursor", title: "Works across apps", detail: "Types or pastes into editors, terminals, and most text fields.")
+                featureRow(icon: "text.cursor", title: "Text insertion", detail: "Click a text field before you start. Completed dictation is inserted there.")
             }
         }
     }
@@ -284,7 +284,7 @@ struct OnboardingView: View {
                 .foregroundStyle(valid ? StenoDesign.success : StenoDesign.error)
             Text(valid ? "File found" : "File not found")
                 .font(StenoDesign.caption())
-                .foregroundStyle(valid ? StenoDesign.success : StenoDesign.error)
+                .foregroundStyle(valid ? StenoDesign.textSecondary : StenoDesign.error)
         }
     }
 
@@ -329,10 +329,13 @@ struct OnboardingView: View {
 
             HStack(spacing: StenoDesign.sm) {
                 if option.isInstalled {
-                    Button(option.isActive ? "Using \(option.title)" : "Use \(option.title)") {
+                    Button {
                         if !option.isActive {
                             controller.activateWhisperModel(option.modelID)
                         }
+                    } label: {
+                        Text(option.isActive ? "Using \(option.title)" : "Use \(option.title)")
+                            .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(StenoDesign.theme(for: controller.preferences).accent)
@@ -348,9 +351,11 @@ struct OnboardingView: View {
                                     .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
                                     .accessibilityHidden(true)
                                 Text("Downloading \(option.title)…")
+                                    .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
                             }
                         } else {
                             Text("Download \(option.title)")
+                                .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -435,16 +440,22 @@ struct OnboardingView: View {
             }
 
             if currentStep == .featureTour {
-                Button("Open Steno") {
+                Button {
                     completeOnboarding()
+                } label: {
+                    Text("Open Steno")
+                        .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(StenoDesign.theme(for: controller.preferences).accent)
                 .keyboardShortcut(.defaultAction)
                 .accessibilityLabel("Finish onboarding and start using Steno")
             } else {
-                Button("Continue") {
+                Button {
                     goForward()
+                } label: {
+                    Text("Continue")
+                        .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(StenoDesign.theme(for: controller.preferences).accent)

@@ -76,11 +76,7 @@ func scopeBadge(_ scope: Scope) -> some View {
         .lineLimit(1)
         .truncationMode(.middle)
         .help(scopeLabel(scope))
-        .padding(.horizontal, StenoDesign.sm)
-        .padding(.vertical, StenoDesign.xxs)
-        .background(StenoDesign.accent.opacity(StenoDesign.opacitySubtle))
-        .foregroundStyle(StenoDesign.accent)
-        .clipShape(Capsule())
+        .foregroundStyle(StenoDesign.textSecondary)
 }
 
 func scopeLabel(_ scope: Scope) -> String {

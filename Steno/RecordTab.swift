@@ -47,11 +47,13 @@ struct RecordTab: View {
                 .minimumScaleFactor(0.8)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
-            Text(captureExplanation)
-                .font(.system(size: 13))
-                .lineSpacing(4)
-                .foregroundStyle(theme.textDim)
-                .fixedSize(horizontal: false, vertical: true)
+            if isProcessing || controller.isRecording || needsMicrophone {
+                Text(captureExplanation)
+                    .font(.system(size: 13))
+                    .lineSpacing(4)
+                    .foregroundStyle(theme.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -145,7 +147,7 @@ struct RecordTab: View {
     }
 
     private var captureExplanation: String {
-        if isProcessing { return "Preparing your final transcript locally. Your microphone is no longer recording." }
+        if isProcessing { return "Finishing transcription. Your microphone is off." }
         if controller.isRecording { return "Speak naturally. Stop to insert your words, or cancel to discard this recording." }
         if needsMicrophone { return "Allow microphone access to start your first dictation." }
         return "Hold a shortcut in the app you're writing in, or start a hands-free dictation here."
@@ -154,7 +156,7 @@ struct RecordTab: View {
     private func shortcutGuide(theme: StenoTheme) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("From any app").font(.system(size: 13, weight: .semibold))
+                Text("Shortcuts").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button("Recording settings") { onOpenSettings(.recording) }
                     .buttonStyle(.link)
@@ -219,15 +221,11 @@ struct RecordTab: View {
                 .help("Open History")
             }
             if let entry = latestEntry {
-                ScrollView {
-                    Text(entry.cleanText.isEmpty ? entry.rawText : entry.cleanText)
-                        .font(StenoDesign.reading(size: min(transcriptPointSize, 34)))
-                        .tracking(-0.25)
-                        .lineSpacing(7)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(height: max(72, min(180, availableHeight - 580)))
+                BoundedTranscriptText(
+                    text: entry.cleanText.isEmpty ? entry.rawText : entry.cleanText,
+                    pointSize: min(transcriptPointSize, 34),
+                    maximumHeight: max(96, min(180, availableHeight - 480))
+                )
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     Label(outcomeLabel(entry.insertionStatus), systemImage: outcomeSymbol(entry.insertionStatus))
@@ -248,33 +246,30 @@ struct RecordTab: View {
                     .font(.system(size: 25, weight: .light))
                     .foregroundStyle(theme.textDim)
                     .padding(.top, 18)
-                Text("Your words will appear here")
+                Text("No transcript yet")
                     .font(StenoDesign.reading(size: 24))
                     .tracking(-0.6)
                     .lineSpacing(3)
-                Text("After dictation, your completed text appears here and in History. Steno inserts it into the app you were using.")
+                Text("Start a dictation to see your transcript.")
                     .font(.system(size: 13))
                     .lineSpacing(4)
                     .foregroundStyle(theme.textDim)
                     .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 24)
-                Divider()
-                Label("Only completed dictations are saved", systemImage: "checkmark.circle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(theme.textDim)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func recoveryNotice(theme: StenoTheme) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Something needs your attention", systemImage: "exclamationmark.triangle")
-                .font(.system(size: 13, weight: .semibold))
-            if !controller.lastError.isEmpty { Text(controller.lastError).textSelection(.enabled) }
-            if !controller.hotkeyRegistrationMessage.isEmpty { Text(controller.hotkeyRegistrationMessage) }
-            Button("Review settings") { onOpenSettings(needsMicrophone ? .permissions : .recording) }
-                .buttonStyle(.link)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 20) {
+                recoveryMessage.frame(minWidth: 320, maxWidth: .infinity, alignment: .leading)
+                recoveryAction
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                recoveryMessage
+                recoveryAction
+            }
         }
         .font(.system(size: 12))
         .foregroundStyle(theme.text)
@@ -283,6 +278,22 @@ struct RecordTab: View {
         .background(theme.amberSoft)
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.amber, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var recoveryMessage: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Something needs your attention", systemImage: "exclamationmark.triangle")
+                .font(.system(size: 13, weight: .semibold))
+            if !controller.lastError.isEmpty { Text(controller.lastError).textSelection(.enabled) }
+            if !controller.hotkeyRegistrationMessage.isEmpty { Text(controller.hotkeyRegistrationMessage) }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var recoveryAction: some View {
+        Button("Review settings") { onOpenSettings(needsMicrophone ? .permissions : .recording) }
+            .buttonStyle(.bordered)
+            .fixedSize()
     }
 
     private func elapsedText(at date: Date) -> String {
@@ -312,6 +323,85 @@ struct RecordTab: View {
     private func keyLabel(for keyCode: UInt16) -> String? {
         let codes: [UInt16] = [122, 120, 160, 131, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90]
         return codes.firstIndex(of: keyCode).map { "F\($0 + 1)" }
+    }
+}
+
+private struct BoundedTranscriptText: View {
+    let text: String
+    let pointSize: CGFloat
+    let maximumHeight: CGFloat
+    @State private var metrics = TranscriptTextMetrics()
+
+    private var viewportHeight: CGFloat {
+        guard metrics.contentHeight > 0 else { return min(96, maximumHeight) }
+        guard metrics.contentHeight > maximumHeight else { return metrics.contentHeight }
+        let lineAdvance = metrics.twoLineHeight - metrics.oneLineHeight
+        guard metrics.oneLineHeight > 0, lineAdvance > 0 else { return maximumHeight }
+        let additionalLines = max(0, floor((maximumHeight - metrics.oneLineHeight) / lineAdvance))
+        return metrics.oneLineHeight + additionalLines * lineAdvance
+    }
+
+    var body: some View {
+        ScrollView {
+            styledText(text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: TranscriptMetricsPreferenceKey.self,
+                            value: TranscriptTextMetrics(contentHeight: geometry.size.height))
+                    }
+                }
+        }
+        .frame(height: viewportHeight)
+        .background(alignment: .topLeading) {
+            HStack(alignment: .top, spacing: 0) {
+                styledText("Ag")
+                    .fixedSize()
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(key: TranscriptMetricsPreferenceKey.self,
+                                value: TranscriptTextMetrics(oneLineHeight: geometry.size.height))
+                        }
+                    }
+                styledText("Ag\nAg")
+                    .fixedSize()
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(key: TranscriptMetricsPreferenceKey.self,
+                                value: TranscriptTextMetrics(twoLineHeight: geometry.size.height))
+                        }
+                    }
+            }
+            .hidden()
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+        }
+        .onPreferenceChange(TranscriptMetricsPreferenceKey.self) { metrics = $0 }
+    }
+
+    private func styledText(_ value: String) -> some View {
+        Text(value)
+            .font(StenoDesign.reading(size: pointSize))
+            .tracking(-0.25)
+            .lineSpacing(7)
+    }
+}
+
+private struct TranscriptTextMetrics: Equatable {
+    var contentHeight: CGFloat = 0
+    var oneLineHeight: CGFloat = 0
+    var twoLineHeight: CGFloat = 0
+}
+
+private struct TranscriptMetricsPreferenceKey: PreferenceKey {
+    static let defaultValue = TranscriptTextMetrics()
+    static func reduce(value: inout TranscriptTextMetrics, nextValue: () -> TranscriptTextMetrics) {
+        let next = nextValue()
+        value.contentHeight = max(value.contentHeight, next.contentHeight)
+        value.oneLineHeight = max(value.oneLineHeight, next.oneLineHeight)
+        value.twoLineHeight = max(value.twoLineHeight, next.twoLineHeight)
     }
 }
 

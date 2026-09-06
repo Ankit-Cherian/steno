@@ -40,7 +40,7 @@ struct PermissionsSettingsSection: View {
 
             HStack(spacing: StenoDesign.md) {
                 Image(systemName: allPermissionsGranted ? "checkmark.circle" : "info.circle")
-                    .foregroundStyle(StenoDesign.accent)
+                    .foregroundStyle(StenoDesign.textSecondary)
 
                 Text(allPermissionsGranted ? "All permissions are allowed. You can change access at any time in System Settings." : "Review the permissions above. Microphone access is needed to record; the other permissions support shortcuts and text insertion.")
                     .font(StenoDesign.caption())
@@ -58,11 +58,11 @@ struct PermissionsSettingsSection: View {
             }
             .padding(.horizontal, StenoDesign.md)
             .padding(.vertical, StenoDesign.md)
-            .background(StenoDesign.accent.opacity(0.08))
+            .background(StenoDesign.surfaceSecondary)
             .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusSmall))
             .overlay(
                 RoundedRectangle(cornerRadius: StenoDesign.radiusSmall)
-                    .stroke(StenoDesign.accent.opacity(0.18), lineWidth: StenoDesign.borderThin)
+                    .stroke(StenoDesign.border, lineWidth: StenoDesign.borderThin)
             )
         }
     }

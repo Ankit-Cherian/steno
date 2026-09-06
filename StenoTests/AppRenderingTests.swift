@@ -62,6 +62,7 @@ struct AppRenderingTests {
             for populated in [false, true] {
                 let controller = IsolatedAppPreview.makeController(populated: populated)
                 controller.preferences.appearance.mode = appearance == .light ? .light : .dark
+                controller.preferences.appearance.accent = .dodger
                 for (sizeName, size) in sizes {
                     for tab in StenoTab.allCases {
                         let name = "\(tab.rawValue.lowercased())-\(appearance)-\(populated ? "populated" : "empty")-\(sizeName)"
@@ -87,6 +88,7 @@ struct AppRenderingTests {
             controller.microphonePermissionStatus = step == 1 ? .denied : .unknown
             for appearance in [ColorScheme.light, .dark] {
                 controller.preferences.appearance.mode = appearance == .light ? .light : .dark
+                controller.preferences.appearance.accent = .dodger
                 let name = "onboarding-\(step)-\(appearance)"
                 let data = try await render(OnboardingView(initialStep: step), controller: controller,
                     appearance: appearance, size: sizes[0].1, accessibility: true)
@@ -109,6 +111,7 @@ struct AppRenderingTests {
             }
             for appearance in [ColorScheme.light, .dark] {
                 controller.preferences.appearance.mode = appearance == .light ? .light : .dark
+                controller.preferences.appearance.accent = .dodger
                 let name = "record-\(state)-\(appearance)"
                 let data = try await render(ContentView(), controller: controller,
                     appearance: appearance, size: sizes[0].1, accessibility: true)
@@ -121,6 +124,7 @@ struct AppRenderingTests {
             for state in ["insights-loading", "insights-error", "history-long", "permissions-denied", "inactive-window"] {
                 let controller = IsolatedAppPreview.makeController(populated: state == "history-long" || state == "inactive-window")
                 controller.preferences.appearance.mode = appearance == .light ? .light : .dark
+                controller.preferences.appearance.accent = .dodger
                 let content: AnyView
                 switch state {
                 case "insights-loading":
@@ -197,6 +201,111 @@ struct AppRenderingTests {
             #expect(data.count > 500)
             presenter.setHostedEvidenceHandler(nil)
         }
+    }
+
+    @Test("Wordmark alternatives render in the production sidebar without duplicate chrome")
+    func renderWordmarkComparisons() async throws {
+        AppFontRegistry.registerIfNeeded()
+        #expect(NSFont(name: "Fraunces", size: 32)?.familyName == "Fraunces")
+        #expect(NSFont(name: "Fraunces-Italic", size: 32)?.familyName == "Fraunces")
+        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["STENO_UI_RENDER_OUTPUT"]
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("StenoUIRendering").path)
+            .appendingPathComponent("wordmark-comparison", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let previous = StenoDesign.wordmarkReviewStyle
+        defer { StenoDesign.wordmarkReviewStyle = previous }
+        for style in StenoDesign.WordmarkReviewStyle.allCases {
+            StenoDesign.wordmarkReviewStyle = style
+            for appearance in [ColorScheme.light, .dark] {
+                let controller = IsolatedAppPreview.makeController()
+                controller.preferences.appearance.mode = appearance == .light ? .light : .dark
+                let data = try await render(ContentView(), controller: controller, appearance: appearance,
+                    size: CGSize(width: 1120, height: 760), accessibility: false)
+                try data.write(to: root.appendingPathComponent("\(style.rawValue)-\(appearance).png"))
+                await controller.teardownAndWait()
+            }
+        }
+    }
+
+    @Test("Focused text, settings, and permission states render at minimum accessible size")
+    func renderFocusedPolishStates() async throws {
+        AppFontRegistry.registerIfNeeded()
+        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["STENO_UI_RENDER_OUTPUT"]
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("StenoUIRendering").path)
+            .appendingPathComponent("focused-polish", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let size = CGSize(width: StenoDesign.windowMinWidth, height: StenoDesign.windowMinHeight)
+        let previousDirection = StenoDesign.reviewDirectionOverride
+        defer { StenoDesign.reviewDirectionOverride = previousDirection }
+        StenoDesign.reviewDirectionOverride = .manuscript
+        var receipt = ["surface,appearance,width,height,accessibility,png_bytes"]
+        let transcripts = [
+            ("short", "Keep this sentence."),
+            ("medium", "Please send the revised agenda on Thursday. Keep the launch date at September 18, and leave enough time for the accessibility review before the team meets."),
+            ("long", String(repeating: "Names, numbers, and deliberate punctuation should stay exactly as spoken. A longer thought needs room to breathe. ", count: 18))
+        ]
+
+        for appearance in [ColorScheme.light, .dark] {
+            for (length, text) in transcripts {
+                let controller = IsolatedAppPreview.makeController(populated: false)
+                controller.preferences.appearance.mode = appearance == .light ? .light : .dark
+                controller.recentEntries = [TranscriptEntry(createdAt: Date(timeIntervalSince1970: 1_783_000_000),
+                    appBundleID: "com.example.preview", rawText: text, cleanText: text,
+                    durationMS: 12_000, audioURL: nil, insertionStatus: .inserted)]
+                let name = "record-\(length)-\(appearance)-minimum-accessible"
+                let data = try await render(ContentView(), controller: controller,
+                    appearance: appearance, size: size, accessibility: true)
+                try data.write(to: root.appendingPathComponent(name + ".png"))
+                receipt.append("\(name),\(appearance),\(size.width),\(size.height),true,\(data.count)")
+                #expect(controller.recentEntries.first?.cleanText == text)
+                await controller.teardownAndWait()
+            }
+
+            for state in ["clean", "dirty", "conflict"] {
+                let controller = IsolatedAppPreview.makeController(populated: false)
+                controller.preferences.appearance.mode = appearance == .light ? .light : .dark
+                let savedPreferences = controller.preferences
+                var draftState = SettingsDraftState(saved: savedPreferences)
+                if state != "clean" {
+                    var editedPreferences = savedPreferences
+                    editedPreferences.hotkeys.optionPressToTalkEnabled.toggle()
+                    draftState.edit(editedPreferences)
+                    #expect(controller.preferences == savedPreferences)
+                }
+                if state == "conflict" {
+                    controller.preferences.dictation.threadCount = savedPreferences.dictation.threadCount + 1
+                    draftState.reconcile(controller.preferences)
+                }
+                #expect(draftState.hasConflictingUpdate == (state == "conflict"))
+                #expect((draftState.preferences != controller.preferences) == (state != "clean"))
+                #expect((!draftState.hasConflictingUpdate && draftState.preferences != controller.preferences) == (state == "dirty"))
+                let theme = StenoDesign.theme(for: controller.preferences)
+                let name = "settings-\(state)-\(appearance)-minimum-accessible"
+                let data = try await render(SettingsView(previewDraftState: draftState)
+                    .foregroundStyle(theme.text).background(theme.ink0),
+                    controller: controller, appearance: appearance, size: size, accessibility: true)
+                try data.write(to: root.appendingPathComponent(name + ".png"))
+                receipt.append("\(name),\(appearance),\(size.width),\(size.height),true,\(data.count)")
+                await controller.teardownAndWait()
+            }
+
+            let controller = IsolatedAppPreview.makeController(populated: false)
+            controller.preferences.appearance.mode = appearance == .light ? .light : .dark
+            controller.microphonePermissionStatus = .unknown
+            controller.accessibilityPermissionStatus = .unknown
+            controller.inputMonitoringPermissionStatus = .unknown
+            let name = "permissions-unknown-\(appearance)-minimum-accessible"
+            let data = try await render(ContentView(initialTab: .settings, initialSettingsSection: .permissions),
+                controller: controller, appearance: appearance, size: size, accessibility: true)
+            try data.write(to: root.appendingPathComponent(name + ".png"))
+            receipt.append("\(name),\(appearance),\(size.width),\(size.height),true,\(data.count)")
+            #expect(controller.microphonePermissionStatus == .unknown)
+            #expect(controller.accessibilityPermissionStatus == .unknown)
+            #expect(controller.inputMonitoringPermissionStatus == .unknown)
+            await controller.teardownAndWait()
+        }
+        #expect(receipt.count == 15)
+        try receipt.joined(separator: "\n").write(to: root.appendingPathComponent("focused-polish.csv"), atomically: true, encoding: .utf8)
     }
 
     func render<V: View>(

@@ -122,9 +122,6 @@ struct InsightsTab: View {
         VStack(alignment: .leading, spacing: 5) {
             StenoPageTitle("Insights")
                 .foregroundStyle(theme.text)
-            Text("Your dictation, over time.")
-                .font(StenoDesign.subheadline())
-                .foregroundStyle(theme.textMuted)
         }
     }
 
@@ -134,9 +131,6 @@ struct InsightsTab: View {
                 StenoBadge(text: rangeLabel(for: snapshot), tone: .neutral, theme: theme,
                     icon: "calendar", compact: true)
             }
-            StenoBadge(text: "Local only", tone: .green, theme: theme,
-                icon: "lock.fill", compact: true)
-                .help("Aggregate Insights history is calculated and retained on this Mac, separately from transcript history.")
         }
     }
 
@@ -149,9 +143,6 @@ struct InsightsTab: View {
                             .font(StenoDesign.reading(size: 22))
                             .foregroundStyle(theme.text)
                             .accessibilityAddTraits(.isHeader)
-                        Text("Darker squares mean more recorded time. Markers distinguish estimates and gaps.")
-                            .font(StenoDesign.subheadline())
-                            .foregroundStyle(theme.textMuted)
                     }
 
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), alignment: .leading)], alignment: .leading, spacing: 12) {
@@ -206,9 +197,6 @@ struct InsightsTab: View {
                     Text("Building your usage history…")
                         .font(StenoDesign.bodyEmphasis())
                         .foregroundStyle(theme.text)
-                    Text("Steno is backfilling saved sessions on this Mac.")
-                        .font(StenoDesign.subheadline())
-                        .foregroundStyle(theme.textMuted)
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 180, alignment: .center)
@@ -290,7 +278,7 @@ struct InsightsTab: View {
             ),
             InsightMetric(
                 id: "time",
-                label: "Known time dictated",
+                label: "Time dictated",
                 value: hasKnownDuration(snapshot)
                     ? durationValue(for: snapshot)
                     : "Unavailable",
@@ -360,10 +348,7 @@ struct InsightsTab: View {
             punctuationChanges: snapshot.cleanupChanges.punctuationChanges,
             lexiconCorrections: snapshot.cleanupChanges.lexiconCorrections,
             exactSessionCount: snapshot.exactCleanupSessionCount,
-            estimatedSessionCount: snapshot.estimatedCleanupSessionCount,
-            trackedDayCount: snapshot.dailyUsage.filter(\.isTracked).count,
-            totalDayCount: snapshot.dailyUsage.count,
-            coverageIntervalCount: snapshot.coverage.count
+            estimatedSessionCount: snapshot.estimatedCleanupSessionCount
         )
     }
 
@@ -388,10 +373,9 @@ struct InsightsTab: View {
     }
 
     private func wordsDetail(for snapshot: UsageAnalyticsSnapshot) -> String {
-        let activeDays = "Across \(snapshot.activeDayCount) active \(snapshot.activeDayCount == 1 ? "day" : "days")"
-        return snapshot.estimatedCleanupSessionCount > 0
-            ? "\(activeDays) · imported counts reconstructed"
-            : activeDays
+        snapshot.estimatedCleanupSessionCount > 0
+            ? "Includes word counts recovered from imported history."
+            : ""
     }
 
     private func durationValue(for snapshot: UsageAnalyticsSnapshot) -> String {
@@ -406,8 +390,8 @@ struct InsightsTab: View {
 
     private func wpmDetail(for snapshot: UsageAnalyticsSnapshot) -> String {
         snapshot.estimatedDurationSessionCount > 0
-            ? "Known durations, including estimates"
-            : "Known-duration sessions only"
+            ? "Average speed uses sessions with saved durations. ≈ marks estimates."
+            : "Average speed uses sessions with saved durations."
     }
 
     private func hasKnownDuration(_ snapshot: UsageAnalyticsSnapshot) -> Bool {
