@@ -367,6 +367,9 @@ final class DictationController: ObservableObject {
             appProfiles: AppPreferences.default.appStyleProfiles
         )
         self.snippetService = SnippetService(snippets: AppPreferences.default.snippets)
+        self.overlay.setStopAction { [weak self] in
+            self?.stopRecording()
+        }
         self.overlay.setCancelAction { [weak self] in
             Task { @MainActor [weak self] in
                 self?.cancelActiveRecording()
@@ -2028,6 +2031,13 @@ final class DictationController: ObservableObject {
 
     private func applyOverlayAppearance(for appearance: AppPreferences.Appearance) {
         let theme = StenoDesign.theme(for: appearance)
+        let panelAppearance: NSAppearance?
+        switch appearance.mode {
+        case .system: panelAppearance = nil
+        case .light: panelAppearance = NSAppearance(named: .aqua)
+        case .dark: panelAppearance = NSAppearance(named: .darkAqua)
+        }
+        overlay.updateAppearance(panelAppearance)
         overlay.updateAccentColor(NSColor(theme.accent), glowColor: NSColor(theme.accentGlow))
     }
 

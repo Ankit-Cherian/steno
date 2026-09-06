@@ -36,7 +36,7 @@ enum IsolatedAppPreview {
             systemIntegrationsEnabled: false,
             isIsolatedPreview: true
         )
-        controller.preferences.appearance.accent = .terracotta
+        controller.preferences.appearance.accent = .dodger
         controller.preferences.general.showOnboarding = false
         controller.preferences.general.launchAtLoginEnabled = false
         controller.preferences.dictation.whisperCLIPath = "/preview/whisper-cli"
@@ -83,6 +83,7 @@ enum IsolatedAppPreview {
 struct IsolatedReviewControls: View {
     @EnvironmentObject private var controller: DictationController
     @State private var state: ReviewState = .ready
+    @StateObject private var overlayReview = OverlayReviewPlayer()
 
     private enum ReviewState: String, CaseIterable {
         case ready = "Populated"
@@ -97,10 +98,15 @@ struct IsolatedReviewControls: View {
         HStack(spacing: 16) {
             Text("Design review · Sample data")
                 .font(.system(size: 11, weight: .semibold))
-            Text("Microphone and system actions are disabled")
+            Text("No microphone or data changes")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
+            Button(overlayReview.isRunning ? "Hide overlay" : "Preview overlay") {
+                if overlayReview.isRunning { overlayReview.stop() }
+                else { overlayReview.start(appearance: controller.preferences.appearance) }
+            }
+            .accessibilityIdentifier("isolated-preview-overlay")
             Picker("Review state", selection: $state) {
                 ForEach(ReviewState.allCases, id: \.self) { state in
                     Text(state.rawValue).tag(state)
@@ -113,6 +119,10 @@ struct IsolatedReviewControls: View {
         .padding(.vertical, 9)
         .background(.bar)
         .accessibilityIdentifier("isolated-preview-banner")
+        .onChange(of: controller.preferences.appearance) { appearance in
+            overlayReview.updateAppearance(appearance)
+        }
+        .onDisappear { overlayReview.stop() }
     }
 
     private func stage(_ state: ReviewState) {

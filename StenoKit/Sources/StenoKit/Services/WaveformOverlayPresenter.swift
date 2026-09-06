@@ -25,8 +25,16 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     private var barLayers: [CALayer] = []
     private var iconLayer: CALayer?
     private var textField: NSTextField?
-    private var transcriptField: NSTextField?
+    private var failureMessage: String?
+    private var transcriptField: OverlayTranscriptView?
+    private var transcriptViewport = OverlayTranscriptViewport()
+    private var transcriptHeight: CGFloat = 0
+    private var transcriptContinuityEpoch: UInt64 = 0
+    private var selectedAppearance: NSAppearance?
+    private var manuscriptRule: CALayer?
     private var cancelButton: OverlayCancelButton?
+    private var stopButton: OverlayCancelButton?
+    private var stopAction: (() -> Void)?
     private var cancelAction: (() -> Void)?
     private var cancelButtonVisible = false
     private var timer: Timer?
@@ -51,6 +59,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     private var lastAnnouncement: OverlayAnnouncement?
     private var announcementGate = OverlayAnnouncementGate()
     private var accentColor = WaveformOverlayPresenter.defaultAccent
+    private var sourceAccentColor = WaveformOverlayPresenter.defaultAccent
     private var accessibilityObserver: NSObjectProtocol?
     #if DEBUG
     private var hostedEvidenceHandler: ((WaveformOverlayHostedEvidenceEvent) -> Void)?
@@ -60,17 +69,16 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
 
     // MARK: - Constants
 
-    private static let compactCornerRadius: CGFloat = 18
-    private static let liveCornerRadius: CGFloat = 18
+    private static let compactCornerRadius: CGFloat = 14
+    private static let liveCornerRadius: CGFloat = 14
     private static let barCount = 5
     private static let barWidth: CGFloat = 3.5
     private static let barSpacing: CGFloat = 3
     private static let barCornerRadius: CGFloat = 1.75
-    private static let barClusterX: CGFloat = 22
+    private static let barClusterX: CGFloat = 20
     private static let iconSize: CGFloat = 16
 
-    private static let defaultAccent = NSColor(red: 30.0 / 255.0, green: 144.0 / 255.0, blue: 1.0, alpha: 1.0)
-    private static let successColor = NSColor(red: 110.0 / 255.0, green: 191.0 / 255.0, blue: 140.0 / 255.0, alpha: 1.0)
+    private static let defaultAccent = NSColor(red: 21.0 / 255.0, green: 93.0 / 255.0, blue: 168.0 / 255.0, alpha: 1.0)
     private static let warningColor = NSColor(red: 224.0 / 255.0, green: 183.0 / 255.0, blue: 113.0 / 255.0, alpha: 1.0)
     private static let errorColor = NSColor(red: 242.0 / 255.0, green: 113.0 / 255.0, blue: 106.0 / 255.0, alpha: 1.0)
 
@@ -101,10 +109,10 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     private var preferredBodyFont: NSFont {
         #if DEBUG
         if let hostedAccessibilityPreferencesOverride {
-            return NSFont.systemFont(ofSize: hostedAccessibilityPreferencesOverride.preferredBodyPointSize)
+            return NSFont.systemFont(ofSize: max(15, hostedAccessibilityPreferencesOverride.preferredBodyPointSize))
         }
         #endif
-        return NSFont.preferredFont(forTextStyle: .body, options: [:])
+        return NSFont.systemFont(ofSize: max(15, NSFont.preferredFont(forTextStyle: .body, options: [:]).pointSize))
     }
 
     private var preferredCaptionFont: NSFont {
@@ -124,15 +132,32 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     }
 
     private var activePanelSize: NSSize {
-        OverlayPanelLayoutPolicy.panelSize(
+        let visibleSize = pinnedScreenFrame?.size
+            ?? window?.screen?.visibleFrame.size
+            ?? NSScreen.main?.visibleFrame.size
+        let size = OverlayPanelLayoutPolicy.panelSize(
             showsTranscript: showsLiveTranscriptPanel,
             textScale: accessibilityMetrics.textScale,
             preferredBodyPointSize: preferredBodyFont.pointSize,
             preferredCaptionPointSize: preferredCaptionFont.pointSize,
-            visibleFrameSize: pinnedScreenFrame?.size
-                ?? window?.screen?.visibleFrame.size
-                ?? NSScreen.main?.visibleFrame.size
+            visibleFrameSize: visibleSize,
+            transcriptHeight: transcriptHeight
         )
+        guard let failureMessage else { return size }
+        let width = OverlayPanelLayoutPolicy.panelSize(
+            showsTranscript: true, textScale: accessibilityMetrics.textScale,
+            preferredBodyPointSize: preferredBodyFont.pointSize,
+            preferredCaptionPointSize: preferredCaptionFont.pointSize,
+            visibleFrameSize: visibleSize, transcriptHeight: 0
+        ).width
+        let textWidth = max(1, width - 84)
+        let measured = (failureMessage as NSString).boundingRect(
+            with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: preferredCaptionFont]
+        )
+        let height = max(size.height, ceil(measured.height) + 30)
+        return CGSize(width: width, height: min(height, max(1, (visibleSize?.height ?? height + 32) - 32)))
     }
 
     private var showsLiveTranscriptPanel: Bool {
@@ -178,14 +203,31 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         cancelAction = action
     }
 
+    public func setStopAction(_ action: (() -> Void)?) {
+        stopAction = action
+        if listeningSessionIsActive { showCancelControl() }
+    }
+
     @MainActor
     public func updateAccentColor(_ color: NSColor, glowColor: NSColor? = nil) {
-        accentColor = color.usingColorSpace(.deviceRGB) ?? color
+        sourceAccentColor = color
+        resolveAccentColor()
         _ = glowColor
 
         if barsVisible {
             setBarColor(accentColor)
         }
+        manuscriptRule?.backgroundColor = accentColor.withAlphaComponent(0.65).cgColor
+        stopButton?.applyAccessibilityAppearance(increaseContrast: increaseContrast, foregroundColor: accentColor)
+    }
+
+    /// Follow the app's explicit appearance; nil follows the system appearance.
+    public func updateAppearance(_ appearance: NSAppearance?) {
+        selectedAppearance = appearance
+        window?.appearance = appearance
+        resolveAccentColor()
+        applyAccessibilityAppearance()
+        rerenderCurrentTranscriptToFitIfNeeded()
     }
 
     @MainActor
@@ -245,6 +287,8 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             updateListeningText()
             return
         }
+        if case .failure(let message) = state { failureMessage = "Error: \(message)" }
+        else { failureMessage = nil }
         switch state {
         case .listening(let handsFree, _):
             liveTranscriptEnabled = configuredLiveTranscriptEnabled
@@ -258,6 +302,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             lastAnnouncement = nil
             announcementGate.beginSession()
             pinnedScreenFrame = nil
+            transcriptViewport.reset()
+            transcriptHeight = 0
+            transcriptContinuityEpoch = 0
             resizePanelForCurrentSession()
             listeningHandsFree = handsFree
             if case .listening(_, let elapsedSeconds) = state {
@@ -285,7 +332,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             endListeningPresentation()
             resizePanelForCurrentSession()
             stopTimer()
-            hideBarsShowIcon("checkmark.circle.fill", color: Self.successColor)
+            hideBarsShowIcon("checkmark.circle.fill", color: successColor)
             updateText("Inserted")
             hideLiveTranscriptFields()
             hideCancelControl()
@@ -346,6 +393,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         stopBarAnimations()
         hideCancelControl()
         wasHidden = true
+        failureMessage = nil
         pinnedScreenFrame = nil
         captureTargetPoint = nil
         liveTranscriptSession = nil
@@ -369,6 +417,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             backing: .buffered,
             defer: false
         )
+        panel.appearance = selectedAppearance
         panel.isOpaque = false
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = true
@@ -412,8 +461,19 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         wrapper.wantsLayer = true
         wrapper.layer?.addSublayer(outerShadow)
         wrapper.addSubview(content)
+        wrapper.appearanceDidChange = { [weak self] in
+            guard let self else { return }
+            self.resolveAccentColor()
+            self.applyAccessibilityAppearance()
+            self.rerenderCurrentTranscriptToFitIfNeeded()
+        }
         self.wrapperView = wrapper
         self.outerShadowLayer = outerShadow
+
+        let rule = CALayer()
+        rule.backgroundColor = accentColor.withAlphaComponent(0.65).cgColor
+        content.layer?.addSublayer(rule)
+        manuscriptRule = rule
 
         // Waveform bars
         let barClusterWidth = CGFloat(Self.barCount) * Self.barWidth + CGFloat(Self.barCount - 1) * Self.barSpacing
@@ -447,7 +507,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         self.iconLayer = icon
 
         // Text label
-        let label = NSTextField(labelWithString: "Listening 00:00")
+        let label = NSTextField(labelWithString: "Listening · 00:00")
         label.font = preferredCaptionFont
         label.textColor = NSColor(calibratedWhite: 0.92, alpha: 1.0)
         label.alignment = .left
@@ -455,12 +515,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         label.setAccessibilityLabel("Dictation status")
         content.addSubview(label)
 
-        let transcript = NSTextField(wrappingLabelWithString: "")
+        let transcript = OverlayTranscriptView(frame: .zero)
         transcript.font = preferredBodyFont
-        transcript.textColor = NSColor(calibratedWhite: 0.96, alpha: 1)
-        transcript.maximumNumberOfLines = 3
-        transcript.lineBreakMode = .byWordWrapping
-        transcript.setAccessibilityLabel("Live transcript")
+        transcript.textColor = transcriptColor
         transcript.setAccessibilityValue("")
         content.addSubview(transcript)
         self.transcriptField = transcript
@@ -473,7 +530,14 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         }
         content.addSubview(cancel)
         self.cancelButton = cancel
-        wrapper.interactiveButton = cancel
+        let stop = OverlayCancelButton(frame: .zero)
+        stop.configureAsStop()
+        stop.isHidden = true
+        stop.isEnabled = false
+        stop.setPressAction { [weak self] in self?.handleStopButtonPressed() }
+        content.addSubview(stop)
+        stopButton = stop
+        wrapper.interactiveButtons = [cancel, stop]
 
         panel.contentView = wrapper
         self.window = panel
@@ -508,10 +572,17 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             + CGFloat(Self.barCount) * Self.barWidth
             + CGFloat(Self.barCount - 1) * Self.barSpacing
             + 14
-        let trailingInset: CGFloat = 52
-        let textWidth = max(80, size.width - transcriptLeading - trailingInset)
+        let trailingInset: CGFloat = listeningSessionIsActive ? 92 : 20
+        let textWidth = max(0, size.width - transcriptLeading - trailingInset)
 
-        if showsLiveTranscriptPanel {
+        textField?.lineBreakMode = failureMessage == nil ? .byTruncatingTail : .byWordWrapping
+        textField?.maximumNumberOfLines = failureMessage == nil ? 1 : 0
+        textField?.cell?.usesSingleLineMode = failureMessage == nil
+        textField?.cell?.wraps = failureMessage != nil
+        if failureMessage != nil {
+            textField?.frame = CGRect(x: transcriptLeading, y: 13, width: textWidth, height: max(0, size.height - 26))
+            transcriptField?.isHidden = true
+        } else if showsLiveTranscriptPanel {
             textField?.frame = NSRect(
                 x: transcriptLeading,
                 y: geometry.statusFrame.minY,
@@ -535,12 +606,16 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         }
 
         cancelButton?.frame = NSRect(
-            x: size.width - 40,
-            y: size.height - 40,
-            width: 24,
-            height: 24
+            x: max(0, size.width - 42),
+            y: max(0, size.height - 39),
+            width: 28,
+            height: 28
         )
 
+        stopButton?.frame = CGRect(x: max(0, size.width - 78), y: max(0, size.height - 39), width: 28, height: 28)
+        manuscriptRule?.isHidden = !showsLiveTranscriptPanel || transcriptHeight == 0
+        manuscriptRule?.frame = CGRect(x: Self.barClusterX, y: size.height - 42,
+                                      width: max(0, min(38, size.width - 40)), height: 1)
         for bar in barLayers {
             bar.position = CGPoint(x: bar.position.x, y: barCenterY)
         }
@@ -552,7 +627,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
 
     @MainActor
     private var barCenterY: CGFloat {
-        showsLiveTranscriptPanel ? activePanelSize.height - 28 : activePanelSize.height / 2
+        showsLiveTranscriptPanel ? activePanelSize.height - 25 : activePanelSize.height / 2
     }
 
     @MainActor
@@ -632,13 +707,14 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         _ = liveRenderBuffer.takePending()
         lastLiveRenderTime = ProcessInfo.processInfo.systemUptime
 
+        transcriptContinuityEpoch = snapshot.continuityEpoch
         let presentation = fittedTranscriptPresentation(
             provisionalText: snapshot.provisionalText
         )
         lastRenderedProvisionalText = snapshot.provisionalText
         transcriptField?.isHidden = false
         transcriptField?.attributedStringValue = transcriptAttributedString(presentation.text)
-        transcriptField?.setAccessibilityValue(presentation.text)
+        transcriptField?.setAccessibilityValue(transcriptViewport.snapshot.sourceText)
 
         if liveRenderBuffer.pendingSnapshot != nil {
             scheduleLiveRenderIfNeeded()
@@ -663,61 +739,45 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     private func fittedTranscriptPresentation(
         provisionalText: String
     ) -> OverlayTranscriptPresentation {
-        guard let transcriptField else {
-            return OverlayTranscriptFormatter.presentation(provisionalText: provisionalText)
-        }
-        var budget = max(
-            1,
-            OverlayPanelLayoutPolicy.estimatedVisibleGraphemeBudget(
-                textWidth: transcriptField.bounds.width,
-                textHeight: transcriptField.bounds.height,
-                preferredBodyPointSize: preferredBodyFont.pointSize
-            )
+        let maximumSize = OverlayPanelLayoutPolicy.panelSize(
+            showsTranscript: true,
+            textScale: accessibilityMetrics.textScale,
+            preferredBodyPointSize: preferredBodyFont.pointSize,
+            preferredCaptionPointSize: preferredCaptionFont.pointSize,
+            visibleFrameSize: pinnedScreenFrame?.size
         )
-
-        while budget > 0 {
-            let presentation = OverlayTranscriptFormatter.presentation(
-                provisionalText: provisionalText,
-                maximumVisibleGraphemes: budget
-            )
-            guard !presentation.text.isEmpty else { return presentation }
-            if transcriptTextFitsField(presentation.text) {
-                return presentation
-            }
-            budget = min(budget - 1, presentation.text.count - 1)
+        let maximumGeometry = OverlayPanelLayoutPolicy.contentGeometry(
+            panelSize: maximumSize, showsTranscript: true,
+            preferredBodyPointSize: preferredBodyFont.pointSize,
+            preferredCaptionPointSize: preferredCaptionFont.pointSize
+        )
+        let capacity = CGSize(width: max(1, maximumSize.width - 2 * Self.barClusterX),
+                              height: maximumGeometry.transcriptFrame.height)
+        let page = transcriptViewport.update(provisionalText, continuityEpoch: transcriptContinuityEpoch) { text in
+            OverlayTranscriptTypesetter.fits(transcriptAttributedString(text), in: capacity)
         }
-        return OverlayTranscriptPresentation(text: "")
+        let measuredHeight = OverlayTranscriptTypesetter.height(
+            of: transcriptAttributedString(page.visibleText), width: capacity.width
+        )
+        // Retain attained height until the session ends. Page turnover and
+        // revisable hypotheses should not make the reading surface breathe.
+        transcriptHeight = page.pageRanges.count > 1
+            ? capacity.height
+            : min(capacity.height, max(transcriptHeight, measuredHeight))
+        resizePanelForCurrentSession()
+        centerWindowNearTop()
+        return OverlayTranscriptPresentation(text: page.visibleText)
     }
 
     @MainActor
     private func transcriptAttributedString(_ text: String) -> NSAttributedString {
-        NSAttributedString(
-            string: text,
-            attributes: [
-                .font: preferredBodyFont,
-                .foregroundColor: increaseContrast
-                    ? NSColor.white
-                    : NSColor(calibratedWhite: 0.96, alpha: 1)
-            ]
-        )
+        OverlayTranscriptTypesetter.attributed(text, font: preferredBodyFont, color: transcriptColor)
     }
 
     @MainActor
     private func transcriptTextFitsField(_ text: String) -> Bool {
-        guard let transcriptField,
-              transcriptField.bounds.width > 0,
-              transcriptField.bounds.height > 0 else {
-            return text.isEmpty
-        }
-        let measured = transcriptAttributedString(text).boundingRect(
-            with: CGSize(
-                width: transcriptField.bounds.width,
-                height: .greatestFiniteMagnitude
-            ),
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        )
-        return ceil(measured.height) <= floor(transcriptField.bounds.height)
-            && ceil(measured.width) <= ceil(transcriptField.bounds.width)
+        guard let transcriptField else { return text.isEmpty }
+        return OverlayTranscriptTypesetter.fits(transcriptAttributedString(text), in: transcriptField.bounds.size)
     }
 
     @MainActor
@@ -747,6 +807,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     @MainActor
     private func clearLiveTranscriptContent() {
         lastRenderedProvisionalText = nil
+        transcriptViewport.reset()
+        transcriptHeight = 0
+        transcriptContinuityEpoch = 0
         transcriptField?.stringValue = ""
         transcriptField?.attributedStringValue = NSAttributedString(string: "")
         transcriptField?.setAccessibilityValue("")
@@ -760,7 +823,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             provisionalText: lastRenderedProvisionalText
         )
         transcriptField?.attributedStringValue = transcriptAttributedString(presentation.text)
-        transcriptField?.setAccessibilityValue(presentation.text)
+        transcriptField?.setAccessibilityValue(transcriptViewport.snapshot.sourceText)
     }
 
     #if DEBUG
@@ -783,7 +846,8 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     @MainActor
     func hostedEvidenceRenderPNG(
         state: OverlayState,
-        snapshot: LiveTranscriptionSnapshot? = nil
+        snapshot: LiveTranscriptionSnapshot? = nil,
+        snapshots: [LiveTranscriptionSnapshot] = []
     ) -> Data? {
         // Render only this presenter's view tree. Never order a panel or
         // announce synthetic content while generating visual fixtures.
@@ -797,6 +861,10 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             updateLiveTranscript(snapshot)
             renderPendingLiveSnapshot()
         }
+        for update in snapshots {
+            updateLiveTranscript(update)
+            renderPendingLiveSnapshot()
+        }
         stopTimer()
         guard let content = contentBackground else { return nil }
         content.layoutSubtreeIfNeeded()
@@ -808,10 +876,42 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     @MainActor
     func hostedEvidenceHasOneTranscriptSurface() -> Bool {
         transcriptField != nil
-            && transcriptField?.accessibilityLabel() == "Live transcript"
-            && transcriptField?.maximumNumberOfLines == 3
-            && transcriptField?.lineBreakMode == .byWordWrapping
+            && transcriptField?.accessibilityLabel() == "Live transcript, provisional"
     }
+
+    @MainActor
+    func hostedEvidenceViewport() -> OverlayTranscriptViewportSnapshot { transcriptViewport.snapshot }
+
+    @MainActor
+    func hostedEvidencePanelSize() -> CGSize { window?.frame.size ?? .zero }
+
+    func hostedEvidenceControlScreenFrames() -> [CGRect] {
+        guard let window, let contentBackground else { return [] }
+        return [stopButton, cancelButton].compactMap { button in
+            guard let button else { return nil }
+            return window.convertToScreen(contentBackground.convert(button.frame, to: nil))
+        }
+    }
+
+    func hostedEvidenceControlsAreNonactivating() -> Bool {
+        window?.styleMask.contains(.nonactivatingPanel) == true && window?.isKeyWindow == false
+    }
+
+    func hostedEvidenceStopIsAvailable() -> Bool {
+        stopButton?.isHidden == false && stopButton?.isEnabled == true
+    }
+
+    func hostedEvidencePressStop() { stopButton?.performClick(nil) }
+
+    func hostedEvidencePressCancel() { cancelButton?.performClick(nil) }
+
+    func hostedEvidenceAccentColor() -> NSColor { accentColor }
+
+    func hostedEvidenceUsesDarkAppearance() -> Bool { usesDarkAppearance }
+
+    func hostedEvidencePrepareOffscreen() { rendersOffscreen = true }
+
+    func hostedEvidenceFlushLiveTranscript() { renderPendingLiveSnapshot() }
 
     @MainActor
     func hostedEvidenceVisibleTranscript() -> String {
@@ -831,7 +931,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     @MainActor
     func hostedEvidenceUsesPreferredTypography() -> Bool {
         textField?.font == NSFont.preferredFont(forTextStyle: .caption1, options: [:])
-            && transcriptField?.font == NSFont.preferredFont(forTextStyle: .body, options: [:])
+            && transcriptField?.font.pointSize ?? 0 >= NSFont.preferredFont(forTextStyle: .body, options: [:]).pointSize
     }
 
     @MainActor
@@ -894,8 +994,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
               let pinnedScreenFrame,
               !transcriptField.isHidden else { return false }
         let visibleText = transcriptField.attributedStringValue.string
-        return transcriptField.font?.pointSize ?? 0 >= preferredBodyPointSize
-            && transcriptField.maximumNumberOfLines == OverlayPanelLayoutPolicy.maximumTranscriptLines
+        return transcriptField.font.pointSize >= preferredBodyPointSize
             && window.frame.width <= pinnedScreenFrame.width
             && window.frame.height <= pinnedScreenFrame.height
             && pinnedScreenFrame.insetBy(dx: -0.5, dy: -0.5).contains(window.frame)
@@ -911,17 +1010,11 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     func hostedEvidenceAccessibilityAppearanceMatchesPreferences() -> Bool {
         let expected = accessibilityPreferences
         let metrics = OverlayAccessibilityMetrics(preferences: expected)
-        let expectedStatusColor = expected.increaseContrast
-            ? NSColor.white
-            : NSColor(calibratedWhite: 0.92, alpha: 1)
-        let expectedTranscriptColor = expected.increaseContrast
-            ? NSColor.white
-            : NSColor(calibratedWhite: 0.96, alpha: 1)
-        let expectedCancelTint = expected.increaseContrast
-            ? NSColor.white
-            : NSColor(calibratedWhite: 0.82, alpha: 1)
-        let expectedCancelBackgroundAlpha: CGFloat = expected.increaseContrast ? 0.20 : 0.08
-        let expectedCancelBorderAlpha: CGFloat = expected.increaseContrast ? 0.72 : 0.12
+        let expectedStatusColor = statusColor
+        let expectedTranscriptColor = transcriptColor
+        let expectedCancelTint = cancelColor
+        let expectedCancelBackgroundAlpha: CGFloat = expected.increaseContrast ? 0.20 : 0.06
+        let expectedCancelBorderAlpha: CGFloat = expected.increaseContrast ? 0.72 : 0.10
 
         return contentBackground?.layer?.shadowOpacity == metrics.innerShadowOpacity
             && outerShadowLayer?.shadowOpacity == metrics.outerShadowOpacity
@@ -1037,6 +1130,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     @MainActor
     private func updateText(_ newText: String) {
         textField?.stringValue = newText
+        textField?.toolTip = newText
     }
 
     // MARK: - Timer
@@ -1063,14 +1157,14 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     @MainActor
     private func updateListeningText() {
         guard let start = listeningStartDate else {
-            textField?.stringValue = "Listening 00:00"
+            textField?.stringValue = "Listening · 00:00"
             return
         }
         let elapsed = Int(Date().timeIntervalSince(start))
         let minutes = elapsed / 60
         let seconds = elapsed % 60
-        let mode = listeningHandsFree ? "Hands-Free" : "Hold-to-Talk"
-        textField?.stringValue = "\(mode) \(String(format: "%02d:%02d", minutes, seconds))"
+        let mode = listeningHandsFree ? "Hands-free" : "Listening"
+        textField?.stringValue = "\(mode) · \(String(format: "%02d:%02d", minutes, seconds))"
     }
 
     // MARK: - Positioning
@@ -1130,32 +1224,55 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         accentColor.blended(withFraction: 0.15, of: .white) ?? accentColor
     }
 
+    private func resolveAccentColor() {
+        let appearance = selectedAppearance ?? window?.effectiveAppearance ?? NSApp?.effectiveAppearance
+        let resolve = {
+            self.accentColor = self.sourceAccentColor.usingColorSpace(.deviceRGB) ?? self.sourceAccentColor
+        }
+        if let appearance { appearance.performAsCurrentDrawingAppearance(resolve) }
+        else { resolve() }
+        if barsVisible { setBarColor(accentColor) }
+        manuscriptRule?.backgroundColor = accentColor.withAlphaComponent(0.65).cgColor
+    }
+
+    private var usesDarkAppearance: Bool {
+        let appearance = selectedAppearance ?? window?.effectiveAppearance ?? NSApp?.effectiveAppearance
+        return appearance?.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    private var successColor: NSColor {
+        usesDarkAppearance
+            ? NSColor(srgbRed: 147.0 / 255, green: 195.0 / 255, blue: 167.0 / 255, alpha: 1)
+            : NSColor(srgbRed: 61.0 / 255, green: 112.0 / 255, blue: 89.0 / 255, alpha: 1)
+    }
+
+    private var transcriptColor: NSColor {
+        if increaseContrast { return usesDarkAppearance ? .white : .black }
+        return usesDarkAppearance
+            ? NSColor(srgbRed: 0.96, green: 0.95, blue: 0.92, alpha: 1)
+            : NSColor(srgbRed: 0.15, green: 0.16, blue: 0.18, alpha: 1)
+    }
+
+    private var statusColor: NSColor { transcriptColor.withAlphaComponent(increaseContrast ? 1 : 0.72) }
+    private var cancelColor: NSColor { transcriptColor.withAlphaComponent(increaseContrast ? 1 : 0.76) }
+
     @MainActor
     private var panelBackgroundColor: NSColor {
-        if reduceTransparency {
-            return NSColor(
-                calibratedRed: 11.0 / 255.0,
-                green: 14.0 / 255.0,
-                blue: 20.0 / 255.0,
-                alpha: 1
-            )
-        }
-        return NSColor(
-            calibratedRed: 11.0 / 255.0,
-            green: 14.0 / 255.0,
-            blue: 20.0 / 255.0,
-            alpha: accessibilityMetrics.backgroundAlpha
-        )
+        let color = usesDarkAppearance
+            ? NSColor(srgbRed: 41.0 / 255, green: 45.0 / 255, blue: 51.0 / 255, alpha: 1)
+            : NSColor(srgbRed: 1, green: 252.0 / 255, blue: 245.0 / 255, alpha: 1)
+        return color.withAlphaComponent(accessibilityMetrics.backgroundAlpha)
     }
 
     @MainActor
     private var panelBorderColor: NSColor {
-        NSColor.white.withAlphaComponent(increaseContrast ? 0.62 : 0.12)
+        transcriptColor.withAlphaComponent(increaseContrast ? 0.62 : 0.16)
     }
 
     @MainActor
     private func applyAccessibilityAppearance() {
         guard let layer = contentBackground?.layer else { return }
+        resolveAccentColor()
         layer.backgroundColor = panelBackgroundColor.cgColor
         layer.borderColor = panelBorderColor.cgColor
         layer.borderWidth = panelBorderWidth
@@ -1164,14 +1281,11 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         outerShadowLayer?.cornerRadius = activeCornerRadius
         outerShadowLayer?.shadowOpacity = accessibilityMetrics.outerShadowOpacity
         textField?.font = preferredCaptionFont
-        textField?.textColor = increaseContrast
-            ? .white
-            : NSColor(calibratedWhite: 0.92, alpha: 1)
+        textField?.textColor = statusColor
         transcriptField?.font = preferredBodyFont
-        transcriptField?.textColor = increaseContrast
-            ? .white
-            : NSColor(calibratedWhite: 0.96, alpha: 1)
-        cancelButton?.applyAccessibilityAppearance(increaseContrast: increaseContrast)
+        transcriptField?.textColor = transcriptColor
+        cancelButton?.applyAccessibilityAppearance(increaseContrast: increaseContrast, foregroundColor: cancelColor)
+        stopButton?.applyAccessibilityAppearance(increaseContrast: increaseContrast, foregroundColor: accentColor)
     }
 
     @MainActor
@@ -1196,6 +1310,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     @MainActor
     private func showCancelControl() {
         cancelButtonVisible = true
+        stopButton?.isHidden = stopAction == nil
+        stopButton?.isEnabled = stopAction != nil
+        stopButton?.alphaValue = 1
         guard let cancelButton else { return }
         cancelButton.isHidden = false
         cancelButton.alphaValue = 1
@@ -1204,13 +1321,23 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     @MainActor
     private func hideCancelControl() {
         cancelButtonVisible = false
+        stopButton?.isHidden = true
+        stopButton?.isEnabled = false
         guard let cancelButton else { return }
         cancelButton.alphaValue = 0
         cancelButton.isHidden = true
     }
 
     @MainActor
+    private func handleStopButtonPressed() {
+        guard listeningSessionIsActive, stopButton?.isEnabled == true else { return }
+        hideCancelControl()
+        stopAction?()
+    }
+
+    @MainActor
     private func handleCancelButtonPressed() {
+        guard listeningSessionIsActive, cancelButtonVisible else { return }
         hideCancelControl()
         announceOnce(.cancelled, message: "Steno dictation cancelled")
         cancelAction?()
@@ -1403,35 +1530,26 @@ struct OverlayPanelContentGeometry: Equatable {
 
 enum OverlayPanelLayoutPolicy {
     static let screenEdgeInset: CGFloat = 16
-    static let maximumTranscriptLines = 3
+    static let maximumTranscriptLines = 4
 
     static func panelSize(
         showsTranscript: Bool,
         textScale: CGFloat,
         preferredBodyPointSize: CGFloat,
         preferredCaptionPointSize: CGFloat,
-        visibleFrameSize: CGSize?
+        visibleFrameSize: CGSize?,
+        transcriptHeight: CGFloat? = nil
     ) -> CGSize {
         let expansion = max(0, textScale - 1)
         let desired: CGSize
         if showsTranscript {
-            let widthForThreeLines = 120
-                + (48 * preferredBodyPointSize * 0.58)
-            let desiredWidth = max(500 + (120 * expansion), widthForThreeLines)
-            let desiredHeight = max(
-                116 + (64 * expansion),
-                12
-                    + (CGFloat(maximumTranscriptLines) * preferredBodyPointSize * 1.35)
-                    + 8
-                    + (preferredCaptionPointSize * 1.35)
-                    + 19
-            )
-            desired = CGSize(width: desiredWidth, height: desiredHeight)
+            let desiredWidth = 440 + (100 * expansion)
+            let headerHeight = max(46, ceil(preferredCaptionPointSize * 1.35) + 26)
+            let maximumTextHeight = CGFloat(maximumTranscriptLines) * preferredBodyPointSize * 1.4 + 2
+            let textHeight = min(maximumTextHeight, transcriptHeight ?? maximumTextHeight)
+            desired = CGSize(width: desiredWidth, height: max(64, headerHeight + textHeight + 14))
         } else {
-            desired = CGSize(
-                width: 292 + (64 * expansion),
-                height: 52 + (24 * expansion)
-            )
+            desired = CGSize(width: 292 + (64 * expansion), height: max(56, preferredCaptionPointSize * 1.35 + 26))
         }
 
         guard let visibleFrameSize else { return desired }
@@ -1458,11 +1576,11 @@ enum OverlayPanelLayoutPolicy {
             return OverlayPanelContentGeometry(statusFrame: statusFrame, transcriptFrame: .zero)
         }
 
-        let bottomInset: CGFloat = 12
-        let topInset: CGFloat = 19
-        let interItemSpacing: CGFloat = 8
-        let statusY = max(bottomInset, panelSize.height - topInset - statusHeight)
-        let transcriptHeight = max(0, statusY - interItemSpacing - bottomInset)
+        let bottomInset: CGFloat = 14
+        let topInset: CGFloat = 13
+        let headerHeight = max(46, ceil(preferredCaptionPointSize * 1.35) + 26)
+        let statusY = max(0, panelSize.height - topInset - statusHeight)
+        let transcriptHeight = max(0, panelSize.height - headerHeight - bottomInset)
         return OverlayPanelContentGeometry(
             statusFrame: CGRect(
                 x: 0,
@@ -1607,6 +1725,7 @@ enum OverlayTranscriptFormatter {
 }
 
 private final class OverlayCancelButton: NSButton {
+    private var symbolName = "xmark"
     private var pressAction: (@MainActor () -> Void)?
 
     override init(frame frameRect: NSRect) {
@@ -1651,20 +1770,23 @@ private final class OverlayCancelButton: NSButton {
         pressAction?()
     }
 
-    func applyAccessibilityAppearance(increaseContrast: Bool) {
-        let foregroundColor = increaseContrast
-            ? NSColor.white
-            : NSColor(calibratedWhite: 0.82, alpha: 1)
-        image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
+    func configureAsStop() {
+        symbolName = "stop.fill"
+        setAccessibilityLabel("Stop dictation and insert transcript")
+        toolTip = "Stop dictation and insert transcript"
+    }
+
+    func applyAccessibilityAppearance(increaseContrast: Bool, foregroundColor: NSColor) {
+        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))?
             .tinted(with: foregroundColor)
         contentTintColor = foregroundColor
-        layer?.backgroundColor = NSColor.white
-            .withAlphaComponent(increaseContrast ? 0.20 : 0.08)
+        layer?.backgroundColor = foregroundColor
+            .withAlphaComponent(increaseContrast ? 0.20 : 0.06)
             .cgColor
         layer?.borderWidth = increaseContrast ? 1 : 0.5
-        layer?.borderColor = NSColor.white
-            .withAlphaComponent(increaseContrast ? 0.72 : 0.12)
+        layer?.borderColor = foregroundColor
+            .withAlphaComponent(increaseContrast ? 0.72 : 0.10)
             .cgColor
     }
 }
@@ -1687,10 +1809,16 @@ private func approximatelyEqual(
 }
 
 private final class OverlayPassthroughContainer: NSView {
-    weak var interactiveButton: NSView?
+    var interactiveButtons: [NSView] = []
+    var appearanceDidChange: (() -> Void)?
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        appearanceDidChange?()
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        OverlayHitTesting.interactiveView(at: point, in: self, interactiveView: interactiveButton)
+        OverlayHitTesting.interactiveView(at: point, in: self, interactiveViews: interactiveButtons)
     }
 }
 
