@@ -78,10 +78,10 @@ struct ContentView: View {
 
     private func navigation(theme: StenoTheme) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Steno")
-                .font(StenoDesign.wordmarkFont)
-                .tracking(StenoDesign.wordmarkTracking)
-                .foregroundStyle(.white)
+            Image("StenoMark")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 48, height: 48)
                 .padding(.horizontal, 12)
                 .padding(.top, 22)
                 .padding(.bottom, 22)
