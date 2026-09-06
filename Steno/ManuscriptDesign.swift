@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Editorial composition with a common writing edge and a separate capture seal.
+/// Keeps the capture heading and action together above the writing surface.
 struct ManuscriptDictationLayout<Header: View, Controls: View, Shortcuts: View, Transcript: View>: View {
     let header: Header
     let controls: Controls
@@ -16,11 +16,11 @@ struct ManuscriptDictationLayout<Header: View, Controls: View, Shortcuts: View, 
             if hasRoomForSeal {
                 HStack(alignment: .center, spacing: 24) {
                     header
-                        .frame(maxWidth: .infinity, alignment: .leading)
                         .layoutPriority(1)
                     controls
                         .frame(width: 180, alignment: .center)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 VStack(alignment: .leading, spacing: 24) {
                     header
