@@ -5,8 +5,8 @@ struct InsertionSettingsSection: View {
     @Binding var preferences: AppPreferences
 
     var body: some View {
-        settingsCard("Text Output (Insertion)") {
-            Text("Set priority order. Backup paste via clipboard is always kept.")
+        settingsCard("Insertion order") {
+            Text("Steno tries these methods in order. Clipboard paste stays available as a backup.")
                 .font(StenoDesign.caption())
                 .foregroundStyle(StenoDesign.textSecondary)
 
@@ -21,11 +21,11 @@ struct InsertionSettingsSection: View {
                             .font(StenoDesign.callout())
                             .lineLimit(1)
                         Spacer()
-                        VStack(spacing: 0) {
+                        HStack(spacing: 4) {
                             Button { moveUp(index) } label: {
                                 Image(systemName: "chevron.up")
                                     .font(.system(size: 10, weight: .medium))
-                                    .frame(width: 20, height: 12)
+                                    .frame(width: 24, height: 26)
                             }
                             .disabled(index == 0)
                             .accessibilityLabel("Move \(label(for: method)) up")
@@ -33,7 +33,7 @@ struct InsertionSettingsSection: View {
                             Button { moveDown(index) } label: {
                                 Image(systemName: "chevron.down")
                                     .font(.system(size: 10, weight: .medium))
-                                    .frame(width: 20, height: 12)
+                                    .frame(width: 24, height: 26)
                             }
                             .disabled(index == methods.count - 1)
                             .accessibilityLabel("Move \(label(for: method)) down")
@@ -53,7 +53,7 @@ struct InsertionSettingsSection: View {
             .background(StenoDesign.surfaceSecondary)
             .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusSmall))
 
-            HStack {
+            VStack(alignment: .leading, spacing: 12) {
                 Toggle(
                     "Type directly",
                     isOn: Binding(
@@ -75,6 +75,7 @@ struct InsertionSettingsSection: View {
                         set: { setInsertionMethod(.clipboardPaste, enabled: $0) }
                     )
                 )
+                .disabled(true)
             }
         }
     }

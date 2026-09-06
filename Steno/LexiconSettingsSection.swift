@@ -11,13 +11,16 @@ struct LexiconSettingsSection: View {
 
     var body: some View {
         settingsCardWithSubtitle(
-            "Word Corrections",
-            subtitle: "Auto-fix words that speech recognition gets wrong, with optional aliases for likely variants"
+            "Your corrections",
+            subtitle: "Replace a recurring misheard word with the spelling you prefer."
         ) {
             VStack(spacing: StenoDesign.sm) {
                 if preferences.lexiconEntries.isEmpty {
                     Text("No corrections yet. Example: \u{201C}stenoh\u{201D} \u{2192} \u{201C}Steno\u{201D}")
+                        .font(StenoDesign.callout())
                         .foregroundStyle(StenoDesign.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
                 } else {
                     ForEach(preferences.lexiconEntries.indices, id: \.self) { index in
                         let entry = preferences.lexiconEntries[index]
@@ -31,14 +34,11 @@ struct LexiconSettingsSection: View {
             Divider()
 
             HStack(spacing: StenoDesign.sm) {
-                TextField("Misheard word", text: $newTerm)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Correct word", text: $newPreferred)
-                    .textFieldStyle(.roundedBorder)
+                settingsTextField("Misheard word", prompt: "stenoh", text: $newTerm)
+                settingsTextField("Correct word", prompt: "Steno", text: $newPreferred)
             }
 
-            TextField("Aliases (comma-separated, optional)", text: $newAliases)
-                .textFieldStyle(.roundedBorder)
+            settingsTextField("Aliases · optional", prompt: "Separate variants with commas", text: $newAliases)
 
             HStack {
                 ScopePickerRow(isGlobal: $newGlobal, bundleID: $newBundleID)
@@ -59,9 +59,11 @@ struct LexiconSettingsSection: View {
                     newBundleID = ""
                     newGlobal = true
                 } label: {
-                    Label("Add", systemImage: "plus")
+                    Label("Add correction", systemImage: "plus")
                 }
                 .buttonStyle(.bordered)
+                .fixedSize()
+                .disabled(newTerm.isEmpty || newPreferred.isEmpty)
             }
         }
     }
@@ -89,7 +91,7 @@ struct LexiconSettingsSection: View {
                 .accessibilityLabel("Remove entry")
                 .accessibilityValue(entry.term)
         }
-        .padding(.vertical, StenoDesign.xs)
+        .padding(.vertical, 10)
         .padding(.horizontal, StenoDesign.sm)
         .background(StenoDesign.surfaceSecondary)
         .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusSmall))

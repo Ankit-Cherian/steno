@@ -3,15 +3,15 @@ import StenoKit
 
 @MainActor
 func settingsCard<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-    VStack(alignment: .leading, spacing: StenoDesign.md) {
+    VStack(alignment: .leading, spacing: 18) {
         Text(title)
-            .font(StenoDesign.heading3())
+            .font(.system(size: 14, weight: .semibold))
             .foregroundStyle(StenoDesign.textPrimary)
             .accessibilityAddTraits(.isHeader)
         content()
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .cardStyle()
+    .cardStyle(padding: 20)
 }
 
 @MainActor
@@ -20,20 +20,21 @@ func settingsCardWithSubtitle<Content: View>(
     subtitle: String,
     @ViewBuilder content: () -> Content
 ) -> some View {
-    VStack(alignment: .leading, spacing: StenoDesign.md) {
+    VStack(alignment: .leading, spacing: 18) {
         VStack(alignment: .leading, spacing: StenoDesign.xs) {
             Text(title)
-                .font(StenoDesign.heading3())
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(StenoDesign.textPrimary)
                 .accessibilityAddTraits(.isHeader)
             Text(subtitle)
                 .font(StenoDesign.subheadline())
                 .foregroundStyle(StenoDesign.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         content()
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .cardStyle()
+    .cardStyle(padding: 20)
 }
 
 @MainActor
@@ -43,10 +44,11 @@ func entryRow(
     scope: Scope? = nil,
     onRemove: @escaping () -> Void
 ) -> some View {
-    HStack(spacing: StenoDesign.sm) {
+    HStack(alignment: .top, spacing: StenoDesign.sm) {
         Text(leading)
             .font(StenoDesign.callout())
-            .lineLimit(1)
+            .lineLimit(3)
+            .help(leading)
         Spacer()
         if let trailing = trailing {
             Text(trailing)
@@ -61,7 +63,7 @@ func entryRow(
             .accessibilityLabel("Remove entry")
             .accessibilityValue(leading)
     }
-    .padding(.vertical, StenoDesign.xs)
+    .padding(.vertical, 10)
     .padding(.horizontal, StenoDesign.sm)
     .background(StenoDesign.surfaceSecondary)
     .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusSmall))
@@ -71,6 +73,9 @@ func entryRow(
 func scopeBadge(_ scope: Scope) -> some View {
     Text(scopeLabel(scope))
         .font(StenoDesign.label())
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .help(scopeLabel(scope))
         .padding(.horizontal, StenoDesign.sm)
         .padding(.vertical, StenoDesign.xxs)
         .background(StenoDesign.accent.opacity(StenoDesign.opacitySubtle))
@@ -81,7 +86,7 @@ func scopeBadge(_ scope: Scope) -> some View {
 func scopeLabel(_ scope: Scope) -> String {
     switch scope {
     case .global:
-        return "Global"
+        return "All apps"
     case .app(let bundleID):
         return bundleID
     }
@@ -131,7 +136,41 @@ struct ScopePickerRow: View {
             if !isGlobal {
                 TextField("Bundle ID", text: $bundleID)
                     .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("App bundle ID")
             }
         }
+    }
+}
+
+/// A native preference control with its explanation aligned beneath the label.
+@MainActor
+func settingsToggle(
+    _ title: String,
+    description: String? = nil,
+    isOn: Binding<Bool>
+) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+        Toggle(title, isOn: isOn)
+            .font(.system(size: 13))
+        if let description {
+            Text(description)
+                .font(.system(size: 12))
+                .foregroundStyle(StenoDesign.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 20)
+        }
+    }
+}
+
+@MainActor
+func settingsTextField(_ title: String, prompt: String, text: Binding<String>) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+        Text(title)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(StenoDesign.textPrimary)
+        TextField(title, text: text, prompt: Text(prompt))
+            .textFieldStyle(.roundedBorder)
+            .labelsHidden()
+            .accessibilityLabel(title)
     }
 }

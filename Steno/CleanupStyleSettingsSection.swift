@@ -14,8 +14,8 @@ struct CleanupStyleSettingsSection: View {
 
     var body: some View {
         settingsCardWithSubtitle(
-            "Cleanup Style",
-            subtitle: "How transcripts are cleaned and formatted"
+            "Default style",
+            subtitle: "Applies to every app unless you add an override below."
         ) {
             VStack(alignment: .leading, spacing: 0) {
                 pickerRow(
@@ -89,9 +89,10 @@ struct CleanupStyleSettingsSection: View {
                                 commandPolicy: .transform
                             )
                         } label: {
-                            Label("Add Override", systemImage: "plus")
+                            Label("Add override", systemImage: "plus")
                         }
                         .buttonStyle(.bordered)
+                        .disabled(newStyleBundleID.isEmpty)
                     }
                 }
                 .padding(.top, StenoDesign.sm)
@@ -121,7 +122,7 @@ struct CleanupStyleSettingsSection: View {
                         .padding(.horizontal, 28)
                         .opacity(0)
                         .accessibilityHidden(true)
-                    Picker("", selection: selection) {
+                    Picker(label, selection: selection) {
                         ForEach(Array(T.allCases), id: \.self) { value in
                             Text(value.rawValue.capitalized).tag(value)
                         }
@@ -135,7 +136,8 @@ struct CleanupStyleSettingsSection: View {
             Text(description)
                 .font(StenoDesign.caption())
                 .foregroundStyle(StenoDesign.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.vertical, StenoDesign.sm)
+        .padding(.vertical, 12)
     }
 }

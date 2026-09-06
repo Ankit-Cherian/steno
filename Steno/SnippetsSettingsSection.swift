@@ -10,13 +10,16 @@ struct SnippetsSettingsSection: View {
 
     var body: some View {
         settingsCardWithSubtitle(
-            "Text Shortcuts",
-            subtitle: "Say a trigger word to insert longer text"
+            "Your shortcuts",
+            subtitle: "Give text you use often a short spoken trigger."
         ) {
             VStack(spacing: StenoDesign.sm) {
                 if preferences.snippets.isEmpty {
                     Text("No shortcuts yet. Example: \u{201C}brb\u{201D} \u{2192} \u{201C}I'll be right back\u{201D}")
+                        .font(StenoDesign.callout())
                         .foregroundStyle(StenoDesign.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
                 } else {
                     ForEach(preferences.snippets) { snippet in
                         entryRow(
@@ -31,11 +34,16 @@ struct SnippetsSettingsSection: View {
 
             Divider()
 
-            HStack(spacing: StenoDesign.sm) {
-                TextField("Trigger word", text: $newTrigger)
+            settingsTextField("Trigger word", prompt: "brb", text: $newTrigger)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Expands to")
+                    .font(.system(size: 12, weight: .medium))
+                TextField("Expands to", text: $newExpansion, prompt: Text("I'll be right back"), axis: .vertical)
                     .textFieldStyle(.roundedBorder)
-                TextField("Expands to", text: $newExpansion)
-                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(3...6)
+                    .labelsHidden()
+                    .accessibilityLabel("Expands to")
             }
 
             HStack {
@@ -55,9 +63,11 @@ struct SnippetsSettingsSection: View {
                     newBundleID = ""
                     newGlobal = true
                 } label: {
-                    Label("Add", systemImage: "plus")
+                    Label("Add shortcut", systemImage: "plus")
                 }
                 .buttonStyle(.bordered)
+                .fixedSize()
+                .disabled(newTrigger.isEmpty || newExpansion.isEmpty)
             }
         }
     }

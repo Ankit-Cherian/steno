@@ -9,12 +9,12 @@ struct ManuscriptDictationLayout<Header: View, Controls: View, Shortcuts: View, 
     let theme: StenoTheme
     let availableSize: CGSize
 
-    private var hasRoomForSeal: Bool { availableSize.width - 64 >= 600 }
+    private var hasRoomForSeal: Bool { availableSize.width >= 560 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             if hasRoomForSeal {
-                HStack(alignment: .center, spacing: 32) {
+                HStack(alignment: .center, spacing: 24) {
                     header
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .layoutPriority(1)
@@ -30,14 +30,14 @@ struct ManuscriptDictationLayout<Header: View, Controls: View, Shortcuts: View, 
                 }
             }
 
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 14) {
                 ManuscriptRule(theme: theme, accentLength: 44)
                 shortcuts
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             transcript
-                .padding(24)
+                .padding(20)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .background(theme.ink2)
                 .overlay(alignment: .top) {
@@ -55,8 +55,8 @@ struct ManuscriptDictationLayout<Header: View, Controls: View, Shortcuts: View, 
                         .allowsHitTesting(false)
                 }
         }
-        .frame(maxWidth: 1040, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: 960, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 
@@ -121,8 +121,8 @@ struct ManuscriptInsightsLayout<Metrics: View, CalendarContent: View, Details: V
     let theme: StenoTheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 14) {
                 ManuscriptRule(theme: theme, accentLength: 44)
                 metrics
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -140,8 +140,8 @@ struct ManuscriptInsightsLayout<Metrics: View, CalendarContent: View, Details: V
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(maxWidth: 1040, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: 960, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 
@@ -150,33 +150,31 @@ struct ManuscriptSettingsLayout<Content: View, Footer: View>: View {
     let content: Content
     let footer: Footer
     let theme: StenoTheme
+    var showsFooter: Bool = true
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 20) {
                     ManuscriptRule(theme: theme, accentLength: 44)
-                    content
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    content.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: 740, alignment: .leading)
-                .padding(32)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
+                .frame(maxWidth: .infinity)
             }
-
-            footer
-                .frame(maxWidth: 740, alignment: .leading)
-                .padding(.horizontal, 32)
-                .padding(.vertical, 20)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(theme.ink2)
-                .overlay(alignment: .top) {
-                    Rectangle()
-                        .fill(theme.lineStrong)
-                        .frame(height: 1)
-                        .accessibilityHidden(true)
-                        .allowsHitTesting(false)
-                }
+            if showsFooter {
+                footer
+                    .frame(maxWidth: 740, alignment: .leading)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 16)
+                    .frame(maxWidth: .infinity)
+                    .background(theme.ink2)
+                    .overlay(alignment: .top) {
+                        Rectangle().fill(theme.lineStrong).frame(height: 1)
+                            .accessibilityHidden(true).allowsHitTesting(false)
+                    }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }

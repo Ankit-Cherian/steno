@@ -6,8 +6,8 @@ struct PermissionsSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: StenoDesign.lg) {
             settingsCardWithSubtitle(
-                "Permissions",
-                subtitle: "Review access used for audio, shortcuts, and inserting your words."
+                "App access",
+                subtitle: "Changes are managed by macOS and take effect immediately."
             ) {
                 PermissionStatusCard(
                     title: "Microphone",
@@ -17,6 +17,8 @@ struct PermissionsSettingsSection: View {
                     onOpenSettings: { controller.openMicrophoneSettings() }
                 )
 
+                Divider()
+
                 PermissionStatusCard(
                     title: "Accessibility",
                     description: "Lets Steno type or paste into the app you're using.",
@@ -24,6 +26,8 @@ struct PermissionsSettingsSection: View {
                     onRequest: { controller.requestAccessibilityPermission() },
                     onOpenSettings: { controller.openAccessibilitySettings() }
                 )
+
+                Divider()
 
                 PermissionStatusCard(
                     title: "Input Monitoring",
@@ -41,14 +45,16 @@ struct PermissionsSettingsSection: View {
                 Text(allPermissionsGranted ? "All permissions are allowed. You can change access at any time in System Settings." : "Review the permissions above. Microphone access is needed to record; the other permissions support shortcuts and text insertion.")
                     .font(StenoDesign.caption())
                     .foregroundStyle(StenoDesign.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                Spacer()
+                Spacer(minLength: 8)
 
-                Button("Re-check") {
+                Button("Check again") {
                     controller.refreshPermissionStatuses()
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .fixedSize()
             }
             .padding(.horizontal, StenoDesign.md)
             .padding(.vertical, StenoDesign.md)

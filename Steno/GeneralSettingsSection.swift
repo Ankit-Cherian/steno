@@ -5,19 +5,25 @@ struct GeneralSettingsSection: View {
     let launchAtLoginWarning: String
 
     var body: some View {
-        settingsCard("General") {
-            Toggle("Launch at login", isOn: $preferences.general.launchAtLoginEnabled)
-            Toggle("Show Dock icon", isOn: $preferences.general.showDockIcon)
-            Toggle("Show onboarding on next launch", isOn: $preferences.general.showOnboarding)
-            if !launchAtLoginWarning.isEmpty {
-                Text(launchAtLoginWarning)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.error)
+        VStack(alignment: .leading, spacing: 20) {
+            settingsCard("Startup and visibility") {
+                settingsToggle("Launch at login", isOn: $preferences.general.launchAtLoginEnabled)
+                if !launchAtLoginWarning.isEmpty {
+                    Text(launchAtLoginWarning)
+                        .font(StenoDesign.caption())
+                        .foregroundStyle(StenoDesign.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Divider()
+                settingsToggle("Show Dock icon", isOn: $preferences.general.showDockIcon)
             }
-            Button("Re-run onboarding wizard") {
-                preferences.general.showOnboarding = true
+            settingsCard("Welcome guide") {
+                settingsToggle("Show onboarding on next launch", isOn: $preferences.general.showOnboarding)
+                Button("Show guide on next launch") {
+                    preferences.general.showOnboarding = true
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.bordered)
         }
     }
 }
