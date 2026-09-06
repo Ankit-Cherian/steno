@@ -147,47 +147,21 @@ enum StenoDesign {
     static var reviewDirectionOverride: StenoDesignDirection?
     #endif
 
-    static var direction: StenoDesignDirection {
-        #if DEBUG
-        if let reviewDirectionOverride { return reviewDirectionOverride }
-        if let value = Bundle.main.object(forInfoDictionaryKey: "StenoDesignDirection") as? String,
-           let direction = StenoDesignDirection(rawValue: value) { return direction }
-        #endif
-        return .signal
-    }
+    static var direction: StenoDesignDirection { .manuscript }
 
-    static var cardCornerRadius: CGFloat { direction == .signal ? 10 : direction == .manuscript ? 2 : 20 }
-
-    static var navigationWidth: CGFloat {
-        switch direction {
-        case .signal: return 104
-        case .manuscript: return 172
-        case .current: return 190
-        }
-    }
+    static var cardCornerRadius: CGFloat { 4 }
+    static var navigationWidth: CGFloat { 172 }
 
     private static var canvas: Color {
-        switch direction {
-        case .signal: return dynamicColor(light: Color(hex: 0xF1F3EE), dark: Color(hex: 0x181D20))
-        case .manuscript: return dynamicColor(light: Color(hex: 0xF5F0E7), dark: Color(hex: 0x202329))
-        case .current: return dynamicColor(light: Color(hex: 0xF0F5F2), dark: Color(hex: 0x16282A))
-        }
+        dynamicColor(light: Color(hex: 0xF5F0E7), dark: Color(hex: 0x202329))
     }
 
     private static var rail: Color {
-        switch direction {
-        case .signal: return dynamicColor(light: Color(hex: 0xE7EBE5), dark: Color(hex: 0x111619))
-        case .manuscript: return dynamicColor(light: Color(hex: 0xE8E2D7), dark: Color(hex: 0x171C23))
-        case .current: return dynamicColor(light: Color(hex: 0xDEEAE6), dark: Color(hex: 0x112023))
-        }
+        dynamicColor(light: Color(hex: 0xE8E2D7), dark: Color(hex: 0x171C23))
     }
 
     private static var readingSurface: Color {
-        switch direction {
-        case .signal: return dynamicColor(light: .white, dark: Color(hex: 0x242C2E))
-        case .manuscript: return dynamicColor(light: Color(hex: 0xFFFCF5), dark: Color(hex: 0x292D33))
-        case .current: return dynamicColor(light: Color(hex: 0xFAFDFC), dark: Color(hex: 0x223739))
-        }
+        dynamicColor(light: Color(hex: 0xFFFCF5), dark: Color(hex: 0x292D33))
     }
 
     static let xxs: CGFloat = 2
@@ -261,24 +235,16 @@ enum StenoDesign {
         theme(for: preferences.appearance)
     }
 
-    static func pageTitle(size: CGFloat = 38) -> Font {
-        switch direction {
-        case .signal: return .system(size: size, weight: .bold)
-        case .manuscript: return .custom("Fraunces", fixedSize: size).weight(.regular)
-        case .current: return .system(size: size, weight: .semibold, design: .rounded)
-        }
+    static func pageTitle(size: CGFloat = 32) -> Font {
+        .custom("Fraunces", fixedSize: size).weight(.regular)
     }
 
-    static func display(size: CGFloat = 56) -> Font {
-        switch direction {
-        case .signal: return .system(size: size, weight: .heavy)
-        case .manuscript: return .custom("Fraunces", fixedSize: size).weight(.regular)
-        case .current: return .system(size: size, weight: .medium, design: .rounded)
-        }
+    static func display(size: CGFloat = 44) -> Font {
+        .custom("Fraunces", fixedSize: size).weight(.regular)
     }
 
     static func reading(size: CGFloat) -> Font {
-        direction == .manuscript ? .custom("Fraunces", fixedSize: size).weight(.regular) : .system(size: size)
+        .custom("Fraunces", fixedSize: size).weight(.regular)
     }
 
     static func heading1() -> Font { system(size: 18, weight: .semibold) }
@@ -290,8 +256,8 @@ enum StenoDesign {
     static func subheadline() -> Font { system(size: 12, weight: .regular) }
     static func caption() -> Font { system(size: 11.5, weight: .regular) }
     static func captionEmphasis() -> Font { system(size: 11.5, weight: .medium) }
-    static func label() -> Font { mono(size: 10, weight: .medium) }
-    static func labelEmphasis() -> Font { mono(size: 10, weight: .medium) }
+    static func label() -> Font { system(size: 12, weight: .medium) }
+    static func labelEmphasis() -> Font { system(size: 12, weight: .semibold) }
 
     static func system(size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .default)

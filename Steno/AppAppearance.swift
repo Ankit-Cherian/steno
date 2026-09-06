@@ -2,9 +2,7 @@ import Foundation
 import SwiftUI
 
 enum StenoDesignDirection: String, CaseIterable, Sendable {
-    case signal
     case manuscript
-    case current
 }
 
 enum StenoAppearanceMode: String, Codable, Sendable, CaseIterable {
