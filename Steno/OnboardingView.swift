@@ -26,7 +26,9 @@ struct OnboardingView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(theme.text)
                 Spacer()
-                StenoBadge(text: "Onboarding", tone: .accent, theme: theme, compact: true)
+                Text("Setup")
+                    .font(StenoDesign.caption())
+                    .foregroundStyle(theme.textDim)
             }
             .padding(.horizontal, 18)
             .frame(height: StenoDesign.titleBarHeight)
@@ -45,7 +47,7 @@ struct OnboardingView: View {
         )
         .background(theme.ink0)
         .animation(
-            reduceMotion ? nil : .easeOut(duration: StenoDesign.direction == .current ? 0.24 : 0.2),
+            reduceMotion ? nil : .easeOut(duration: 0.2),
             value: currentStep
         )
         .onAppear {
@@ -61,27 +63,13 @@ struct OnboardingView: View {
         }
     }
 
-    @ViewBuilder
     private func onboardingLayout(theme: StenoTheme) -> some View {
-        switch StenoDesign.direction {
-        case .signal:
-            VStack(spacing: 0) {
-                progressBar.padding(.horizontal, 32).padding(.top, 24)
-                ScrollView {
-                    stepContent
-                        .padding(32)
-                        .frame(maxWidth: 760)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
-                Divider()
-                navigationBar.padding(.horizontal, 32).padding(.bottom, 20)
-            }
-            .background(theme.ink0)
-        case .manuscript:
-            ManuscriptOnboardingLayout(progress: progressBar, content: stepContent, navigation: navigationBar, theme: theme)
-        case .current:
-            CurrentOnboardingLayout(progress: progressBar, content: stepContent, navigation: navigationBar, theme: theme)
-        }
+        ManuscriptOnboardingLayout(
+            progress: progressBar,
+            content: stepContent,
+            navigation: navigationBar,
+            theme: theme
+        )
     }
 
     private var stepContent: some View {
@@ -101,22 +89,26 @@ struct OnboardingView: View {
     // MARK: - Progress Bar
 
     private var progressBar: some View {
-        HStack(spacing: StenoDesign.xs) {
+        let theme = StenoDesign.theme(for: controller.preferences)
+
+        return HStack(spacing: StenoDesign.md) {
             ForEach(OnboardingStep.allCases, id: \.self) { step in
-                VStack(alignment: .leading, spacing: 8) {
-                Text(step.title).font(.system(size: 12, weight: step == currentStep ? .semibold : .regular))
-                    .foregroundStyle(step == currentStep ? StenoDesign.textPrimary : StenoDesign.textSecondary)
-                RoundedRectangle(cornerRadius: StenoDesign.radiusTiny)
-                    .fill(step.rawValue <= currentStep.rawValue ? StenoDesign.theme(for: controller.preferences).accent : StenoDesign.border)
-                    .frame(height: StenoDesign.xs)
-                    .animation(
-                        reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationNormal),
-                        value: currentStep
-                    )
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(step.title)
+                        .font(.system(size: 12, weight: step == currentStep ? .semibold : .regular))
+                        .foregroundStyle(step == currentStep ? theme.text : theme.textDim)
+                        .lineLimit(1)
+
+                    RoundedRectangle(cornerRadius: StenoDesign.radiusTiny)
+                        .fill(step.rawValue <= currentStep.rawValue ? theme.accent : theme.line)
+                        .frame(height: 3)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .accessibilityLabel("Step \(currentStep.rawValue + 1) of \(OnboardingStep.allCases.count)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Setup progress")
+        .accessibilityValue("Step \(currentStep.rawValue + 1) of \(OnboardingStep.allCases.count): \(currentStep.name)")
     }
 
     // MARK: - Step Transition
@@ -131,32 +123,31 @@ struct OnboardingView: View {
     // MARK: - Step 1: Welcome
 
     private var welcomeStep: some View {
-        VStack(spacing: StenoDesign.xl) {
-            Spacer()
+        VStack(alignment: .leading, spacing: 28) {
+            stepHeading(
+                "Welcome to Steno",
+                description: "Private dictation that types into your active app."
+            )
 
-            Image(systemName: "mic.fill")
-                .font(.system(size: 44, weight: .medium))
-                .foregroundStyle(StenoDesign.theme(for: controller.preferences).accent)
-                .accessibilityHidden(true)
-
-            VStack(spacing: StenoDesign.sm) {
-                StenoPageTitle("Welcome to Steno")
-                    .foregroundStyle(StenoDesign.textPrimary)
-                    .accessibilityAddTraits(.isHeader)
-
-                Text("Private dictation that types into your active app")
-                    .font(StenoDesign.subheadline())
-                    .foregroundStyle(StenoDesign.textSecondary)
-            }
-
-            VStack(alignment: .leading, spacing: StenoDesign.md) {
+            VStack(alignment: .leading, spacing: StenoDesign.lg) {
                 featureRow(icon: "lock.shield", title: "Private by default", detail: "Audio and transcript cleanup stay on your Mac.")
+                Divider().overlay(StenoDesign.border)
                 featureRow(icon: "bolt", title: "Choose your pace", detail: "Pick a local speech model to balance speed and accuracy.")
+                Divider().overlay(StenoDesign.border)
                 featureRow(icon: "text.cursor", title: "Works across apps", detail: "Types or pastes into editors, terminals, and most text fields.")
             }
-            .cardStyle()
+        }
+    }
 
-            Spacer()
+    private func stepHeading(_ title: String, description: String) -> some View {
+        VStack(alignment: .leading, spacing: StenoDesign.sm) {
+            StenoPageTitle(title)
+                .foregroundStyle(StenoDesign.textPrimary)
+
+            Text(description)
+                .font(StenoDesign.subheadline())
+                .foregroundStyle(StenoDesign.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -175,25 +166,21 @@ struct OnboardingView: View {
                 Text(detail)
                     .font(StenoDesign.caption())
                     .foregroundStyle(StenoDesign.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Step 2: Permissions
 
     private var permissionsStep: some View {
-        VStack(spacing: StenoDesign.lg) {
-            Spacer()
-
-            VStack(spacing: StenoDesign.sm) {
-                StenoPageTitle("Permissions")
-                    .foregroundStyle(StenoDesign.textPrimary)
-                    .accessibilityAddTraits(.isHeader)
-
-                Text("Allow the access needed to record and insert dictation.")
-                    .font(StenoDesign.subheadline())
-                    .foregroundStyle(StenoDesign.textSecondary)
-            }
+        VStack(alignment: .leading, spacing: StenoDesign.lg) {
+            stepHeading(
+                "Permissions",
+                description: "Allow the access needed to record and insert dictation."
+            )
 
             VStack(spacing: StenoDesign.sm) {
                 PermissionStatusCard(
@@ -213,7 +200,7 @@ struct OnboardingView: View {
                 )
 
                 PermissionStatusCard(
-                    title: "Input Monitoring",
+                    title: "Input monitoring",
                     description: "Lets Steno detect global hotkeys while other apps are focused.",
                     status: controller.inputMonitoringPermissionStatus,
                     onRequest: { controller.requestInputMonitoringPermission() },
@@ -222,12 +209,11 @@ struct OnboardingView: View {
             }
 
             if controller.microphonePermissionStatus != .granted {
-                Text("Allow microphone access to start dictating. You can also finish setup later.")
+                Label("Allow microphone access to start dictating. You can also finish setup later.", systemImage: "info.circle")
                     .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.warning)
+                    .foregroundStyle(StenoDesign.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            Spacer()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             guard !controller.isIsolatedPreview else { return }
@@ -238,19 +224,8 @@ struct OnboardingView: View {
     // MARK: - Step 3: Whisper Setup
 
     private var whisperSetupStep: some View {
-        VStack(spacing: StenoDesign.lg) {
-            Spacer()
-
-            VStack(spacing: StenoDesign.sm) {
-                Text("Choose your speech model")
-                    .font(StenoDesign.heading1())
-                    .foregroundStyle(StenoDesign.textPrimary)
-                    .accessibilityAddTraits(.isHeader)
-
-                Text(whisperSetupDescription)
-                    .font(StenoDesign.subheadline())
-                    .foregroundStyle(StenoDesign.textSecondary)
-            }
+        VStack(alignment: .leading, spacing: StenoDesign.lg) {
+            stepHeading("Choose your speech model", description: whisperSetupDescription)
 
             VStack(alignment: .leading, spacing: StenoDesign.md) {
                 if let recommendedModel = controller.recommendedWhisperModel {
@@ -258,41 +233,39 @@ struct OnboardingView: View {
                 }
 
                 DisclosureGroup("Custom model setup", isExpanded: $showAdvancedSetup) {
-                VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: StenoDesign.xs) {
-                    Text("whisper-cli path")
-                        .font(StenoDesign.bodyEmphasis())
-                        .foregroundStyle(StenoDesign.textPrimary)
-                    TextField("Path to whisper-cli binary", text: $whisperCLIPath)
-                        .textFieldStyle(.roundedBorder)
-                    pathValidationLabel(valid: whisperCLIPathValid)
-                }
+                    VStack(alignment: .leading, spacing: StenoDesign.md) {
+                        VStack(alignment: .leading, spacing: StenoDesign.xs) {
+                            Text("whisper-cli path")
+                                .font(StenoDesign.bodyEmphasis())
+                                .foregroundStyle(StenoDesign.textPrimary)
+                            TextField("Path to whisper-cli binary", text: $whisperCLIPath)
+                                .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("whisper-cli path")
+                            pathValidationLabel(valid: whisperCLIPathValid)
+                        }
 
-                VStack(alignment: .leading, spacing: StenoDesign.xs) {
-                    Text("Model path")
-                        .font(StenoDesign.bodyEmphasis())
-                        .foregroundStyle(StenoDesign.textPrimary)
-                    TextField("Path to model file", text: $modelPath)
-                        .textFieldStyle(.roundedBorder)
-                    pathValidationLabel(valid: modelPathValid)
+                        VStack(alignment: .leading, spacing: StenoDesign.xs) {
+                            Text("Model path")
+                                .font(StenoDesign.bodyEmphasis())
+                                .foregroundStyle(StenoDesign.textPrimary)
+                            TextField("Path to model file", text: $modelPath)
+                                .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("Model path")
+                            pathValidationLabel(valid: modelPathValid)
+                        }
+                    }
+                    .padding(.top, StenoDesign.sm)
                 }
-                }
-                .padding(.top, 12)
-                }
+                .font(StenoDesign.bodyEmphasis())
+                .cardStyle()
             }
-            .cardStyle()
 
             if bundledRuntime != nil {
-                HStack(spacing: StenoDesign.xs) {
-                    Image(systemName: "shippingbox.fill")
-                        .font(StenoDesign.caption())
-                    Text("This build includes Small by default. You can keep going now and still download a better model later in Settings \u{2192} Speech model.")
-                        .font(StenoDesign.caption())
-                }
-                .foregroundStyle(StenoDesign.textSecondary)
+                Label("Small is included and ready to use. You can choose another model later in Settings \u{2192} Speech model.", systemImage: "shippingbox")
+                    .font(StenoDesign.caption())
+                    .foregroundStyle(StenoDesign.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            Spacer()
         }
     }
 
@@ -369,9 +342,13 @@ struct OnboardingView: View {
                         controller.downloadWhisperModel(option.modelID)
                     } label: {
                         if controller.activeModelDownloadID == option.modelID {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
+                            HStack(spacing: StenoDesign.xs) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
+                                    .accessibilityHidden(true)
+                                Text("Downloading \(option.title)…")
+                            }
                         } else {
                             Text("Download \(option.title)")
                         }
@@ -400,50 +377,36 @@ struct OnboardingView: View {
     // MARK: - Step 4: Feature Tour
 
     private var featureTourStep: some View {
-        VStack(spacing: StenoDesign.xl) {
-            Spacer()
+        VStack(alignment: .leading, spacing: 28) {
+            stepHeading(
+                "Your first dictation",
+                description: "Open an app and click where you want your words to go."
+            )
 
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 40, weight: .medium))
-                .foregroundStyle(StenoDesign.success)
-                .accessibilityHidden(true)
-
-            VStack(spacing: StenoDesign.sm) {
-                StenoPageTitle("Your first dictation")
-                    .foregroundStyle(StenoDesign.textPrimary)
-                    .accessibilityAddTraits(.isHeader)
-
-                Text("Open an app and click where you want your words to go.")
-                    .font(StenoDesign.subheadline())
-                    .foregroundStyle(StenoDesign.textSecondary)
-            }
-
-            VStack(alignment: .leading, spacing: StenoDesign.md) {
-                tipRow(number: "1", text: "Hold Option to dictate (press-to-talk)")
+            VStack(alignment: .leading, spacing: StenoDesign.lg) {
+                tipRow(number: "1", text: "Hold Option to dictate (press-to-talk).")
                 tipRow(number: "2", text: "Speak naturally. Release Option to finish and insert your words.")
                 tipRow(number: "3", text: "Find your completed dictations in History, ready to copy.")
                 tipRow(number: "4", text: "In Recording settings, choose a hands-free key and optional live preview.")
             }
-            .cardStyle()
-
-            Spacer()
         }
     }
 
     private func tipRow(number: String, text: String) -> some View {
-        HStack(spacing: StenoDesign.md) {
+        HStack(alignment: .top, spacing: StenoDesign.md) {
             Text(number)
-                .font(StenoDesign.bodyEmphasis())
-                .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
-                .frame(width: StenoDesign.xl, height: StenoDesign.xl)
-                .background(StenoDesign.theme(for: controller.preferences).accent)
-                .clipShape(Circle())
-                .accessibilityHidden(true)
+                .font(.system(size: 22, weight: .regular, design: .serif))
+                .foregroundStyle(StenoDesign.theme(for: controller.preferences).accent)
+                .frame(width: 24, alignment: .leading)
 
             Text(text)
                 .font(StenoDesign.body())
                 .foregroundStyle(StenoDesign.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 3)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Navigation Bar
@@ -455,6 +418,8 @@ struct OnboardingView: View {
                     goBack()
                 }
                 .buttonStyle(.bordered)
+                .keyboardShortcut("[", modifiers: .command)
+                .help("Previous step (Command-[)")
                 .accessibilityLabel("Go to previous step")
             }
 
@@ -464,9 +429,9 @@ struct OnboardingView: View {
                 Button("Set up later") {
                     goForward()
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(StenoDesign.textSecondary)
-                .accessibilityLabel("Skip this step")
+                .buttonStyle(.bordered)
+                .help("Continue setup without completing this step")
+                .accessibilityLabel("Set up \(currentStep.name.lowercased()) later")
             }
 
             if currentStep == .featureTour {
@@ -475,6 +440,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(StenoDesign.theme(for: controller.preferences).accent)
+                .keyboardShortcut(.defaultAction)
                 .accessibilityLabel("Finish onboarding and start using Steno")
             } else {
                 Button("Continue") {
@@ -483,6 +449,7 @@ struct OnboardingView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(StenoDesign.theme(for: controller.preferences).accent)
                 .disabled(!canContinue)
+                .keyboardShortcut(.defaultAction)
                 .accessibilityLabel("Continue to next step")
             }
         }
@@ -543,12 +510,14 @@ private enum OnboardingStep: Int, CaseIterable {
     case whisperSetup = 2
     case featureTour = 3
 
-    var title: String {
+    var title: String { "\(rawValue + 1) · \(name)" }
+
+    var name: String {
         switch self {
-        case .welcome: return "1 · Welcome"
-        case .permissions: return "2 · Permissions"
-        case .whisperSetup: return "3 · Speech model"
-        case .featureTour: return "4 · First dictation"
+        case .welcome: return "Welcome"
+        case .permissions: return "Permissions"
+        case .whisperSetup: return "Speech model"
+        case .featureTour: return "First dictation"
         }
     }
 }
