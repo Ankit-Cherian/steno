@@ -11,7 +11,7 @@ struct PermissionStatusCard: View {
         HStack(spacing: StenoDesign.md) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(statusColor.opacity(0.12))
+                    .fill(status == .granted ? StenoDesign.surfaceSecondary : statusColor.opacity(0.12))
                 Image(systemName: statusIconName)
                     .font(.system(size: StenoDesign.iconLG, weight: .semibold))
                     .foregroundStyle(statusColor)
@@ -32,11 +32,7 @@ struct PermissionStatusCard: View {
 
             Text(status.rawValue)
                 .font(StenoDesign.label())
-                .foregroundStyle(statusColor)
-                .padding(.horizontal, StenoDesign.sm)
-                .padding(.vertical, StenoDesign.xxs)
-                .background(statusColor.opacity(StenoDesign.opacitySubtle))
-                .clipShape(Capsule())
+                .foregroundStyle(status == .granted ? StenoDesign.textSecondary : statusColor)
                 .accessibilityLabel("Status: \(status.rawValue)")
 
             actionButton
@@ -70,7 +66,7 @@ struct PermissionStatusCard: View {
 
     private var statusBorderColor: Color {
         switch status {
-        case .granted: return StenoDesign.successBorder
+        case .granted: return StenoDesign.border
         case .denied: return StenoDesign.errorBorder
         case .unknown: return StenoDesign.border
         }
@@ -89,11 +85,12 @@ struct PermissionStatusCard: View {
             .controlSize(.small)
             .accessibilityLabel("Open \(title) settings")
         case .unknown:
-            Button("Grant") {
+            Button {
                 onRequest()
+            } label: {
+                Text("Grant").foregroundStyle(StenoDesign.accentInk)
             }
             .buttonStyle(.borderedProminent)
-            .tint(StenoDesign.accent)
             .controlSize(.small)
             .accessibilityLabel("Grant \(title) permission")
         }

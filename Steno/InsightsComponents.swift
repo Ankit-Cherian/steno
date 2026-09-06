@@ -28,9 +28,6 @@ struct CleanupInsightSummary {
     let lexiconCorrections: Int
     let exactSessionCount: Int
     let estimatedSessionCount: Int
-    let trackedDayCount: Int
-    let totalDayCount: Int
-    let coverageIntervalCount: Int
 }
 
 struct InsightsCard<Content: View>: View {
@@ -74,9 +71,6 @@ struct InsightsMetricStrip: View {
                         .font(StenoDesign.system(size: 12, weight: .medium))
                         .foregroundStyle(theme.textDim)
                     Spacer()
-                    Text("Local usage history")
-                        .font(StenoDesign.system(size: 12, weight: .regular))
-                        .foregroundStyle(theme.textDim)
                 }
                 .padding(.horizontal, 18)
                 .padding(.top, 13)
@@ -125,17 +119,13 @@ private struct InsightMetricCell: View {
                 .foregroundStyle(theme.text)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
-
-            Text(metric.detail)
-                .font(StenoDesign.subheadline())
-                .foregroundStyle(theme.textDim)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
-        .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(metric.label), \(metric.value). \(metric.detail)")
+        .help(metric.detail)
     }
 }
 
@@ -176,16 +166,10 @@ struct AppUsageBreakdownView: View {
     private var sectionHeading: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Top apps")
-                    .font(StenoDesign.system(size: 12, weight: .medium))
-                    .foregroundStyle(theme.textMuted)
-                Text("Where you dictate")
+                Text("App usage")
                     .font(StenoDesign.reading(size: 22))
                     .foregroundStyle(theme.text)
                     .accessibilityAddTraits(.isHeader)
-                Text("Local usage history, ranked by sessions with known dictated time shown.")
-                    .font(StenoDesign.subheadline())
-                    .foregroundStyle(theme.textMuted)
             }
 
             Spacer()
@@ -299,10 +283,6 @@ struct CleanupCoverageView: View {
 
                 if summary.exactSessionCount > 0 {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Recorded exact actions")
-                            .font(StenoDesign.system(size: 12, weight: .medium))
-                            .foregroundStyle(theme.textDim)
-
                         VStack(spacing: 0) {
                             cleanupRow(label: "Filler words removed", value: summary.fillerRemovals)
                             divider
@@ -321,12 +301,9 @@ struct CleanupCoverageView: View {
                 if summary.estimatedSessionCount > 0 {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Estimated historical cleanup edits")
+                            Text("Estimated edits")
                                 .font(StenoDesign.callout())
                                 .foregroundStyle(theme.textDim)
-                            Text("Categories unavailable for imported sessions")
-                                .font(StenoDesign.caption())
-                                .foregroundStyle(theme.textMuted)
                         }
 
                         Spacer()
@@ -337,10 +314,10 @@ struct CleanupCoverageView: View {
                     }
                     .padding(.horizontal, 11)
                     .padding(.vertical, 10)
-                    .background(theme.amber.opacity(theme.isLight ? 0.07 : 0.09))
+                    .background(theme.ink1)
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(theme.amber.opacity(0.24), lineWidth: StenoDesign.borderThin)
+                            .stroke(theme.line, lineWidth: StenoDesign.borderThin)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .accessibilityElement(children: .combine)
@@ -351,19 +328,6 @@ struct CleanupCoverageView: View {
                         cleanupRow(label: "Recorded cleanup actions", value: 0)
                     }
                 }
-
-                coverageSection
-
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(theme.textMuted)
-                    Text(cleanupProvenanceText)
-                        .font(StenoDesign.caption())
-                        .foregroundStyle(theme.textMuted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .help("Steno stores aggregate counts for Insights, not transcript text.")
             }
         }
     }
@@ -374,13 +338,6 @@ struct CleanupCoverageView: View {
                 Text("Cleanup history")
                     .font(StenoDesign.system(size: 12, weight: .medium))
                     .foregroundStyle(theme.textDim)
-                Spacer(minLength: 0)
-                StenoBadge(
-                    text: coverageBadgeText,
-                    tone: coverageIsComplete ? .green : .amber,
-                    theme: theme,
-                    compact: true
-                )
             }
             Text(headlineText)
                 .font(StenoDesign.reading(size: 22).monospacedDigit())
@@ -388,6 +345,7 @@ struct CleanupCoverageView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
         }
+        .help(cleanupProvenanceText)
     }
 
     private func cleanupRow(label: String, value: Int) -> some View {
@@ -410,40 +368,6 @@ struct CleanupCoverageView: View {
             .frame(height: 1)
     }
 
-    private var coverageSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Calendar coverage")
-                    .font(StenoDesign.system(size: 12, weight: .medium))
-                    .foregroundStyle(theme.textDim)
-                Spacer()
-                Text("\(summary.trackedDayCount) of \(summary.totalDayCount) days")
-                    .font(StenoDesign.system(size: 12, weight: .regular))
-                    .foregroundStyle(theme.textMuted)
-            }
-
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(Color.white.opacity(theme.isLight ? 0.58 : 0.04))
-                    Capsule(style: .continuous)
-                        .fill(coverageIsComplete ? theme.green.opacity(0.72) : theme.amber.opacity(0.72))
-                        .frame(width: proxy.size.width * coverageFraction)
-                }
-            }
-            .frame(height: 6)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("History coverage, \(summary.trackedDayCount) of \(summary.totalDayCount) days")
-
-            if summary.coverageIntervalCount > 1 {
-                Text("Known history contains \(summary.coverageIntervalCount) separate coverage windows.")
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(theme.textMuted)
-            }
-        }
-        .padding(.top, 2)
-    }
-
     private var exactOtherChanges: Int {
         max(
             0,
@@ -456,7 +380,7 @@ struct CleanupCoverageView: View {
 
     private var headlineText: String {
         if summary.exactSessionCount > 0 {
-            return "\(InsightsFormatting.compactCount(summary.exactActions)) exact cleanup actions"
+            return "\(InsightsFormatting.compactCount(summary.exactActions)) cleanup actions"
         }
         if summary.estimatedSessionCount > 0 {
             return "≈\(InsightsFormatting.compactCount(summary.estimatedChanges)) historical cleanup edits"
@@ -473,22 +397,6 @@ struct CleanupCoverageView: View {
             return "Historical cleanup edits reconstructed from \(summary.estimatedSessionCount) imported sessions are estimates. \(retention)"
         }
         return "Cleanup actions are recorded as exact aggregate counts. \(retention)"
-    }
-
-    private var coverageFraction: CGFloat {
-        guard summary.totalDayCount > 0 else { return 0 }
-        return min(1, max(0, CGFloat(summary.trackedDayCount) / CGFloat(summary.totalDayCount)))
-    }
-
-    private var coverageIsComplete: Bool {
-        summary.totalDayCount > 0 && summary.trackedDayCount == summary.totalDayCount
-    }
-
-    private var coverageBadgeText: String {
-        if summary.totalDayCount == 0 {
-            return "No range"
-        }
-        return coverageIsComplete ? "Complete range" : "Partial history"
     }
 }
 

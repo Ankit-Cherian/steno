@@ -7,6 +7,7 @@ struct StenoApp: App {
     @StateObject private var controller: DictationController
 
     init() {
+        AppFontRegistry.registerIfNeeded()
         #if DEBUG
         if IsolatedAppPreview.isTestHost || IsolatedAppPreview.isRequested {
             _controller = StateObject(wrappedValue: IsolatedAppPreview.makeController(
@@ -59,6 +60,7 @@ struct StenoApp: App {
             }
             .background(WindowConfigurator(savesWindowFrame: !controller.isIsolatedPreview).frame(width: 0, height: 0))
             .preferredColorScheme(controller.preferences.appearance.mode.colorScheme)
+            .tint(StenoDesign.theme(for: controller.preferences).accent)
             .task {
                 appDelegate.controller = controller
                 await controller.bootstrapIfNeeded()

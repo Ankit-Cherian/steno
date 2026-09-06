@@ -15,7 +15,7 @@ struct InsertionSettingsSection: View {
                 ForEach(Array(methods.enumerated()), id: \.element.rawValue) { index, method in
                     HStack(spacing: StenoDesign.sm) {
                         Image(systemName: icon(for: method))
-                            .foregroundStyle(StenoDesign.accent)
+                            .foregroundStyle(StenoDesign.textSecondary)
                             .frame(width: StenoDesign.iconLG)
                         Text(label(for: method))
                             .font(StenoDesign.callout())

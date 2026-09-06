@@ -40,21 +40,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         }
     }
 
-    var summary: String {
-        switch self {
-        case .recording: return "Choose how you start, finish, and preview dictation."
-        case .engine: return "Choose a speech model for this Mac."
-        case .output: return "Control how your words reach the app you're using."
-        case .cleanup: return "Choose how Steno tidies your words while preserving what you mean."
-        case .corrections: return "Help Steno get names, terms, and recurring words right."
-        case .shortcuts: return "Turn a short spoken phrase into text you use often."
-        case .media: return "Keep playback predictable while you dictate."
-        case .permissions: return "Review the access Steno needs for dictation."
-        case .appearance: return "Make Steno comfortable to use."
-        case .general: return "Choose how Steno fits into your Mac."
-        }
-    }
-
     var symbolName: String {
         switch self {
         case .appearance:
@@ -147,6 +132,15 @@ struct SettingsView: View {
         _selectedSection = selectedSection
     }
 
+    #if DEBUG
+    init(previewDraftState: SettingsDraftState, selectedSection: Binding<SettingsSection> = .constant(.recording), showsSidebar: Bool = true) {
+        self.showsSidebar = showsSidebar
+        _selectedSection = selectedSection
+        _draftState = State(initialValue: previewDraftState)
+        _didLoad = State(initialValue: true)
+    }
+    #endif
+
     var body: some View {
         let theme = StenoDesign.theme(for: controller.preferences)
 
@@ -182,10 +176,6 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 StenoPageTitle(selectedSection.title)
                     .accessibilityAddTraits(.isHeader)
-                Text(selectedSection.summary)
-                    .font(.system(size: 13))
-                    .foregroundStyle(theme.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             sectionContent(theme: theme)
         }
@@ -288,7 +278,7 @@ struct SettingsView: View {
 
     private func footerStatus(theme: StenoTheme) -> some View {
         Text(hasConflictingUpdate ? "Settings changed elsewhere. Discard to reload before saving." : preferencesDraft == controller.preferences ? "No pending changes" : "You have unsaved changes")
-            .font(.system(size: 12))
+            .font(.system(size: preferencesDraft == controller.preferences && !hasConflictingUpdate ? 11 : 12))
             .foregroundStyle(theme.textDim)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -296,7 +286,7 @@ struct SettingsView: View {
     private func footerActions(theme: StenoTheme) -> some View {
         HStack(spacing: 10) {
             Button("Discard") { draftState.reload(controller.preferences) }
-                .buttonStyle(StenoActionButtonStyle(theme: theme, tone: .ghost))
+                .buttonStyle(SettingsFooterButtonStyle(theme: theme, tone: .ghost))
                 .disabled(preferencesDraft == controller.preferences)
                 .accessibilityIdentifier("settings.discard")
             Button("Save changes") {
@@ -304,7 +294,7 @@ struct SettingsView: View {
                 // Accept synchronously normalized paths and options as the new draft baseline.
                 draftState.reload(controller.preferences)
             }
-            .buttonStyle(StenoActionButtonStyle(theme: theme, tone: .primary))
+            .buttonStyle(SettingsFooterButtonStyle(theme: theme, tone: .primary))
             .disabled(hasConflictingUpdate || preferencesDraft == controller.preferences)
             .accessibilityIdentifier("settings.save")
             .keyboardShortcut("s", modifiers: .command)
@@ -322,5 +312,25 @@ struct SettingsView: View {
                 controller.saveAppearance(newAppearance)
             }
         )
+    }
+}
+
+private struct SettingsFooterButtonStyle: ButtonStyle {
+    let theme: StenoTheme
+    let tone: StenoActionButtonStyle.Tone
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 14)
+            .frame(height: 30)
+            .font(StenoDesign.callout().weight(.medium))
+            .foregroundStyle(!isEnabled ? Color(nsColor: .disabledControlTextColor) : tone == .primary ? theme.accentInk : theme.text)
+            .background(isEnabled && tone == .primary ? theme.accent.opacity(configuration.isPressed ? 0.92 : 1) : .clear)
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(isEnabled ? theme.lineStrong : theme.line, lineWidth: StenoDesign.borderThin))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .scaleEffect(configuration.isPressed && isEnabled && !reduceMotion ? 0.985 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: configuration.isPressed)
     }
 }

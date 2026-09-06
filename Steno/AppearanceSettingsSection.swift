@@ -20,8 +20,6 @@ struct AppearanceSettingsSection: View {
                     }
                 }
                 .frame(maxWidth: 320)
-                Text("Choose an accent for the recording control and navigation.")
-                    .font(.system(size: 12)).foregroundStyle(StenoDesign.textSecondary)
             }
             Label("Steno follows your Mac's Reduce Motion and Reduce Transparency settings.", systemImage: "accessibility")
                 .font(.system(size: 12)).foregroundStyle(StenoDesign.textSecondary)
