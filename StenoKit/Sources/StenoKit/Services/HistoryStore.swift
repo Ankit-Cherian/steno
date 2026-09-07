@@ -25,7 +25,7 @@ public actor HistoryStore: HistoryStoreProtocol {
     public init(
         storageURL: URL? = nil,
         clipboardService: ClipboardService,
-        maxEntries: Int = 500
+        maxEntries: Int = 1_000
     ) {
         self.storageURL = storageURL ?? Self.defaultStorageURL()
         self.clipboardService = clipboardService
