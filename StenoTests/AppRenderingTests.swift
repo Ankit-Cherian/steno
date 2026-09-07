@@ -168,7 +168,8 @@ struct AppRenderingTests {
             ("hands-free", .listening(handsFree: true, elapsedSeconds: 130)),
             ("finishing", .transcribing), ("inserted", .inserted),
             ("copied", .copiedOnly), ("silence", .noSpeechDetected),
-            ("failure", .failure(message: "The document closed. Your words are ready to copy."))
+            ("failure", .failure(message: "The document closed. Your words are ready to copy.")),
+            ("vad-failure", .failure(message: RetainedWhisperRuntimeError.vadIntegrityFailure.localizedDescription))
         ]
         for (name, state) in states {
             let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
