@@ -71,6 +71,14 @@ public enum CanonicalWAVFrameStreamerError: Error, LocalizedError, Equatable {
 public actor CanonicalWAVFrameStreamer {
     public static let maximumSupportedFrameBytes = 32 * 1_024
 
+    /// Checks a closed recorder file without reading or retaining its PCM.
+    /// Capture validates before returning the URL so one-shot decoding has the
+    /// same container-integrity boundary as live-stream finalization.
+    static func validateFinalizedCapture(source: any CanonicalWAVByteSource) async throws {
+        let validator = try CanonicalWAVFrameStreamer(sessionID: UUID(), source: source)
+        try await validator.validateFinalizedSource()
+    }
+
     private struct DataLayout {
         var sizeFieldOffset: UInt64
         var payloadOffset: UInt64
@@ -279,6 +287,19 @@ public actor CanonicalWAVFrameStreamer {
         }
     }
 
+    private func validateFinalizedSource() throws {
+        let fileByteCount = try source.byteCount()
+        guard try discoverDataLayout(fileByteCount: fileByteCount),
+              let layout = dataLayout else {
+            throw CanonicalWAVFrameStreamerError.inconsistentDataSize
+        }
+        isFinalizing = true
+        let window = try readablePCMWindow(layout: layout, fileByteCount: fileByteCount)
+        guard window.isFinalPayloadComplete else {
+            throw CanonicalWAVFrameStreamerError.inconsistentDataSize
+        }
+    }
+
     private func discoverDataLayout(fileByteCount: UInt64) throws -> Bool {
         if dataLayout != nil { return true }
 
@@ -386,9 +407,6 @@ public actor CanonicalWAVFrameStreamer {
             ) ?? availableByteCount
             isFinalPayloadComplete = false
         } else if declaredByteCount == 0 {
-            guard availableByteCount == 0 else {
-                throw CanonicalWAVFrameStreamerError.inconsistentDataSize
-            }
             readableByteCount = 0
             isFinalPayloadComplete = true
         } else if declaredByteCount == UInt64(UInt32.max) {
@@ -400,6 +418,17 @@ public actor CanonicalWAVFrameStreamer {
 
         if isFinalizing, declaredByteCount.isMultiple(of: 2) == false {
             throw CanonicalWAVFrameStreamerError.inconsistentDataSize
+        }
+        if isFinalizing, isFinalPayloadComplete {
+            // A short declaration must not silently discard physical audio.
+            // Only a complete RIFF and valid trailing metadata may delimit it.
+            guard try activeDeclaredDataByteCount(
+                layout: layout,
+                declaredByteCount: declaredByteCount,
+                fileByteCount: fileByteCount
+            ) == declaredByteCount else {
+                throw CanonicalWAVFrameStreamerError.inconsistentDataSize
+            }
         }
 
         let completeReadableByteCount = readableByteCount - (readableByteCount % 2)
