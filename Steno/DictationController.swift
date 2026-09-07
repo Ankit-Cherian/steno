@@ -978,7 +978,7 @@ final class DictationController: ObservableObject {
 
     func refreshHistory() async {
         guard !isIsolatedPreview else { return }
-        let all = await historyStore.recent(limit: 500)
+        let all = await historyStore.recent(limit: 1_000)
         let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         recentEntries = all.filter { $0.createdAt >= thirtyDaysAgo }
     }
@@ -1038,7 +1038,7 @@ final class DictationController: ObservableObject {
                     )
                 }
 
-                let currentEntries = await historyStore.recent(limit: 500)
+                let currentEntries = await historyStore.recent(limit: 1_000)
                 let availableLegacyURL = FileManager.default.fileExists(
                     atPath: legacyHistoryURL.path
                 ) ? legacyHistoryURL : nil

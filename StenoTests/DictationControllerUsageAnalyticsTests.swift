@@ -4,6 +4,52 @@ import Testing
 import StenoKit
 
 @MainActor
+@Test("History and Insights include all one thousand retained recordings")
+func historyAndInsightsLoadExpandedCapacity() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StenoExpandedHistoryTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let now = Date()
+    let entries = (0..<1_000).map { index in
+        TranscriptEntry(
+            createdAt: now.addingTimeInterval(-Double(index)),
+            appBundleID: "com.example.Editor",
+            rawText: "Saved recording \(index)",
+            cleanText: "Saved recording \(index).",
+            durationMS: 1_000,
+            audioURL: nil,
+            insertionStatus: .inserted
+        )
+    }
+    let historyURL = directory.appendingPathComponent("history.json")
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(entries).write(to: historyURL, options: .atomic)
+
+    let controller = makeTestDictationController(
+        hotkey: InsightsTestHotkeyService(),
+        historyStore: HistoryStore(
+            storageURL: historyURL,
+            clipboardService: MemoryClipboardService()
+        ),
+        usageAnalyticsStore: UsageAnalyticsStore(
+            storageURL: directory.appendingPathComponent("usage.json")
+        ),
+        legacyHistoryURL: directory.appendingPathComponent("absent-legacy.json")
+    )
+    defer { controller.teardown() }
+
+    await controller.refreshHistory()
+    await controller.refreshUsageAnalytics(now: now)
+
+    #expect(controller.recentEntries.map(\.id) == entries.map(\.id))
+    #expect(controller.usageAnalyticsError.isEmpty)
+    #expect(controller.usageAnalyticsSnapshot.totalSessions == 1_000)
+}
+
+@MainActor
 @Test("Insights refresh backfills current and legacy history without filling the unknown gap")
 func insightsRefreshBackfillsAllRecoverableHistory() async throws {
     let directory = FileManager.default.temporaryDirectory
