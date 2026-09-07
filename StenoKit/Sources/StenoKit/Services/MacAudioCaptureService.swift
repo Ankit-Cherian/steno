@@ -86,8 +86,23 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
         }
 
         recorder.stop()
-        recorderSessionIDs.removeValue(forKey: ObjectIdentifier(recorder))
+        defer {
+            recorderSessionIDs.removeValue(forKey: ObjectIdentifier(recorder))
+            recorderErrors[sessionID] = nil
+        }
         if let captureError = recorderErrors.removeValue(forKey: sessionID) {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw captureError
+        }
+        do {
+            try await CanonicalWAVFrameStreamer.validateFinalizedCapture(
+                source: FileCanonicalWAVByteSource(url: fileURL)
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw MacAudioCaptureError.encodingFailure(details: error.localizedDescription)
+        }
+        if let captureError = recorderErrors[sessionID] {
             try? FileManager.default.removeItem(at: fileURL)
             throw captureError
         }
