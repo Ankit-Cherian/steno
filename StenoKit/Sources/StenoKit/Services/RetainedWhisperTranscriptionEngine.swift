@@ -6,6 +6,7 @@ public enum RetainedWhisperRuntimeError: Error, LocalizedError, Equatable {
     case helperUnavailable
     case unsupportedConfiguration
     case staleResponse
+    case vadIntegrityFailure
 
     public var errorDescription: String? {
         switch self {
@@ -19,6 +20,8 @@ public enum RetainedWhisperRuntimeError: Error, LocalizedError, Equatable {
             return "The retained transcription runtime does not support this configuration."
         case .staleResponse:
             return "The retained transcription runtime returned a stale response."
+        case .vadIntegrityFailure:
+            return "Speech detection could not verify the complete recording. Transcription was stopped."
         }
     }
 }
@@ -159,6 +162,7 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
     private var isLiveHypothesisInFlight = false
     private var failedLiveSession: LiveTranscriptionSession?
     private var exhaustedCanonicalFinals: Set<String> = []
+    private var vadRejectedCanonicalFinals: Set<String> = []
     private var pendingOrder: [UUID] = []
     private var pending: [UUID: PendingRequest] = [:]
     private var activeRequestID: UUID?
@@ -391,6 +395,9 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
         guard !isShutDown else {
             throw RetainedWhisperRuntimeError.shutDown
         }
+        guard !vadRejectedCanonicalFinals.contains(canonicalAudioKey(canonicalAudioURL)) else {
+            throw RetainedWhisperRuntimeError.vadIntegrityFailure
+        }
         let sampleByteCount = UInt64(MemoryLayout<Int16>.size)
         guard streamSummary.byteCount.isMultiple(of: sampleByteCount),
               streamSummary.byteCount / sampleByteCount == streamSummary.sampleCount
@@ -449,6 +456,22 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
         } catch is CancellationError {
             await failLiveSessionIfCurrent(requestedSession, allowFallback: false)
             throw CancellationError()
+        } catch RetainedWhisperRuntimeError.vadIntegrityFailure {
+            let stillOwned = liveSessionIdentity == requestedSession
+                && liveLifecyclePhase == .finishing
+                && generation == requestedSession.runtimeGeneration
+                && !isShutDown
+            if stillOwned {
+                vadRejectedCanonicalFinals.insert(canonicalAudioKey(canonicalAudioURL))
+            }
+            await failLiveSessionIfCurrent(requestedSession, allowFallback: false)
+            try Task.checkCancellation()
+            guard stillOwned, generation == requestedSession.runtimeGeneration, !isShutDown else {
+                throw CancellationError()
+            }
+            // The CLI uses the same VAD implementation. A retry could silently
+            // accept another incomplete speech mask instead of this failure.
+            throw RetainedWhisperRuntimeError.vadIntegrityFailure
         } catch {
             let shouldFallback = liveSessionIdentity == requestedSession
                 && liveLifecyclePhase == .finishing
@@ -496,6 +519,9 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
         audioURL: URL,
         request: TranscriptionRequest
     ) async throws -> RawTranscript {
+        guard !vadRejectedCanonicalFinals.contains(canonicalAudioKey(audioURL)) else {
+            throw RetainedWhisperRuntimeError.vadIntegrityFailure
+        }
         guard !exhaustedCanonicalFinals.contains(canonicalAudioKey(audioURL)) else {
             throw LiveTranscriptionFinalizationError.authoritativeFallbackExhausted
         }
@@ -660,6 +686,11 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
             throw RetainedWhisperRuntimeError.staleResponse
         }
         try Task.checkCancellation()
+        // A duplicate may have entered the queue before the preceding request
+        // recorded its terminal VAD failure.
+        guard !vadRejectedCanonicalFinals.contains(canonicalAudioKey(pendingRequest.audioURL)) else {
+            throw RetainedWhisperRuntimeError.vadIntegrityFailure
+        }
 
         let requestGeneration = generation
         let configuration = self.configuration
@@ -712,6 +743,17 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
             throw CancellationError()
         } catch RetainedWhisperRuntimeError.staleResponse {
             throw CancellationError()
+        } catch RetainedWhisperRuntimeError.vadIntegrityFailure {
+            guard activeRequestID == requestID, generation == requestGeneration, !isShutDown else {
+                throw CancellationError()
+            }
+            vadRejectedCanonicalFinals.insert(canonicalAudioKey(pendingRequest.audioURL))
+            await invalidateSession()
+            try Task.checkCancellation()
+            guard activeRequestID == requestID, generation == requestGeneration, !isShutDown else {
+                throw CancellationError()
+            }
+            throw RetainedWhisperRuntimeError.vadIntegrityFailure
         } catch {
             await invalidateSession()
             try Task.checkCancellation()

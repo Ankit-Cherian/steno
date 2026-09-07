@@ -43,6 +43,7 @@ enum class ObservedBackend : int {
 };
 
 std::atomic<ObservedBackend> g_observed_backend{ObservedBackend::Unknown};
+std::atomic<uint64_t> g_backend_error_epoch{0};
 uint32_t g_current_asr_context_count = 0;
 uint32_t g_peak_asr_context_count = 0;
 
@@ -62,7 +63,10 @@ void free_asr_context(whisper_context * context) {
     --g_current_asr_context_count;
 }
 
-void observe_backend_log(ggml_log_level, const char * message, void *) {
+void observe_backend_log(ggml_log_level level, const char * message, void *) {
+    if (level == GGML_LOG_LEVEL_ERROR) {
+        g_backend_error_epoch.fetch_add(1, std::memory_order_relaxed);
+    }
     if (message == nullptr) {
         return;
     }
@@ -109,6 +113,7 @@ enum class ErrorCategory : uint32_t {
     Audio = 3,
     Inference = 4,
     Internal = 5,
+    VADIntegrity = 6,
 };
 
 enum class PreviewSpeechEvidence : uint32_t {
@@ -680,6 +685,11 @@ bool prepare_vad_audio(
     const std::vector<float> & input,
     PreparedAudio & prepared
 ) {
+    // The pinned VAD implementation can return a partial or stale probability
+    // vector after a compute error. Its typed error callback remains observable
+    // even when it reports success. Inference is serialized in this helper;
+    // count errors from backend worker threads as well as the calling thread.
+    const uint64_t error_epoch = g_backend_error_epoch.load(std::memory_order_relaxed);
     std::unique_ptr<whisper_vad_segments, decltype(&whisper_vad_free_segments)> segments(
         whisper_vad_segments_from_samples(
             vad_context,
@@ -689,7 +699,9 @@ bool prepare_vad_audio(
         ),
         &whisper_vad_free_segments
     );
-    if (segments == nullptr) {
+    if (segments == nullptr
+        || g_backend_error_epoch.load(std::memory_order_relaxed) != error_epoch) {
+        prepared = PreparedAudio{};
         return false;
     }
 
@@ -821,8 +833,12 @@ bool transcribe(
     const RequestConfiguration & request,
     std::string & output_json,
     std::atomic<bool> * abort_requested = nullptr,
-    const std::vector<uint8_t> * pcm_snapshot = nullptr
+    const std::vector<uint8_t> * pcm_snapshot = nullptr,
+    ErrorCategory * failure_category = nullptr
 ) {
+    if (failure_category != nullptr) {
+        *failure_category = ErrorCategory::Inference;
+    }
     if (request.language != "auto" && whisper_lang_id(request.language.c_str()) == -1) {
         return false;
     }
@@ -881,6 +897,9 @@ bool transcribe(
 
     PreparedAudio prepared;
     if (!request.vad_model_path.empty()) {
+        if (failure_category != nullptr) {
+            *failure_category = ErrorCategory::VADIntegrity;
+        }
         if (vad_context == nullptr || loaded_vad_model_path != request.vad_model_path) {
             if (vad_context != nullptr) {
                 whisper_vad_free(vad_context);
@@ -898,10 +917,16 @@ bool transcribe(
             loaded_vad_model_path = request.vad_model_path;
         }
         if (!prepare_vad_audio(vad_context, parameters.vad_params, samples, prepared)) {
+            whisper_vad_free(vad_context);
+            vad_context = nullptr;
+            loaded_vad_model_path.clear();
             return false;
         }
     } else {
         prepared.samples = std::move(samples);
+    }
+    if (failure_category != nullptr) {
+        *failure_category = ErrorCategory::Inference;
     }
 
     std::unique_ptr<whisper_state, decltype(&whisper_free_state)> state(
@@ -1013,53 +1038,70 @@ bool detect_preview_speech(
     if (abort_requested.load(std::memory_order_relaxed)) {
         return false;
     }
-    if (vad_context == nullptr || loaded_vad_model_path != request.vad_model_path) {
+    try {
+        if (vad_context == nullptr || loaded_vad_model_path != request.vad_model_path) {
+            if (vad_context != nullptr) {
+                whisper_vad_free(vad_context);
+                vad_context = nullptr;
+            }
+            const whisper_vad_context_params context_parameters = whisper_vad_default_context_params();
+            vad_context = whisper_vad_init_from_file_with_params(
+                request.vad_model_path.c_str(),
+                context_parameters
+            );
+            if (vad_context == nullptr) {
+                loaded_vad_model_path.clear();
+                return true;
+            }
+            loaded_vad_model_path = request.vad_model_path;
+        }
+        if (pcm.empty()) {
+            evidence = PreviewSpeechEvidence::NoSpeech;
+            return !abort_requested.load(std::memory_order_relaxed);
+        }
+
+        std::vector<float> samples(pcm.size());
+        for (size_t index = 0; index < pcm.size(); ++index) {
+            samples[index] = static_cast<float>(pcm[index]) / 32768.0f;
+        }
+        whisper_vad_params parameters = whisper_vad_default_params();
+        parameters.threshold = 0.12f;
+        // Preview evidence is decode-scoped and must qualify before the canonical
+        // final-transcription VAD gate runs. A 50 ms minimum admits sustained
+        // early speech split across a 200 ms scheduling boundary while still rejecting
+        // shorter transients. The lower preview-only threshold admits the public
+        // JFK onset, whose short-window probability remains below the canonical
+        // 0.5 threshold; final transcription retains its 0.5/250 ms gate.
+        parameters.min_speech_duration_ms = 50;
+        parameters.min_silence_duration_ms = 100;
+        parameters.max_speech_duration_s = FLT_MAX;
+        parameters.speech_pad_ms = 30;
+        parameters.samples_overlap = 0.1f;
+        PreparedAudio prepared;
+        if (!prepare_vad_audio(vad_context, parameters, samples, prepared)) {
+            // Failed evidence is Unknown, never confirmed silence. Discard the
+            // contaminated VAD state and let finalization evaluate the full capture
+            // afresh without forcing the live session onto an unguarded fallback.
+            whisper_vad_free(vad_context);
+            vad_context = nullptr;
+            loaded_vad_model_path.clear();
+            return !abort_requested.load(std::memory_order_relaxed);
+        }
+        if (abort_requested.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        evidence = prepared.speech_detected
+            ? PreviewSpeechEvidence::Speech
+            : PreviewSpeechEvidence::NoSpeech;
+        return true;
+    } catch (...) {
         if (vad_context != nullptr) {
             whisper_vad_free(vad_context);
             vad_context = nullptr;
         }
-        const whisper_vad_context_params context_parameters = whisper_vad_default_context_params();
-        vad_context = whisper_vad_init_from_file_with_params(
-            request.vad_model_path.c_str(),
-            context_parameters
-        );
-        if (vad_context == nullptr) {
-            loaded_vad_model_path.clear();
-            return false;
-        }
-        loaded_vad_model_path = request.vad_model_path;
-    }
-    if (pcm.empty()) {
-        evidence = PreviewSpeechEvidence::NoSpeech;
+        loaded_vad_model_path.clear();
         return !abort_requested.load(std::memory_order_relaxed);
     }
-
-    std::vector<float> samples(pcm.size());
-    for (size_t index = 0; index < pcm.size(); ++index) {
-        samples[index] = static_cast<float>(pcm[index]) / 32768.0f;
-    }
-    whisper_vad_params parameters = whisper_vad_default_params();
-    parameters.threshold = 0.12f;
-    // Preview evidence is decode-scoped and must qualify before the canonical
-    // final-transcription VAD gate runs. A 50 ms minimum admits sustained
-    // early speech split across a 200 ms scheduling boundary while still rejecting
-    // shorter transients. The lower preview-only threshold admits the public
-    // JFK onset, whose short-window probability remains below the canonical
-    // 0.5 threshold; final transcription retains its 0.5/250 ms gate.
-    parameters.min_speech_duration_ms = 50;
-    parameters.min_silence_duration_ms = 100;
-    parameters.max_speech_duration_s = FLT_MAX;
-    parameters.speech_pad_ms = 30;
-    parameters.samples_overlap = 0.1f;
-    PreparedAudio prepared;
-    if (!prepare_vad_audio(vad_context, parameters, samples, prepared)
-        || abort_requested.load(std::memory_order_relaxed)) {
-        return false;
-    }
-    evidence = prepared.speech_detected
-        ? PreviewSpeechEvidence::Speech
-        : PreviewSpeechEvidence::NoSpeech;
-    return true;
 }
 
 int run_version_1(whisper_context * context) {
@@ -1091,19 +1133,23 @@ int run_version_1(whisper_context * context) {
         }
         std::string json;
         bool succeeded = false;
+        ErrorCategory failure_category = ErrorCategory::Inference;
         try {
             succeeded = transcribe(
                 context,
                 vad_context,
                 loaded_vad_model_path,
                 configuration,
-                json
+                json,
+                nullptr,
+                nullptr,
+                &failure_category
             );
         } catch (...) {
             succeeded = false;
         }
         if (!succeeded) {
-            write_error(request, ErrorCategory::Inference);
+            write_error(request, failure_category);
             continue;
         }
         Frame response = response_frame(request, Operation::Result);
@@ -1227,6 +1273,7 @@ void streaming_worker(whisper_context * context, StreamRuntime & runtime) {
         if (one_shot.has_value()) {
             std::string json;
             bool succeeded = false;
+            ErrorCategory failure_category = ErrorCategory::Inference;
             try {
                 succeeded = transcribe(
                     context,
@@ -1234,7 +1281,9 @@ void streaming_worker(whisper_context * context, StreamRuntime & runtime) {
                     loaded_vad_model_path,
                     one_shot->configuration,
                     json,
-                    &runtime.abort_requested
+                    &runtime.abort_requested,
+                    nullptr,
+                    &failure_category
                 );
             } catch (...) {
                 succeeded = false;
@@ -1247,7 +1296,7 @@ void streaming_worker(whisper_context * context, StreamRuntime & runtime) {
             }
             if (should_respond) {
                 if (!succeeded) {
-                    write_stream_error(runtime, one_shot->frame, ErrorCategory::Inference);
+                    write_stream_error(runtime, one_shot->frame, failure_category);
                 } else {
                     Frame response = response_frame(one_shot->frame, Operation::Result);
                     response.payload.assign(json.begin(), json.end());
@@ -1277,6 +1326,7 @@ void streaming_worker(whisper_context * context, StreamRuntime & runtime) {
                 && final_request->streamed_hash == final_request->expected_hash;
             std::string json;
             bool succeeded = false;
+            ErrorCategory failure_category = ErrorCategory::Inference;
             if (canonical_matches) {
                 try {
                     succeeded = transcribe(
@@ -1286,7 +1336,8 @@ void streaming_worker(whisper_context * context, StreamRuntime & runtime) {
                         final_request->configuration,
                         json,
                         &runtime.abort_requested,
-                        &canonical_pcm
+                        &canonical_pcm,
+                        &failure_category
                     );
                 } catch (...) {
                     succeeded = false;
@@ -1309,7 +1360,7 @@ void streaming_worker(whisper_context * context, StreamRuntime & runtime) {
                 if (!canonical_matches) {
                     write_stream_error(runtime, final_request->frame, ErrorCategory::Audio);
                 } else if (!succeeded) {
-                    write_stream_error(runtime, final_request->frame, ErrorCategory::Inference);
+                    write_stream_error(runtime, final_request->frame, failure_category);
                 } else {
                     Frame response = response_frame(final_request->frame, Operation::FinalResult);
                     response.payload.assign(json.begin(), json.end());

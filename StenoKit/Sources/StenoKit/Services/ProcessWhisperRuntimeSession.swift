@@ -313,6 +313,10 @@ private struct ProcessWhisperRuntimeSession: WhisperRuntimeSession {
         case .cancelled:
             throw CancellationError()
         case .error:
+            var reader = FrameDataReader(data: response.payload)
+            if response.payload.count == 4, (try? reader.readUInt32()) == 6 {
+                throw RetainedWhisperRuntimeError.vadIntegrityFailure
+            }
             throw RetainedWhisperRuntimeError.invalidResponse
         default:
             throw RetainedWhisperRuntimeError.invalidResponse
@@ -941,7 +945,7 @@ private enum WhisperStreamingRuntimeProtocol {
         guard payload.count == 16 else { return nil }
         var reader = FrameDataReader(data: payload)
         guard let category = try? reader.readUInt32(),
-              (1...5).contains(category),
+              (1...6).contains(category),
               let operationRawValue = try? reader.readUInt16(),
               let operation = Operation(rawValue: operationRawValue),
               isRequestOperation(operation),
@@ -971,7 +975,7 @@ private enum WhisperStreamingRuntimeProtocol {
         guard payload.count == 4 else { return false }
         var reader = FrameDataReader(data: payload)
         guard let category = try? reader.readUInt32() else { return false }
-        return (1...5).contains(category)
+        return (1...6).contains(category)
     }
 
     static func responseDiscriminator(for frame: Frame) -> UInt64? {
@@ -1562,8 +1566,11 @@ private final class WhisperStreamingResponseRegistry: @unchecked Sendable {
                 }
                 return matchingTokens.compactMap { entries.removeValue(forKey: $0)?.pending }
             }
+            let error: RetainedWhisperRuntimeError = correlatedError?.category == 6
+                ? .vadIntegrityFailure
+                : .invalidResponse
             for response in pending {
-                response.resolve(.failure(RetainedWhisperRuntimeError.invalidResponse))
+                response.resolve(.failure(error))
             }
             return
         }
