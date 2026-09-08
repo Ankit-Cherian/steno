@@ -1,10 +1,14 @@
 #include "whisper.h"
 
+#include "steno_prompt_scoring.h"
+#include "steno_prompt_verification.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cfloat>
 #include <cerrno>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
@@ -55,10 +59,16 @@ void record_asr_context_constructed() {
     );
 }
 
+// The encoded all-zero reference window used by prompt verification, created
+// on first use and kept for the lifetime of the loaded model.
+steno::SilentReference g_silent_reference;
+
 void free_asr_context(whisper_context * context) {
     if (context == nullptr) {
         return;
     }
+    // The reference state belongs to this model and must not outlive it.
+    g_silent_reference.release();
     whisper_free(context);
     --g_current_asr_context_count;
 }
@@ -141,6 +151,7 @@ struct RequestConfiguration {
     std::string suppress_regex;
     std::string vad_model_path;
     std::string vad_identity;
+    std::string vocabulary_prompt;
 };
 
 struct RuntimeIdentity {
@@ -456,12 +467,19 @@ bool parse_request(const Frame & frame, RequestConfiguration & request) {
         || !reader.read_string(request.language)
         || !reader.read_string(request.prompt, true)
         || !reader.read_string(request.suppress_regex, true)
-        || !reader.read_string(request.vad_model_path, true)
-        || !reader.exhausted()) {
+        || !reader.read_string(request.vad_model_path, true)) {
         return false;
     }
     if (threads == 0 || threads > 128 || beam_size == 0 || beam_size > 128
-        || best_of == 0 || best_of > 128 || (flags & ~0x3U) != 0) {
+        || best_of == 0 || best_of > 128 || (flags & ~0x7U) != 0) {
+        return false;
+    }
+    // Frames without the vocabulary-prompt flag parse exactly as before.
+    const bool vocabulary_present = (flags & (1U << 2)) != 0;
+    if (vocabulary_present && !reader.read_string(request.vocabulary_prompt)) {
+        return false;
+    }
+    if (!reader.exhausted() || vocabulary_present == request.vocabulary_prompt.empty()) {
         return false;
     }
     request.threads = static_cast<int>(threads);
@@ -490,8 +508,16 @@ bool parse_stream_configuration(PayloadReader & reader, RequestConfiguration & r
         return false;
     }
     if (threads == 0 || threads > 128 || beam_size == 0 || beam_size > 128
-        || best_of == 0 || best_of > 128 || (flags & ~0x3U) != 0
+        || best_of == 0 || best_of > 128 || (flags & ~0x7U) != 0
         || request.language.empty()) {
+        return false;
+    }
+    // Frames without the vocabulary-prompt flag parse exactly as before.
+    const bool vocabulary_present = (flags & (1U << 2)) != 0;
+    if (vocabulary_present && !reader.read_string(request.vocabulary_prompt)) {
+        return false;
+    }
+    if (vocabulary_present == request.vocabulary_prompt.empty()) {
         return false;
     }
     request.threads = static_cast<int>(threads);
@@ -635,47 +661,201 @@ int64_t map_processed_to_original_time(
     return lower->original_time + (offset * original_difference) / processed_difference;
 }
 
+struct TokenView {
+    std::string text;
+    int64_t start = -1;
+    int64_t end = -1;
+    int id = 0;
+    float probability = 0.0f;
+};
+
+struct SegmentView {
+    int64_t processed_start = 0;
+    int64_t processed_end = 0;
+    std::string text;
+    std::vector<TokenView> tokens;
+};
+
+std::vector<SegmentView> collect_segments(whisper_context * context, whisper_state * state) {
+    std::vector<SegmentView> segments;
+    const int segment_count = whisper_full_n_segments_from_state(state);
+    segments.reserve(static_cast<size_t>(std::max(segment_count, 0)));
+    for (int segment_index = 0; segment_index < segment_count; ++segment_index) {
+        SegmentView segment;
+        segment.processed_start = whisper_full_get_segment_t0_from_state(state, segment_index);
+        segment.processed_end = whisper_full_get_segment_t1_from_state(state, segment_index);
+        const char * text = whisper_full_get_segment_text_from_state(state, segment_index);
+        if (text != nullptr) {
+            segment.text.assign(text);
+        }
+        const int token_count = whisper_full_n_tokens_from_state(state, segment_index);
+        segment.tokens.reserve(static_cast<size_t>(std::max(token_count, 0)));
+        for (int token_index = 0; token_index < token_count; ++token_index) {
+            const whisper_token_data token = whisper_full_get_token_data_from_state(
+                state,
+                segment_index,
+                token_index
+            );
+            TokenView view;
+            const char * token_text = whisper_token_to_str(context, token.id);
+            if (token_text != nullptr) {
+                view.text.assign(token_text);
+            }
+            view.start = token.t0;
+            view.end = token.t1;
+            view.id = token.id;
+            view.probability = token.p;
+            segment.tokens.push_back(std::move(view));
+        }
+        segments.push_back(std::move(segment));
+    }
+    return segments;
+}
+
+// The acoustic support of one scored hypothesis, as reported in the rich
+// output. Suspect words are listed in order of first appearance with the
+// summed support of their first occurrence; the other words contribute one
+// mean over their tokens.
+struct SupportSummary {
+    bool present = false;
+    int words = 0;
+    int other_tokens = 0;
+    double other_support = 0.0;
+    std::vector<steno::WordSupport> suspect_words;
+};
+
+SupportSummary summarize_support(const steno::SupportScores & scores) {
+    SupportSummary summary;
+    summary.present = true;
+    summary.words = static_cast<int>(scores.words.size());
+    summary.other_tokens = scores.other_word_tokens;
+    summary.other_support = scores.other_word_support;
+    summary.suspect_words = scores.suspect_words;
+    return summary;
+}
+
+struct WindowVerification {
+    int64_t seek = 0;
+    const char * decision = "accepted";
+    int tier = 1;
+    int prompted_words = 0;
+    int prompt_free_words = 0;
+    SupportSummary prompted;    // P: the prompted window
+    SupportSummary vocabulary;  // V: the vocabulary-only retry, when scored
+    SupportSummary prompt_free; // N: the prompt-free decode, when scored
+};
+
+struct VerificationReport {
+    bool triggered = false;
+    std::vector<WindowVerification> windows;
+};
+
+void append_json_number(std::ostringstream & output, double value) {
+    if (std::isfinite(value)) {
+        output << value;
+    } else {
+        output << "null";
+    }
+}
+
+void append_support_json(std::ostringstream & output, const SupportSummary & summary) {
+    if (!summary.present) {
+        output << "null";
+        return;
+    }
+    output << "{\"words\":" << summary.words
+           << ",\"otherTokens\":" << summary.other_tokens
+           << ",\"otherSupport\":";
+    if (summary.other_tokens > 0) {
+        append_json_number(output, summary.other_support);
+    } else {
+        output << "null";
+    }
+    output << ",\"suspect\":[";
+    for (size_t index = 0; index < summary.suspect_words.size(); ++index) {
+        if (index > 0) {
+            output << ',';
+        }
+        const steno::WordSupport & word = summary.suspect_words[index];
+        output << "{\"word\":\"" << json_escape(word.word.c_str())
+               << "\",\"group\":\"" << (word.group == steno::WordGroup::Label ? "label" : "vocabulary")
+               << "\",\"occurrences\":" << word.occurrences
+               << ",\"first\":";
+        append_json_number(output, word.first_occurrence_support);
+        output << '}';
+    }
+    output << "]}";
+}
+
+std::string verification_json(const VerificationReport & report) {
+    std::ostringstream output;
+    output << "{\"triggered\":" << (report.triggered ? "true" : "false") << ",\"windows\":[";
+    for (size_t index = 0; index < report.windows.size(); ++index) {
+        if (index > 0) {
+            output << ',';
+        }
+        const WindowVerification & window = report.windows[index];
+        output << "{\"seek\":" << window.seek
+               << ",\"decision\":\"" << window.decision
+               << "\",\"tier\":" << window.tier
+               << ",\"wordsP\":" << window.prompted_words
+               << ",\"wordsN\":" << window.prompt_free_words
+               << ",\"P\":";
+        append_support_json(output, window.prompted);
+        output << ",\"V\":";
+        append_support_json(output, window.vocabulary);
+        output << ",\"N\":";
+        append_support_json(output, window.prompt_free);
+        output << '}';
+    }
+    output << "]}";
+    return output.str();
+}
+
 std::string transcript_json(
-    whisper_context * context,
-    whisper_state * state,
-    const std::vector<TimeMapping> & time_mapping
+    const std::vector<SegmentView> & segments,
+    const std::vector<TimeMapping> & time_mapping,
+    const VerificationReport * verification
 ) {
     std::ostringstream output;
     output << "{\"transcription\":[";
-    const int segment_count = whisper_full_n_segments_from_state(state);
-    for (int segment_index = 0; segment_index < segment_count; ++segment_index) {
+    for (size_t segment_index = 0; segment_index < segments.size(); ++segment_index) {
         if (segment_index > 0) {
             output << ',';
         }
-        const int64_t processed_start = whisper_full_get_segment_t0_from_state(state, segment_index);
-        const int64_t processed_end = whisper_full_get_segment_t1_from_state(state, segment_index);
-        const int64_t segment_start = map_processed_to_original_time(processed_start, time_mapping);
-        int64_t segment_end = map_processed_to_original_time(processed_end, time_mapping);
+        const SegmentView & segment = segments[segment_index];
+        const int64_t segment_start = map_processed_to_original_time(segment.processed_start, time_mapping);
+        int64_t segment_end = map_processed_to_original_time(segment.processed_end, time_mapping);
         if (!time_mapping.empty() && segment_end - segment_start < 10) {
             segment_end = segment_start + 10;
         }
         output << "{\"offsets\":{\"from\":" << segment_start * 10
                << ",\"to\":" << segment_end * 10
                << "},\"text\":\""
-               << json_escape(whisper_full_get_segment_text_from_state(state, segment_index))
+               << json_escape(segment.text.c_str())
                << "\",\"tokens\":[";
 
-        const int token_count = whisper_full_n_tokens_from_state(state, segment_index);
-        for (int token_index = 0; token_index < token_count; ++token_index) {
+        for (size_t token_index = 0; token_index < segment.tokens.size(); ++token_index) {
             if (token_index > 0) {
                 output << ',';
             }
-            const whisper_token_data token = whisper_full_get_token_data_from_state(state, segment_index, token_index);
-            output << "{\"text\":\"" << json_escape(whisper_token_to_str(context, token.id)) << "\"";
-            if (token.t0 > -1 && token.t1 > -1) {
-                output << ",\"offsets\":{\"from\":" << token.t0 * 10
-                       << ",\"to\":" << token.t1 * 10 << '}';
+            const TokenView & token = segment.tokens[token_index];
+            output << "{\"text\":\"" << json_escape(token.text.c_str()) << "\"";
+            if (token.start > -1 && token.end > -1) {
+                output << ",\"offsets\":{\"from\":" << token.start * 10
+                       << ",\"to\":" << token.end * 10 << '}';
             }
-            output << ",\"id\":" << token.id << ",\"p\":" << token.p << '}';
+            output << ",\"id\":" << token.id << ",\"p\":" << token.probability << '}';
         }
         output << "]}";
     }
-    output << "]}";
+    output << ']';
+    // A decode that used no prompt, or whose text repeated no prompt label,
+    // emits exactly the payload the previous runtime emitted.
+    if (verification != nullptr) {
+        output << ",\"verification\":" << verification_json(*verification);
+    }
+    output << '}';
     return output.str();
 }
 
@@ -826,6 +1006,324 @@ bool prepare_vad_audio(
     return true;
 }
 
+// One decoded window is 30 s of audio. With timestamps disabled whisper.cpp
+// completes each window as a single segment whose end time is the window start
+// plus that fixed span, which locates the window the segment came from.
+constexpr int64_t kWindowCentiseconds = 100 * WHISPER_CHUNK_SIZE;
+constexpr int kSamplesPerCentisecond = WHISPER_SAMPLE_RATE / 100;
+bool verification_reencodes_every_window() {
+    const char * value = std::getenv("STENO_RUNTIME_VERIFICATION_REENCODE");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
+bool window_seek_for_segment(
+    const SegmentView & segment,
+    int64_t window_limit,
+    int64_t & seek
+) {
+    const int64_t candidate = segment.processed_end - kWindowCentiseconds;
+    if (candidate < 0 || (candidate % kWindowCentiseconds) != 0 || candidate >= window_limit) {
+        return false;
+    }
+    seek = candidate;
+    return true;
+}
+
+const SegmentView * segment_for_seek(
+    const std::vector<SegmentView> & segments,
+    int64_t window_limit,
+    int64_t seek
+) {
+    for (const SegmentView & segment : segments) {
+        int64_t candidate = 0;
+        if (window_seek_for_segment(segment, window_limit, candidate) && candidate == seek) {
+            return &segment;
+        }
+    }
+    return nullptr;
+}
+// Reject prompt-conditioned windows that the audio does not support.
+//
+// The prompted result is produced by the unchanged decode path. Verification
+// then measures, per window that repeats prompt text, whether the audio
+// supports the first occurrence of each repeated prompt word and, when a word
+// occurs more than once, whether a prompt-free decode of the same audio
+// corroborates the repetition (see steno_prompt_verification.h). A rejected
+// final window is replaced by a vocabulary-only retry when that retry is
+// supported, else by the prompt-free decode when that is supported, else it is
+// dropped. Previews skip the vocabulary retry.
+//
+// Returning false leaves `segments` untouched, so a verification failure keeps
+// the prompted result rather than degrading it.
+bool verify_prompted_segments(
+    whisper_context * context,
+    whisper_state * prompted_state,
+    const whisper_full_params & prompted_parameters,
+    const RequestConfiguration & request,
+    const std::vector<float> & samples,
+    bool is_preview,
+    std::atomic<bool> * abort_requested,
+    std::vector<SegmentView> & segments,
+    VerificationReport & report
+) {
+    if (request.prompt.empty() || segments.empty() || samples.empty()) {
+        return true;
+    }
+    const std::vector<std::string> terms = steno::vocabulary_terms(request.vocabulary_prompt);
+    const std::vector<std::string> labels = steno::label_words(request.prompt, terms);
+    if (labels.empty() && terms.empty()) {
+        return true;
+    }
+
+    const int64_t window_limit = static_cast<int64_t>(samples.size()) / kSamplesPerCentisecond;
+    struct Pending {
+        size_t segment_index = 0;
+        int64_t seek = 0;
+        size_t window_index = 0;
+        steno::SupportScores prompted;
+        bool scored = false;
+        bool needs_prompt_free = false;
+    };
+    std::vector<Pending> pending;
+    for (size_t index = 0; index < segments.size(); ++index) {
+        int64_t seek = 0;
+        if (!window_seek_for_segment(segments[index], window_limit, seek)) {
+            continue;
+        }
+        if (steno::triggers_verification(segments[index].text, labels, terms)) {
+            Pending entry;
+            entry.segment_index = index;
+            entry.seek = seek;
+            pending.push_back(entry);
+        }
+    }
+    if (pending.empty()) {
+        return true;
+    }
+
+    // whisper_full_with_state encodes every window whose seek leaves more than
+    // its minimum step before the end of the mel, whether or not that window
+    // produced a segment. The cross-attention state it leaves behind therefore
+    // belongs to the last such window, which is derived from the mel length
+    // rather than from the segments (a trailing window can emit no text).
+    constexpr int64_t kMinimumSeekStep = 10;
+    const int64_t mel_length = whisper_n_len_from_state(prompted_state);
+    int64_t last_encoded_seek = -1;
+    if (mel_length > kMinimumSeekStep) {
+        last_encoded_seek = ((mel_length - kMinimumSeekStep - 1) / kWindowCentiseconds) * kWindowCentiseconds;
+    }
+
+    int language_id = -1;
+    if (request.language == "auto") {
+        language_id = whisper_full_lang_id_from_state(prompted_state);
+    } else {
+        language_id = whisper_lang_id(request.language.c_str());
+    }
+    if (whisper_is_multilingual(context) != 0 && language_id < 0) {
+        return false;
+    }
+    const int blank_token = steno::blank_token_id(context);
+    whisper_state * silent_state = g_silent_reference.state_for(context, request.threads);
+    if (silent_state == nullptr) {
+        return false;
+    }
+    static const bool forces_reencode = verification_reencodes_every_window();
+
+    // whisper_full_with_state leaves the cross-attention state at the last
+    // window it decoded, so a single-window result needs no re-encoding.
+    bool encoder_positioned = !forces_reencode && last_encoded_seek >= 0;
+    int64_t encoded_seek = last_encoded_seek;
+    const auto ensure_encoded = [&](int64_t seek) {
+        if (encoder_positioned && encoded_seek == seek) {
+            return true;
+        }
+        // A mel frame is one centisecond, so the window seek is the mel offset.
+        if (whisper_encode_with_state(
+                context,
+                prompted_state,
+                static_cast<int>(seek),
+                request.threads
+            ) != 0) {
+            encoder_positioned = false;
+            return false;
+        }
+        encoded_seek = seek;
+        encoder_positioned = true;
+        return true;
+    };
+    const auto score = [&](int64_t seek, const std::string & text, steno::SupportScores & scores) {
+        return ensure_encoded(seek)
+            && steno::score_hypothesis_support(
+                context,
+                prompted_state,
+                silent_state,
+                language_id,
+                request.threads,
+                blank_token,
+                text,
+                labels,
+                terms,
+                scores
+            );
+    };
+
+    report.triggered = true;
+    report.windows.reserve(pending.size());
+    bool any_prompt_free = false;
+    for (Pending & entry : pending) {
+        WindowVerification window;
+        window.seek = entry.seek;
+        window.prompted_words = steno::alphabetic_word_count(segments[entry.segment_index].text);
+        if (score(entry.seek, segments[entry.segment_index].text, entry.prompted)) {
+            entry.scored = true;
+            window.prompted = summarize_support(entry.prompted);
+            // A window whose suspect words are unsupported needs an alternative;
+            // one that repeats a suspect word needs the prompt-free decode to
+            // corroborate the repetition. Both need the prompt-free decode.
+            entry.needs_prompt_free = !steno::suspect_words_supported(entry.prompted)
+                || steno::repeats_suspect_word(entry.prompted);
+            if (!entry.needs_prompt_free) {
+                window.decision = "accepted";
+                window.tier = 1;
+            }
+        } else {
+            // Unscorable window: keep the prompted text and record that no
+            // verification tier ran for it.
+            window.decision = "unscorable";
+            window.tier = 0;
+        }
+        any_prompt_free = any_prompt_free || entry.needs_prompt_free;
+        entry.window_index = report.windows.size();
+        report.windows.push_back(window);
+    }
+    if (!any_prompt_free) {
+        return true;
+    }
+    if (abort_requested != nullptr && abort_requested->load(std::memory_order_relaxed)) {
+        return false;
+    }
+
+    whisper_full_params prompt_free_parameters = prompted_parameters;
+    prompt_free_parameters.initial_prompt = nullptr;
+    std::unique_ptr<whisper_state, decltype(&whisper_free_state)> prompt_free_state(
+        whisper_init_state(context),
+        &whisper_free_state
+    );
+    if (prompt_free_state == nullptr
+        || whisper_full_with_state(
+            context,
+            prompt_free_state.get(),
+            prompt_free_parameters,
+            samples.data(),
+            static_cast<int>(samples.size())
+        ) != 0) {
+        return false;
+    }
+    const std::vector<SegmentView> prompt_free = collect_segments(context, prompt_free_state.get());
+    prompt_free_state.reset();
+
+    std::vector<SegmentView> vocabulary_segments;
+    bool vocabulary_decoded = false;
+    std::vector<size_t> dropped_segments;
+
+    for (const Pending & entry : pending) {
+        if (!entry.needs_prompt_free) {
+            continue;
+        }
+        WindowVerification & window = report.windows[entry.window_index];
+        const SegmentView * alternative = segment_for_seek(prompt_free, window_limit, entry.seek);
+        const std::string alternative_text = alternative == nullptr ? std::string() : alternative->text;
+        const std::vector<std::string> prompt_free_words =
+            steno::alphabetic_words(alternative_text, labels, terms);
+        window.prompt_free_words = static_cast<int>(prompt_free_words.size());
+
+        if (steno::prompted_window_supported(entry.prompted, prompt_free_words)) {
+            window.decision = "accepted";
+            window.tier = 1;
+            continue;
+        }
+
+        if (steno::attempts_vocabulary_retry(is_preview, !request.vocabulary_prompt.empty())) {
+            if (!vocabulary_decoded) {
+                vocabulary_decoded = true;
+                if (abort_requested == nullptr
+                    || !abort_requested->load(std::memory_order_relaxed)) {
+                    whisper_full_params vocabulary_parameters = prompted_parameters;
+                    vocabulary_parameters.initial_prompt = request.vocabulary_prompt.c_str();
+                    std::unique_ptr<whisper_state, decltype(&whisper_free_state)> vocabulary_state(
+                        whisper_init_state(context),
+                        &whisper_free_state
+                    );
+                    if (vocabulary_state != nullptr
+                        && whisper_full_with_state(
+                            context,
+                            vocabulary_state.get(),
+                            vocabulary_parameters,
+                            samples.data(),
+                            static_cast<int>(samples.size())
+                        ) == 0) {
+                        vocabulary_segments = collect_segments(context, vocabulary_state.get());
+                    }
+                }
+            }
+            const SegmentView * retried = segment_for_seek(
+                vocabulary_segments,
+                window_limit,
+                entry.seek
+            );
+            // A retry that spells the rejected window's words carries the
+            // same verdict and is not rescored.
+            if (retried != nullptr && !retried->text.empty()
+                && !steno::same_alphabetic_words(retried->text, segments[entry.segment_index].text)) {
+                steno::SupportScores retried_scores;
+                if (score(entry.seek, retried->text, retried_scores)) {
+                    window.vocabulary = summarize_support(retried_scores);
+                    if (steno::replacement_supported(retried_scores, prompt_free_words)) {
+                        segments[entry.segment_index] = *retried;
+                        window.decision = "accepted_vocabulary";
+                        window.tier = 2;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // The prompt-free decode replaces the window only when the audio
+        // supports it too; an unsupported alternative would trade one
+        // fabrication for another.
+        bool prompt_free_supported = false;
+        if (alternative != nullptr && !alternative_text.empty()
+            && !steno::same_alphabetic_words(alternative_text, segments[entry.segment_index].text)) {
+            steno::SupportScores alternative_scores;
+            if (score(entry.seek, alternative_text, alternative_scores)) {
+                window.prompt_free = summarize_support(alternative_scores);
+                prompt_free_supported = steno::replacement_supported(alternative_scores, prompt_free_words);
+            }
+        }
+        if (!prompt_free_supported || (is_preview && !steno::kPreviewSubstitutesPromptFreeText)) {
+            window.decision = "dropped";
+            window.tier = 0;
+            dropped_segments.push_back(entry.segment_index);
+            continue;
+        }
+        segments[entry.segment_index] = *alternative;
+        window.decision = "replaced";
+        window.tier = 0;
+    }
+
+    std::sort(
+        dropped_segments.begin(),
+        dropped_segments.end(),
+        [](size_t lhs, size_t rhs) { return lhs > rhs; }
+    );
+    for (size_t index : dropped_segments) {
+        segments.erase(segments.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+    return true;
+}
+
+
+
 bool transcribe(
     whisper_context * context,
     whisper_vad_context *& vad_context,
@@ -946,7 +1444,24 @@ bool transcribe(
         ) != 0) {
         return false;
     }
-    output_json = transcript_json(context, state.get(), prepared.time_mapping);
+    std::vector<SegmentView> segments = collect_segments(context, state.get());
+    VerificationReport verification;
+    const bool verified = verify_prompted_segments(
+        context,
+        state.get(),
+        parameters,
+        request,
+        prepared.samples,
+        false,
+        abort_requested,
+        segments,
+        verification
+    );
+    output_json = transcript_json(
+        segments,
+        prepared.time_mapping,
+        verified && verification.triggered ? &verification : nullptr
+    );
     return output_json.size() <= kMaximumPayloadBytes;
 }
 
@@ -1011,10 +1526,24 @@ bool transcribe_preview(
         ) != 0) {
         return false;
     }
+    std::vector<SegmentView> segments = collect_segments(context, state.get());
+    VerificationReport verification;
+    // Provisional text is display-only, so a rejected preview window carries
+    // the prompt-free hypothesis without a vocabulary retry.
+    (void) verify_prompted_segments(
+        context,
+        state.get(),
+        parameters,
+        request,
+        samples,
+        true,
+        &abort_requested,
+        segments,
+        verification
+    );
     std::ostringstream output;
-    const int segment_count = whisper_full_n_segments_from_state(state.get());
-    for (int index = 0; index < segment_count; ++index) {
-        output << whisper_full_get_segment_text_from_state(state.get(), index);
+    for (const SegmentView & segment : segments) {
+        output << segment.text;
         if (output.tellp() > static_cast<std::streampos>(kMaximumHypothesisBytes)) {
             return false;
         }

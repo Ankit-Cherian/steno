@@ -475,11 +475,14 @@ public enum LiveContextBenchmarkRunner {
     }
 
     private static let adversarialCaseNamesByCategory: [String: Set<String>] = [
-        "compatibility": ["v1 backward compatibility"],
+        "compatibility": ["v1 backward compatibility", "v1 one-shot vocabulary-prompt field is accepted"],
         "protocolValidation": [
             "v2 validation, cross-session, duplicate, and terminal rejection",
             "v2 out-of-order, malformed, and per-append size bounds",
             "v2 shutdown rejects malformed fields and permits active teardown",
+            "v2 stream vocabulary-prompt configuration is accepted",
+            "v2 prompted JFK window emits accepted verification",
+            "vocabulary-prompt flag and string mismatches are rejected",
         ],
         "terminalPriority": [
             "v2 finish priority and exactly one final",
@@ -1195,9 +1198,11 @@ public enum LiveContextBenchmarkRunner {
         let manifestEntries = Dictionary(
             uniqueKeysWithValues: adversarial.sourceFixtureManifest.entries.map { ($0.role, $0) }
         )
-        let expectedManifestRoles = ["audioFixture", "harnessSource", "helperBinary", "helperSource", "vadModel", "whisperModel"]
+        let expectedManifestRoles = ["audioFixture", "harnessSource", "helperBinary", "helperSource", "promptScoringHeader", "promptVerificationHeader", "vadModel", "whisperModel"]
         let repository = URL(fileURLWithPath: configuration.sourceRootPath)
         let helperSourcePath = repository.appendingPathComponent("runtime-helper/steno_whisper_runtime.cpp").path
+        let promptScoringHeaderPath = repository.appendingPathComponent("runtime-helper/steno_prompt_scoring.h").path
+        let promptVerificationHeaderPath = repository.appendingPathComponent("runtime-helper/steno_prompt_verification.h").path
         let harnessPath = repository.appendingPathComponent("scripts/test-whisper-runtime-helper-v2.py").path
         let manifestPath: (String) -> String = { path in
             let root = repository.standardizedFileURL.path + "/"
@@ -1209,7 +1214,7 @@ public enum LiveContextBenchmarkRunner {
                 ["path": $0.path, "role": $0.role, "sha256": $0.sha256]
             }
         )
-        guard adversarial.schemaVersion == 2,
+        guard adversarial.schemaVersion == 3,
               receiptIsCurrent(adversarial.generatedAt, now: now),
               adversarial.git.sha == identity.gitSHA,
               adversarial.git.state == (adversarial.git.dirty ? "dirty" : "clean"),
@@ -1289,7 +1294,7 @@ public enum LiveContextBenchmarkRunner {
               manifestEntries.count == expectedManifestRoles.count,
               adversarial.sourceFixtureManifest.sha256 == canonicalManifestHash,
               adversarial.hashes.sourceFixtureManifestSHA256 == canonicalManifestHash,
-              adversarial.cases.expected == 22,
+              adversarial.cases.expected == 26,
               adversarial.cases.passed == adversarial.cases.expected,
               adversarial.cases.failed == 0,
               adversarial.cases.skipped == 0,
@@ -1332,6 +1337,10 @@ public enum LiveContextBenchmarkRunner {
               manifestEntries["helperBinary"]?.sha256 == adversarial.hashes.helperBinarySHA256,
               manifestEntries["helperSource"]?.path == manifestPath(helperSourcePath),
               manifestEntries["helperSource"]?.sha256 == adversarial.hashes.helperSourceSHA256,
+              manifestEntries["promptScoringHeader"]?.path == manifestPath(promptScoringHeaderPath),
+              manifestEntries["promptScoringHeader"]?.sha256 == sha256File(promptScoringHeaderPath),
+              manifestEntries["promptVerificationHeader"]?.path == manifestPath(promptVerificationHeaderPath),
+              manifestEntries["promptVerificationHeader"]?.sha256 == sha256File(promptVerificationHeaderPath),
               manifestEntries["whisperModel"]?.path == URL(fileURLWithPath: configuration.modelPath).standardizedFileURL.path,
               manifestEntries["whisperModel"]?.sha256 == adversarial.hashes.modelSHA256,
               manifestEntries["vadModel"]?.path == configuration.vadModelPath.map({
@@ -1405,6 +1414,7 @@ public enum LiveContextBenchmarkRunner {
             return ["unsupported-adversarial-receipt-schema"]
         }
         var failures: [String] = []
+        if receipt.schemaVersion != 3 { failures.append("unsupported-adversarial-receipt-schema") }
         if receipt.git.dirty || receipt.git.state != "clean" { failures.append("dirty-git-tree") }
         if receipt.execution.requestedDeviceMode != "default"
             || receipt.execution.backend != "observed-metal"
@@ -1412,7 +1422,7 @@ public enum LiveContextBenchmarkRunner {
             || !receipt.execution.productionMetalSmokePerformed {
             failures.append("non-metal-backend")
         }
-        if receipt.cases.expected != 22
+        if receipt.cases.expected != 26
             || Set(receipt.cases.rows.map(\.name))
                 != Set(adversarialCaseNamesByCategory.values.flatMap { $0 }) {
             failures.append("adversarial-catalog-mismatch")

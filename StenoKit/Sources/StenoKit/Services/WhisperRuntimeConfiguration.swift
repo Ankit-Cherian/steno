@@ -147,6 +147,18 @@ public enum WhisperRuntimeConfiguration {
         return prompt.isEmpty ? nil : prompt
     }
 
+    /// The configured hot terms alone, without the field labels that a weak
+    /// decode can copy. The runtime helper uses this to identify configured
+    /// vocabulary for acoustic verification and to retry a rejected window.
+    public static func buildVocabularyPrompt(
+        for request: TranscriptionRequest,
+        maxHotTerms: Int = 8
+    ) -> String? {
+        let hotTerms = Array(request.hotTerms.prefix(maxHotTerms))
+        guard !hotTerms.isEmpty else { return nil }
+        return hotTerms.joined(separator: ", ") + "."
+    }
+
     public static func promptFragments(
         for request: TranscriptionRequest,
         maxHotTerms: Int = 8
