@@ -1,6 +1,8 @@
 # Steno Quickstart
 
-Fastest path to a source build of the unreleased 1.0 candidate on an Apple silicon Mac running macOS 13 or later.
+Source setup for Steno on an Apple silicon Mac running macOS 13 or later. The instructions below describe the unreleased 1.0 candidate tree.
+
+The complete candidate is still local development work. A clone of the public default branch does not include all of it. When continuing an existing candidate checkout, preserve that checkout and its changes and skip the clone step. Release acceptance is tracked in [the 1.0 checklist](docs/release/1.0-checklist.md).
 
 ## Prerequisites
 
@@ -11,7 +13,7 @@ Fastest path to a source build of the unreleased 1.0 candidate on an Apple silic
 - at least one local Whisper model and the Silero VAD model
 - a local Apple Developer Team for an Xcode-run build
 
-Signing and notarization are distribution steps. They are not part of these preparation instructions and have not been performed for the unreleased 1.0 candidate.
+Developer ID signing and notarization are separate distribution steps. Local development or ad-hoc signatures do not establish a distributable 1.0 release.
 
 ## 1) Clone and build local transcription dependencies
 
@@ -84,7 +86,9 @@ Expected result:
 
 Steno starts with the selected model on first use and keeps that Whisper context loaded between compatible dictations. The private helper communicates only through inherited process pipes; it does not run an HTTP server or network listener. Changing the model or VAD configuration invalidates the loaded context, so the next dictation pays the reload cost. The legacy `whisper-cli` path remains available as a fallback if the retained helper cannot complete a request.
 
-The app has four sidebar destinations: Dictate, History, Insights, and Settings. Insights shows a local activity calendar, streaks, words, known dictated time, sessions, average speed, cleanup coverage, and top apps. Its separate ledger stores per-session usage metadata, not transcript text or audio. Deleting History text does not remove the aggregate usage record.
+The app uses one Manuscript interface with four sidebar destinations: Dictate, History, Insights, and Settings. The compact Dictate pill reflects the current capture state; Stop ends the active recording mode, while Cancel discards the active capture. Settings changes remain a draft until Save changes; Discard reloads saved preferences. A conflict warning requires reloading before saving.
+
+Insights shows a local activity calendar, streaks, words, known dictated time, sessions, average speed, cleanup coverage, and top apps. Its separate ledger stores per-session usage metadata, not transcript text or audio. Deleting History text does not remove the aggregate usage record.
 
 Cleanup is conservative by default: ambiguous language, including `like`, `you know`, `question mark`, `open paren`, and `slash command`, stays literal rather than being automatically converted or removed. Only the explicit aggressive filler policy performs narrow filler removal. Optional media interruption is also fail-closed: Steno sends semantic Pause and Play commands only when it can bind ownership to the exact application and process lineage it observed.
 
@@ -114,12 +118,16 @@ The following checks are intentionally separate from automated validation and re
 - Insert text into both a standard text editor and a terminal-like target.
 - Verify nearby-text continuation at sentence and mid-sentence boundaries, plus `lowercase <payload>` and `literal lowercase <text>`.
 - Verify exact-application media Pause/Play behavior with supported players, including already-paused and ambiguous-owner cases.
-- Open Settings -> Engine and confirm:
+- Open Settings -> Speech model and confirm:
   - the detected hardware line is present
   - the current model is visible
   - the recommendation/status text makes sense for your machine
 - Open History and confirm transcripts, timestamps, and copy actions look correct.
-- Check keyboard navigation, VoiceOver labels, reduced motion, an installed app bundle, and a macOS 13 machine.
+- Change Settings sections and leave/return with an unsaved draft; verify Save changes, Discard, and external-update conflict handling.
+- Check short and long dictations, opening words, silence, Stop, Cancel, and a fresh recording immediately after completion.
+- Check keyboard navigation, VoiceOver labels, reduced motion, sleep/wake, an installed app bundle, and a macOS 13 machine.
+
+Record actual results against the exact tested build in [the 1.0 checklist](docs/release/1.0-checklist.md). A transient success or a single dictation does not complete the whole checklist.
 
 Passing the automated commands does not establish any of these manual results. Distribution signing and notarization are also still pending.
 
@@ -151,7 +159,7 @@ Steno remains local for transcription, provisional display, cleanup, and Insight
 
 - The engine status looks wrong for your hardware
 
-  Re-open Settings -> Engine after model downloads finish. If you are using a non-canonical or quantized model, expect recommendation text to stay in advanced/manual territory.
+  Re-open Settings -> Speech model after model downloads finish. If you are using a non-canonical or quantized model, expect recommendation text to stay in advanced/manual territory.
 
 - You want benchmark or release-signoff verification instead of just a local run
 

@@ -11,6 +11,12 @@ This document exists so contributors do not blur those two together.
 
 > **Evidence boundary for 1.0:** Existing 0.2/0.2.1 release-eval results, including the May 15, 2026 corpus work and the previously measured `m5-pro / 64GB / large-v3-turbo` row, are historical evidence. They do not establish the unreleased 1.0 candidate. Any 1.0 accuracy, latency, compatibility, or release-signoff claim needs a fresh run with receipts tied to the final 1.0 commit and declared corpus.
 
+## Candidate development evidence
+
+September 2026 work includes a measured VAD-confirmed-silence preview optimization and scoped regression evaluations. Preserved final-transcript parity is evidence for that change on its declared corpus; it is not a new final-transcription accuracy improvement or final-source release signoff. Subsequent UI changes have separate package, hosted-test, build, and synthetic visual evidence.
+
+Use [the 1.0 checklist](1.0-checklist.md) to tie final evaluation and manual acceptance to the chosen release source. Keep dated development receipts distinct from the final release record.
+
 ## Smoke fixture vs release signoff
 
 ### Smoke fixture

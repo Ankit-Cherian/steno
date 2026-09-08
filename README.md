@@ -12,13 +12,15 @@ The latest public release is Steno v0.2.0:
 
 [Download Steno-0.2.0.dmg](https://github.com/Ankit-Cherian/steno/releases/download/v0.2.0/Steno-0.2.0.dmg)
 
-Version 1.0 is available for source review and testing only. It has not been released, signed, notarized, or published as a download.
+Version 1.0 is under local development and testing. It has not been released as a Developer ID signed, notarized download. Cloning the public default branch does not provide the complete local candidate.
 
 Open the DMG, drag Steno to Applications, then launch Steno from Applications. Source setup is only needed if you want to build or contribute to the app.
 
 ## What Is New in the 1.0 Candidate
 
-- Three native design candidates cover Dictate, History, Insights, Settings, and onboarding. They share recording controls, transcript recovery, usage storage, and preference behavior; the final design selection is pending review.
+- One Manuscript design covers Dictate, History, Insights, Settings, and onboarding, with a compact recording pill, clearer typography, a transparent ribbon S brand mark, and saved accent preferences.
+- The recording overlay grows into a bounded reading area with stable Stop and Cancel controls. It follows the current hypothesis and keeps the completed recording authoritative for insertion.
+- Settings keeps an unsaved draft across navigation, with persistent Save changes and Discard controls and protection against conflicting updates. Onboarding separates setup, permissions, model readiness, and the first dictation check.
 - Optional live transcription shows a bounded preview while recording. Only the completed recording supplies the final text for insertion.
 - Optional nearby-text continuation adjusts insertion spacing and conservative casing using a bounded selection snapshot from the captured editor. Nearby text never enters recognition prompts, history, or analytics.
 - Insights summarizes a local activity calendar, streaks, words, known dictated time, sessions, average speed, cleanup coverage, and top apps.
@@ -39,13 +41,13 @@ Open the DMG, drag Steno to Applications, then launch Steno from Applications. S
 - Searchable transcript history with transcript inspection and recovery-oriented copy actions
 - A separate local Insights ledger for activity, streak, word, time, session, speed, cleanup, and top-app summaries
 - VoiceOver-aware controls and reduced-motion-aware animation behavior
-- Nonactivating recording overlay with a static recording indicator, readable flowing preview, outcome icons, and a cancel control
+- Nonactivating recording overlay with a static recording indicator, readable flowing preview, outcome icons, and separate Stop and Cancel controls
 
 ## Validation Status
 
 The May 15 evaluation is historical evidence for the 0.2.1 candidate on one M5 Pro / 64GB / Large V3 Turbo row. It does not validate the current unreleased 1.0 tree or other hardware/model combinations.
 
-The 1.0 preparation uses automated package tests, hosted macOS tests, an unsigned app build, generated-project/signing audits, and benchmark-report validation where applicable. Manual microphone, media-player, insertion, UI, VoiceOver, installed-app, and macOS 13 checks remain pending; signing and notarization have not been performed.
+The candidate has passed automated package and hosted macOS tests, app builds, and synthetic production-view checks. These are scoped development results. Personal testing continues, and final-source release evaluation, a complete live microphone/media/insertion acceptance pass, VoiceOver, sleep/wake, macOS 13, and distribution checks remain release gates. See [the 1.0 checklist](docs/release/1.0-checklist.md) for the acceptance record; a local ad-hoc signature is not Developer ID distribution signing.
 
 ## Screenshots
 
@@ -118,6 +120,7 @@ For the benchmark and signoff workflow details, see [docs/release/release-eval.m
 
 ## Contributor Path
 
+- 1.0 acceptance and release preparation: [docs/release/1.0-checklist.md](docs/release/1.0-checklist.md)
 - Setup and contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Fast local run instructions: [QUICKSTART.md](QUICKSTART.md)
 - Historical 0.2 release brief: [docs/release/v0.2.0-release-brief.md](docs/release/v0.2.0-release-brief.md)

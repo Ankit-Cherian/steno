@@ -7,16 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-_Target version: 1.0.0. Unreleased; review and personal acceptance are pending._
+_Target version: 1.0.0. Local testing and further refinement are in progress. Release acceptance and distribution approval are pending._
 
 ### Added
+- Added a ribbon S app icon and transparent in-app mark, centered in the sidebar and used throughout onboarding.
 - Added an optional live transcript that follows recording in a nonactivating overlay while preserving the completed recording as the source of final insertion.
 - Added opt-in, bounded nearby-text continuation for insertion spacing and conservative casing, with editor identity revalidation and no persistence of surrounding text.
 - Added Insights with a six-month activity calendar and private, on-device summaries for words, known recording time, estimated speaking speed, completed sessions, streaks, and frequently used applications. The per-session metadata is stored separately from transcript history and contains no transcript text or audio.
 - Added a retained local Whisper context that communicates with a bundled helper over inherited process pipes, without opening a network listener.
 
 ### Changed
-- Rebuilt Dictate, History, Insights, Settings, and onboarding with three native design candidates for review, consistent navigation, readable transcripts, and persistent settings controls.
+- Unified Dictate, History, Insights, Settings, and onboarding around the Manuscript design, with clearer typography, quieter metadata, responsive reading layouts, and consistent navigation.
+- Replaced the large Dictate control with a centered compact pill that reflects microphone access, listening, elapsed time, and transcription state, with configured shortcuts grouped beneath it.
+- Redesigned the floating overlay as a bounded reading panel that grows downward, follows the current live hypothesis, and keeps Stop and Cancel controls stable. Long previews show a readable portion without changing final transcription.
+- Preserved existing accent choices while using citron for new preferences; improved light-mode calendar contrast and light/dark overlay styling.
+- Kept unsaved Settings drafts across navigation, with persistent Save changes and Discard actions, conflict feedback, and advanced engine diagnostics separated from routine setup.
+- Clarified onboarding steps and readiness checks, History copy/recovery actions, and Insights metric labels; the six-month activity calendar keeps lifetime totals independent of its display range.
+- Increased local transcript history capacity from 500 to 1,000 entries while keeping the separate usage ledger independent of transcript retention.
 - Removed simulated audio meters and misleading shortcut hints; recording controls reflect the actual configured shortcuts and enabled modes.
 - Retained transcription falls back to the existing local `whisper-cli` path when the helper is unavailable or fails. Cancellation stops the request; model, VAD, runtime, sleep/wake, or memory-state changes invalidate the retained context for a subsequent reload.
 - Media interruption now sends semantic Pause and Play commands only to the exact application and process lineage that Steno verified was producing audio. Ambiguous ownership fails closed, and Steno never uses a global play/pause toggle fallback.
@@ -25,16 +32,30 @@ _Target version: 1.0.0. Unreleased; review and personal acceptance are pending._
 - Direct-distribution builds package the retained-runtime helper and validate its local `whisper.cpp` dependency set alongside the app.
 
 ### Fixed
+- Added acoustic verification to the retained Whisper helper for suspected prompt-derived text. It checks token support against silent audio and corroborates repeated prompt words with a prompt-free decode, replacing or dropping unsupported windows while preserving genuinely spoken terms in the tested controls.
+- Reject incomplete or malformed capture WAVs before recognition so unfinished audio cannot produce an insertion or history entry.
+- Treat failed voice-activity detection as a transcription failure instead of accepting an invalid speech mask.
 - Skip provisional recognition when voice activity detection confirms that newly appended audio is silent; final transcription remains unchanged.
+- Route on-screen Stop through the active recording mode so both press-to-talk and hands-free captures end correctly.
+- Prevent medium and long overlay text from clipping through line-aware sizing, and bound layout work for unusually long hypotheses.
 - Hardened capture start, cancellation, overlap, rapid restart, and shutdown so stale asynchronous work cannot resume media or modify a newer dictation session.
 - Improved session teardown and insertion ownership so recording resources close promptly and completed text is inserted or persisted at most once through the active session.
 - Kept media that was already paused unchanged and resumed only media that Steno itself verified it paused.
 
 ### Tests
+- Added shared C++ decision tests, real-inference scoring controls, vocabulary-prompt protocol checks, and opt-in retained-helper tests across preview modes, cleanup, insertion, and history. Verification metadata is covered without making it part of saved transcripts.
+- Added focused coverage for Settings drafts and conflicts, recording Stop behavior, overlay layout and revisions, and synthetic app states.
 - Expanded automated package and hosted macOS coverage for retained-runtime lifecycle and fallback behavior, exact-process media ownership, cancellation and rapid-restart races, conservative cleanup, insertion ownership, helper packaging, and dependency validation.
+
+### Removed
+- Removed the temporary three-design selection from the app; Manuscript is the single interface.
 
 ### Compatibility
 - The 1.0 candidate targets Apple silicon Macs running macOS 13 or later. Minimum-version runtime and distribution acceptance remain pending; Intel Macs are not supported.
+
+### Known issues
+- Voice-activity detection can omit quiet opening words after a long silent lead-in. The issue remains under investigation and must pass sentence-preservation acceptance before release.
+- The prompt-verification correction has passed controlled evaluation and initial personal testing; extended microphone acceptance remains in progress. The legacy CLI fallback does not include this helper-specific correction.
 
 ## [0.2.0] - 2026-04-21
 

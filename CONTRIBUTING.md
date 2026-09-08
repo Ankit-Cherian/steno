@@ -58,6 +58,12 @@ Before you start:
 
 5. Open `Steno.xcodeproj`, set your Apple Developer Team in Signing & Capabilities, and run the app locally.
 
+## Continuing the 1.0 Candidate
+
+The candidate uses a single Manuscript interface and remains under local testing and refinement. Continue the existing candidate checkout when working on that effort; preserve uncommitted work and verify the branch before edits. A public clone may not contain the complete candidate. [The 1.0 checklist](docs/release/1.0-checklist.md) separates development checks from final release acceptance.
+
+Documentation changes alone call for source/claim checks, link validation, and a diff review. Substantial code changes require the checks below; historical test receipts cannot validate a later edit.
+
 ## Daily Development Loop
 
 For normal code changes, the expected validation path is:
@@ -140,7 +146,11 @@ For the self-contained DMG distribution path, see [docs/release/direct-distribut
 - Do not hardcode fonts, shadows, spacing, or colors when `StenoDesign`/theme tokens already exist
 - Respect `accessibilityReduceMotion`
 - Add accessibility labels to interactive elements
-- Follow the existing Steno visual system instead of reintroducing older default-control styling
+- Follow the single Manuscript design and its semantic typography/color roles; preserve saved accents and the transparent in-app mark
+- Keep the compact Dictate action and configured shortcuts together; preserve mode-aware Stop and a separate Cancel action
+- Keep overlay text display-only, bounded, revision-aware, and readable across light/dark modes and supported window sizes
+- Keep Settings drafts, persistent Save changes/Discard controls, and conflict protection intact
+- Synthetic review fixtures must stay isolated from microphone, global shortcuts, system permissions, playback, and personal storage
 
 ### General engineering rules
 
@@ -151,7 +161,7 @@ For the self-contained DMG distribution path, see [docs/release/direct-distribut
 
 ## Testing Notes
 
-Steno uses Swift Testing, not XCTest.
+Steno uses Swift Testing for its package and hosted macOS regression suites.
 
 Run the full package suite:
 
