@@ -4,6 +4,8 @@ This document covers the repo’s direct-distribution path for Steno outside the
 
 > **1.0 candidate status:** The repository contains the packaging mechanics described below, including the retained local runtime helper. This preparation does not produce a public release: no Developer ID signing, notarization, stapling, upload, download-link change, installed-app check, or manual macOS acceptance run is claimed here.
 
+Use [the 1.0 checklist](1.0-checklist.md) before release packaging. The local ad-hoc Debug candidate used during development is not the self-contained Developer ID signed distribution artifact described here. Running the release script is a separate release action; documentation preparation alone does not authorize it.
+
 ## Goal
 
 Produce a downloadable, self-contained `Steno.app` inside a DMG so users do not need to:

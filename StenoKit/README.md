@@ -1,5 +1,24 @@
 # StenoKit
 
+## Prompt-verification regression checks
+
+The retained helper has separate decision and real-inference checks. From the repository root, run `bash scripts/test-whisper-prompt-verification.sh` for the shared decision rules and `bash scripts/test-whisper-prompt-scoring.sh` for the scorer. The scorer requires the local whisper.cpp build, a model, the JFK sample, and macOS speech synthesis; its defaults are `small.en` and the Samantha voice. Set `STENO_TEST_WHISPER_MODEL` explicitly for each additional model, and `STENO_TEST_SPEECH_VOICE` to test another installed voice. Generated speech can vary between macOS voice versions.
+
+The opt-in coordinator suite requires an external bundle of public or synthetic 16 kHz mono PCM WAVs. Copy its manifest and audio together; each audio path is relative to the manifest. A passing ordinary package run does not execute this suite. Use explicit local inputs and a new receipt directory:
+
+```sh
+STENO_TEST_RETAINED_HELPER=/absolute/path/to/steno-whisper-runtime \
+STENO_TEST_WHISPER_MODEL=/absolute/path/to/model.bin \
+STENO_TEST_WHISPER_VAD=/absolute/path/to/vad-model.bin \
+STENO_TEST_PROMPT_MANIFEST=/absolute/path/to/fixture-bundle/manifest.json \
+STENO_TEST_PROMPT_RECEIPTS=/absolute/path/to/new-receipts \
+bash scripts/test-prompt-isolation.sh
+```
+
+The manifest schema is documented in `PromptIsolationIntegrationTests.swift`: `publicOrSyntheticAudio: true` and fixtures containing `id`, `audio`, `expectedText`, and `hotTerms`. Required cases cover ordinary speech, literal and repeated terms, vocabulary, pauses, and silence. References must be independently supplied, and exact audio hashes must accompany evaluation results. Omit the VAD variable only for a deliberately separate diagnostic run. The runner creates an isolated Swift build cache unless `STENO_TEST_SWIFT_SCRATCH_PATH` is supplied.
+
+This suite exercises press-to-talk with preview enabled and disabled, the retained helper, cleanup, isolated insertion, and file history. It does not exercise a microphone, native editor delivery, or hands-free mode. Per-window helper diagnostics are available in rich output to external harnesses; they are not persisted by the app.
+
 Core package for Steno’s local-first dictation, retained Whisper runtime, cleanup, insertion, usage analytics, media interruption, compatibility, and benchmark stack.
 
 `StenoKit` is the non-UI engine that powers the macOS app in `Steno/`. The app layer owns SwiftUI views, dependency and lifecycle wiring, and window orchestration; `StenoKit` owns the reusable logic that turns audio into text, cleans it up, inserts it safely, persists transcript and aggregate usage data, coordinates exact-app media interruption, and evaluates release quality.
@@ -59,6 +78,8 @@ Key package interfaces include:
 - Retained local Whisper context between compatible dictations, using a private inherited-pipe helper with no HTTP server or network listener
 - Versioned retained-helper streaming for bounded provisional hypotheses, cooperative cancellation, final priority, and canonical PCM count/digest validation
 - Ephemeral stable/revisable transcript reduction with session, controller, runtime, revision, and audio-watermark isolation
+- VAD-confirmed silence skips unnecessary provisional recognition while preserving resumed speech, unknown evidence, and authoritative final decoding
+- A bounded, line-aware overlay viewport that renders the current hypothesis without stitching old previews or altering final text
 - Bounded exact-editor context, target revalidation, insertion-only continuation shaping, and secure/unsupported-field exclusion
 - Frozen `lowercase <payload>` directive plus `literal lowercase <text>` escape, both applied around the existing cleanup pipeline
 - Per-request `whisper-cli` fallback after retained-helper failure, plus cancellation, unload, shutdown, and load-identity invalidation
@@ -91,7 +112,7 @@ The retained helper is built from the audited `whisper.cpp` revision `764482c317
 - raw/pipeline/coordinator benchmark validation
 - warm-runtime benchmark identity and acceptance validation
 - release-signoff timing aggregation and gate evaluation
-- compact overlay hit-testing
+- compact overlay hit-testing, transcript viewport bounds, Unicode handling, and revision/reset behavior
 
 ## Core Commands
 
@@ -137,6 +158,7 @@ Package and hosted tests are automated evidence only. They do not establish live
 
 ## Related Docs
 
+- 1.0 acceptance checklist: [`docs/release/1.0-checklist.md`](../docs/release/1.0-checklist.md)
 - Repo overview: [`README.md`](../README.md)
 - Contributor workflow: [`CONTRIBUTING.md`](../CONTRIBUTING.md)
 - Release-eval guide: [`docs/release/release-eval.md`](../docs/release/release-eval.md)
