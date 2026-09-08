@@ -12,6 +12,7 @@ import argparse
 import datetime
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -45,7 +46,7 @@ MODEL_IDENTITY = "vendored-small-en"
 VAD_IDENTITY = "vendored-silero-v6-2"
 VAD_MODEL: Path | None = None
 PUBLIC_CANARY = b"STENO-PUBLIC-PROTOCOL-CANARY-V1"
-RECEIPT_SCHEMA_VERSION = 2
+RECEIPT_SCHEMA_VERSION = 3
 SAMPLE_RATE_HZ = 16_000
 CHANNEL_COUNT = 1
 SAMPLE_WIDTH_BYTES = 2
@@ -110,24 +111,35 @@ def identity_payload(vad_identity: str = VAD_IDENTITY) -> bytes:
     )
 
 
-def stream_configuration(vad_model: Path | None = None, vad_identity: str | None = None) -> bytes:
+def stream_configuration(
+    vad_model: Path | None = None,
+    vad_identity: str | None = None,
+    prompt: str | None = None,
+    vocabulary_prompt: str | None = None,
+) -> bytes:
     if vad_identity is None:
         vad_identity = VAD_IDENTITY
         vad_model = VAD_MODEL
     vad_enabled = vad_model is not None
-    return b"".join(
-        (
-            u32(STREAM_THREAD_COUNT),
-            u32(1),
-            u32(1),
-            u32(3 if vad_enabled else 1),
-            string("en"),
-            optional_string(None),
-            optional_string(None),
-            optional_string(str(vad_model) if vad_model is not None else None),
-            string(vad_identity),
-        )
-    )
+    flags = 1
+    if vad_enabled:
+        flags |= 1 << 1
+    if vocabulary_prompt:
+        flags |= 1 << 2
+    payload = [
+        u32(STREAM_THREAD_COUNT),
+        u32(1),
+        u32(1),
+        u32(flags),
+        string("en"),
+        optional_string(prompt),
+        optional_string(None),
+        optional_string(str(vad_model) if vad_model is not None else None),
+        string(vad_identity),
+    ]
+    if vocabulary_prompt:
+        payload.append(string(vocabulary_prompt))
+    return b"".join(payload)
 
 
 def parse_error(payload: bytes) -> tuple[int, int, int | None]:
@@ -164,20 +176,37 @@ def parse_hypothesis(payload: bytes) -> tuple[int, int, int, int, str]:
     return revision, watermark, monotonic_nanos, evidence, text
 
 
-def one_shot_configuration(audio_path: Path) -> bytes:
-    return b"".join(
-        (
-            u32(4),
-            u32(1),
-            u32(1),
-            u32(1),
-            string(str(audio_path)),
-            string("en"),
-            optional_string(None),
-            optional_string(None),
-            optional_string(None),
-        )
-    )
+def one_shot_configuration(
+    audio_path: Path,
+    prompt: str | None = None,
+    vocabulary_prompt: str | None = None,
+    vad_model: Path | None = None,
+    threads: int = 4,
+    beam_size: int = 1,
+    best_of: int = 1,
+    suppress_nst: bool = True,
+) -> bytes:
+    flags = 0
+    if suppress_nst:
+        flags |= 1 << 0
+    if vad_model is not None:
+        flags |= 1 << 1
+    if vocabulary_prompt:
+        flags |= 1 << 2
+    payload = [
+        u32(threads),
+        u32(beam_size),
+        u32(best_of),
+        u32(flags),
+        string(str(audio_path)),
+        string("en"),
+        optional_string(prompt),
+        optional_string(None),
+        optional_string(str(vad_model) if vad_model is not None else None),
+    ]
+    if vocabulary_prompt:
+        payload.append(string(vocabulary_prompt))
+    return b"".join(payload)
 
 
 def append_payload(sequence: int, offset: int, pcm: bytes) -> bytes:
@@ -593,6 +622,103 @@ def append_all(helper: Helper, stream_id: bytes, generation: int, pcm: bytes) ->
 
 def finish_payload(helper: Helper, audio: Path, pcm: bytes) -> bytes:
     return u64(len(pcm) // 2) + u64(fnv1a(pcm)) + string(str(audio)) + helper.stream_configuration()
+
+
+VERIFICATION_DECISIONS = frozenset(
+    {"accepted", "accepted_vocabulary", "replaced", "dropped", "unscorable"}
+)
+VERIFICATION_WINDOW_KEYS = frozenset({"seek", "decision", "tier", "wordsP", "wordsN", "P", "V", "N"})
+SUPPORT_KEYS = frozenset({"words", "otherTokens", "otherSupport", "suspect"})
+SUSPECT_KEYS = frozenset({"word", "group", "occurrences", "first"})
+
+
+def with_vocabulary_flag(payload: bytes) -> bytes:
+    threads, beam, best_of, flags = struct.unpack(">IIII", payload[:16])
+    return struct.pack(">IIII", threads, beam, best_of, flags | (1 << 2)) + payload[16:]
+
+
+def finish_with_configuration(audio: Path, pcm: bytes, configuration: bytes) -> bytes:
+    return u64(len(pcm) // 2) + u64(fnv1a(pcm)) + string(str(audio)) + configuration
+
+
+def require_finite_number_or_none(value: object, field: str) -> None:
+    if value is None:
+        return
+    require(
+        isinstance(value, (int, float)) and not isinstance(value, bool),
+        f"verification window {field} was not a number",
+    )
+    require(math.isfinite(value), f"verification window {field} was not finite")
+
+
+def require_verification_shape(verification: object) -> dict:
+    require(isinstance(verification, dict), "verification was not an object")
+    require(set(verification) == {"triggered", "windows"}, "verification object keys mismatch")
+    require(isinstance(verification["triggered"], bool), "verification.triggered was not a boolean")
+    windows = verification["windows"]
+    require(isinstance(windows, list), "verification.windows was not an array")
+    for window in windows:
+        require(isinstance(window, dict), "verification window was not an object")
+        require(set(window) == VERIFICATION_WINDOW_KEYS, "verification window keys mismatch")
+        require(
+            isinstance(window["seek"], int) and not isinstance(window["seek"], bool),
+            "verification window seek was not an integer",
+        )
+        require(window["decision"] in VERIFICATION_DECISIONS, "verification window decision was invalid")
+        require(
+            isinstance(window["wordsP"], int) and not isinstance(window["wordsP"], bool),
+            "verification window wordsP was not an integer",
+        )
+        require(
+            isinstance(window["wordsN"], int) and not isinstance(window["wordsN"], bool),
+            "verification window wordsN was not an integer",
+        )
+        require(window["tier"] in (0, 1, 2), "verification window tier was invalid")
+        for field in ("P", "V", "N"):
+            require_support_shape(window[field], field)
+    return verification
+
+
+def require_support_shape(support: object, field: str) -> None:
+    if support is None:
+        return
+    require(isinstance(support, dict), f"verification {field} was not an object")
+    require(set(support) == SUPPORT_KEYS, f"verification {field} keys mismatch")
+    for key in ("words", "otherTokens"):
+        require(
+            isinstance(support[key], int) and not isinstance(support[key], bool),
+            f"verification {field}.{key} was not an integer",
+        )
+    require_finite_number_or_none(support["otherSupport"], f"{field}.otherSupport")
+    require(
+        (support["otherSupport"] is None) == (support["otherTokens"] == 0),
+        f"verification {field}.otherSupport disagreed with otherTokens",
+    )
+    require(isinstance(support["suspect"], list), f"verification {field}.suspect was not an array")
+    for entry in support["suspect"]:
+        require(isinstance(entry, dict), f"verification {field}.suspect entry was not an object")
+        require(set(entry) == SUSPECT_KEYS, f"verification {field}.suspect keys mismatch")
+        require(isinstance(entry["word"], str) and entry["word"] != "", f"verification {field}.suspect word was empty")
+        require(entry["group"] in ("label", "vocabulary"), f"verification {field}.suspect group was invalid")
+        require(
+            isinstance(entry["occurrences"], int) and entry["occurrences"] >= 1,
+            f"verification {field}.suspect occurrences was invalid",
+        )
+        require_finite_number_or_none(entry["first"], f"{field}.suspect.first")
+        require(entry["first"] is not None, f"verification {field}.suspect first was missing")
+
+
+def require_rich_result(payload: bytes) -> dict:
+    decoded = json.loads(payload)
+    require(isinstance(decoded, dict), "rich result was not an object")
+    require(isinstance(decoded.get("transcription"), list), "rich result did not match schema")
+    require(
+        set(decoded) <= {"transcription", "verification"},
+        "rich result contained unexpected keys",
+    )
+    if "verification" in decoded:
+        require_verification_shape(decoded["verification"])
+    return decoded
 
 
 def test_v1_compatibility(executable: Path, model: Path, audio: Path, _: bytes) -> None:
@@ -1169,6 +1295,134 @@ def run_interruption_case(
         helper.terminate()
 
 
+def test_v2_stream_vocabulary_prompt_accepted(executable: Path, model: Path, audio: Path, pcm: bytes) -> None:
+    helper = Helper(executable, model, VERSION_2)
+    try:
+        stream_id = uuid.uuid4().bytes
+        generation = 201
+        configuration = stream_configuration(
+            helper.vad_model,
+            helper.vad_identity,
+            prompt="Language: en. Terms: Kubernetes.",
+            vocabulary_prompt="Kubernetes.",
+        )
+        helper.send(Frame(STREAM_START, stream_id, generation, configuration))
+        started = helper.expect(STREAM_STARTED, stream_id, generation)
+        require(started.payload == helper.identity_payload(), "stream-start identity payload mismatch")
+        append_all(helper, stream_id, generation, pcm)
+        helper.send(Frame(STREAM_FINISH, stream_id, generation, finish_with_configuration(audio, pcm, configuration)))
+        response = helper.expect(FINAL_RESULT, stream_id, generation, timeout=30.0)
+        require_rich_result(response.payload)
+        helper.shutdown()
+    finally:
+        helper.terminate()
+
+
+def test_v1_one_shot_vocabulary_prompt_accepted(executable: Path, model: Path, audio: Path, _: bytes) -> None:
+    helper = Helper(executable, model, VERSION_1)
+    try:
+        request_id = uuid.uuid4().bytes
+        helper.send(
+            Frame(
+                TRANSCRIBE,
+                request_id,
+                8,
+                one_shot_configuration(
+                    audio,
+                    prompt="Language: en. Terms: Kubernetes.",
+                    vocabulary_prompt="Kubernetes.",
+                ),
+            )
+        )
+        response = helper.expect(RESULT, request_id, 8, timeout=30.0)
+        require_rich_result(response.payload)
+        helper.shutdown()
+    finally:
+        helper.terminate()
+
+
+def test_prompted_jfk_accepted_verification(executable: Path, model: Path, audio: Path, _: bytes) -> None:
+    helper = Helper(executable, model, VERSION_2)
+    observed: object = None
+    try:
+        request_id = uuid.uuid4().bytes
+        helper.send(
+            Frame(
+                TRANSCRIBE,
+                request_id,
+                9,
+                one_shot_configuration(
+                    audio,
+                    prompt="Topic: country.",
+                    vocabulary_prompt="Kubernetes.",
+                    vad_model=helper.vad_model,
+                ),
+            )
+        )
+        response = helper.expect(RESULT, request_id, 9, timeout=30.0)
+        decoded = json.loads(response.payload)
+        observed = decoded.get("verification") if isinstance(decoded, dict) else decoded
+        try:
+            require_rich_result(response.payload)
+            require(isinstance(observed, dict), "prompted JFK result omitted verification")
+            require(observed["triggered"] is True, "verification.triggered was not true")
+            windows = observed["windows"]
+            require(len(windows) == 1, "verification did not contain exactly one window")
+            window = windows[0]
+            require(window["seek"] == 0, "verification window seek was not 0")
+            require(window["decision"] == "accepted", "verification window decision was not accepted")
+            require(window["tier"] == 1, "verification window tier was not 1")
+            prompted = window["P"]
+            require(isinstance(prompted, dict), "verification window P was not scored")
+            require(prompted["words"] >= 20, "verification window P counted too few words")
+            suspects = {entry["word"]: entry for entry in prompted["suspect"]}
+            require("country" in suspects, "verification window P did not list the spoken label word")
+            require(suspects["country"]["group"] == "label", "country was not a label word")
+            require(suspects["country"]["occurrences"] == 2, "country was not counted twice")
+            require(suspects["country"]["first"] >= 5.0, "spoken country was not acoustically supported")
+            require(window["V"] is None, "an accepted window scored a vocabulary retry")
+            # The repeated label word is corroborated by the prompt-free decode,
+            # which hears `country` as often.
+            require(window["wordsN"] >= 20, "prompt-free decode did not hear the sentence")
+        except TestFailure as error:
+            raise TestFailure(
+                f"{error}; observed verification={json.dumps(observed, sort_keys=True, ensure_ascii=True)}"
+            ) from error
+        helper.shutdown()
+    finally:
+        helper.terminate()
+
+
+def test_vocabulary_prompt_malformed_payloads(executable: Path, model: Path, audio: Path, _: bytes) -> None:
+    helper = Helper(executable, model, VERSION_2)
+    try:
+        generation = 210
+        stream_base = helper.stream_configuration()
+        transcribe_base = one_shot_configuration(audio)
+        malformed_stream = (
+            ("bit 2 set without a vocabulary string", with_vocabulary_flag(stream_base)),
+            ("bit 2 clear with a trailing vocabulary string", stream_base + string("Kubernetes.")),
+            ("bit 2 set with an empty vocabulary string", with_vocabulary_flag(stream_base) + string("")),
+        )
+        for offset, (_label, payload) in enumerate(malformed_stream):
+            stream_id = uuid.uuid4().bytes
+            helper.send(Frame(STREAM_START, stream_id, generation + offset, payload))
+            require_error(helper.expect(ERROR, stream_id, generation + offset), 1, STREAM_START)
+
+        malformed_transcribe = (
+            ("bit 2 set without a vocabulary string", with_vocabulary_flag(transcribe_base)),
+            ("bit 2 clear with a trailing vocabulary string", transcribe_base + string("Kubernetes.")),
+            ("bit 2 set with an empty vocabulary string", with_vocabulary_flag(transcribe_base) + string("")),
+        )
+        for offset, (_label, payload) in enumerate(malformed_transcribe):
+            request_id = uuid.uuid4().bytes
+            helper.send(Frame(TRANSCRIBE, request_id, generation + 10 + offset, payload))
+            require_error(helper.expect(ERROR, request_id, generation + 10 + offset), 1, TRANSCRIBE)
+        helper.shutdown()
+    finally:
+        helper.terminate()
+
+
 def declared_configuration() -> dict[str, object]:
     return {
         "audio": {
@@ -1247,6 +1501,8 @@ def source_fixture_manifest(
     entries = [
         {"role": "harnessSource", "path": manifest_path(Path(__file__), repository), "sha256": sha256(Path(__file__))},
         {"role": "helperSource", "path": manifest_path(helper_source, repository), "sha256": sha256(helper_source)},
+        {"role": "promptScoringHeader", "path": manifest_path(helper_source.parent / "steno_prompt_scoring.h", repository), "sha256": sha256(helper_source.parent / "steno_prompt_scoring.h")},
+        {"role": "promptVerificationHeader", "path": manifest_path(helper_source.parent / "steno_prompt_verification.h", repository), "sha256": sha256(helper_source.parent / "steno_prompt_verification.h")},
         {"role": "helperBinary", "path": manifest_path(helper_binary, repository), "sha256": sha256(helper_binary)},
         {"role": "audioFixture", "path": manifest_path(audio, repository), "sha256": sha256(audio)},
         {"role": "whisperModel", "path": manifest_path(model, repository, absolute=True), "sha256": sha256(model)},
@@ -1311,7 +1567,7 @@ def validate_receipt(receipt: dict[str, object], fixture: AudioFixture) -> None:
     require(manifest.get("sha256") == canonical_json_sha256(manifest["entries"]), "source/fixture manifest SHA mismatch")
     roles = [entry.get("role") for entry in manifest["entries"] if isinstance(entry, dict)]
     require(roles == sorted(roles), "source/fixture manifest was not role-sorted")
-    expected_roles = {"harnessSource", "helperSource", "helperBinary", "audioFixture", "whisperModel", "vadModel"}
+    expected_roles = {"harnessSource", "helperSource", "helperBinary", "promptScoringHeader", "promptVerificationHeader", "audioFixture", "whisperModel", "vadModel"}
     require(set(roles) == expected_roles and len(roles) == len(expected_roles), "source/fixture manifest roles were incomplete")
     for entry in manifest["entries"]:
         require(isinstance(entry, dict), "source/fixture manifest entry was malformed")
@@ -1383,7 +1639,7 @@ def validate_receipt(receipt: dict[str, object], fixture: AudioFixture) -> None:
 
     execution = receipt["execution"]
     require(isinstance(execution, dict), "receipt execution evidence was malformed")
-    expected_matrix_counts = {"full-adversarial": 22, "reduced-adversarial": 12, "metal-smoke-only": 1}
+    expected_matrix_counts = {"full-adversarial": 26, "reduced-adversarial": 16, "metal-smoke-only": 1}
     require(execution.get("matrix") in expected_matrix_counts, "receipt matrix kind was invalid")
     require(cases.get("expected") == expected_matrix_counts[execution["matrix"]], "receipt matrix row count mismatch")
     if execution.get("requestedDeviceMode") == "cpu-device-suppressed":
@@ -1440,6 +1696,10 @@ def main() -> int:
         ("v2 crash after exactly one final", "lifecycleCrashEOF", test_crash_after_final),
         ("CPU attestation cannot qualify as Metal", "receiptIntegrity", test_cpu_attestation_cannot_qualify_as_metal),
         ("global oversized frame rejection", "parserBounds", test_global_oversized_header),
+        ("v2 stream vocabulary-prompt configuration is accepted", "protocolValidation", test_v2_stream_vocabulary_prompt_accepted),
+        ("v1 one-shot vocabulary-prompt field is accepted", "compatibility", test_v1_one_shot_vocabulary_prompt_accepted),
+        ("v2 prompted JFK window emits accepted verification", "protocolValidation", test_prompted_jfk_accepted_verification),
+        ("vocabulary-prompt flag and string mismatches are rejected", "protocolValidation", test_vocabulary_prompt_malformed_payloads),
     ]
     if arguments.metal_smoke_only:
         tests = [

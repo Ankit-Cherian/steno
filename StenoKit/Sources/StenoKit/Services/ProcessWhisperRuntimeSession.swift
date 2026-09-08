@@ -3,7 +3,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-private enum WhisperRuntimeProtocol {
+enum WhisperRuntimeProtocol {
     static let magic: UInt32 = 0x5354_5752
     static let version: UInt16 = 1
     static let maximumPayloadBytes = 64 * 1024 * 1024
@@ -78,15 +78,23 @@ private enum WhisperRuntimeProtocol {
         payload.appendBigEndian(UInt32(request.threadCount))
         payload.appendBigEndian(UInt32(request.beamSize))
         payload.appendBigEndian(UInt32(request.bestOf))
+        let vocabularyPrompt = whisperVocabularyPrompt(
+            prompt: request.prompt,
+            vocabularyPrompt: request.vocabularyPrompt
+        )
         var flags: UInt32 = 0
         if request.suppressNonSpeechTokens { flags |= 1 << 0 }
         if request.vadModelPath != nil { flags |= 1 << 1 }
+        if vocabularyPrompt != nil { flags |= 1 << 2 }
         payload.appendBigEndian(flags)
         try payload.appendBoundedString(request.audioURL.path)
         try payload.appendBoundedString(request.language)
         try payload.appendOptionalBoundedString(request.prompt)
         try payload.appendOptionalBoundedString(request.suppressRegex)
         try payload.appendOptionalBoundedString(request.vadModelPath?.path)
+        if let vocabularyPrompt {
+            try payload.appendBoundedString(vocabularyPrompt)
+        }
         return payload
     }
 }
@@ -497,6 +505,15 @@ private final class WhisperHelperProcessState: @unchecked Sendable {
     }
 }
 
+/// The vocabulary prompt only travels alongside a non-empty initial prompt,
+/// because the helper verifies prompt-conditioned output and has nothing to
+/// verify otherwise.
+func whisperVocabularyPrompt(prompt: String?, vocabularyPrompt: String?) -> String? {
+    guard let prompt, !prompt.isEmpty,
+          let vocabularyPrompt, !vocabularyPrompt.isEmpty else { return nil }
+    return vocabularyPrompt
+}
+
 // MARK: - Streaming runtime protocol (v2)
 
 /// Immutable recognition settings attached to a streaming capture.
@@ -506,6 +523,7 @@ private final class WhisperHelperProcessState: @unchecked Sendable {
 struct WhisperStreamConfiguration: Sendable, Equatable {
     var language: String
     var prompt: String?
+    var vocabularyPrompt: String?
     var threadCount: Int
     var suppressNonSpeechTokens: Bool
     var suppressRegex: String?
@@ -516,6 +534,7 @@ struct WhisperStreamConfiguration: Sendable, Equatable {
     init(
         language: String,
         prompt: String?,
+        vocabularyPrompt: String? = nil,
         threadCount: Int,
         suppressNonSpeechTokens: Bool,
         suppressRegex: String?,
@@ -525,6 +544,7 @@ struct WhisperStreamConfiguration: Sendable, Equatable {
     ) {
         self.language = language
         self.prompt = prompt
+        self.vocabularyPrompt = vocabularyPrompt
         self.threadCount = max(1, threadCount)
         self.suppressNonSpeechTokens = suppressNonSpeechTokens
         self.suppressRegex = suppressRegex
@@ -629,7 +649,7 @@ struct ProcessWhisperStreamingRuntimeSessionFactory: WhisperRuntimeSessionFactor
     }
 }
 
-private enum WhisperStreamingRuntimeProtocol {
+enum WhisperStreamingRuntimeProtocol {
     static let magic: UInt32 = 0x5354_5752
     static let version: UInt16 = 2
     static let headerByteCount = 36
@@ -769,15 +789,23 @@ private enum WhisperStreamingRuntimeProtocol {
         payload.appendBigEndian(UInt32(configuration.threadCount))
         payload.appendBigEndian(UInt32(configuration.beamSize))
         payload.appendBigEndian(UInt32(configuration.bestOf))
+        let vocabularyPrompt = whisperVocabularyPrompt(
+            prompt: configuration.prompt,
+            vocabularyPrompt: configuration.vocabularyPrompt
+        )
         var flags: UInt32 = 0
         if configuration.suppressNonSpeechTokens { flags |= 1 << 0 }
         if configuration.vadModelPath != nil { flags |= 1 << 1 }
+        if vocabularyPrompt != nil { flags |= 1 << 2 }
         payload.appendBigEndian(flags)
         try payload.appendBoundedString(configuration.language)
         try payload.appendOptionalBoundedString(configuration.prompt)
         try payload.appendOptionalBoundedString(configuration.suppressRegex)
         try payload.appendOptionalBoundedString(configuration.vadModelPath?.path)
         try payload.appendBoundedString(identity.vadIdentifier ?? "")
+        if let vocabularyPrompt {
+            try payload.appendBoundedString(vocabularyPrompt)
+        }
         return payload
     }
 

@@ -500,6 +500,7 @@ func evidenceReceiptsFailClosed() throws {
         now: fixture.now
     )
     #expect(LiveContextBenchmarkRunner.adversarialReceiptSchemaDecodes(at: fixture.adversarialURL.path))
+    #expect(LiveContextBenchmarkRunner.adversarialReceiptQualificationFailures(at: fixture.adversarialURL.path).isEmpty)
 
     var hostedWithLegacyOverlayTiming = fixture.hosted
     hostedWithLegacyOverlayTiming.overlayMainActorDefinition =
@@ -733,9 +734,11 @@ func evidenceReceiptsFailClosed() throws {
         )
     }
 
-    adversarial = fixture.adversarial
-    adversarial["schemaVersion"] = 1
-    try expectAdversarialReceiptRejected(adversarial, fixture: fixture)
+    for historicalSchema in [1, 2] {
+        adversarial = fixture.adversarial
+        adversarial["schemaVersion"] = historicalSchema
+        try expectAdversarialReceiptRejected(adversarial, fixture: fixture)
+    }
 
     adversarial = fixture.adversarial
     var runtimeIdentity = adversarial["identity"] as! [String: Any]
@@ -998,7 +1001,7 @@ func productionCoreAudioOracleIgnoresFrameBoundaries() {
     ))
 }
 
-@Test("Current schema-v2 CPU diagnostic receipt strict-decodes but cannot qualify as Metal")
+@Test("Current schema-v3 CPU diagnostic receipt strict-decodes but cannot qualify as Metal")
 func generatedCPUReceiptIsSchemaValidButNonqualifying() throws {
     let fixture = try makeReceiptFixture()
     defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -1032,6 +1035,44 @@ func generatedCPUReceiptIsSchemaValidButNonqualifying() throws {
             identity: fixture.identity,
             now: fixture.now
         )
+    }
+}
+
+@Test("Receipt validation requires both prompt headers even with a recomputed manifest digest")
+func runnerRejectsMissingOrTamperedPromptHeaderIdentity() throws {
+    let fixture = try makeReceiptFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    try LiveContextBenchmarkRunner.validateEvidenceReceipts(
+        configuration: fixture.configuration,
+        identity: fixture.identity,
+        now: fixture.now
+    )
+
+    for role in ["promptScoringHeader", "promptVerificationHeader"] {
+        for omitHeader in [true, false] {
+            var receipt = fixture.adversarial
+            var manifest = try #require(receipt["sourceFixtureManifest"] as? [String: Any])
+            var entries = try #require(manifest["entries"] as? [[String: Any]])
+            let index = try #require(entries.firstIndex { $0["role"] as? String == role })
+            if omitHeader {
+                entries.remove(at: index)
+            } else {
+                entries[index]["sha256"] = String(repeating: "0", count: 64)
+            }
+            // Keep the receipt internally consistent so validation must check
+            // required source files, not merely reject an outdated checksum.
+            let digest = testSHA256(try JSONSerialization.data(
+                withJSONObject: entries,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            ))
+            manifest["entries"] = entries
+            manifest["sha256"] = digest
+            receipt["sourceFixtureManifest"] = manifest
+            var hashes = try #require(receipt["hashes"] as? [String: Any])
+            hashes["sourceFixtureManifestSHA256"] = digest
+            receipt["hashes"] = hashes
+            try expectAdversarialReceiptRejected(receipt, fixture: fixture)
+        }
     }
 }
 
@@ -1159,12 +1200,18 @@ private func makeReceiptFixture() throws -> ReceiptFixture {
         staticAudit: .init(boundHostedSourceManifestSHA256: hostedSourceHash, auditedFileCount: LiveContextReceiptManifest.hostedProductionRelativePaths.count, featureLogInvocationSourceAuditPerformed: true, featureLogInvocationSourceFindings: 0, crashMetadataSinkReferenceSourceAuditPerformed: true, crashMetadataSinkReferenceSourceFindings: 0, ephemeralPersistenceSourceAuditPerformed: true, ephemeralPersistenceSourceFindings: 0, ephemeralFilenameDiagnosticSourceAuditPerformed: true, ephemeralFilenameDiagnosticSourceFindings: 0, prohibitedNetworkAPISourceAuditPerformed: true, prohibitedNetworkAPISourceFindings: 0)
     )
     let helperSourceURL = repositoryRoot.appendingPathComponent("runtime-helper/steno_whisper_runtime.cpp")
+    let promptScoringHeaderURL = repositoryRoot.appendingPathComponent("runtime-helper/steno_prompt_scoring.h")
+    let promptVerificationHeaderURL = repositoryRoot.appendingPathComponent("runtime-helper/steno_prompt_verification.h")
     let harnessURL = repositoryRoot.appendingPathComponent("scripts/test-whisper-runtime-helper-v2.py")
     let caseRows: [(String, String)] = [
         ("compatibility", "v1 backward compatibility"),
+        ("compatibility", "v1 one-shot vocabulary-prompt field is accepted"),
         ("protocolValidation", "v2 validation, cross-session, duplicate, and terminal rejection"),
         ("protocolValidation", "v2 out-of-order, malformed, and per-append size bounds"),
         ("protocolValidation", "v2 shutdown rejects malformed fields and permits active teardown"),
+        ("protocolValidation", "v2 stream vocabulary-prompt configuration is accepted"),
+        ("protocolValidation", "v2 prompted JFK window emits accepted verification"),
+        ("protocolValidation", "vocabulary-prompt flag and string mismatches are rejected"),
         ("terminalPriority", "v2 finish priority and exactly one final"),
         ("terminalPriority", "v2 cancellation priority"),
         ("terminalPriority", "v2 cancel during finish preserves restart"),
@@ -1197,6 +1244,8 @@ private func makeReceiptFixture() throws -> ReceiptFixture {
         ["role": "harnessSource", "path": manifestPath(harnessURL), "sha256": testSHA256(try Data(contentsOf: harnessURL))],
         ["role": "helperBinary", "path": manifestPath(helperURL), "sha256": helperHash],
         ["role": "helperSource", "path": manifestPath(helperSourceURL), "sha256": testSHA256(try Data(contentsOf: helperSourceURL))],
+        ["role": "promptScoringHeader", "path": manifestPath(promptScoringHeaderURL), "sha256": testSHA256(try Data(contentsOf: promptScoringHeaderURL))],
+        ["role": "promptVerificationHeader", "path": manifestPath(promptVerificationHeaderURL), "sha256": testSHA256(try Data(contentsOf: promptVerificationHeaderURL))],
         ["role": "vadModel", "path": vadModelURL.standardizedFileURL.path, "sha256": vadModelHash],
         ["role": "whisperModel", "path": modelURL.standardizedFileURL.path, "sha256": modelHash],
     ]
@@ -1205,7 +1254,7 @@ private func makeReceiptFixture() throws -> ReceiptFixture {
         options: [.sortedKeys, .withoutEscapingSlashes]
     ))
     let adversarial: [String: Any] = [
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "generatedAt": formatter.string(from: now.addingTimeInterval(-1)),
         "git": ["sha": git, "dirty": false, "state": "clean"],
         "protocolVersions": [1, 2],

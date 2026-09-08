@@ -114,6 +114,7 @@ struct WhisperRuntimeRequest: Sendable {
     var audioURL: URL
     var language: String
     var prompt: String?
+    var vocabularyPrompt: String? = nil
     var threadCount: Int
     var suppressNonSpeechTokens: Bool
     var suppressRegex: String?
@@ -721,6 +722,9 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
                 audioURL: pendingRequest.audioURL,
                 language: normalizedLanguage(from: pendingRequest.request.languageHints.first),
                 prompt: WhisperRuntimeConfiguration.buildPrompt(for: pendingRequest.request),
+                vocabularyPrompt: WhisperRuntimeConfiguration.buildVocabularyPrompt(
+                    for: pendingRequest.request
+                ),
                 threadCount: configuration.threadCount,
                 suppressNonSpeechTokens: configuration.suppressNonSpeechTokens,
                 suppressRegex: configuration.suppressRegex,
@@ -971,6 +975,7 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
         WhisperStreamConfiguration(
             language: normalizedLanguage(from: request.languageHints.first),
             prompt: WhisperRuntimeConfiguration.buildPrompt(for: request),
+            vocabularyPrompt: WhisperRuntimeConfiguration.buildVocabularyPrompt(for: request),
             threadCount: configuration.threadCount,
             suppressNonSpeechTokens: configuration.suppressNonSpeechTokens,
             suppressRegex: configuration.suppressRegex,

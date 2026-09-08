@@ -256,3 +256,20 @@ func processEnvironmentAddsLocalWhisperLibraryPaths() {
     #expect(env["DYLD_FALLBACK_LIBRARY_PATH"]?.contains("/tmp/whisper.cpp/models") == true)
     #expect(env["DYLD_FALLBACK_LIBRARY_PATH"]?.contains("/fallback/present") == true)
 }
+
+@Test("buildVocabularyPrompt is the hot terms without field labels")
+func buildVocabularyPromptOmitsFieldLabels() {
+    let request = TranscriptionRequest(
+        languageHints: ["en-US"],
+        hotTerms: ["StenoKit", "Steno", "Turso", "Ankit"]
+    )
+    #expect(
+        WhisperRuntimeConfiguration.buildPrompt(for: request)
+            == "Language: en. Terms: StenoKit, Steno, Turso, Ankit."
+    )
+    #expect(
+        WhisperRuntimeConfiguration.buildVocabularyPrompt(for: request)
+            == "StenoKit, Steno, Turso, Ankit."
+    )
+    #expect(WhisperRuntimeConfiguration.buildVocabularyPrompt(for: TranscriptionRequest()) == nil)
+}

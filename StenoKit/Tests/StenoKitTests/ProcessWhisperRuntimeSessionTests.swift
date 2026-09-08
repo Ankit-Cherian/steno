@@ -1184,6 +1184,130 @@ func streamingRuntimeSupportsOneShotFinalTranscription() async throws {
     #expect(String(data: response, encoding: .utf8) == #"{"text":"one-shot"}"#)
     await session.shutdown()
 }
+
+@Test("Transcription payload appends the vocabulary prompt behind flag bit 2 byte for byte")
+func transcriptionPayloadEncodesVocabularyPromptOnFlagBit2() throws {
+    let audioURL = URL(fileURLWithPath: "/tmp/capture.wav")
+    let prompt = "Language: en. Terms: StenoKit, Steno, Turso, Ankit."
+    let vocabulary = "StenoKit, Steno, Turso, Ankit."
+    func request(prompt: String?, vocabularyPrompt: String?) -> WhisperRuntimeRequest {
+        WhisperRuntimeRequest(
+            id: UUID(),
+            generation: 0,
+            audioURL: audioURL,
+            language: "en",
+            prompt: prompt,
+            vocabularyPrompt: vocabularyPrompt,
+            threadCount: 6,
+            suppressNonSpeechTokens: true,
+            suppressRegex: nil,
+            vadModelPath: nil,
+            beamSize: 5,
+            bestOf: 5
+        )
+    }
+    // Independently assembled frame body: u32 threads, beam, best-of, flags,
+    // then bounded strings (0xFFFFFFFF marks an absent optional string).
+    func expected(flags: UInt32, prompt: String?, trailing: String?) -> Data {
+        var data = Data()
+        for value in [UInt32(6), 5, 5, flags] { data.appendPayloadBigEndian(value) }
+        for field in [audioURL.path, "en"] as [String] {
+            data.appendPayloadBigEndian(UInt32(field.utf8.count)); data.append(contentsOf: Array(field.utf8))
+        }
+        for optional in [prompt, nil, nil] as [String?] {
+            if let optional {
+                data.appendPayloadBigEndian(UInt32(optional.utf8.count)); data.append(contentsOf: Array(optional.utf8))
+            } else {
+                data.appendPayloadBigEndian(UInt32(0xFFFF_FFFF))
+            }
+        }
+        if let trailing {
+            data.appendPayloadBigEndian(UInt32(trailing.utf8.count)); data.append(contentsOf: Array(trailing.utf8))
+        }
+        return data
+    }
+
+    #expect(
+        try WhisperRuntimeProtocol.transcriptionPayload(for: request(prompt: prompt, vocabularyPrompt: nil))
+            == expected(flags: 1, prompt: prompt, trailing: nil)
+    )
+    #expect(
+        try WhisperRuntimeProtocol.transcriptionPayload(for: request(prompt: prompt, vocabularyPrompt: vocabulary))
+            == expected(flags: 5, prompt: prompt, trailing: vocabulary)
+    )
+    // A vocabulary prompt without a recognition prompt has nothing to verify,
+    // so the frame is exactly the legacy frame.
+    #expect(
+        try WhisperRuntimeProtocol.transcriptionPayload(for: request(prompt: nil, vocabularyPrompt: vocabulary))
+            == expected(flags: 1, prompt: nil, trailing: nil)
+    )
+    #expect(whisperVocabularyPrompt(prompt: nil, vocabularyPrompt: "Steno.") == nil)
+    #expect(whisperVocabularyPrompt(prompt: "Language: en.", vocabularyPrompt: "") == nil)
+    #expect(whisperVocabularyPrompt(prompt: "Language: en.", vocabularyPrompt: vocabulary) == vocabulary)
+}
+
+@Test("Stream configuration payload appends the vocabulary prompt after the VAD identity byte for byte")
+func streamConfigurationPayloadEncodesVocabularyPromptOnFlagBit2() throws {
+    let prompt = "Language: en. Terms: StenoKit, Steno, Turso, Ankit."
+    let vocabulary = "StenoKit, Steno, Turso, Ankit."
+    let identity = LiveTranscriptionRuntimeIdentity(
+        protocolVersion: 2,
+        runtimeIdentifier: "runtime",
+        modelIdentifier: "model",
+        vadIdentifier: nil,
+        currentASRContextCount: 1,
+        peakASRContextCount: 1
+    )
+    func configuration(vocabularyPrompt: String?) -> WhisperStreamConfiguration {
+        WhisperStreamConfiguration(
+            language: "en",
+            prompt: prompt,
+            vocabularyPrompt: vocabularyPrompt,
+            threadCount: 6,
+            suppressNonSpeechTokens: true,
+            suppressRegex: nil,
+            vadModelPath: nil,
+            beamSize: 5,
+            bestOf: 5
+        )
+    }
+    func expected(flags: UInt32, trailing: String?) -> Data {
+        var data = Data()
+        for value in [UInt32(6), 5, 5, flags] { data.appendPayloadBigEndian(value) }
+        data.appendPayloadBigEndian(UInt32(2)); data.append(contentsOf: Array("en".utf8))
+        data.appendPayloadBigEndian(UInt32(prompt.utf8.count)); data.append(contentsOf: Array(prompt.utf8))
+        data.appendPayloadBigEndian(UInt32(0xFFFF_FFFF)) // suppress regex
+        data.appendPayloadBigEndian(UInt32(0xFFFF_FFFF)) // VAD model path
+        data.appendPayloadBigEndian(UInt32(0)) // empty VAD identity
+        if let trailing {
+            data.appendPayloadBigEndian(UInt32(trailing.utf8.count)); data.append(contentsOf: Array(trailing.utf8))
+        }
+        return data
+    }
+
+    #expect(
+        try WhisperStreamingRuntimeProtocol.streamConfigurationPayload(
+            configuration(vocabularyPrompt: nil), identity: identity
+        ) == expected(flags: 1, trailing: nil)
+    )
+    #expect(
+        try WhisperStreamingRuntimeProtocol.streamConfigurationPayload(
+            configuration(vocabularyPrompt: vocabulary), identity: identity
+        ) == expected(flags: 5, trailing: vocabulary)
+    )
+}
+}
+
+private extension Data {
+    /// Test-side big-endian writer so payload fixtures are assembled independently of the protocol encoder.
+    mutating func appendPayloadBigEndian(_ value: UInt32) {
+        append(contentsOf: [
+            UInt8(truncatingIfNeeded: value >> 24),
+            UInt8(truncatingIfNeeded: value >> 16),
+            UInt8(truncatingIfNeeded: value >> 8),
+            UInt8(truncatingIfNeeded: value),
+        ])
+    }
 }
 
 private struct StreamingRuntimeFixture {
