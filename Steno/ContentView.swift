@@ -81,10 +81,9 @@ struct ContentView: View {
             Image("StenoMark")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 48, height: 48)
-                .padding(.horizontal, 12)
-                .padding(.top, 22)
-                .padding(.bottom, 22)
+                .frame(width: 56, height: 56)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 18)
                 .accessibilityHidden(true)
             ForEach(StenoTab.allCases, id: \.self) { tab in
                 Button { selectedTab = tab } label: {

@@ -38,10 +38,11 @@ struct RecordTab: View {
     }
 
     private func captureHeader(theme: StenoTheme) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .center, spacing: 12) {
             Text(captureTitle)
                 .font(StenoDesign.display(size: min(displayPointSize, 56)))
                 .tracking(-0.8)
+                .multilineTextAlignment(.center)
                 .lineSpacing(1)
                 .lineLimit(3)
                 .minimumScaleFactor(0.8)
@@ -49,6 +50,7 @@ struct RecordTab: View {
                 .accessibilityAddTraits(.isHeader)
             if isProcessing || controller.isRecording || needsMicrophone {
                 Text(captureExplanation)
+                    .multilineTextAlignment(.center)
                     .font(.system(size: 13))
                     .lineSpacing(4)
                     .foregroundStyle(theme.textDim)
@@ -62,7 +64,7 @@ struct RecordTab: View {
     }
 
     private func recordingControls(theme: StenoTheme) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .center, spacing: 12) {
             Button {
                 if needsMicrophone && !controller.isRecording && !isProcessing {
                     onOpenSettings(.permissions)
@@ -72,17 +74,18 @@ struct RecordTab: View {
                     controller.toggleHandsFree()
                 }
             } label: {
-                VStack(spacing: 12) {
+                HStack(spacing: 12) {
                     captureGlyph
                     Text(captureActionText)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                     if controller.isRecording { controlDetail }
                 }
-                .padding(18)
-                .frame(width: 156, height: 156)
-                .contentShape(RoundedRectangle(cornerRadius: controller.isRecording ? 46 : 78))
+                .padding(.horizontal, 26)
+                .padding(.vertical, 16)
+                .frame(minWidth: 200, minHeight: 56)
+                .contentShape(Capsule())
 
             }
             .buttonStyle(StenoCaptureButtonStyle(theme: theme, isRecording: controller.isRecording))
@@ -106,8 +109,8 @@ struct RecordTab: View {
             ProgressView().controlSize(.small).accessibilityHidden(true)
         } else {
             Image(systemName: controller.isRecording ? "stop.fill" : needsMicrophone ? "mic.slash" : "mic")
-                .font(.system(size: 31, weight: .medium))
-                .frame(width: 34, height: 34)
+                .font(.system(size: 21, weight: .medium))
+                .frame(width: 24, height: 24)
                 .accessibilityHidden(true)
         }
     }
@@ -126,7 +129,7 @@ struct RecordTab: View {
     }
 
     private func shortcutSection(theme: StenoTheme) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .center, spacing: 12) {
             shortcutGuide(theme: theme)
             if !controller.isRecording && !isProcessing && controller.status != "Idle" && controller.status != "Ready" && !controller.status.isEmpty {
                 Label(controller.status, systemImage: "info.circle")
@@ -154,22 +157,19 @@ struct RecordTab: View {
     }
 
     private func shortcutGuide(theme: StenoTheme) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Shortcuts").font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Button("Recording settings") { onOpenSettings(.recording) }
-                    .buttonStyle(.link)
-                    .font(.system(size: 12))
-            }
+        VStack(alignment: .center, spacing: 12) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 24) { shortcutRows(theme: theme) }
-                VStack(alignment: .leading, spacing: 10) { shortcutRows(theme: theme) }
+                VStack(alignment: .center, spacing: 10) { shortcutRows(theme: theme) }
             }
             if !controller.preferences.hotkeys.optionPressToTalkEnabled && controller.preferences.hotkeys.handsFreeGlobalKeyCode == nil {
                 Text("Global shortcuts are off. Set one in Recording settings to dictate without opening Steno.")
                     .font(.system(size: 13)).foregroundStyle(theme.textDim)
+                    .multilineTextAlignment(.center)
             }
+            Button("Recording settings") { onOpenSettings(.recording) }
+                .buttonStyle(.link)
+                .font(.system(size: 12))
         }
     }
 
@@ -412,16 +412,12 @@ private struct StenoCaptureButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
-    private var cornerRadius: CGFloat {
-        isRecording ? 46 : 78
-    }
-
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(isEnabled ? theme.accentInk : theme.textDim)
             .background(isEnabled ? theme.accent : theme.ink3)
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius)
+            .clipShape(Capsule())
+            .overlay(Capsule()
                 .strokeBorder(theme.text.opacity(isHovered && isEnabled ? 0.16 : 0), lineWidth: 1))
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.985 : 1)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: configuration.isPressed)

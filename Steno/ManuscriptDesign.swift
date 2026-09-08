@@ -9,32 +9,18 @@ struct ManuscriptDictationLayout<Header: View, Controls: View, Shortcuts: View, 
     let theme: StenoTheme
     let availableSize: CGSize
 
-    private var hasRoomForSeal: Bool { availableSize.width >= 560 }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            if hasRoomForSeal {
-                HStack(alignment: .center, spacing: 24) {
-                    header
-                        .layoutPriority(1)
-                    controls
-                        .frame(width: 180, alignment: .center)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                VStack(alignment: .leading, spacing: 24) {
-                    header
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    controls
-                        .frame(width: 180, alignment: .leading)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 14) {
-                ManuscriptRule(theme: theme, accentLength: 44)
+        VStack(alignment: .leading, spacing: 24) {
+            VStack(spacing: 22) {
+                header
+                    .frame(maxWidth: .infinity, alignment: .center)
+                controls
                 shortcuts
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
+            .padding(.vertical, 20)
+
+            ManuscriptRule(theme: theme, accentLength: 44)
 
             transcript
                 .padding(20)
