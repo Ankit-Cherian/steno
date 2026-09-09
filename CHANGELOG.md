@@ -7,7 +7,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-_Target version: 1.0.0. Local testing and further refinement are in progress. Release acceptance and distribution approval are pending._
+_Target version: 1.0.0. The repeated-Terms fix is complete and accepted in maintainer testing. Release acceptance and distribution approval remain pending._
 
 ### Added
 - Added a ribbon S app icon and transparent in-app mark, centered in the sidebar and used throughout onboarding.
@@ -32,7 +32,7 @@ _Target version: 1.0.0. Local testing and further refinement are in progress. Re
 - Direct-distribution builds package the retained-runtime helper and validate its local `whisper.cpp` dependency set alongside the app.
 
 ### Fixed
-- Added acoustic verification to the retained Whisper helper for suspected prompt-derived text. It checks token support against silent audio and corroborates repeated prompt words with a prompt-free decode, replacing or dropping unsupported windows while preserving genuinely spoken terms in the tested controls.
+- Fixed unwanted repeated text such as "Terms, Terms, Terms" appearing without corresponding speech. The retained Whisper helper checks acoustic support and corroborates suspected repetitions with a prompt-free decode while preserving deliberately dictated words.
 - Reject incomplete or malformed capture WAVs before recognition so unfinished audio cannot produce an insertion or history entry.
 - Treat failed voice-activity detection as a transcription failure instead of accepting an invalid speech mask.
 - Skip provisional recognition when voice activity detection confirms that newly appended audio is silent; final transcription remains unchanged.
@@ -54,8 +54,8 @@ _Target version: 1.0.0. Local testing and further refinement are in progress. Re
 - The 1.0 candidate targets Apple silicon Macs running macOS 13 or later. Minimum-version runtime and distribution acceptance remain pending; Intel Macs are not supported.
 
 ### Known issues
-- Voice-activity detection can omit quiet opening words after a long silent lead-in. The issue remains under investigation and must pass sentence-preservation acceptance before release.
-- The prompt-verification correction has passed controlled evaluation and initial personal testing; extended microphone acceptance remains in progress. The legacy CLI fallback does not include this helper-specific correction.
+- Voice-activity detection can omit words in quiet speech after a long silent lead-in. A separate experimental correction is deferred and is not included in this candidate; the retained limitation remains documented for the release decision.
+- The legacy CLI fallback does not include the retained helper's prompt-verification correction. A separate small.en control can mistake deliberately spoken "Terms" for "Churns"; that recognition limitation is deferred from this bug closeout.
 
 ## [0.2.0] - 2026-04-21
 

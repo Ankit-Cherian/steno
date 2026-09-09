@@ -27,6 +27,7 @@ Open the DMG, drag Steno to Applications, then launch Steno from Applications. S
 - Insights stores per-session usage metadata such as counts, duration quality, application identifier, cleanup counts, and insertion outcome. It does not copy transcript text or audio into the analytics ledger.
 - Usage analytics persist separately from transcript history. Deleting a transcript does not delete the corresponding aggregate usage totals.
 - A private retained runtime keeps the selected Whisper model loaded between compatible dictations. If that helper fails, Steno invalidates it and uses the existing `whisper-cli` path for the request.
+- Acoustic verification addresses unwanted repeated text such as "Terms, Terms, Terms" while preserving deliberately spoken words.
 - Media interruption is application-targeted and fail-closed: Steno only resumes the exact application and process lineage it verified that it paused. Ambiguous playback ownership does not authorize Play.
 - Cleanup remains conservative by default. Ambiguous language is preserved; phrases such as `like`, `you know`, `question mark`, `open paren`, and `slash command` are not automatically inferred away or converted to symbols. Narrow filler removal is available only through the explicit aggressive policy.
 
@@ -47,7 +48,7 @@ Open the DMG, drag Steno to Applications, then launch Steno from Applications. S
 
 The May 15 evaluation is historical evidence for the 0.2.1 candidate on one M5 Pro / 64GB / Large V3 Turbo row. It does not validate the current unreleased 1.0 tree or other hardware/model combinations.
 
-The candidate has passed automated package and hosted macOS tests, app builds, and synthetic production-view checks. These are scoped development results. Personal testing continues, and final-source release evaluation, a complete live microphone/media/insertion acceptance pass, VoiceOver, sleep/wake, macOS 13, and distribution checks remain release gates. See [the 1.0 checklist](docs/release/1.0-checklist.md) for the acceptance record; a local ad-hoc signature is not Developer ID distribution signing.
+The unwanted repeated-Terms bug is closed after maintainer testing of the installed correction. Automated package and hosted macOS tests, app builds, and synthetic production-view checks have also passed on the recorded development source. Final-source release evaluation, a complete live microphone/media/insertion acceptance pass, VoiceOver, sleep/wake, macOS 13, and distribution checks remain release gates. See [the 1.0 checklist](docs/release/1.0-checklist.md) for the acceptance record and separately deferred accuracy limitations; a local ad-hoc signature is not Developer ID distribution signing.
 
 ## Screenshots
 
