@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    uses: ./.github/workflows/validate.yml

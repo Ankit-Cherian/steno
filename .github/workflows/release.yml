@@ -1,0 +1,223 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable version matching project.yml and an existing vX.Y.Z tag'
+        required: true
+        type: string
+      source_sha:
+        description: 'Exact 40-character SHA at main HEAD, already manually accepted'
+        required: true
+        type: string
+      manual_acceptance:
+        description: 'I completed the release checklist for this exact source (microphone, insertion, permissions, media, UI, and native Metal inference)'
+        required: true
+        default: false
+        type: boolean
+
+      publish_release:
+        description: 'After draft review, request protected approval to publish this exact release as latest'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# Draft-only runs can be promoted later through the separate Publish release workflow.
+# Never cancel a signing/notarization submission or a partially created draft.
+concurrency:
+  group: steno-release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SHA: ${{ inputs.source_sha }}
+      MANUAL_ACCEPTANCE: ${{ inputs.manual_acceptance }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind the release to accepted main source and its existing tag
+        run: python3 scripts/ci/release-guard.py source --remote
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  validate:
+    needs: preflight
+    uses: ./.github/workflows/validate.yml
+    permissions:
+      contents: read
+
+  security:
+    needs: preflight
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+
+  sign:
+    needs: [preflight, validate, security]
+    runs-on: macos-15
+    timeout-minutes: 120
+    # Configure required reviewers and allow main only; see the setup guide for
+    # the sole-maintainer self-review setting.
+    # Store Apple credentials ONLY as secrets in this environment.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      GGML_METAL_DEVICES: '0'
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SHA: ${{ inputs.source_sha }}
+      MANUAL_ACCEPTANCE: ${{ inputs.manual_acceptance }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recheck source after approval
+        run: python3 scripts/ci/release-guard.py source --remote
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Verify release environment setup
+        env:
+          RELEASE_ENABLED: ${{ vars.RELEASE_ENABLED }}
+        run: |
+          test "$RELEASE_ENABLED" = 'true' || { echo 'Release environment is not configured and enabled.' >&2; exit 1; }
+          test "$(uname -m)" = arm64
+      - name: Prepare pinned build tools
+        run: |
+          bash scripts/ci/tools.sh xcodegen
+          echo "$GITHUB_WORKSPACE/build/ci-tools/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Prepare verified runtime source and models
+        run: bash scripts/ci/prepare-runtime.sh --root "$RUNNER_TEMP/steno-release-runtime"
+      - name: Sign, notarize once, staple, and verify the distribution
+        run: bash scripts/ci/release-sign.sh
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      - name: Preserve sanitized notarization recovery receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: notary-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/steno-release-distribution/release-notary-receipt.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Attest the final stapled DMG
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ runner.temp }}/steno-release-assets/*.dmg
+      - name: Preserve only verified public release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-release-${{ github.sha }}
+          path: ${{ runner.temp }}/steno-release-assets/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  draft:
+    needs: sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # A separate reviewer confirms distribution evidence before draft creation.
+    environment: release-draft
+    outputs:
+      release_id: ${{ steps.prepare.outputs.release_id }}
+    permissions:
+      contents: write
+      attestations: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SHA: ${{ inputs.source_sha }}
+      MANUAL_ACCEPTANCE: ${{ inputs.manual_acceptance }}
+      RELEASE_ASSETS: ${{ github.workspace }}/build/release-assets
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recheck immutable tag and main ancestry
+        run: python3 scripts/ci/release-guard.py source --remote
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signed-release-${{ github.sha }}
+          path: ${{ github.workspace }}/build/release-assets
+      - name: Verify attestation for the release workflow and exact source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify "$RELEASE_ASSETS/Steno-$RELEASE_VERSION.dmg" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main --source-digest "$RELEASE_SHA"
+      - name: Create one non-overwriting draft release
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DRAFT_ENABLED: ${{ vars.RELEASE_DRAFT_ENABLED }}
+        run: |
+          test "$RELEASE_DRAFT_ENABLED" = 'true' || { echo 'Draft publication environment is not enabled.' >&2; exit 1; }
+          python3 scripts/ci/release-publish.py
+
+  publish:
+    if: inputs.publish_release
+    needs: draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release-publish
+    permissions:
+      contents: write
+      attestations: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SHA: ${{ inputs.source_sha }}
+      MANUAL_ACCEPTANCE: ${{ inputs.manual_acceptance }}
+      RELEASE_ASSETS: ${{ github.workspace }}/build/release-assets
+      RELEASE_ID: ${{ needs.draft.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signed-release-${{ github.sha }}
+          path: ${{ github.workspace }}/build/release-assets
+      - name: Reverify attested source and publish the exact reviewed draft once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PUBLISH_ENABLED: ${{ vars.RELEASE_PUBLISH_ENABLED }}
+        run: |
+          test "$RELEASE_PUBLISH_ENABLED" = 'true' || { echo 'Publication environment is not enabled.' >&2; exit 1; }
+          gh attestation verify "$RELEASE_ASSETS/Steno-$RELEASE_VERSION.dmg" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main --source-digest "$RELEASE_SHA"
+          python3 scripts/ci/release-guard.py source --remote
+          python3 scripts/ci/release-publish.py --publish

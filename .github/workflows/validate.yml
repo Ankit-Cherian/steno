@@ -1,0 +1,156 @@
+name: Validate
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  policy:
+    name: Workflow and release contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate automation policy and regression tests
+        run: |
+          test -z "$(git ls-files 'Steno.xcodeproj/*')" || { echo 'Xcode project must remain generated and untracked.' >&2; exit 1; }
+          python3 scripts/ci/check-policy.py
+          python3 -m unittest discover -s scripts/ci/tests -p 'test_*.py' -v
+          for script in scripts/ci/*.sh scripts/release-dmg.sh; do bash -n "$script"; done
+          bash scripts/ci/tools.sh actionlint
+          build/ci-tools/actionlint/actionlint -shellcheck= -pyflakes=
+          git diff --check
+
+  macos:
+    name: Package and hosted tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      TEST_RUNNER_STENO_UI_RENDER_OUTPUT: ${{ github.workspace }}/build/ci/renders/app
+      TEST_RUNNER_STENO_OVERLAY_ACCENT_RENDER_OUTPUT: ${{ github.workspace }}/build/ci/renders/accents
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Verify toolchain and generate project
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          swift --version
+          bash scripts/ci/tools.sh xcodegen
+          build/ci-tools/xcodegen/xcodegen/bin/xcodegen generate
+      - name: Package tests with coverage
+        run: |
+          mkdir -p build/ci
+          swift test --package-path StenoKit --enable-code-coverage 2>&1 | tee build/ci/package-tests.log
+          swift test --package-path StenoKit --show-codecov-path > build/ci/coverage-path.txt
+          cp "$(cat build/ci/coverage-path.txt)" build/ci/package-coverage.json
+      - name: Native prompt verification policy
+        run: bash scripts/test-whisper-prompt-verification.sh
+      - name: Build macOS app
+        run: |
+          xcodebuild build -project Steno.xcodeproj -scheme Steno \
+            -destination 'platform=macOS' -derivedDataPath build/ci/DerivedData \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci/app-build.log
+      - name: Hosted tests and production-view renders
+        run: |
+          xcodebuild test -project Steno.xcodeproj -scheme Steno \
+            -configuration Debug -destination 'platform=macOS' \
+            -derivedDataPath build/ci/DerivedData \
+            -resultBundlePath build/ci/HostedTests.xcresult \
+            -enableCodeCoverage YES CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci/hosted-tests.log
+          test -s build/ci/renders/app/render-matrix.csv
+          test -s build/ci/renders/accents/overlay-accent-render-receipt.csv
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tests-${{ matrix.os }}-${{ github.sha }}
+          retention-days: 14
+          path: |
+            build/ci/*.log
+            build/ci/package-coverage.json
+            build/ci/HostedTests.xcresult
+            build/ci/renders/
+
+  runtime:
+    name: Runtime and distribution preview
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      GGML_METAL_DEVICES: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned build tools and runtime assets
+        run: |
+          test "$(uname -m)" = arm64
+          bash scripts/ci/tools.sh xcodegen
+          echo "$GITHUB_WORKSPACE/build/ci-tools/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
+          bash scripts/ci/prepare-runtime.sh
+      - name: Native runtime contracts
+        run: bash scripts/ci/runtime-checks.sh --backend cpu --root "$GITHUB_WORKSPACE/vendor/whisper.cpp" --output "$GITHUB_WORKSPACE/build/ci/runtime"
+      - name: Public audio benchmark and zero cleanup regression
+        env:
+          STENO_WHISPER_BUILD_DIR: ${{ github.workspace }}/build/ci/runtime/build-steno
+        run: bash scripts/ci/benchmark.sh
+      - name: Build self-contained preview DMG without release credentials
+        env:
+          STENO_BUNDLED_WHISPER_ROOT: ${{ github.workspace }}/vendor/whisper.cpp
+          STENO_BUNDLED_WHISPER_BUILD_DIR: ${{ github.workspace }}/build/ci/runtime/build-steno
+          STENO_BUNDLED_MODEL_PATH: ${{ github.workspace }}/vendor/whisper.cpp/models/ggml-small.en.bin
+          STENO_BUNDLED_VAD_MODEL_PATH: ${{ github.workspace }}/vendor/whisper.cpp/models/ggml-silero-v6.2.0.bin
+          STENO_DIST_DIR: ${{ github.workspace }}/build/ci/distribution
+        run: bash scripts/release-dmg.sh --unsigned-preview
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-evidence-${{ github.sha }}
+          retention-days: 14
+          path: |
+            build/ci/runtime/*.json
+            build/ci/runtime/*.log
+            build/ci/runtime/*.txt
+            build/ci/benchmark/*.json
+            build/ci/benchmark/*.md
+      - name: Upload preview for manual testing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-preview-arm64-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0
+          path: build/ci/distribution/*-preview.dmg
+
+  gate:
+    name: CI Gate
+    if: always()
+    needs: [policy, macos, runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every validation job to succeed
+        env:
+          POLICY_RESULT: ${{ needs.policy.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          RUNTIME_RESULT: ${{ needs.runtime.result }}
+        run: |
+          test "$POLICY_RESULT" = success
+          test "$MACOS_RESULT" = success
+          test "$RUNTIME_RESULT" = success

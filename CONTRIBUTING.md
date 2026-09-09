@@ -4,6 +4,8 @@ Thanks for your interest in contributing to Steno.
 
 If you want to use the app locally, start with [QUICKSTART.md](QUICKSTART.md). This guide is for contributors working on the repo itself.
 
+Pull requests run the [CI and security pipeline](docs/ci-cd.md), including package/hosted tests, runtime contracts, a public-audio smoke benchmark and a self-contained preview build. That guide explains failed checks, artifacts, local reproduction and the separate approved release path. Maintainers must complete [GitHub activation](docs/maintainers/github-setup.md) to enforce the checks.
+
 ## Prerequisites
 
 Before you start:

@@ -1,0 +1,140 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  schedule:
+    - cron: '31 8 * * 1'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Review newly introduced dependencies
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime, development, unknown
+          warn-only: false
+          comment-summary-in-pr: never
+
+  actions:
+    name: CodeQL (Actions)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: actions
+          build-mode: none
+          queries: security-extended
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          category: /language:actions
+          output: build/codeql-results
+      - name: Block high and critical findings
+        run: python3 scripts/ci/check-sarif.py --directory build/codeql-results --category /language:actions
+
+  native:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [swift, c-cpp]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Verify toolchain
+        run: |
+          test -d "$DEVELOPER_DIR"
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          swift --version
+      - name: Prepare pinned native sources
+        if: matrix.language == 'c-cpp'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: 764482c3175d9c3bc6089c1ec84df7d1b9537d83
+          path: vendor/whisper.cpp
+          persist-credentials: false
+      - name: Prepare project generator
+        if: matrix.language == 'swift'
+        run: |
+          bash scripts/ci/tools.sh xcodegen
+          build/ci-tools/xcodegen/xcodegen/bin/xcodegen generate
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: manual
+          queries: security-extended
+      # A fresh build after init lets CodeQL observe actual compiler invocations.
+      # No compilation cache is restored in this workflow.
+      - name: Build Swift app for analysis
+        if: matrix.language == 'swift'
+        run: |
+          xcodebuild build -project Steno.xcodeproj -scheme Steno \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build/codeql-swift \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO
+      - name: Build C++ runtime for analysis
+        if: matrix.language == 'c-cpp'
+        run: bash scripts/build-whisper-runtime-helper.sh
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          category: /language:${{ matrix.language }}
+          output: build/codeql-results
+      - name: Block high and critical findings
+        env:
+          ANALYSIS_CATEGORY: /language:${{ matrix.language }}
+        run: python3 scripts/ci/check-sarif.py --directory build/codeql-results --category "$ANALYSIS_CATEGORY"
+
+  gate:
+    name: Security Gate
+    if: always()
+    needs: [dependency-review, actions, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require all applicable security checks
+        env:
+          DEPENDENCY_RESULT: ${{ needs.dependency-review.result }}
+          ACTIONS_RESULT: ${{ needs.actions.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          test "$ACTIONS_RESULT" = success
+          test "$NATIVE_RESULT" = success
+          if [ "$EVENT_NAME" = pull_request ]; then
+            test "$DEPENDENCY_RESULT" = success
+          else
+            test "$DEPENDENCY_RESULT" = skipped
+          fi
