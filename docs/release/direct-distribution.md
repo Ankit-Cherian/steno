@@ -130,8 +130,7 @@ STENO_BUNDLED_MODEL_PATH=/absolute/path/to/ggml-small.en.bin scripts/release-dmg
 If you only want to test the packaging pipeline:
 
 ```bash
-STENO_DIST_SIGN_IDENTITY="<local development signing identity>" \
-scripts/release-dmg.sh --skip-notarize
+scripts/release-dmg.sh --unsigned-preview
 ```
 
 This is useful for:
@@ -140,7 +139,9 @@ This is useful for:
 - runtime-bundling validation
 - DMG layout checks
 
-It is **not** the final public artifact path.
+This mode uses ad-hoc signatures and a `-preview.dmg` filename. It requires no Apple credentials and is **not** the final public artifact path. Preview helpers omit hardened-runtime options so their ad-hoc libraries can load; production signatures retain hardened runtime. `--skip-notarize` still requires Developer ID signing and is reserved for inspecting a signed artifact before a separately approved notarization.
+
+Every invocation uses a new `build/distribution-<timestamp>-<pid>` directory. An explicit `STENO_DIST_DIR` must be an absolute, nonexistent dedicated directory. Existing output, protected roots, and the canonical `build/Steno.app` are protected from replacement. Prefer a path under `build` or the temporary directory.
 
 ### Real public release
 
@@ -158,12 +159,12 @@ with a real `Developer ID Application` certificate available.
 
 The script checks the runtime architecture and deployment target, required dependencies, helper listener symbols, bundle contents, rpaths, and included Steno and third-party license notices. Those checks establish packaging properties only; they do not establish signing, notarization, installation, launch, microphone, media-interruption, insertion, UI, VoiceOver, or OS-compatibility behavior.
 
-After a real signed run, validate the exact generated artifact (substitute the version produced by the script):
+After a real signed run, validate the exact generated artifact (substitute the output directory and version printed by the script):
 
-- `codesign --verify --deep --strict --verbose=2 build/distribution/Steno.app`
-- `codesign --verify --verbose=2 build/distribution/Steno-<version>.dmg`
-- `xcrun stapler validate build/distribution/Steno-<version>.dmg`
-- `spctl -a -vv -t open --context context:primary-signature build/distribution/Steno-<version>.dmg`
+- `codesign --verify --deep --strict --verbose=2 <output-directory>/Steno.app`
+- `codesign --verify --verbose=2 <output-directory>/Steno-<version>.dmg`
+- `xcrun stapler validate <output-directory>/Steno-<version>.dmg`
+- `spctl -a -vv -t open --context context:primary-signature <output-directory>/Steno-<version>.dmg`
 
 ### Pending release and manual proof
 

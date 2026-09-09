@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "steno-benchmark-manifest/v1",
+  "benchmarkName": "Public JFK pipeline smoke regression",
+  "evidenceTier": "smokeFixture",
+  "scoring": {
+    "normalization": {
+      "version": "steno-normalization-v1",
+      "lowercase": true,
+      "collapseWhitespace": true,
+      "trimWhitespace": true,
+      "stripPunctuation": true,
+      "keepApostrophes": true
+    }
+  },
+  "samples": [
+    {
+      "id": "public-jfk",
+      "dataset": "whisper.cpp-public-sample",
+      "audioPath": "jfk.wav",
+      "referenceText": "And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+      "languageHint": "en",
+      "audioDurationMS": 11000
+    }
+  ]
+}

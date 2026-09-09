@@ -4,10 +4,23 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: '08:00'
+      timezone: Etc/UTC
     open-pull-requests-limit: 5
+    groups:
+      action-updates:
+        patterns: ['*']
+        update-types: [minor, patch]
 
   - package-ecosystem: swift
     directory: "/StenoKit"
     schedule:
       interval: weekly
+      day: monday
+      time: '08:00'
+      timezone: Etc/UTC
     open-pull-requests-limit: 5
+
+# whisper.cpp and model hashes are reviewed together in scripts/ci/runtime-lock.json.
+# These audited runtime inputs are intentionally not updated by package automation.

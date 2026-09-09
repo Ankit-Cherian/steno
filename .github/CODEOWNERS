@@ -1,2 +1,9 @@
 # Default code owner for all paths.
 * @Ankit-Cherian
+
+# Review requests become mandatory only when the repository ruleset requires them.
+/.github/ @Ankit-Cherian
+/scripts/ @Ankit-Cherian
+/runtime-helper/ @Ankit-Cherian
+/project.yml @Ankit-Cherian
+/SECURITY.md @Ankit-Cherian

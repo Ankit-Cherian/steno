@@ -3,13 +3,22 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/release-dmg.sh [--skip-notarize]
+Usage: scripts/release-dmg.sh [--skip-notarize | --unsigned-preview]
 
 Build a self-contained Steno.app, bundle whisper.cpp runtime assets into it,
 sign it for distribution, package it into a DMG, and optionally notarize it.
 
+--unsigned-preview creates an ad-hoc signed local/CI test artifact. It never
+uses signing credentials or submits to Apple, and is not a distributable release.
+
 Environment:
-  STENO_DIST_SIGN_IDENTITY       Optional. Signing identity to use.
+  STENO_DIST_DIR                Optional absolute, nonexistent output directory.
+                                 Default: unique build/distribution-<time>-<pid>.
+                                 Existing outputs and build/Steno.app are protected.
+  STENO_SIGNING_KEYCHAIN        Optional dedicated keychain for signing.
+  STENO_NOTARY_KEY_PATH         API key file, used with STENO_NOTARY_KEY_ID and
+                                 STENO_NOTARY_ISSUER_ID instead of a stored profile.
+  STENO_DIST_SIGN_IDENTITY       Optional. Developer ID Application signing identity.
                                  Default: auto-detect a single "Developer ID Application" identity.
   STENO_NOTARY_PROFILE           Required unless --skip-notarize is used.
                                  Name of a keychain profile previously stored with:
@@ -31,8 +40,7 @@ Examples:
 
   STENO_NOTARY_PROFILE=StenoNotary scripts/release-dmg.sh
 
-  STENO_DIST_SIGN_IDENTITY="Apple Development: name@example.com (TEAMID)" \
-  scripts/release-dmg.sh --skip-notarize
+  scripts/release-dmg.sh --unsigned-preview
 EOF
 }
 
@@ -56,9 +64,15 @@ require_dir() {
 }
 
 SKIP_NOTARIZE=0
+UNSIGNED_PREVIEW=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --unsigned-preview)
+      UNSIGNED_PREVIEW=1
+      SKIP_NOTARIZE=1
+      shift
+      ;;
     --skip-notarize)
       SKIP_NOTARIZE=1
       shift
@@ -75,7 +89,8 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DIST_DIR="$REPO_ROOT/build/distribution"
+DIST_DIR="${STENO_DIST_DIR:-$REPO_ROOT/build/distribution-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+DIST_DIR="$(python3 "$SCRIPT_DIR/ci/release-guard.py" output "$DIST_DIR" --repo "$REPO_ROOT")"
 DERIVED_DATA="$DIST_DIR/DerivedData"
 UNSIGNED_APP="$DIST_DIR/Steno.app"
 STAGING_DIR="$DIST_DIR/dmg-stage"
@@ -89,11 +104,14 @@ LEGAL_SUBDIR="Contents/Resources/Legal"
 RUNTIME_DEPLOYMENT_TARGET="13.0"
 RUNTIME_ARCHITECTURE="arm64"
 
-mkdir -p "$DIST_DIR"
-rm -rf "$DERIVED_DATA" "$UNSIGNED_APP" "$STAGING_DIR"
 
 detect_identity() {
+  if [[ "$UNSIGNED_PREVIEW" -eq 1 ]]; then
+    echo "-"
+    return
+  fi
   if [[ -n "${STENO_DIST_SIGN_IDENTITY:-}" ]]; then
+    [[ "$STENO_DIST_SIGN_IDENTITY" == "Developer ID Application: "* ]] || die "Distribution requires a Developer ID Application identity."
     echo "$STENO_DIST_SIGN_IDENTITY"
     return
   fi
@@ -178,12 +196,13 @@ detect_vad_path() {
 
 require_clean_worktree() {
   if [[ "${STENO_RELEASE_ALLOW_DIRTY:-0}" == "1" ]]; then
+    [[ "$UNSIGNED_PREVIEW" -eq 1 ]] || die "Dirty worktree bypass is allowed only for --unsigned-preview."
     return
   fi
 
   local status
   status="$(git -C "$REPO_ROOT" status --porcelain)"
-  [[ -z "$status" ]] || die "Working tree must be clean before packaging. Commit or stash changes first."
+  [[ -z "$status" ]] || die "Working tree must be clean before packaging. Use a clean release checkout or explicitly allow a local preview."
 }
 
 remove_rpaths() {
@@ -354,16 +373,29 @@ validate_runtime_bundle() {
     done < <(otool -L "$file" | tail -n +2 | awk '{ print $1 }')
   done
 
-  if otool -L "${runtime_files[@]}" | grep -Eq 'libggml-(blas|rpc)'; then
+  if otool -L "${runtime_files[@]}" | grep -E 'libggml-(blas|rpc)' >/dev/null; then
     die "Bundled runtime unexpectedly depends on BLAS or RPC backends."
   fi
-  if nm -u "$retained_helper" | grep -Eq ' U _?(socket|bind|listen|accept|connect)(\$|$)'; then
+  if nm -u "$retained_helper" | grep -E ' U _?(socket|bind|listen|accept|connect)(\$|$)' >/dev/null; then
     die "Retained runtime unexpectedly imports a network-listener symbol."
   fi
 }
 
 is_macho() {
-  file "$1" | grep -q "Mach-O"
+  file "$1" | grep "Mach-O" >/dev/null
+}
+
+sign_code() {
+  local target="$1"
+  local identity="$2"
+  shift 2
+  local arguments=(--force --sign "$identity")
+  # Hardened library validation requires a shared Developer ID team. Ad-hoc
+  # preview helpers and libraries have no team, so preview code omits runtime.
+  if [[ "$UNSIGNED_PREVIEW" -eq 0 ]]; then
+    arguments+=(--options runtime)
+  fi
+  codesign "${arguments[@]}" "${SIGNING_ARGS[@]}" "$@" "$target"
 }
 
 sign_nested_code() {
@@ -372,7 +404,7 @@ sign_nested_code() {
 
   while IFS= read -r -d '' file; do
     if is_macho "$file"; then
-      codesign --force --sign "$identity" --options runtime --timestamp "$file"
+      sign_code "$file" "$identity"
     fi
   done < <(find "$app_path/Contents" -type f -print0)
 }
@@ -397,6 +429,12 @@ smoke_test_bundled_runtime() {
   local vad_model="$models_dir/ggml-silero-v6.2.0.bin"
   local fixture
   local smoke_dir
+  # Hosted CI may lack a GPU. This affects only smoke execution, never the
+  # bundled model, compiled Metal support, or the installed app environment.
+  local smoke_environment=("HOME=$HOME" "PATH=/usr/bin:/bin")
+  if [[ "${GGML_METAL_DEVICES+x}" == "x" ]]; then
+    smoke_environment+=("GGML_METAL_DEVICES=$GGML_METAL_DEVICES")
+  fi
 
   require_file "$helper" "Bundled whisper helper"
   require_file "$retained_helper" "Bundled retained whisper helper"
@@ -407,13 +445,13 @@ smoke_test_bundled_runtime() {
   fixture="$smoke_dir/silence.wav"
   create_silence_wav "$fixture"
 
-  if ! env -i HOME="$HOME" PATH="/usr/bin:/bin" "$helper" --help >"$smoke_log" 2>&1; then
+  if ! env -i "${smoke_environment[@]}" "$helper" --help >"$smoke_log" 2>&1; then
     cat "$smoke_log" >&2 || true
     die "Bundled whisper helper failed to launch. See $smoke_log"
   fi
 
   set +e
-  env -i HOME="$HOME" PATH="/usr/bin:/bin" "$retained_helper" --protocol-version 0 >>"$smoke_log" 2>&1
+  env -i "${smoke_environment[@]}" "$retained_helper" --protocol-version 0 >>"$smoke_log" 2>&1
   local retained_status=$?
   set -e
   if [[ "$retained_status" -ne 64 ]]; then
@@ -433,7 +471,7 @@ smoke_test_bundled_runtime() {
   if [[ -f "$vad_model" ]]; then
     inference_args+=(--vad --vad-model "$vad_model")
   fi
-  if ! env -i HOME="$HOME" PATH="/usr/bin:/bin" \
+  if ! env -i "${smoke_environment[@]}" \
     "$helper" "${inference_args[@]}" >/dev/null 2>&1; then
     rm -rf "$smoke_dir"
     die "Bundled Whisper model/VAD inference smoke test failed."
@@ -485,7 +523,7 @@ scan_distribution_hygiene() {
   local file
   while IFS= read -r -d '' file; do
     for pattern in "${patterns[@]}"; do
-      if [[ -n "$pattern" ]] && strings -a "$file" | grep -Fq -- "$pattern"; then
+      if [[ -n "$pattern" ]] && strings -a "$file" | grep -F -- "$pattern" >/dev/null; then
         echo "Error: local build path leaked in bundle file: ${file#$app_path/}" >&2
         leaked=1
         break
@@ -521,7 +559,7 @@ sign_dmg() {
 
   codesign --force \
     --sign "$identity" \
-    --timestamp \
+    "${SIGNING_ARGS[@]}" \
     -i "$identifier" \
     "$dmg_path"
   codesign --verify --verbose=2 "$dmg_path"
@@ -534,6 +572,25 @@ WHISPER_BUILD_DIR="${STENO_BUNDLED_WHISPER_BUILD_DIR:-$WHISPER_ROOT/build-steno}
 MODEL_PATH="$(detect_model_path "$WHISPER_ROOT")"
 VAD_PATH="$(detect_vad_path "$MODEL_PATH")"
 NOTARY_PROFILE="${STENO_NOTARY_PROFILE:-}"
+SIGNING_ARGS=(--timestamp)
+if [[ "$UNSIGNED_PREVIEW" -eq 1 ]]; then
+  SIGNING_ARGS=(--timestamp=none)
+elif [[ -n "${STENO_SIGNING_KEYCHAIN:-}" ]]; then
+  require_file "$STENO_SIGNING_KEYCHAIN" "Signing keychain"
+  SIGNING_ARGS+=(--keychain "$STENO_SIGNING_KEYCHAIN")
+fi
+NOTARY_ARGS=()
+if [[ "$SKIP_NOTARIZE" -eq 0 ]]; then
+  if [[ -n "${STENO_NOTARY_KEY_PATH:-}" ]]; then
+    require_file "$STENO_NOTARY_KEY_PATH" "Notary API key"
+    [[ -n "${STENO_NOTARY_KEY_ID:-}" && -n "${STENO_NOTARY_ISSUER_ID:-}" ]] || die "Notary API key ID and issuer are required."
+    NOTARY_ARGS=(--key "$STENO_NOTARY_KEY_PATH" --key-id "$STENO_NOTARY_KEY_ID" --issuer "$STENO_NOTARY_ISSUER_ID")
+  elif [[ -n "$NOTARY_PROFILE" ]]; then
+    NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+  else
+    die "Provide a notary API key or STENO_NOTARY_PROFILE before packaging."
+  fi
+fi
 
 require_dir "$WHISPER_ROOT" "STENO_BUNDLED_WHISPER_ROOT"
 require_file "$MODEL_PATH" "Bundled model"
@@ -542,6 +599,10 @@ if [[ -n "$VAD_PATH" ]]; then
 fi
 require_file "$DIST_ENTITLEMENTS" "Distribution entitlements"
 require_clean_worktree
+[[ "$(uname -m)" == "arm64" ]] || die "Packaging requires an Apple silicon runner."
+# No existing output is removed. Create only after all read-only preflight checks.
+mkdir -p "$(dirname "$DIST_DIR")"
+mkdir "$DIST_DIR"
 
 echo "==> build retained whisper helper"
 STENO_WHISPER_ROOT="$WHISPER_ROOT" \
@@ -549,10 +610,6 @@ STENO_WHISPER_BUILD_DIR="$WHISPER_BUILD_DIR" \
   "$REPO_ROOT/scripts/build-whisper-runtime-helper.sh" >/dev/null
 require_file "$WHISPER_BUILD_DIR/bin/whisper-cli" "Bundled whisper-cli"
 require_file "$WHISPER_BUILD_DIR/bin/steno-whisper-runtime" "Bundled retained whisper helper"
-
-if [[ "$SKIP_NOTARIZE" -eq 0 ]] && [[ -z "$NOTARY_PROFILE" ]]; then
-  die "STENO_NOTARY_PROFILE is required unless --skip-notarize is used."
-fi
 
 echo "==> xcodegen generate"
 (
@@ -568,6 +625,7 @@ echo "==> build unsigned Release app"
     -scheme Steno \
     -configuration Release \
     -derivedDataPath "$DERIVED_DATA" \
+    ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
     CODE_SIGNING_ALLOWED=NO
 )
 
@@ -585,12 +643,7 @@ echo "==> sign bundled runtime"
 sign_nested_code "$UNSIGNED_APP" "$IDENTITY"
 
 echo "==> sign app bundle"
-codesign --force \
-  --sign "$IDENTITY" \
-  --options runtime \
-  --timestamp \
-  --entitlements "$DIST_ENTITLEMENTS" \
-  "$UNSIGNED_APP"
+sign_code "$UNSIGNED_APP" "$IDENTITY" --entitlements "$DIST_ENTITLEMENTS"
 
 echo "==> validate signed app"
 codesign --verify --deep --strict --verbose=2 "$UNSIGNED_APP"
@@ -609,7 +662,10 @@ fi
 APP_BUNDLE_ID="$(defaults read "$UNSIGNED_APP/Contents/Info" CFBundleIdentifier 2>/dev/null || echo "io.stenoapp.steno")"
 DMG_SIGNING_IDENTIFIER="${APP_BUNDLE_ID}.dmg"
 DMG_PATH="$DIST_DIR/Steno-${APP_VERSION}.dmg"
-rm -f "$DMG_PATH"
+if [[ "$UNSIGNED_PREVIEW" -eq 1 ]]; then
+  DMG_PATH="$DIST_DIR/Steno-${APP_VERSION}-$(git -C "$REPO_ROOT" rev-parse --short HEAD)-preview.dmg"
+fi
+[[ ! -e "$DMG_PATH" ]] || die "Refusing to overwrite a DMG."
 
 echo "==> create DMG"
 create_dmg "$UNSIGNED_APP" "$DMG_PATH"
@@ -618,7 +674,7 @@ echo "==> sign DMG"
 sign_dmg "$DMG_PATH" "$IDENTITY" "$DMG_SIGNING_IDENTIFIER"
 
 if [[ "$SKIP_NOTARIZE" -eq 1 ]]; then
-  echo "Signed DMG created without notarization:"
+  echo "Non-notarized test DMG created (not approved for distribution):"
   echo "  App: $UNSIGNED_APP"
   echo "  DMG: $DMG_PATH"
   exit 0
@@ -627,18 +683,71 @@ fi
 echo "==> notarize DMG"
 NOTARY_SUBMISSION_JSON="$DIST_DIR/notary-submit.json"
 NOTARY_LOG_JSON="$DIST_DIR/notary-log.json"
-NOTARY_SUBMISSION_JSON_RAW="$(xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json)"
-printf '%s\n' "$NOTARY_SUBMISSION_JSON_RAW" > "$NOTARY_SUBMISSION_JSON"
-NOTARY_SUBMISSION_ID="$(python3 - <<'PY' "$NOTARY_SUBMISSION_JSON"
+# One submission only. On timeout/failure retain the receipt and inspect with
+# notarytool info/log; never blindly rerun this command to resolve uncertainty.
+# Submit once, record the ID before waiting, then query that same submission.
+NOTARY_EXIT=0
+xcrun notarytool submit "$DMG_PATH" "${NOTARY_ARGS[@]}" --output-format json > "$NOTARY_SUBMISSION_JSON" || NOTARY_EXIT=$?
+NOTARY_RECEIPT="$DIST_DIR/release-notary-receipt.json"
+write_notary_receipt() {
+  python3 - "$1" "$NOTARY_RECEIPT" "$DMG_PATH" "$(git -C "$REPO_ROOT" rev-parse HEAD)" <<'PYRECEIPT'
+import hashlib
+import json
+import os
+import re
+import sys
+from pathlib import Path
+try:
+    raw = json.loads(Path(sys.argv[1]).read_text())
+except (ValueError, OSError):
+    raw = {}
+identifier = str(raw.get('id', ''))
+if not re.fullmatch(r'[0-9a-fA-F-]{36}', identifier):
+    # Keep the already recorded submission ID if a wait timed out without JSON.
+    try:
+        identifier = json.loads(Path(sys.argv[2]).read_text()).get('submission_id', 'unavailable')
+    except (ValueError, OSError):
+        identifier = 'unavailable'
+status = str(raw.get('status', 'Unknown'))
+if status not in ('Accepted', 'Invalid', 'In Progress', 'Rejected', 'Uploaded'):
+    status = 'Unknown'
+with Path(sys.argv[3]).open('rb') as stream:
+    digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+receipt = {'submission_id': identifier, 'status': status, 'source_sha': sys.argv[4],
+           'submitted_dmg_sha256': digest, 'workflow_run_id': os.environ.get('GITHUB_RUN_ID', '')}
+Path(sys.argv[2]).write_text(json.dumps(receipt, indent=2) + '\n')
+print(f'Notary submission: {identifier}; status: {status}')
+PYRECEIPT
+}
+write_notary_receipt "$NOTARY_SUBMISSION_JSON"
+if [[ "$NOTARY_EXIT" -ne 0 ]]; then
+  die "Submission failed or has unknown status. Inspect $NOTARY_RECEIPT; do not resubmit without resolving its status."
+fi
+NOTARY_SUBMISSION_ID="$(python3 - "$NOTARY_RECEIPT" <<'PYID'
 import json
 import sys
 from pathlib import Path
-
-payload = json.loads(Path(sys.argv[1]).read_text())
-print(payload["id"])
-PY
+identifier = json.loads(Path(sys.argv[1]).read_text())['submission_id']
+if identifier == 'unavailable':
+    raise SystemExit('Notary submission ID unavailable; do not resubmit.')
+print(identifier)
+PYID
 )"
-xcrun notarytool log "$NOTARY_SUBMISSION_ID" "$NOTARY_LOG_JSON" --keychain-profile "$NOTARY_PROFILE"
+NOTARY_WAIT_JSON="$DIST_DIR/notary-wait.json"
+NOTARY_EXIT=0
+xcrun notarytool wait "$NOTARY_SUBMISSION_ID" "${NOTARY_ARGS[@]}" --timeout 20m --output-format json > "$NOTARY_WAIT_JSON" || NOTARY_EXIT=$?
+write_notary_receipt "$NOTARY_WAIT_JSON"
+if [[ "$NOTARY_EXIT" -ne 0 ]]; then
+  die "Notarization failed or remains pending. Inspect $NOTARY_RECEIPT; do not resubmit."
+fi
+python3 - "$NOTARY_RECEIPT" <<'PYSTATUS'
+import json
+import sys
+from pathlib import Path
+if json.loads(Path(sys.argv[1]).read_text())['status'] != 'Accepted':
+    raise SystemExit('Notarization was not Accepted; inspect the saved receipt.')
+PYSTATUS
+xcrun notarytool log "$NOTARY_SUBMISSION_ID" "$NOTARY_LOG_JSON" "${NOTARY_ARGS[@]}"
 
 echo "==> staple ticket"
 xcrun stapler staple "$DMG_PATH"

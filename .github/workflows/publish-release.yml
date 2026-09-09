@@ -1,0 +1,108 @@
+name: Publish release
+
+# Promote an existing draft without rebuilding or resubmitting to Apple.
+# This first version deliberately requires the source still to be main HEAD.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable version of the existing signed and notarized draft'
+        required: true
+        type: string
+      source_sha:
+        description: 'Exact 40-character SHA at main HEAD that produced the draft'
+        required: true
+        type: string
+      draft_id:
+        description: 'Exact positive numeric GitHub release ID of the reviewed draft'
+        required: true
+        type: string
+      manual_acceptance:
+        description: 'I approve publishing this draft after native microphone, insertion, permissions, media, UI, and Metal acceptance'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# Share the lock with Release so the two workflows cannot race each other.
+concurrency:
+  group: steno-release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SHA: ${{ inputs.source_sha }}
+      MANUAL_ACCEPTANCE: ${{ inputs.manual_acceptance }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact accepted main source and immutable version tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/release-guard.py source --remote
+
+  validate:
+    needs: preflight
+    uses: ./.github/workflows/validate.yml
+    permissions:
+      contents: read
+
+  security:
+    needs: preflight
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+
+  publish:
+    needs: [preflight, validate, security]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release-publish
+    permissions:
+      contents: write
+      attestations: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SHA: ${{ inputs.source_sha }}
+      RELEASE_ID: ${{ inputs.draft_id }}
+      MANUAL_ACCEPTANCE: ${{ inputs.manual_acceptance }}
+      RELEASE_ASSETS: ${{ github.workspace }}/build/publish-assets
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify protected publication configuration and source after approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PUBLISH_ENABLED: ${{ vars.RELEASE_PUBLISH_ENABLED }}
+        run: |
+          test "$RELEASE_PUBLISH_ENABLED" = 'true' || { echo 'Publication environment is not enabled.' >&2; exit 1; }
+          python3 scripts/ci/release-guard.py source --remote
+      - name: Download only verified assets from the exact existing draft ID
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/release-publish.py --download
+      - name: Verify original Release workflow provenance and publish the reviewed draft once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify "$RELEASE_ASSETS/Steno-$RELEASE_VERSION.dmg" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main --source-digest "$RELEASE_SHA"
+          python3 scripts/ci/release-guard.py source --remote
+          python3 scripts/ci/release-publish.py --publish
