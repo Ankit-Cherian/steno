@@ -109,7 +109,7 @@ xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=m
 
 ## 6) Pending manual checks
 
-The following checks are intentionally separate from automated validation and remain pending for the unreleased 1.0 candidate:
+The original unwanted repeated-Terms bug is closed after maintainer testing. The following broader checks remain part of selecting and validating the final 1.0 release build; they do not reopen that bug:
 
 - Hold `Option` to start dictation immediately, then release to transcribe.
 - Trigger hands-free mode using the configured function key (default `F18`).
