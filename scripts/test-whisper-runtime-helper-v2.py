@@ -1668,7 +1668,7 @@ def main() -> int:
         "--vad-model",
         type=Path,
         default=Path(__file__).resolve().parent.parent
-        / "vendor/whisper.cpp/models/for-tests-silero-v6.2.0-ggml.bin",
+        / "vendor/whisper.cpp/models/ggml-silero-v6.2.0.bin",
     )
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--skip-interruption-matrix", action="store_true")

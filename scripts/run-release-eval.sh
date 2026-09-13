@@ -75,8 +75,11 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 SMOKE_MANIFEST="$REPO_ROOT/research/benchmarks/manifest.json"
 SMOKE_LEXICON="$REPO_ROOT/research/benchmarks/lexicon.json"
-SMOKE_CLI="$REPO_ROOT/research/benchmarks/fixtures/fake-whisper-cli.sh"
-SMOKE_MODEL="$REPO_ROOT/research/benchmarks/fixtures/fake-model.bin"
+SMOKE_WORKSPACE="$(mktemp -d "${TMPDIR:-/tmp}/steno-smoke.XXXXXX")"
+"$PYTHON_BIN" "$SCRIPT_DIR/prepare-smoke-fixtures.py" "$SMOKE_MANIFEST" "$SMOKE_WORKSPACE/inputs"
+SMOKE_MANIFEST="$SMOKE_WORKSPACE/inputs/manifest.json"
+SMOKE_CLI="$SMOKE_WORKSPACE/inputs/fake-whisper-cli.sh"
+SMOKE_MODEL="$SMOKE_WORKSPACE/inputs/fake-model.bin"
 
 require_file "$SMOKE_MANIFEST" "Smoke manifest"
 require_file "$SMOKE_LEXICON" "Smoke lexicon"
@@ -156,8 +159,9 @@ else
   BUNDLE_ROOT="$REPO_ROOT/research/benchmarks/generated/release-signoff-${RUN_DATE}-${HOST_SLUG}-${CHIP_CLASS}-${MEMORY_GB}gb-${MODEL_SLUG}"
 fi
 
-rm -rf "$BUNDLE_ROOT"
-mkdir -p "$BUNDLE_ROOT"
+[[ ! -e "$BUNDLE_ROOT" ]] || die "Evaluation output already exists; preserve or move it before another run: $BUNDLE_ROOT"
+mkdir -p "$(dirname "$BUNDLE_ROOT")"
+mkdir "$BUNDLE_ROOT"
 
 SMOKE_ROOT="$BUNDLE_ROOT/smoke"
 mkdir -p "$SMOKE_ROOT"
