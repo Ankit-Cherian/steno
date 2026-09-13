@@ -20,7 +20,8 @@ Environment:
                                  STENO_NOTARY_ISSUER_ID instead of a stored profile.
   STENO_DIST_SIGN_IDENTITY       Optional. Developer ID Application signing identity.
                                  Default: auto-detect a single "Developer ID Application" identity.
-  STENO_NOTARY_PROFILE           Required unless --skip-notarize is used.
+  STENO_NOTARY_PROFILE           Required for notarization unless API key credentials
+                                 are supplied through STENO_NOTARY_KEY_PATH.
                                  Name of a keychain profile previously stored with:
                                  xcrun notarytool store-credentials ...
   STENO_BUNDLED_WHISPER_ROOT     Optional. Root of a built whisper.cpp checkout.

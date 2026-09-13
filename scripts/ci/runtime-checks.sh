@@ -12,7 +12,8 @@ while [[ $# -gt 0 ]]; do
     --output) OUTPUT="${2:?--output requires a path}"; shift 2 ;;
     --backend) BACKEND="${2:?--backend requires cpu or metal}"; shift 2 ;;
     --verify-receipt) RECEIPT="${2:?--verify-receipt requires a path}"; shift 2 ;;
-    *) echo "Usage: $0 [--root PATH] [--backend cpu|metal] --output NEW_DIRECTORY" >&2; exit 2 ;;
+    *) echo "Usage: $0 [--root PATH] [--backend cpu|metal] --output NEW_DIRECTORY
+       $0 [--backend cpu|metal] --verify-receipt RECEIPT_JSON" >&2; exit 2 ;;
   esac
 done
 case "$BACKEND" in

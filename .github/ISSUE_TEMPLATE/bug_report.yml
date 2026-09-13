@@ -4,7 +4,18 @@ labels: ["bug"]
 body:
   - type: markdown
     attributes:
-      value: "Thanks for reporting a bug. Please fill out the sections below."
+      value: |
+        This issue and its attachments are public. Use synthetic examples and remove private transcripts, audio, editor content, credentials, and personal file paths from logs or screenshots. Do not upload your history or settings files.
+
+        Report vulnerabilities through [the security policy](https://github.com/Ankit-Cherian/steno/blob/main/SECURITY.md), not this form.
+  - type: input
+    id: app-version
+    attributes:
+      label: Steno Version and Build
+      description: Include the version and build number. If you built from source, include the commit and note any local changes.
+      placeholder: "e.g., 1.0.0 (3), built from source"
+    validations:
+      required: true
   - type: input
     id: macos-version
     attributes:
@@ -16,14 +27,14 @@ body:
     id: description
     attributes:
       label: Description
-      description: What happened?
+      description: What happened? For transcription issues, say whether it affected live preview, the final transcript, insertion, or history.
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
       label: Steps to Reproduce
-      description: How can we reproduce this issue?
+      description: How can we reproduce this issue using non-sensitive sample text?
       value: |
         1.
         2.
@@ -50,8 +61,13 @@ body:
         - label: Microphone
         - label: Accessibility
         - label: Input Monitoring
+  - type: input
+    id: transcription-setup
+    attributes:
+      label: Transcription Setup
+      description: For transcription issues, include the selected model, language, push-to-talk or toggle mode, and approximate recording duration. Do not include model file paths.
   - type: textarea
     id: logs
     attributes:
       label: Additional Context
-      description: Logs, screenshots, or other context
+      description: Optional sanitized logs, screenshots, or other context. Review all visible content and attachments for private data before submitting.

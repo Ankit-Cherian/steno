@@ -66,8 +66,9 @@ with open(sys.argv[1], 'rb') as stream:
 if entitlements.get('com.apple.security.get-task-allow'):
     raise SystemExit('Distribution must not permit debugger attachment')
 PY
-# Copy only the final stapled DMG and public provenance metadata. Notary receipts,
-# signing material, build logs, and keychain files never enter uploaded artifacts.
+# Copy only the final stapled DMG and public provenance metadata into release assets.
+# The workflow separately preserves a sanitized notarization recovery receipt.
+# Raw notary logs, signing material, build logs, and keychain files are excluded.
 mkdir "$RUNNER_TEMP/steno-release-assets"
 cp "$STENO_DIST_DIR/Steno-$RELEASE_VERSION.dmg" "$RUNNER_TEMP/steno-release-assets/"
 python3 - <<'PY'

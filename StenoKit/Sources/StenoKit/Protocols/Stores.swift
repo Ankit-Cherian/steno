@@ -1,6 +1,6 @@
 import Foundation
 
-/// Persists and queries transcript history with a 30-day rolling window.
+/// Persists and queries transcript history.
 public protocol HistoryStoreProtocol: Sendable {
     /// Appends a new transcript entry to the history.
     func append(entry: TranscriptEntry) async throws

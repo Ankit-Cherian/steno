@@ -59,8 +59,12 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement by opening a
-GitHub Issue in this repository.
+reported privately to the community leaders responsible for enforcement.
+To request a private reporting channel, use the
+[Private Contact Request form](https://github.com/Ankit-Cherian/steno/issues/new?template=contact_request.yml).
+The request is public and identifies your GitHub account. Do not include
+incident details, names of other people, or attachments. Wait for a maintainer
+to provide a private channel before sharing the report.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
