@@ -1,154 +1,39 @@
 # Steno
 
-Fast local dictation for Apple silicon Macs, with a 1.0 candidate in development.
+Steno is a free, open-source dictation app for Apple silicon Macs. Hold **Option**, speak, and release to type into the app you're using. Speech recognition runs on your Mac through [whisper.cpp](https://github.com/ggerganov/whisper.cpp), with no account or API key required.
 
-Steno is a local-first voice-to-text app for people who want responsive dictation, reliable insertion, and conservative cleanup without shipping their audio to a hosted transcription service. The unreleased 1.0 candidate adds local Insights and a retained Whisper runtime while preserving a command-line fallback.
+[Download](https://github.com/Ankit-Cherian/steno/releases/latest) · [Build from source](QUICKSTART.md) · [Changelog](CHANGELOG.md)
 
-[![Swift Tests](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml)
+<a href="assets/record.png"><img src="assets/record.png" alt="Steno Dictate with the Terracotta accent in dark mode" width="100%"></a>
 
-## Download
+Steno requires **macOS 13 or later and Apple silicon**. Open the downloaded DMG, drag Steno into Applications, and launch it there. To update, download the latest release and replace the copy in Applications. The downloadable app includes a speech model, so you don't need to set up a separate transcription service. During setup, allow Microphone access to record, Accessibility to insert text, and Input Monitoring to use shortcuts while another app is focused.
 
-The latest public release is Steno v0.2.0:
+For a first dictation, click into a text field, hold Option, and say a sentence. Release Option when you're finished. Steno transcribes the recording and inserts the result. If it reports that the text was copied instead, press **Cmd+V** where you want it. You can also recover the text from History.
 
-[Download Steno-0.2.0.dmg](https://github.com/Ankit-Cherian/steno/releases/download/v0.2.0/Steno-0.2.0.dmg)
+For longer recordings, choose a hands-free function key in Settings → Recording; the default is **F18**. Press it once to start and again to finish. Stop finishes a recording, while Cancel discards it. You can turn on the floating live transcript to follow along as you speak. Those words may change as recognition continues; the completed recording determines the text that gets inserted and saved.
 
-Version 1.0 is under local development and testing. It has not been released as a Developer ID signed, notarized download. Cloning the public default branch does not provide the complete local candidate.
+Settings also lets you adjust how Steno handles your words:
 
-Open the DMG, drag Steno to Applications, then launch Steno from Applications. Source setup is only needed if you want to build or contribute to the app.
+- Add recurring misheard words and preferred spellings to your word list, with optional aliases and rules for individual apps.
+- Expand a short phrase into saved text, such as an address or a reply you use often. Shortcuts can apply everywhere or in one app.
+- Choose cleanup preferences. Default cleanup keeps ambiguous phrases such as “like” and “you know”; Aggressive cleanup can remove its supported fillers.
+- Enable media interruption to pause an app that is playing audio and resume it after recording. Steno leaves playback alone when it cannot confirm which app it would control.
+- Choose a light or dark appearance, follow the system setting, and pick an accent color.
 
-## What Is New in the 1.0 Candidate
+Most settings wait for **Save changes**; **Discard** restores the saved values. Appearance changes save immediately.
 
-- One Manuscript design covers Dictate, History, Insights, Settings, and onboarding, with a compact recording pill, clearer typography, a transparent ribbon S brand mark, and saved accent preferences.
-- The recording overlay grows into a bounded reading area with stable Stop and Cancel controls. It follows the current hypothesis and keeps the completed recording authoritative for insertion.
-- Settings keeps an unsaved draft across navigation, with persistent Save changes and Discard controls and protection against conflicting updates. Onboarding separates setup, permissions, model readiness, and the first dictation check.
-- Optional live transcription shows a bounded preview while recording. Only the completed recording supplies the final text for insertion.
-- Optional nearby-text continuation adjusts insertion spacing and conservative casing using a bounded selection snapshot from the captured editor. Nearby text never enters recognition prompts, history, or analytics.
-- Insights summarizes a local activity calendar, streaks, words, known dictated time, sessions, average speed, cleanup coverage, and top apps.
-- Insights stores per-session usage metadata such as counts, duration quality, application identifier, cleanup counts, and insertion outcome. It does not copy transcript text or audio into the analytics ledger.
-- Usage analytics persist separately from transcript history. Deleting a transcript does not delete the corresponding aggregate usage totals.
-- A private retained runtime keeps the selected Whisper model loaded between compatible dictations. If that helper fails, Steno invalidates it and uses the existing `whisper-cli` path for the request.
-- Acoustic verification addresses unwanted repeated text such as "Terms, Terms, Terms" while preserving deliberately spoken words.
-- Media interruption is application-targeted and fail-closed: Steno only resumes the exact application and process lineage it verified that it paused. Ambiguous playback ownership does not authorize Play.
-- Cleanup remains conservative by default. Ambiguous language is preserved; phrases such as `like`, `you know`, `question mark`, `open paren`, and `slash command` are not automatically inferred away or converted to symbols. Narrow filler removal is available only through the explicit aggressive policy.
+<a href="assets/1.0/history-dark.png"><img src="assets/1.0/history-dark.png" alt="Steno History with fictional sample notes" width="100%"></a>
 
-## What Steno Does
+History keeps your most recent 1,000 dictations on your Mac. Search them, check whether the text was inserted or copied, copy it again, or delete an entry. Insights shows daily activity, streaks, words dictated, time spent, and usage by app. It stores session dates, app identifiers, and usage counts without a second copy of your transcripts or audio. Deleting a History entry leaves those usage totals intact.
 
-- High-accuracy local transcription with `whisper.cpp`
-- Bundled `small.en` for immediate first-run use, with in-app downloads for larger canonical models based on your hardware
-- App-aware insertion: direct typing where it is safe, clipboard-first behavior where paste-sensitive targets need it
-- Global dictation controls: `Option` hold-to-talk plus a configurable hands-free toggle key
-- Local cleanup with tone, structure, conservative repair and punctuation handling, lexicon corrections, and explicit aggressive filler removal
-- Personal lexicon corrections, app-specific overrides, and text shortcuts
-- Searchable transcript history with transcript inspection and recovery-oriented copy actions
-- A separate local Insights ledger for activity, streak, word, time, session, speed, cleanup, and top-app summaries
-- VoiceOver-aware controls and reduced-motion-aware animation behavior
-- Nonactivating recording overlay with a static recording indicator, readable flowing preview, outcome icons, and separate Stop and Cancel controls
+Optional nearby-text continuation reads a small amount of text around the editor selection to adjust spacing and capitalization. It currently works with English text in supported fields in Apple Mail, Notes, and TextEdit. That text is temporary: it isn't saved in History or Insights or sent to the speech model. Steno skips automatic continuation in secure or unsupported fields and when it cannot confirm the original editor target.
 
-## Validation Status
+Once the model is installed, dictation works offline. Settings → Speech model offers Medium and Large V3 Turbo downloads if you want to try another model; downloading requires an internet connection. Steno reuses the loaded model for later recordings when possible. Accuracy and response time depend on the model, your Mac, and the recording. Review the finished text, especially names and technical terms.
 
-The May 15 evaluation is historical evidence for the 0.2.1 candidate on one M5 Pro / 64GB / Large V3 Turbo row. It does not validate the current unreleased 1.0 tree or other hardware/model combinations.
+[View Insights](assets/1.0/insights-light.png) · [View Settings](assets/settings.png)
 
-The unwanted repeated-Terms bug is closed after maintainer testing of the installed correction. Automated package and hosted macOS tests, app builds, and synthetic production-view checks have also passed on the recorded development source. Final-source release evaluation, a complete live microphone/media/insertion acceptance pass, VoiceOver, sleep/wake, macOS 13, and distribution checks remain release gates. See [the 1.0 checklist](docs/release/1.0-checklist.md) for the acceptance record and separately deferred accuracy limitations; a local ad-hoc signature is not Developer ID distribution signing.
+This guide describes the **unreleased 1.0.0 candidate**. The download link points to the latest published release, which may have different features. Screenshots use fictional sample data. The [release checklist](docs/release/1.0-checklist.md) records the remaining acceptance and distribution checks.
 
-## Screenshots
+To build or contribute, follow the [source setup](QUICKSTART.md) and [contribution guide](CONTRIBUTING.md). Development requires Xcode with Swift 6.2 or later, XcodeGen, CMake, and the pinned local Whisper runtime and models described in the setup guide. The app uses SwiftUI and AppKit; [StenoKit](StenoKit/README.md) contains the core services and benchmark tools. The [CI guide](docs/ci-cd.md) explains the automated checks and packaging workflow.
 
-These are historical 0.2 product screenshots. They are not manual UI evidence for the unreleased 1.0 candidate.
-
-<table>
-  <tr>
-    <td><img src="assets/record.png" alt="Record tab in Steno 0.2" width="620"></td>
-    <td><img src="assets/settings.png" alt="Settings appearance tab in Steno 0.2" width="620"></td>
-  </tr>
-</table>
-
-## Developer Setup
-
-For source builds, use [QUICKSTART.md](QUICKSTART.md). Local development requires an Apple silicon Mac running macOS 13 or later, Xcode, XcodeGen, CMake, the pinned `whisper.cpp` checkout, a local model, and the Silero VAD model. The canonical binaries live under `vendor/whisper.cpp/build-steno/`.
-
-### Model guidance
-
-Steno curates four canonical local models:
-
-- `base.en`
-- `small.en`
-- `medium.en`
-- `large-v3-turbo`
-
-Conservative starting points:
-
-| Detected Apple silicon tier | Unified memory | Recommended default |
-|---|---:|---|
-| Base M1 / M2 / M3 | 8GB-16GB | `small.en` |
-| Base M2 / M3 / M4 / M5 | 24GB-32GB | `medium.en` |
-| Pro-tier chips | 16GB-31GB | `medium.en` |
-| Pro / Max chips | 32GB+ | `large-v3-turbo` |
-
-These are recommendation tiers, not blanket validation claims. Exact validated rows live in the compatibility matrix and release-eval artifacts.
-
-## Daily Use
-
-- Hold `Option` to record immediately, then release to transcribe and insert.
-- Use the configured hands-free function key to start and stop dictation without holding a modifier.
-- Let Steno route insertion by target: direct typing for standard editors, safer clipboard-oriented behavior where needed.
-- Use Settings to control cleanup tone, structure, filler removal, command handling, appearance, and engine configuration.
-- Use History to search old transcripts, recover prior text, and copy the output for pasting where you need it.
-- Use Insights to review local usage trends without placing transcript text or audio in the analytics ledger.
-
-## Retained Runtime
-
-The retained runtime launches `steno-whisper-runtime` as a private child process and communicates through inherited pipes. It does not expose an HTTP server or network listener. The first retained request pays model-load cost; changing the model, VAD path, or another load identity invalidates that context and the next request reloads it. Sleep/wake recovery, memory pressure, cancellation, shutdown, or helper failure can also unload the retained context. The existing `whisper-cli` engine remains the safe fallback.
-
-## Release Eval
-
-The repo-level release-eval entrypoint is:
-
-```bash
-STENO_WHISPER_CLI=/absolute/path/to/whisper-cli \
-STENO_WHISPER_MODEL=/absolute/path/to/ggml-large-v3-turbo.bin \
-STENO_VAD_MODEL=/absolute/path/to/ggml-silero-v6.2.0.bin \
-STENO_LIBRISPEECH_ROOT=/absolute/path/to/librispeech_test_clean \
-scripts/run-release-eval.sh
-```
-
-Useful notes:
-
-- `scripts/run-release-eval.sh --smoke-only` runs only the package tests plus the smoke fixture benchmark.
-- Full release eval writes local audit artifacts that stay out of git.
-- Smoke and release evidence are intentionally separate.
-- The release report also records `not_evaluable` gates when the corpus did not honestly exercise a metric.
-
-For the benchmark and signoff workflow details, see [docs/release/release-eval.md](docs/release/release-eval.md).
-
-## Contributor Path
-
-- 1.0 acceptance and release preparation: [docs/release/1.0-checklist.md](docs/release/1.0-checklist.md)
-- Setup and contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Fast local run instructions: [QUICKSTART.md](QUICKSTART.md)
-- Historical 0.2 release brief: [docs/release/v0.2.0-release-brief.md](docs/release/v0.2.0-release-brief.md)
-- Direct-download DMG workflow: [docs/release/direct-distribution.md](docs/release/direct-distribution.md)
-- Core package overview: [StenoKit/README.md](StenoKit/README.md)
-
-## Known Limitations
-
-- Apple silicon Mac running macOS 13 or later
-- Local setup still expects the pinned `whisper.cpp` checkout, a `build-steno` runtime, and downloaded Whisper and VAD model files
-- Release-eval validation is row-specific, not universal hardware proof
-- Production microphone behavior is broader than the current benchmark corpus
-- Recognition and cleanup can still make errors; review names, numbers, negation, and other meaning-sensitive text before sharing it
-- The unreleased 1.0 candidate still requires manual live-app checks plus distribution signing and notarization before release
-
-## Security
-
-See [SECURITY.md](SECURITY.md) for vulnerability reporting expectations.
-
-## Support
-
-See [SUPPORT.md](SUPPORT.md) for usage help and bug report paths.
-
-## Acknowledgments
-
-Steno uses [whisper.cpp](https://github.com/ggerganov/whisper.cpp) by Georgi Gerganov and contributors for local speech-to-text transcription. whisper.cpp is licensed under the MIT License. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the upstream notice text included with this repository.
-
-## License
-
-MIT — see [LICENSE](LICENSE) for details.
+[Support](SUPPORT.md) · [Report a security issue](SECURITY.md) · [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)

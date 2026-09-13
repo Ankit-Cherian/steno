@@ -243,7 +243,7 @@ struct AppRenderingTests {
         let transcripts = [
             ("short", "Keep this sentence."),
             ("medium", "Please send the revised agenda on Thursday. Keep the launch date at September 18, and leave enough time for the accessibility review before the team meets."),
-            ("long", String(repeating: "Names, numbers, and deliberate punctuation should stay exactly as spoken. A longer thought needs room to breathe. ", count: 18))
+            ("long", String(repeating: "Take the path along the river, turn left at the bridge, and meet outside the cafe after the walk. ", count: 18))
         ]
 
         for appearance in [ColorScheme.light, .dark] {

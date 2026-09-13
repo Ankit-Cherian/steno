@@ -67,10 +67,10 @@ enum IsolatedAppPreview {
 
     static var entries: [TranscriptEntry] {
         let samples: [(String, InsertionStatus)] = [
-            ("Send the revised agenda on Thursday. Keep the launch date at September 18, and do not change the accessibility review.", .inserted),
-            ("The editor closed before insertion. This sample is ready to copy when you return to your document.", .copiedOnly),
-            (String(repeating: "A clear thought deserves room to breathe. Names, numbers, and deliberate punctuation should stay exactly as spoken. ", count: 12), .inserted),
-            ("Please keep this sentence, even when insertion needs another try.", .failed)
+            ("Move the planning meeting from Thursday to Friday. Send the updated agenda before lunch so everyone has time to read it.", .inserted),
+            ("Pick up tomatoes, pasta, olive oil, and a loaf of bread. Check whether we need coffee before leaving.", .copiedOnly),
+            (String(repeating: "Take the path along the river, turn left at the bridge, and meet outside the cafe after the walk. ", count: 12), .inserted),
+            ("Book a table for four near the window, and ask whether there is space for a stroller.", .failed)
         ]
         return samples.enumerated().map { index, sample in
             TranscriptEntry(createdAt: Date().addingTimeInterval(-Double(index * 3_600)),
