@@ -261,15 +261,15 @@ func processEnvironmentAddsLocalWhisperLibraryPaths() {
 func buildVocabularyPromptOmitsFieldLabels() {
     let request = TranscriptionRequest(
         languageHints: ["en-US"],
-        hotTerms: ["StenoKit", "Steno", "Turso", "Ankit"]
+        hotTerms: ["StenoKit", "Steno", "Turso", "Rowan"]
     )
     #expect(
         WhisperRuntimeConfiguration.buildPrompt(for: request)
-            == "Language: en. Terms: StenoKit, Steno, Turso, Ankit."
+            == "Language: en. Terms: StenoKit, Steno, Turso, Rowan."
     )
     #expect(
         WhisperRuntimeConfiguration.buildVocabularyPrompt(for: request)
-            == "StenoKit, Steno, Turso, Ankit."
+            == "StenoKit, Steno, Turso, Rowan."
     )
     #expect(WhisperRuntimeConfiguration.buildVocabularyPrompt(for: TranscriptionRequest()) == nil)
 }

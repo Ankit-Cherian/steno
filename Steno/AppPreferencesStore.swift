@@ -26,7 +26,7 @@ actor AppPreferencesStore {
             return prefs
         } catch {
             Self.logger.error(
-                "Preferences load failed for path \(self.storageURL.path, privacy: .private): \(error.localizedDescription, privacy: .public)"
+                "Preferences load failed for path \(self.storageURL.path, privacy: .private): \(error.localizedDescription, privacy: .private)"
             )
             return .default
         }
@@ -44,7 +44,7 @@ actor AppPreferencesStore {
             try data.write(to: storageURL, options: .atomic)
         } catch {
             Self.logger.error(
-                "Preferences save failed for path \(self.storageURL.path, privacy: .private): \(error.localizedDescription, privacy: .public)"
+                "Preferences save failed for path \(self.storageURL.path, privacy: .private): \(error.localizedDescription, privacy: .private)"
             )
         }
     }
@@ -83,7 +83,7 @@ actor AppPreferencesStore {
                 try fm.copyItem(at: oldDir, to: newDir)
             } catch {
                 logger.error(
-                    "Preferences migration copy failed from \(oldDir.path, privacy: .private) to \(newDir.path, privacy: .private): \(error.localizedDescription, privacy: .public)"
+                    "Preferences migration copy failed from \(oldDir.path, privacy: .private) to \(newDir.path, privacy: .private): \(error.localizedDescription, privacy: .private)"
                 )
             }
         }
