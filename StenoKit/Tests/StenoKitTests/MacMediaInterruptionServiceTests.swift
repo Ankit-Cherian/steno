@@ -3482,11 +3482,13 @@ func releasePreservesAcceptedPauseSettlingWindow() async {
         beginProbe.didComplete = true
         return token
     }
+    // Observe custody on the MainActor before starting the independent sleep
+    // gate's deadline; queued MainActor work must not consume that deadline.
+    let beginCompleted = await waitUntilSatisfied { beginProbe.didComplete }
     let reachedFirstSleep = await sleepGate.waitUntilCount(
         1,
         timeoutMilliseconds: 1_000
     )
-    let beginCompleted = await waitUntilSatisfied { beginProbe.didComplete }
     guard reachedFirstSleep, beginCompleted else {
         begin.cancel()
         await sleepGate.openPermanently()
@@ -3567,11 +3569,13 @@ func newOwnerRestoresPauseRetriesDuringReleaseDrain() async {
         beginProbe.didComplete = true
         return token
     }
+    // Observe custody on the MainActor before starting the independent sleep
+    // gate's deadline; queued MainActor work must not consume that deadline.
+    let beginCompleted = await waitUntilSatisfied { beginProbe.didComplete }
     let reachedFirstSleep = await sleepGate.waitUntilCount(
         1,
         timeoutMilliseconds: 1_000
     )
-    let beginCompleted = await waitUntilSatisfied { beginProbe.didComplete }
     guard reachedFirstSleep, beginCompleted else {
         begin.cancel()
         await sleepGate.openPermanently()
