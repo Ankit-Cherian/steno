@@ -4,7 +4,7 @@ Steno is a free, open-source dictation app for Apple silicon Macs. Hold **Option
 
 [Download](https://github.com/Ankit-Cherian/steno/releases/latest) · [Build from source](QUICKSTART.md) · [Changelog](CHANGELOG.md)
 
-<a href="assets/record.png"><img src="assets/record.png" alt="Steno Dictate with the Terracotta accent in dark mode" width="100%"></a>
+![Steno Dictate with the Terracotta accent in dark mode](assets/record.png)
 
 Steno requires **macOS 13 or later and Apple silicon**. Open the downloaded DMG, drag Steno into Applications, and launch it there. To update, download the latest release and replace the copy in Applications. The downloadable app includes a speech model, so you don't need to set up a separate transcription service. During setup, allow Microphone access to record, Accessibility to insert text, and Input Monitoring to use shortcuts while another app is focused.
 
@@ -22,7 +22,7 @@ Settings also lets you adjust how Steno handles your words:
 
 Most settings wait for **Save changes**; **Discard** restores the saved values. Appearance changes save immediately.
 
-<a href="assets/1.0/history-dark.png"><img src="assets/1.0/history-dark.png" alt="Steno History with fictional sample notes" width="100%"></a>
+![Steno History with fictional sample notes](assets/1.0/history-dark.png)
 
 History keeps your most recent 1,000 dictations on your Mac. Search them, check whether the text was inserted or copied, copy it again, or delete an entry. Insights shows daily activity, streaks, words dictated, time spent, and usage by app. It stores session dates, app identifiers, and usage counts without a second copy of your transcripts or audio. Deleting a History entry leaves those usage totals intact.
 
