@@ -166,11 +166,12 @@ class ReleaseAssetTests(unittest.TestCase):
             root = Path(temp)
             self.write_assets(root)
             assets = publish.validate_assets(root, '1.0.0', SHA)
-            receipt = {'id': 42, 'draft': True, 'target_commitish': SHA, 'assets': [
+            receipt = {'id': 42, 'draft': True, 'prerelease': False, 'target_commitish': SHA, 'assets': [
                 {'name': Path(p).name, 'state': 'uploaded',
                  'digest': 'sha256:' + hashlib.sha256(Path(p).read_bytes()).hexdigest()} for p in assets]}
             publish.verify_remote_assets(receipt, assets, SHA, '42')
-            for change in [{'id': 43}, {'draft': False}, {'target_commitish': 'b' * 40}, {'assets': []}]:
+            for change in [{'id': 43}, {'draft': False}, {'prerelease': True}, {'prerelease': None},
+                           {'target_commitish': 'b' * 40}, {'assets': []}]:
                 with self.subTest(change=change), self.assertRaises(ValueError):
                     publish.verify_remote_assets(dict(receipt, **change), assets, SHA, '42')
             receipt['assets'][0]['digest'] = None
@@ -182,7 +183,7 @@ class ReleaseAssetTests(unittest.TestCase):
         source.mkdir()
         self.write_assets(source)
         payloads = {index: path.read_bytes() for index, path in enumerate(sorted(source.iterdir()), 1)}
-        receipt = {'id': 42, 'draft': True, 'target_commitish': SHA, 'tag_name': 'v1.0.0',
+        receipt = {'id': 42, 'draft': True, 'prerelease': False, 'target_commitish': SHA, 'tag_name': 'v1.0.0',
                    'assets': [{'id': index, 'name': path.name, 'state': 'uploaded',
                                'size': path.stat().st_size,
                                'digest': 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()}
@@ -206,7 +207,7 @@ class ReleaseAssetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             receipt, _ = self.download_fixture(root)
-            cases = [dict(receipt, id=43), dict(receipt, draft=False)]
+            cases = [dict(receipt, id=43), dict(receipt, draft=False), dict(receipt, prerelease=True)]
             evil = json.loads(json.dumps(receipt))
             evil['assets'][0]['name'] = '../../outside.dmg'
             cases.append(evil)
@@ -248,6 +249,94 @@ class ReleaseAssetTests(unittest.TestCase):
                 with self.assertRaises(subprocess.CalledProcessError):
                     publish.main()
                 create.assert_not_called()
+
+
+class LatestReleaseTests(unittest.TestCase):
+    write_assets = ReleaseAssetTests.write_assets
+    download_fixture = ReleaseAssetTests.download_fixture
+
+    def stable(self, version):
+        return {'tag_name': 'v' + version, 'draft': False, 'prerelease': False,
+                'published_at': '2026-09-13T00:00:00Z'}
+
+    def test_version_comparison_covers_every_page_and_uses_numeric_components(self):
+        for version, pages in [('1.0.0', [[]]), ('1.10.0', [[self.stable('1.9.9')]]),
+                               ('2.0.0', [[self.stable('1.0.0')], [self.stable('1.99.9')]])]:
+            with self.subTest(version=version), mock.patch.object(publish.subprocess, 'check_output', return_value=json.dumps(pages)) as call:
+                publish.require_newer_stable_release('owner/repo', version)
+                self.assertIn('--paginate', call.call_args.args[0])
+        for pages in [[[self.stable('0.9.0')], [self.stable('1.0.0')]],
+                      [[self.stable('2.0.0')]], [[self.stable('unrecognized')]]]:
+            with self.subTest(pages=pages), mock.patch.object(publish.subprocess, 'check_output', return_value=json.dumps(pages)):
+                with self.assertRaises(ValueError):
+                    publish.require_newer_stable_release('owner/repo', '1.0.0')
+
+    def test_drafts_and_prereleases_do_not_block_a_new_stable_release(self):
+        pages = [[dict(self.stable('9.0.0'), draft=True),
+                  dict(self.stable('10.0.0-beta'), prerelease=True), self.stable('0.2.0')]]
+        with mock.patch.object(publish.subprocess, 'check_output', return_value=json.dumps(pages)):
+            publish.require_newer_stable_release('owner/repo', '1.0.0')
+
+    def publication_fixture(self, root):
+        draft, _ = self.download_fixture(root)
+        assets = publish.validate_assets(root / 'source', '1.0.0', SHA)
+        published = dict(draft, draft=False, published_at='2026-09-13T00:00:00Z',
+                         html_url='https://github.com/owner/repo/releases/tag/v1.0.0')
+        return draft, assets, published
+
+    def test_publication_sets_full_latest_and_verifies_exact_latest_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            draft, assets, published = self.publication_fixture(Path(temp))
+            responses = [json.dumps([[self.stable('0.2.0')]]), json.dumps(published), json.dumps(published)]
+            with mock.patch.dict(publish.os.environ, {'RELEASE_ID': '42'}), mock.patch.object(publish, 'release_receipt', return_value=draft), mock.patch.object(publish.subprocess, 'check_output', side_effect=responses) as read, mock.patch.object(publish.subprocess, 'run') as write:
+                publish.publish_existing('owner/repo', '1.0.0', SHA, assets)
+                write.assert_called_once()
+                command = write.call_args.args[0]
+                for setting in ['draft=false', 'prerelease=false', 'make_latest=true']:
+                    self.assertIn(setting, command)
+                self.assertEqual(read.call_args.args[0][-1], 'repos/owner/repo/releases/latest')
+
+    def test_prerelease_or_older_version_never_attempts_publication(self):
+        with tempfile.TemporaryDirectory() as temp:
+            draft, assets, _ = self.publication_fixture(Path(temp))
+            for receipt, pages in [(dict(draft, prerelease=True), [[]]),
+                                   (draft, [[self.stable('1.0.0')]]),
+                                   (draft, [[self.stable('2.0.0')]])]:
+                with self.subTest(receipt=receipt, pages=pages), mock.patch.dict(publish.os.environ, {'RELEASE_ID': '42'}), mock.patch.object(publish, 'release_receipt', return_value=receipt), mock.patch.object(publish.subprocess, 'check_output', return_value=json.dumps(pages)), mock.patch.object(publish.subprocess, 'run') as write:
+                    with self.assertRaises(ValueError):
+                        publish.publish_existing('owner/repo', '1.0.0', SHA, assets)
+                    write.assert_not_called()
+
+    def test_failed_listing_never_attempts_publication(self):
+        with tempfile.TemporaryDirectory() as temp:
+            draft, assets, _ = self.publication_fixture(Path(temp))
+            with mock.patch.dict(publish.os.environ, {'RELEASE_ID': '42'}), mock.patch.object(publish, 'release_receipt', return_value=draft), mock.patch.object(publish.subprocess, 'check_output', side_effect=subprocess.CalledProcessError(1, 'gh')), mock.patch.object(publish.subprocess, 'run') as write:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    publish.publish_existing('owner/repo', '1.0.0', SHA, assets)
+                write.assert_not_called()
+
+    def test_latest_identity_or_assets_mismatch_fails_without_second_patch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            draft, assets, published = self.publication_fixture(Path(temp))
+            for change in [{'id': 43}, {'tag_name': 'v0.2.0'}, {'target_commitish': 'b' * 40},
+                           {'prerelease': True}, {'draft': True}, {'assets': []}]:
+                responses = [json.dumps([[]]), json.dumps(published), json.dumps(dict(published, **change))]
+                with self.subTest(change=change), mock.patch.dict(publish.os.environ, {'RELEASE_ID': '42'}), mock.patch.object(publish, 'release_receipt', return_value=draft), mock.patch.object(publish.subprocess, 'check_output', side_effect=responses), mock.patch.object(publish.subprocess, 'run') as write:
+                    with self.assertRaises(ValueError):
+                        publish.publish_existing('owner/repo', '1.0.0', SHA, assets)
+                    write.assert_called_once()
+
+    def test_uncertain_patch_or_postpublication_read_never_retries(self):
+        with tempfile.TemporaryDirectory() as temp:
+            draft, assets, published = self.publication_fixture(Path(temp))
+            for failure_at in ['patch', 'published-read', 'latest-read']:
+                responses = [json.dumps([[]]), subprocess.CalledProcessError(1, 'gh')]
+                if failure_at == 'latest-read':
+                    responses.insert(1, json.dumps(published))
+                with self.subTest(failure_at=failure_at), mock.patch.dict(publish.os.environ, {'RELEASE_ID': '42'}), mock.patch.object(publish, 'release_receipt', return_value=draft), mock.patch.object(publish.subprocess, 'check_output', side_effect=responses), mock.patch.object(publish.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'gh') if failure_at == 'patch' else None) as write:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        publish.publish_existing('owner/repo', '1.0.0', SHA, assets)
+                    write.assert_called_once()
 
 
 if __name__ == '__main__':
