@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 _Target version: 1.0.0. The repeated-Terms fix is complete and accepted in maintainer testing. Release acceptance and distribution approval remain pending._
 
 ### Added
+- Added a shared CI/CD pipeline for contribution tests, runtime and security checks, preview DMGs, and approved signed/notarized releases with artifact provenance. Approved publication advances the default download to a newer stable version and rejects version rollback. Repository activation and release validation remain pending.
 - Added a ribbon S app icon and transparent in-app mark, centered in the sidebar and used throughout onboarding.
 - Added an optional live transcript that follows recording in a nonactivating overlay while preserving the completed recording as the source of final insertion.
 - Added opt-in, bounded nearby-text continuation for insertion spacing and conservative casing, with editor identity revalidation and no persistence of surrounding text.
@@ -17,6 +18,7 @@ _Target version: 1.0.0. The repeated-Terms fix is complete and accepted in maint
 - Added a retained local Whisper context that communicates with a bundled helper over inherited process pipes, without opening a network listener.
 
 ### Changed
+- Reworked the README around the 1.0 interface with current native screenshots using sample data, and aligned source setup and contributor documentation with the new candidate.
 - Unified Dictate, History, Insights, Settings, and onboarding around the Manuscript design, with clearer typography, quieter metadata, responsive reading layouts, and consistent navigation.
 - Replaced the large Dictate control with a centered compact pill that reflects microphone access, listening, elapsed time, and transcription state, with configured shortcuts grouped beneath it.
 - Redesigned the floating overlay as a bounded reading panel that grows downward, follows the current live hypothesis, and keeps Stop and Cancel controls stable. Long previews show a readable portion without changing final transcription.
@@ -32,6 +34,7 @@ _Target version: 1.0.0. The repeated-Terms fix is complete and accepted in maint
 - Direct-distribution builds package the retained-runtime helper and validate its local `whisper.cpp` dependency set alongside the app.
 
 ### Fixed
+- Marked preference errors and application identities in media diagnostics as private in unified logs.
 - Fixed unwanted repeated text such as "Terms, Terms, Terms" appearing without corresponding speech. The retained Whisper helper checks acoustic support and corroborates suspected repetitions with a prompt-free decode while preserving deliberately dictated words.
 - Reject incomplete or malformed capture WAVs before recognition so unfinished audio cannot produce an insertion or history entry.
 - Treat failed voice-activity detection as a transcription failure instead of accepting an invalid speech mask.

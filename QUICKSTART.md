@@ -1,25 +1,32 @@
 # Steno Quickstart
 
-Source setup for Steno on an Apple silicon Mac running macOS 13 or later. The instructions below describe the unreleased 1.0 candidate tree.
-
-The complete candidate is still local development work. A clone of the public default branch does not include all of it. When continuing an existing candidate checkout, preserve that checkout and its changes and skip the clone step. Release acceptance is tracked in [the 1.0 checklist](docs/release/1.0-checklist.md).
+Build and run the unreleased Steno 1.0.0 candidate on an Apple silicon Mac. For an older release, use the guide at that version's tag.
 
 ## Prerequisites
 
-- Xcode and its command-line tools
+- Xcode with Swift 6.2 or later and its command-line tools; CI uses Xcode 26.3
 - XcodeGen
 - CMake
-- an Apple silicon Mac running macOS 13+
-- at least one local Whisper model and the Silero VAD model
+- an Apple silicon Mac running a macOS version supported by your Xcode installation
+- the `small.en` Whisper model and Silero VAD model downloaded in step 1
 - a local Apple Developer Team for an Xcode-run build
 
-Developer ID signing and notarization are separate distribution steps. Local development or ad-hoc signatures do not establish a distributable 1.0 release.
+The app's deployment target is macOS 13 or later. Building requires the newer host OS supported by the selected Xcode version.
+
+Public distribution requires Developer ID signing and notarization, which are not part of this setup.
 
 ## 1) Clone and build local transcription dependencies
+
+Clone the repository, then select the source branch or tag you intend to build. If you already have that checkout, start with the dependency setup below.
 
 ```bash
 git clone https://github.com/Ankit-Cherian/steno.git
 cd steno
+```
+
+From the selected source checkout:
+
+```bash
 git clone https://github.com/ggerganov/whisper.cpp vendor/whisper.cpp
 cd vendor/whisper.cpp
 git checkout 764482c3175d9c3bc6089c1ec84df7d1b9537d83
@@ -27,8 +34,6 @@ cd ../..
 scripts/build-whisper-runtime-helper.sh
 cd vendor/whisper.cpp
 ./models/download-ggml-model.sh small.en
-./models/download-ggml-model.sh medium.en
-./models/download-ggml-model.sh large-v3-turbo
 cd models
 ./download-vad-model.sh silero-v6.2.0
 cd ../../..
@@ -38,28 +43,33 @@ Expected result:
 
 - `vendor/whisper.cpp/build-steno/bin/whisper-cli` exists
 - `vendor/whisper.cpp/build-steno/bin/steno-whisper-runtime` exists
-- at least one canonical model exists under `vendor/whisper.cpp/models/`
+- `ggml-small.en.bin` exists under `vendor/whisper.cpp/models/`
 - `ggml-silero-v6.2.0.bin` exists under `vendor/whisper.cpp/models/`
 
 The helper build verifies the pinned `whisper.cpp` revision, creates arm64 binaries under `vendor/whisper.cpp/build-steno/`, and targets macOS 13. It does not build the Whisper server, RPC backend, or a network-enabled runtime.
 
-Steno curates these canonical local models:
+Start with `small.en`: the source app uses it for default paths and local runtime discovery. Medium and Large V3 Turbo are optional downloads in Settings → Speech model. You can also download them with `./models/download-ggml-model.sh medium.en` or `./models/download-ggml-model.sh large-v3-turbo` from `vendor/whisper.cpp`.
+
+Steno recognizes these model names. Use the advanced path settings for `base.en`:
 
 - `base.en`
 - `small.en`
 - `medium.en`
 - `large-v3-turbo`
 
-Conservative starting points:
+Model recommendations:
 
 | Detected Apple silicon tier | Unified memory | Recommended default |
 |---|---:|---|
 | Base M1 / M2 / M3 | 8GB-16GB | `small.en` |
-| Base M2 / M3 / M4 / M5 | 24GB-32GB | `medium.en` |
-| Pro-tier chips | 16GB-31GB | `medium.en` |
-| Pro / Max chips | 32GB+ | `large-v3-turbo` |
+| Base M4 / M5 | 16GB | `small.en` |
+| Base M2 / M3 | 24GB | `medium.en` |
+| Base M4 / M5 | 24GB-32GB | `medium.en` |
+| M1 / M2 / M3 Pro | 16GB-31GB | `medium.en` |
+| M4 / M5 Pro | 24GB-31GB | `medium.en` |
+| Pro / Max chips | 32GB-128GB | `large-v3-turbo` |
 
-Those are recommendation tiers, not universal validation claims. Exact validated rows live in the compatibility matrix and release-eval artifacts.
+These are starting recommendations. Performance must be measured on the particular Mac and model; the compatibility matrix and release-eval results record which combinations have been tested.
 
 ## 2) Generate the Xcode project
 
@@ -67,10 +77,7 @@ Those are recommendation tiers, not universal validation claims. Exact validated
 xcodegen generate
 ```
 
-Expected result:
-
-- local `Steno.xcodeproj` is up to date
-- the generated project matches `project.yml`
+This generates `Steno.xcodeproj` from `project.yml`.
 
 ## 3) Run in Xcode
 
@@ -82,19 +89,23 @@ Expected result:
    - Accessibility
    - Input Monitoring
 
-## 4) Understand the 1.0 runtime
+If the source runtime is not detected, open Settings → Speech model → Advanced setup and diagnostics. Set absolute paths to `vendor/whisper.cpp/build-steno/bin/whisper-cli`, `vendor/whisper.cpp/models/ggml-small.en.bin`, and `vendor/whisper.cpp/models/ggml-silero-v6.2.0.bin` inside your checkout, then choose Save changes.
 
-Steno starts with the selected model on first use and keeps that Whisper context loaded between compatible dictations. The private helper communicates only through inherited process pipes; it does not run an HTTP server or network listener. Changing the model or VAD configuration invalidates the loaded context, so the next dictation pays the reload cost. The legacy `whisper-cli` path remains available as a fallback if the retained helper cannot complete a request.
+## 4) Use the app
 
-The app uses one Manuscript interface with four sidebar destinations: Dictate, History, Insights, and Settings. The compact Dictate pill reflects the current capture state; Stop ends the active recording mode, while Cancel discards the active capture. Settings changes remain a draft until Save changes; Discard reloads saved preferences. A conflict warning requires reloading before saving.
+The first dictation loads the selected model. Steno keeps it loaded for later recordings and reloads it when the model or voice-activity detection (VAD) configuration changes. The helper communicates through inherited process pipes, with no HTTP server or network listener. Recoverable helper failures can fall back to the local `whisper-cli` engine. Cancellation, stale responses, and VAD integrity failures stop without that retry.
 
-Insights shows a local activity calendar, streaks, words, known dictated time, sessions, average speed, cleanup coverage, and top apps. Its separate ledger stores per-session usage metadata, not transcript text or audio. Deleting History text does not remove the aggregate usage record.
+The sidebar contains Dictate, History, Insights, and Settings. The Dictate button shows the recording state. Stop finishes the recording; Cancel discards it. Most Settings changes stay in a draft: choose Save changes to apply them or Discard to return to saved preferences. Appearance changes save immediately. If another update conflicts with a draft, choose Discard to reload it before saving.
 
-Cleanup is conservative by default: ambiguous language, including `like`, `you know`, `question mark`, `open paren`, and `slash command`, stays literal rather than being automatically converted or removed. Only the explicit aggressive filler policy performs narrow filler removal. Optional media interruption is also fail-closed: Steno sends semantic Pause and Play commands only when it can bind ownership to the exact application and process lineage it observed.
+Insights shows an activity calendar, streaks, words, known dictated time, sessions, average speed, cleanup coverage, and top apps. Its local usage records contain no transcript text or audio. Deleting a transcript from History does not remove its usage record.
 
-Recording settings include an optional live transcript and nearby-text continuation. Live hypotheses are local, bounded overlay content only; the completed WAV still supplies the authoritative transcript. Nearby text is read only from a bounded range around the captured selection, retained only for the active dictation, and never added to transcription prompts or History. Context-derived casing is disabled when the exact editor cannot be revalidated and for code, terminal, remote-desktop, or unknown-language boundaries.
+Cleanup runs locally and preserves ambiguous phrases such as `like`, `you know`, `question mark`, `open paren`, and `slash command`. Only Aggressive cleanup removes its supported filler phrases. Optional media interruption sends Pause and Play to the specific app and process Steno verified; uncertain ownership leaves playback alone.
 
-The directive works with or without nearby context. It is recognized only when, after optional leading Unicode whitespace, the exact case-insensitive first lexical token is `lowercase`, followed by Unicode whitespace and a nonempty payload containing a cased grapheme. It lowercases only the first cased grapheme after normal cleanup. Used alone, non-leading, punctuated (`lowercase,`), quoted, introduced, or code-like, `lowercase` remains literal. To escape the directive, after optional leading Unicode whitespace, start with the exact case-insensitive tokens `literal lowercase`, followed by Unicode whitespace and nonempty text; the output begins `lowercase` without invoking the directive.
+Recording settings include an optional live transcript and nearby-text continuation. The live transcript stays in the local overlay; the completed recording determines the final text. Automatic continuation is limited to English in supported fields in Apple Mail, Notes, and TextEdit. Nearby text is read from a limited range around the selection and discarded after the dictation. It is never added to recognition prompts, History, or Insights. Steno skips continuation in secure or unsupported fields and when it cannot confirm the same editor is still the target.
+
+To lowercase the first letter of the result, begin with `lowercase` followed by whitespace and your text. The command works with or without nearby context. It ignores case and leading Unicode whitespace, requires text containing a cased grapheme, and changes only the first cased grapheme after cleanup. It stays literal when the prefix does not match: for example, `lowercase` alone, `please lowercase Hello`, `lowercase, hello`, `"lowercase hello"`, or `lowercase(Hello)`. A matching command still applies when its payload contains quotes or code, such as `lowercase "Hello"`.
+
+To keep the word itself, begin with `literal lowercase` followed by whitespace and nonempty text. These tokens also ignore case and allow leading Unicode whitespace. The output starts with `lowercase` without applying the command.
 
 ## 5) Automated checks
 
@@ -107,9 +118,9 @@ xcodebuild test -project Steno.xcodeproj -scheme Steno -destination 'platform=ma
 xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
 ```
 
-## 6) Pending manual checks
+## 6) Check a release build
 
-The original unwanted repeated-Terms bug is closed after maintainer testing. The following broader checks remain part of selecting and validating the final 1.0 release build; they do not reopen that bug:
+Validate these behaviors against the exact app build being considered for release:
 
 - Hold `Option` to start dictation immediately, then release to transcribe.
 - Trigger hands-free mode using the configured function key (default `F18`).
@@ -127,13 +138,7 @@ The original unwanted repeated-Terms bug is closed after maintainer testing. The
 - Check short and long dictations, opening words, silence, Stop, Cancel, and a fresh recording immediately after completion.
 - Check keyboard navigation, VoiceOver labels, reduced motion, sleep/wake, an installed app bundle, and a macOS 13 machine.
 
-Record actual results against the exact tested build in [the 1.0 checklist](docs/release/1.0-checklist.md). A transient success or a single dictation does not complete the whole checklist.
-
-Passing the automated commands does not establish any of these manual results. Distribution signing and notarization are also still pending.
-
-## Cleanup behavior
-
-Steno remains local for transcription, provisional display, cleanup, and Insights aggregation. The retained helper has no HTTP or network-listener mode, the Insights ledger excludes transcript text and audio, and bounded nearby editor text remains ephemeral rather than entering prompts, History, or analytics.
+Record each result and the tested build in [the 1.0 checklist](docs/release/1.0-checklist.md). These checks require using the app; automated tests and a single successful dictation cannot cover them all. Distribution signing and notarization remain pending.
 
 ## If something fails
 
@@ -159,8 +164,8 @@ Steno remains local for transcription, provisional display, cleanup, and Insight
 
 - The engine status looks wrong for your hardware
 
-  Re-open Settings -> Speech model after model downloads finish. If you are using a non-canonical or quantized model, expect recommendation text to stay in advanced/manual territory.
+  Re-open Settings → Speech model after model downloads finish. Custom or quantized models may not have a matching hardware recommendation.
 
 - You want benchmark or release-signoff verification instead of just a local run
 
-  Use the repo-level release-eval docs and commands in [README.md](README.md#release-eval) and [docs/release/release-eval.md](docs/release/release-eval.md).
+  Follow [the release-eval guide](docs/release/release-eval.md) and [the 1.0 checklist](docs/release/1.0-checklist.md).

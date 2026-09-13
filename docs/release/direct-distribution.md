@@ -1,186 +1,110 @@
 # Steno Direct Distribution
 
-This document covers the repo’s direct-distribution path for Steno outside the Mac App Store.
+Package Steno as a self-contained app in a DMG for distribution outside the Mac App Store. Users can install it without Xcode, a source checkout, a `whisper.cpp` build, or manual runtime/model path setup.
 
-> **1.0 candidate status:** The repository contains the packaging mechanics described below, including the retained local runtime helper. This preparation does not produce a public release: no Developer ID signing, notarization, stapling, upload, download-link change, installed-app check, or manual macOS acceptance run is claimed here.
+The packaging entry point is `scripts/release-dmg.sh`. Use the preview command below to test it without Apple credentials; its default mode signs and submits the DMG for notarization.
 
-Use [the 1.0 checklist](1.0-checklist.md) before release packaging. The local ad-hoc Debug candidate used during development is not the self-contained Developer ID signed distribution artifact described here. Running the release script is a separate release action; documentation preparation alone does not authorize it.
+The current candidate is unreleased. Its development build is an ad-hoc signed Debug app. Developer ID signing, notarization, stapling, installation, manual macOS checks, hosting, and download-link verification remain pending for the release. Complete [the release checklist](1.0-checklist.md) and obtain release approval before running the signing and publication steps below.
 
-## Goal
+## Prerequisites
 
-Produce a downloadable, self-contained `Steno.app` inside a DMG so users do not need to:
+The app targets Apple silicon and macOS 13 or later. Use a packaging Mac with:
 
-- install Xcode
-- clone the repo
-- build `whisper.cpp`
-- manually point the app at local model/runtime paths
-
-## Current implementation
-
-The repo now includes:
-
-- bundled-runtime discovery in the app
-- bundled `small.en` as the always-available first-run model
-- in-app downloads for `medium.en` and `large-v3-turbo`
-- a distribution entitlements file
-- a `scripts/release-dmg.sh` script that:
-  - builds the audited Apple-silicon `whisper.cpp` runtime targeting macOS 13
-  - builds an unsigned Release app
-  - injects a bundled `whisper.cpp` runtime and model into the app bundle
-  - patches runtime rpaths for the bundled layout
-  - signs the app and DMG with Developer ID Application signing
-  - creates a DMG
-  - optionally notarizes and staples the DMG
-  - includes Steno and third-party license notices
-
-The retained helper communicates only through inherited standard-input and standard-output pipes. It does not open an HTTP server or any other network listener. The app keeps the CLI path as a fallback when retained runtime startup or recovery fails.
-
-## Main script
-
-```bash
-cd /path/to/steno
-scripts/release-dmg.sh
-```
-
-## Build and release prerequisites
-
-The supported distribution target is Apple silicon on macOS 13 or later. A packaging machine needs:
-
-- Xcode and its command-line tools
-- XcodeGen
-- CMake
-- the local `vendor/whisper.cpp` checkout at audited revision `764482c3175d9c3bc6089c1ec84df7d1b9537d83`
-- a successful canonical runtime build in `vendor/whisper.cpp/build-steno`
+- Xcode 26.3 and its command-line tools
+- XcodeGen, CMake, Git, and Python 3.11 or later
+- `vendor/whisper.cpp` at revision `764482c3175d9c3bc6089c1ec84df7d1b9537d83`
 - the selected Whisper model and Silero VAD model
 
-The helper and CLI can be built with:
+Packaging invokes `scripts/build-whisper-runtime-helper.sh` itself: it verifies the pinned source revision and builds the Apple silicon runtime for macOS 13. A prebuilt helper is not required. The selected build directory is writable build state; choose a separate directory when preserving an existing helper. See [local runtime provisioning](../ci-cd.md#local-reproduction) for checksum-verified source and model setup.
 
-```bash
-scripts/build-whisper-runtime-helper.sh
-```
+Run from the repository root with a clean worktree. The script regenerates `Steno.xcodeproj`, builds in its distribution directory, and runs a focused Swift package inference test, which can update the package build cache.
 
-That script verifies the pinned `whisper.cpp` revision and produces the Apple-silicon, macOS-13-targeted runtime in `build-steno`.
+For the signed release flow below, verify that a **Developer ID Application** certificate is available in Keychain and that a saved `notarytool` profile works. The script also supports a notary API key, as used by CI; see its environment options when using that route.
 
-For a signed, notarized public artifact, the machine additionally needs:
-
-- a **Developer ID Application** certificate installed in Keychain
-- a saved `notarytool` keychain profile
-
-Example notary credential setup:
+To save a local profile:
 
 ```bash
 xcrun notarytool store-credentials StenoNotary
 ```
 
-Then the release script can use:
+Pass that profile to the release script:
 
 ```bash
 STENO_NOTARY_PROFILE=StenoNotary scripts/release-dmg.sh
 ```
 
-## Runtime bundle strategy
+## Bundle contents
 
-The downloadable build does not commit giant binaries into git.
+The script builds an unsigned Release app, copies in the runtime and models, patches library rpaths, signs nested code, signs the app with distribution entitlements, and signs the DMG. Its default signed mode then notarizes and staples the DMG. Steno and third-party license notices are included.
 
-Instead, the release script copies a local runtime into the app bundle from a detected or specified `whisper.cpp` checkout:
+| Component | Location in the app |
+| --- | --- |
+| Standalone CLI | `Steno.app/Contents/Helpers/whisper-cli` |
+| Retained helper | `Steno.app/Contents/Helpers/steno-whisper-runtime` |
+| Required `libwhisper` and `libggml*` libraries | `Steno.app/Contents/Frameworks/` |
+| Selected Whisper model and Silero VAD model | `Steno.app/Contents/Resources/WhisperModels/` |
 
-- `whisper-cli`
-- `steno-whisper-runtime`, a private inherited-pipe helper with no listener
-- required `libwhisper` / `libggml*` dylibs
-- one selected canonical model
-- the VAD model
+Keep these binaries out of Git. The app detects and prefers the bundled runtime on first launch. The retained helper communicates through inherited standard-input and standard-output pipes, with no HTTP server or network listener. The CLI remains available when helper startup or recovery fails.
 
-They are copied into standard macOS bundle locations:
-
-- helper CLI: `Steno.app/Contents/Helpers/whisper-cli`
-- retained helper: `Steno.app/Contents/Helpers/steno-whisper-runtime`
-- dylibs: `Steno.app/Contents/Frameworks/`
-- model files: `Steno.app/Contents/Resources/WhisperModels/`
-
-The app now prefers that bundled runtime automatically on first launch when it exists.
-
-The release script uses `vendor/whisper.cpp/build-steno` by default. Override the build directory only when validating another canonical build:
+The default runtime build directory is `vendor/whisper.cpp/build-steno`. To build the runtime in a separate directory for a preview:
 
 ```bash
-STENO_BUNDLED_WHISPER_BUILD_DIR=/absolute/path/to/build-steno \
-scripts/release-dmg.sh
+STENO_BUNDLED_WHISPER_BUILD_DIR=/absolute/path/to/new-build-steno \
+scripts/release-dmg.sh --unsigned-preview
 ```
 
-Packaging fails closed if the audited source revision is not clean, a runtime binary requires newer than macOS 13, the runtime is not Apple-silicon-only, a dependency is missing, or the retained helper imports listener-related network symbols.
+Packaging stops if the pinned source revision is wrong or has tracked changes, the runtime requires a newer macOS version than 13, the binaries are not Apple-silicon-only, a dependency is missing, or the retained helper imports listener-related network symbols. The script also checks bundle contents, rpaths, and license notices.
 
-## Choosing the bundled model
+## Bundled model
 
-By default, the script prefers the first locally available canonical model in this order:
+The script selects the first available model in this order:
 
 1. `ggml-small.en.bin`
 2. `ggml-base.en.bin`
 3. `ggml-medium.en.bin`
 4. `ggml-large-v3-turbo.bin`
 
-You can override this explicitly:
+The release workflow explicitly bundles `small.en` for first use. Users can download `medium.en` or `large-v3-turbo` in the app. To choose the bundled model explicitly:
 
 ```bash
-STENO_BUNDLED_MODEL_PATH=/absolute/path/to/ggml-small.en.bin scripts/release-dmg.sh
+STENO_BUNDLED_MODEL_PATH=/absolute/path/to/ggml-small.en.bin \
+scripts/release-dmg.sh --unsigned-preview
 ```
 
-## Dry run vs real release
+## Test packaging
 
-### Mechanical dry run
-
-If you only want to test the packaging pipeline:
+To check the build script, bundled runtime, and DMG layout without Apple credentials:
 
 ```bash
 scripts/release-dmg.sh --unsigned-preview
 ```
 
-This is useful for:
+This creates an ad-hoc signed `-preview.dmg`, not a public release. Preview helpers omit hardened-runtime options so their ad-hoc libraries can load; production signatures retain hardened runtime. `--skip-notarize` still requires Developer ID signing. Use it only to inspect a signed artifact before separately approved notarization.
 
-- build-script debugging
-- runtime-bundling validation
-- DMG layout checks
+Each run creates a new `build/distribution-<timestamp>-<pid>` directory. The default helper build still writes to `vendor/whisper.cpp/build-steno`; use `STENO_BUNDLED_WHISPER_BUILD_DIR` as above to keep an existing helper unchanged. If you set `STENO_DIST_DIR`, use an absolute path to a new, dedicated directory under `build` or the temporary directory. The script protects existing output, protected roots, and `build/Steno.app` from replacement.
 
-This mode uses ad-hoc signatures and a `-preview.dmg` filename. It requires no Apple credentials and is **not** the final public artifact path. Preview helpers omit hardened-runtime options so their ad-hoc libraries can load; production signatures retain hardened runtime. `--skip-notarize` still requires Developer ID signing and is reserved for inspecting a signed artifact before a separately approved notarization.
+## Build and verify the release
 
-Every invocation uses a new `build/distribution-<timestamp>-<pid>` directory. An explicit `STENO_DIST_DIR` must be an absolute, nonexistent dedicated directory. Existing output, protected roots, and the canonical `build/Steno.app` are protected from replacement. Prefer a path under `build` or the temporary directory.
-
-### Real public release
-
-Use:
+With release approval, a Developer ID Application certificate, and the saved notary profile:
 
 ```bash
 STENO_NOTARY_PROFILE=StenoNotary scripts/release-dmg.sh
 ```
 
-with a real `Developer ID Application` certificate available.
-
-## Validation checklist
-
-### Automated packaging checks
-
-The script checks the runtime architecture and deployment target, required dependencies, helper listener symbols, bundle contents, rpaths, and included Steno and third-party license notices. Those checks establish packaging properties only; they do not establish signing, notarization, installation, launch, microphone, media-interruption, insertion, UI, VoiceOver, or OS-compatibility behavior.
-
-After a real signed run, validate the exact generated artifact (substitute the output directory and version printed by the script):
+Verify the exact output, substituting the directory and version printed by the script:
 
 - `codesign --verify --deep --strict --verbose=2 <output-directory>/Steno.app`
 - `codesign --verify --verbose=2 <output-directory>/Steno-<version>.dmg`
 - `xcrun stapler validate <output-directory>/Steno-<version>.dmg`
 - `spctl -a -vv -t open --context context:primary-signature <output-directory>/Steno-<version>.dmg`
 
-### Pending release and manual proof
+Before publishing, record the following against that artifact:
 
-Before calling a 1.0 artifact releasable, separately complete and record:
+- Developer ID signatures, notarization, stapling, and Gatekeeper validation.
+- Installation and first launch from the DMG on supported Apple silicon Macs, including macOS 13.
+- Microphone capture, media pause/resume, editor insertion, Settings, History, Insights, UI, and VoiceOver/accessibility checks from the release checklist.
+- Release hosting and the actual download link after the approved upload.
 
-- Developer ID signing, notarization, stapling, and Gatekeeper validation
-- installation and first-launch checks from the produced DMG on supported Apple-silicon Macs
-- the release checklist’s microphone, media interruption, insertion, settings, history, Insights, UI, and accessibility checks
-- a macOS 13 compatibility run
-- release hosting and download-link verification
+A packaging check or successful build cannot substitute for these results. Keep each item pending until it has been checked on the release artifact.
 
-## Current blocker
-
-For the unreleased 1.0 candidate, the packaging path exists, but a public notarized DMG is not established by this preparation. Release time still requires verified credentials and fresh receipts:
-
-- an available `Developer ID Application` certificate must be verified
-- an available `notarytool` keychain profile must be verified
-
-Once those exist, `scripts/release-dmg.sh` is intended to be the end-to-end packaging path. This document does not claim that a 1.0 DMG has been signed, notarized, uploaded, or made available for download.
+For GitHub publication, use the [release workflow](../ci-cd.md#release-operation), which creates checksums, a source manifest, final-DMG attestation, and a verified draft. The local packaging script does not upload a release or create that publication provenance. If notarization times out, inspect `release-notary-receipt.json` in the output directory and query that submission before considering another upload; an unavailable submission ID means the outcome remains unknown.

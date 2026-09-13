@@ -1,41 +1,24 @@
 # StenoKit
 
-## Prompt-verification regression checks
+`StenoKit` contains Steno's audio capture, Whisper runtime, text cleanup, insertion, history, usage analytics, and media controls. It also provides the benchmark runner and release-evaluation tools.
 
-The retained helper has separate decision and real-inference checks. From the repository root, run `bash scripts/test-whisper-prompt-verification.sh` for the shared decision rules and `bash scripts/test-whisper-prompt-scoring.sh` for the scorer. The scorer requires the local whisper.cpp build, a model, the JFK sample, and macOS speech synthesis; its defaults are `small.en` and the Samantha voice. Set `STENO_TEST_WHISPER_MODEL` explicitly for each additional model, and `STENO_TEST_SPEECH_VOICE` to test another installed voice. Generated speech can vary between macOS voice versions.
+The macOS app in `Steno/` connects these services to its windows, settings, onboarding, menu bar, and application lifecycle. The package includes the recording overlay's presentation and layout helpers.
 
-The opt-in coordinator suite requires an external bundle of public or synthetic 16 kHz mono PCM WAVs. Copy its manifest and audio together; each audio path is relative to the manifest. A passing ordinary package run does not execute this suite. Use explicit local inputs and a new receipt directory:
+Requires Swift 6.2 or later. The package targets macOS 13 or later; the app and native runtime build use Apple silicon. See [the source setup guide](../QUICKSTART.md) for the Xcode host requirements and local runtime setup.
 
-```sh
-STENO_TEST_RETAINED_HELPER=/absolute/path/to/steno-whisper-runtime \
-STENO_TEST_WHISPER_MODEL=/absolute/path/to/model.bin \
-STENO_TEST_WHISPER_VAD=/absolute/path/to/vad-model.bin \
-STENO_TEST_PROMPT_MANIFEST=/absolute/path/to/fixture-bundle/manifest.json \
-STENO_TEST_PROMPT_RECEIPTS=/absolute/path/to/new-receipts \
-bash scripts/test-prompt-isolation.sh
-```
-
-The manifest schema is documented in `PromptIsolationIntegrationTests.swift`: `publicOrSyntheticAudio: true` and fixtures containing `id`, `audio`, `expectedText`, and `hotTerms`. Required cases cover ordinary speech, literal and repeated terms, vocabulary, pauses, and silence. References must be independently supplied, and exact audio hashes must accompany evaluation results. Omit the VAD variable only for a deliberately separate diagnostic run. The runner creates an isolated Swift build cache unless `STENO_TEST_SWIFT_SCRATCH_PATH` is supplied.
-
-This suite exercises press-to-talk with preview enabled and disabled, the retained helper, cleanup, isolated insertion, and file history. It does not exercise a microphone, native editor delivery, or hands-free mode. Per-window helper diagnostics are available in rich output to external harnesses; they are not persisted by the app.
-
-Core package for Steno’s local-first dictation, retained Whisper runtime, cleanup, insertion, usage analytics, media interruption, compatibility, and benchmark stack.
-
-`StenoKit` is the non-UI engine that powers the macOS app in `Steno/`. The app layer owns SwiftUI views, dependency and lifecycle wiring, and window orchestration; `StenoKit` owns the reusable logic that turns audio into text, cleans it up, inserts it safely, persists transcript and aggregate usage data, coordinates exact-app media interruption, and evaluates release quality.
-
-## What Lives Here
+## Package contents
 
 ### Runtime services
 
-- `SessionCoordinator`: actor-owned orchestration for the dictation lifecycle
+- `SessionCoordinator`: actor that manages a dictation from capture through insertion and history
 - `MacAudioCaptureService`: local audio capture
 - `WhisperCLITranscriptionEngine`: local `whisper.cpp` adapter
-- `RetainedWhisperTranscriptionEngine`: serial retained-context runtime with CLI fallback, cancellation, configuration invalidation, and shutdown handling
+- `RetainedWhisperTranscriptionEngine`: reuses a loaded model, serializes requests, and handles CLI fallback, cancellation, configuration changes, and shutdown
 - `RuleBasedCleanupEngine`: local cleanup pipeline
 - `InsertionService`: target-aware insertion routing
 - `HistoryStore`: transcript persistence and recovery
 - `UsageAnalyticsStore`: separate aggregate per-session usage persistence and calculation
-- `MacMediaInterruptionService`: fail-closed exact-application Pause/Play ownership
+- `MacMediaInterruptionService`: pauses and resumes only the app it verifies, leaving uncertain playback state alone
 - `PersonalLexiconService`: term correction and alias handling
 - `StyleProfileService`: cleanup policy selection
 - `SnippetService`: phrase expansion
@@ -43,14 +26,14 @@ Core package for Steno’s local-first dictation, retained Whisper runtime, clea
 
 ### Models and state
 
-- transcript models with richer segment metadata
+- transcript models with segment metadata
 - recording state-machine models
-- profile and preference-facing cleanup policy types
+- cleanup policies used by profiles and preferences
 - hardware/model compatibility types
-- aggregate usage events, quality provenance, calendar summaries, streaks, speed, and per-app metrics
+- usage events with measurement sources, calendar summaries, streaks, speed, and per-app metrics
 - retained-runtime load identity and lifecycle configuration
 
-### Benchmark and release-eval infrastructure
+### Benchmarks
 
 - `StenoBenchmarkCLI`
 - `StenoBenchmarkCore`
@@ -61,7 +44,7 @@ Core package for Steno’s local-first dictation, retained Whisper runtime, clea
 
 ## Public Interfaces
 
-Key package interfaces include:
+The main interfaces are:
 
 - `AudioCaptureService`
 - `TranscriptionEngine`
@@ -75,26 +58,20 @@ Key package interfaces include:
 
 ## Unreleased 1.0 Package Changes
 
-- Retained local Whisper context between compatible dictations, using a private inherited-pipe helper with no HTTP server or network listener
-- Versioned retained-helper streaming for bounded provisional hypotheses, cooperative cancellation, final priority, and canonical PCM count/digest validation
-- Ephemeral stable/revisable transcript reduction with session, controller, runtime, revision, and audio-watermark isolation
-- VAD-confirmed silence skips unnecessary provisional recognition while preserving resumed speech, unknown evidence, and authoritative final decoding
-- A bounded, line-aware overlay viewport that renders the current hypothesis without stitching old previews or altering final text
-- Bounded exact-editor context, target revalidation, insertion-only continuation shaping, and secure/unsupported-field exclusion
-- Frozen `lowercase <payload>` directive plus `literal lowercase <text>` escape, both applied around the existing cleanup pipeline
-- Per-request `whisper-cli` fallback after retained-helper failure, plus cancellation, unload, shutdown, and load-identity invalidation
-- First-use loading and reload after model, VAD, or other load-identity changes
-- Local usage analytics for the app's Insights tab: calendar activity, streaks, words, known time, sessions, weighted speed, cleanup coverage, and top apps
-- Aggregate per-session analytics that exclude transcript text and audio and persist separately from transcript history
-- Exact-application media Pause/Play ownership with fail-closed playback evidence and rapid-restart/cancellation protection
-- Conservative cleanup that preserves ambiguous language, repairs, punctuation, and lexicon intent; only explicit aggressive cleanup performs narrow filler removal
-- Reproducible benchmark identities plus retained-runtime and hosted macOS test coverage
+- Whisper stays loaded between compatible dictations in a private helper connected through inherited pipes, with no network listener. The first request loads the model; changes to the model, VAD, or other load configuration require a reload. Cancellation, unloading, and shutdown release retained resources. Recoverable helper failures can use a per-request CLI fallback; cancellation, stale responses, and VAD integrity failures do not.
+- The versioned streaming protocol supports live transcripts, cooperative cancellation, and priority for final recognition. It validates PCM frame counts and digests. Session, controller, runtime, revision, and audio-watermark checks prevent stale previews from reaching a newer recording.
+- Live text can revise itself. The overlay displays a limited, line-aware portion of the current text without joining previous previews or changing the final transcript. Voice-activity detection skips preview decoding only for confirmed new silence; resumed speech, unknown evidence, and final decoding retain their normal paths.
+- Nearby editor text is limited to the active target and checked again before insertion. Automatic continuation is restricted to English in supported fields in Apple Mail, Notes, and TextEdit; secure and unsupported fields are excluded. The independent `lowercase <payload>` command and `literal lowercase <text>` escape run around the existing cleanup steps.
+- Insights stores session metadata separately from transcript history, without transcript text or audio. It provides calendar activity, streaks, words, known time, session counts, weighted speed, cleanup coverage, and top apps.
+- Media Pause and Play commands apply only to the verified app and process. Uncertain playback state, cancellation, and rapid restarts cannot authorize an unrelated resume.
+- Cleanup preserves ambiguous language, repairs, punctuation, and lexicon intent. Only explicitly selected Aggressive cleanup removes its supported filler phrases.
+- Benchmark results identify their inputs and runtime. Package and hosted macOS tests cover the retained runtime and related app behavior.
 
 The retained helper is built from the audited `whisper.cpp` revision `764482c3175d9c3bc6089c1ec84df7d1b9537d83` into `vendor/whisper.cpp/build-steno/bin/`. The canonical build targets Apple silicon and macOS 13+, disables the server, RPC, and CURL paths, and keeps the standalone CLI available.
 
-## Test Surface
+## Test coverage
 
-`swift test --package-path StenoKit` now covers:
+`swift test --package-path StenoKit` covers:
 
 - cleanup ranking and repair-aware candidate generation
 - literal-preservation counterexamples
@@ -123,14 +100,14 @@ cd /path/to/steno
 swift test --package-path StenoKit
 ```
 
-Run the smoke benchmark:
+Run the smoke benchmark with Python 3 available. The script generates its synthetic inputs automatically:
 
 ```bash
 cd /path/to/steno
 scripts/run-smoke-benchmark.sh
 ```
 
-Run the full release-eval path:
+Run the release evaluation with Python 3 and the prepared LibriSpeech WAV subset described in [the evaluation guide](../docs/release/release-eval.md). The script expects specific filenames and reference text, not an arbitrary LibriSpeech directory:
 
 ```bash
 cd /path/to/steno
@@ -141,20 +118,26 @@ STENO_LIBRISPEECH_ROOT=/absolute/path/to/librispeech_test_clean \
 scripts/run-release-eval.sh
 ```
 
-## Integration Boundaries
+## Prompt-verification regression checks
 
-The host app in `Steno/` still owns:
+The retained helper has separate decision and real-inference checks. From the repository root, run `bash scripts/test-whisper-prompt-verification.sh` for the shared decision rules and `bash scripts/test-whisper-prompt-scoring.sh` for the scorer. The scorer requires the local whisper.cpp build, a model, the JFK sample, Python 3, and macOS speech synthesis; its defaults are `small.en` and the Samantha voice. Set `STENO_TEST_WHISPER_MODEL` explicitly for each additional model, and `STENO_TEST_SPEECH_VOICE` to test another installed voice. Generated speech can vary between macOS voice versions.
 
-- SwiftUI views and app window structure
-- settings screens and onboarding UI
-- app lifecycle wiring
-- menu bar integration
-- final macOS presentation polish
-- the Dictate, History, Insights, and Settings navigation
+The opt-in coordinator suite requires public or synthetic 16 kHz mono PCM WAVs. Keep the manifest and audio together; audio paths are relative to the manifest. The normal package command does not run this suite. Supply the local files and a new output directory:
 
-`StenoKit` intentionally keeps those concerns out of the package so the runtime and evaluation stack remain testable and reusable.
+```sh
+STENO_TEST_RETAINED_HELPER=/absolute/path/to/steno-whisper-runtime \
+STENO_TEST_WHISPER_MODEL=/absolute/path/to/model.bin \
+STENO_TEST_WHISPER_VAD=/absolute/path/to/vad-model.bin \
+STENO_TEST_PROMPT_MANIFEST=/absolute/path/to/fixture-bundle/manifest.json \
+STENO_TEST_PROMPT_RECEIPTS=/absolute/path/to/new-receipts \
+bash scripts/test-prompt-isolation.sh
+```
 
-Package and hosted tests are automated evidence only. They do not establish live microphone capture, supported-player behavior, real-app insertion, UI or VoiceOver behavior, an installed signed app, notarization, or execution on macOS 13; those checks require separate manual or distribution evidence.
+The manifest schema is documented in [PromptIsolationIntegrationTests.swift](Tests/StenoKitTests/PromptIsolationIntegrationTests.swift): `publicOrSyntheticAudio: true` and fixtures containing `id`, `audio`, `expectedText`, and `hotTerms`. Required cases cover ordinary speech, literal and repeated terms, vocabulary, pauses, and silence. References must be independently supplied, and exact audio hashes must accompany evaluation results. Omit the VAD variable only for a deliberately separate diagnostic run. The runner creates an isolated Swift build cache unless `STENO_TEST_SWIFT_SCRATCH_PATH` is supplied.
+
+This suite exercises press-to-talk with preview enabled and disabled, the retained helper, cleanup, isolated insertion, and file history. It does not exercise a microphone, native editor delivery, or hands-free mode. Per-window helper diagnostics are available in rich output to external harnesses; they are not persisted by the app.
+
+Package and hosted tests do not replace checks with a microphone, supported media players, real editors, VoiceOver, or an installed app on macOS 13. Signing and notarization also require separate verification. See the release checklist below.
 
 ## Related Docs
 

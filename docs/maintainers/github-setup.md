@@ -9,7 +9,7 @@ Review the change, integrate it into the intended default branch, and observe a 
 Use the **Checks** UI or the check-runs API to obtain the actual check names, including any reusable-workflow prefix:
 
 ```bash
-gh api repos/Ankit-Cherian/steno/commits/main/check-runs \
+gh api --paginate repos/Ankit-Cherian/steno/commits/main/check-runs \
   --jq '.check_runs[] | {name,conclusion,app:.app.slug,details_url}'
 ```
 
@@ -24,11 +24,11 @@ Create an active **branch ruleset** for the default branch with:
 - No bypass actors for these check requirements, including the maintainer.
 - Block force pushes and branch deletion.
 
-Keep the existing review/conversation/linear-history protections. Require code-owner review for outside contributions to the sensitive paths in `.github/CODEOWNERS`.
+Inspect and preserve any existing review, conversation-resolution, and linear-history protections; configure the intended policy if it is absent. Require code-owner review for outside contributions to the sensitive paths in `.github/CODEOWNERS`.
 
 For a sole maintainer, keep review policy separate from the required-check ruleset: the maintainer may need a review-policy bypass for their own contribution because GitHub does not permit self-approval of a PR. That exception must not bypass CI or security checks. Once there is another trusted maintainer, require independent review for maintainer changes as well. A protection that nobody can satisfy is not a useful release process.
 
-Preserve the existing `v*` tag update/deletion protection. Enable immutable releases if available, after reviewing its irreversible effects; attach all intended assets before publishing. Do not rewrite existing release tags.
+Verify that a tag ruleset protects `v*` tags against updates and deletion, preserving any existing protection. Enable immutable releases if available, after reviewing its irreversible effects; attach all intended assets before publishing. Do not rewrite existing release tags.
 
 ## 3. Harden repository automation
 
@@ -89,7 +89,7 @@ Record the source SHA and links to these results:
 - A failed-check PR that cannot merge under the new rules.
 - A release approval pause that cannot be bypassed through an unprotected branch.
 - A successful signed/notarized draft with matching tag, source, final DMG hash and attestation, once release acceptance is approved.
-- A separately approved publication with verified release ID and unchanged uploaded asset digests.
+- A separately approved publication with verified release ID, unchanged uploaded asset digests, and the same release at `/releases/latest`.
 
 A draft is not a public release. A signed build is not proof of notarization. A green local check is not proof of a hosted workflow. Keep the [release checklist](../release/1.0-checklist.md) and [operating guide](../ci-cd.md) with the actual run receipts.
 

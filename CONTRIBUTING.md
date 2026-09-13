@@ -1,27 +1,23 @@
 # Contributing to Steno
 
-Thanks for your interest in contributing to Steno.
+For local app setup, start with [QUICKSTART.md](QUICKSTART.md). This guide covers changes to the unreleased 1.0.0 source. Use the documentation for the branch or tag you are working on.
 
-If you want to use the app locally, start with [QUICKSTART.md](QUICKSTART.md). This guide is for contributors working on the repo itself.
-
-Pull requests run the [CI and security pipeline](docs/ci-cd.md), including package/hosted tests, runtime contracts, a public-audio smoke benchmark and a self-contained preview build. That guide explains failed checks, artifacts, local reproduction and the separate approved release path. Maintainers must complete [GitHub activation](docs/maintainers/github-setup.md) to enforce the checks.
+The [CI guide](docs/ci-cd.md) explains package and hosted tests, runtime checks, the public-audio smoke benchmark, preview builds, and how to reproduce failures locally. Maintainers must complete [GitHub activation](docs/maintainers/github-setup.md) to enforce these checks. Release requirements are tracked in [the 1.0 checklist](docs/release/1.0-checklist.md).
 
 ## Prerequisites
 
-Before you start:
-
 - an Apple silicon Mac
-- macOS 13.0+
-- Xcode 26+
+- a macOS version supported by your Xcode installation; the app's deployment target is macOS 13.0+
+- Xcode with Swift 6.2 or later; CI uses Xcode 26.3
 - XcodeGen (`brew install xcodegen`)
 - CMake (`brew install cmake`)
 - a local `whisper.cpp` checkout at the pinned revision, built under `vendor/whisper.cpp/build-steno`
-- at least one canonical Whisper model
+- the `small.en` Whisper model for default source-app setup and runtime discovery
 - the Silero VAD model for the canonical app and release-eval configuration
 
 ## First-Time Setup
 
-1. Clone the repository:
+1. Clone the repository, then select the branch or tag you intend to contribute to:
 
    ```bash
    git clone https://github.com/Ankit-Cherian/steno.git
@@ -38,19 +34,19 @@ Before you start:
    scripts/build-whisper-runtime-helper.sh
    ```
 
-   This canonical build disables host-specific CPU tuning, BLAS, RPC, CURL, and the Whisper server while retaining Accelerate and Metal. It produces arm64 `whisper-cli` and `steno-whisper-runtime` binaries under `vendor/whisper.cpp/build-steno/bin/` for the app's macOS 13 deployment target.
+   This build disables host-specific CPU tuning, BLAS, RPC, CURL, and the Whisper server while retaining Accelerate and Metal. It produces arm64 `whisper-cli` and `steno-whisper-runtime` binaries under `vendor/whisper.cpp/build-steno/bin/` for macOS 13 or later.
 
-3. Download local models:
+3. Download the default model and VAD model:
 
    ```bash
    cd vendor/whisper.cpp
    ./models/download-ggml-model.sh small.en
-   ./models/download-ggml-model.sh medium.en
-   ./models/download-ggml-model.sh large-v3-turbo
    cd models
    ./download-vad-model.sh silero-v6.2.0
    cd ../../..
    ```
+
+   Medium and Large V3 Turbo are optional downloads in Settings → Speech model. Additional evaluation models can be downloaded with `./models/download-ggml-model.sh medium.en` or `./models/download-ggml-model.sh large-v3-turbo` from `vendor/whisper.cpp`.
 
 4. Generate the local Xcode project:
 
@@ -60,15 +56,11 @@ Before you start:
 
 5. Open `Steno.xcodeproj`, set your Apple Developer Team in Signing & Capabilities, and run the app locally.
 
-## Continuing the 1.0 Candidate
-
-The candidate uses a single Manuscript interface and remains under local testing and refinement. Continue the existing candidate checkout when working on that effort; preserve uncommitted work and verify the branch before edits. A public clone may not contain the complete candidate. [The 1.0 checklist](docs/release/1.0-checklist.md) separates development checks from final release acceptance.
-
-Documentation changes alone call for source/claim checks, link validation, and a diff review. Substantial code changes require the checks below; historical test receipts cannot validate a later edit.
+   If runtime discovery fails, follow the explicit path setup in [QUICKSTART.md](QUICKSTART.md#3-run-in-xcode).
 
 ## Daily Development Loop
 
-For normal code changes, the expected validation path is:
+For substantial code changes, run:
 
 ```bash
 cd /path/to/steno
@@ -77,17 +69,19 @@ xcodegen generate
 xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
 ```
 
-Use that as the default automated “done” bar for substantial work. It does not prove live microphone capture, supported-player media interruption, insertion into real applications, UI appearance, VoiceOver behavior, an installed app bundle, or macOS 13 compatibility; run and report those checks separately when the change requires them.
+Run the relevant hosted tests for app behavior or UI changes. Check microphone capture, media interruption, editor insertion, appearance, VoiceOver, installation, and macOS 13 behavior in the app when your change affects them. Automated tests alone cannot verify those interactions.
 
-## Unreleased 1.0 Architecture Boundaries
+For documentation-only changes, verify the claims against source, check links and commands, and review the diff. Always report results for the source you actually tested.
+
+## Architecture
 
 ### Retained Whisper runtime
 
-`steno-whisper-runtime` is a private child process that keeps a compatible Whisper model context loaded between dictations. It communicates over inherited pipes and must not expose an HTTP server or other network listener. The first request loads the model; changes to model, VAD path, or another load identity invalidate that context and make the next request reload it. Cancellation, shutdown, sleep/wake recovery, memory pressure, and helper failure must release or invalidate retained resources safely. `WhisperCLITranscriptionEngine` remains the per-request fallback.
+`steno-whisper-runtime` is a private child process that keeps the Whisper model loaded between compatible dictations. It communicates over inherited pipes and must not expose a network listener. The first request loads the model; changes to the model, VAD path, or another part of its load configuration require a reload. Cancellation, shutdown, sleep/wake recovery, memory pressure, and helper failure must release or invalidate retained resources safely. Recoverable helper failures can use `WhisperCLITranscriptionEngine` for the request. Cancellation, stale responses, and VAD integrity failures must not trigger that fallback.
 
 ### Insights privacy and persistence
 
-Insights is a primary sidebar destination. Its local ledger records per-session aggregate metadata—timestamps, application identifiers, word and duration counts with provenance, cleanup counts, and insertion outcomes—not transcript text or audio. It persists independently of transcript history, so deleting History content does not delete aggregate usage totals. Keep migrations, corruption recovery, and UI copy honest about exact versus estimated metrics.
+The Insights ledger stores session timestamps, application identifiers, word and duration counts and their sources, cleanup counts, and insertion outcomes. It contains no transcript text or audio. Deleting History content does not delete usage totals. Preserve this separation during migrations and corruption recovery, and distinguish measured from estimated values in the UI.
 
 ### Media and cleanup safety
 
@@ -97,22 +91,20 @@ Default cleanup must preserve ambiguous dictated language. Phrases such as `like
 
 ## Release-Eval and Benchmark Workflow
 
-Steno has two distinct benchmark paths.
-
 ### Smoke benchmark
 
-Use this to confirm the repo-level benchmark machinery is still healthy:
+Check that the benchmark runner and report generation work. Python 3 is required; the script generates its synthetic inputs automatically:
 
 ```bash
 cd /path/to/steno
 scripts/run-smoke-benchmark.sh
 ```
 
-This is a fast fixture path. It is not release evidence.
+This uses fixtures and does not measure recognition quality or release latency. Changes to transcription, runtime behavior, post-processing, cleanup, ranking, or benchmark logic also need real-audio evaluation with the report and zero-regression pipeline gates in [the evaluation guide](docs/release/release-eval.md): no increase in WER or CER, and no regressed samples.
 
 ### Full release signoff
 
-Use this when you need a measured verdict for one exact hardware/model row:
+Measure a specific hardware and model combination. This requires Python 3 and the prepared LibriSpeech WAV subset described in [the evaluation guide](docs/release/release-eval.md). The script expects specific filenames and reference text; an unprepared LibriSpeech download is not sufficient.
 
 ```bash
 cd /path/to/steno
@@ -123,16 +115,7 @@ STENO_LIBRISPEECH_ROOT=/absolute/path/to/librispeech_test_clean \
 scripts/run-release-eval.sh
 ```
 
-Important boundaries:
-
-- smoke fixtures are preflight only
-- release signoff is row-specific
-- `not_evaluable` metrics should not be presented as real passes or real failures
-- generated release outputs are local audit artifacts, not tracked source files
-
-For the detailed workflow, see [docs/release/release-eval.md](docs/release/release-eval.md).
-
-For the self-contained DMG distribution path, see [docs/release/direct-distribution.md](docs/release/direct-distribution.md).
+Results apply to the tested hardware and model. A `not_evaluable` metric is neither a pass nor a failure: the run did not establish that result. Keep generated reports out of Git. See [the evaluation guide](docs/release/release-eval.md) for details and [the distribution guide](docs/release/direct-distribution.md) for DMG packaging.
 
 ## Code Style
 
@@ -151,7 +134,7 @@ For the self-contained DMG distribution path, see [docs/release/direct-distribut
 - Follow the single Manuscript design and its semantic typography/color roles; preserve saved accents and the transparent in-app mark
 - Keep the compact Dictate action and configured shortcuts together; preserve mode-aware Stop and a separate Cancel action
 - Keep overlay text display-only, bounded, revision-aware, and readable across light/dark modes and supported window sizes
-- Keep Settings drafts, persistent Save changes/Discard controls, and conflict protection intact
+- Keep Settings drafts, persistent Save changes/Discard controls, and conflict protection intact; appearance changes save immediately
 - Synthetic review fixtures must stay isolated from microphone, global shortcuts, system permissions, playback, and personal storage
 
 ### General engineering rules
@@ -208,7 +191,7 @@ rerun:
 xcodegen generate
 ```
 
-Do not commit generated Xcode project churn unless the repo policy changes to explicitly track it again.
+Do not commit the generated Xcode project unless the repository starts tracking it again.
 
 ## Code Signing and TCC
 
@@ -226,25 +209,25 @@ Changing those in tracked source can invalidate user TCC permissions and force r
 - Accessibility
 - Input Monitoring
 
-Local Xcode runs require selecting an Apple Developer Team. Automated package tests and unsigned command-line builds do not. Public distribution additionally requires the maintainer's Developer ID signing identity, hardened runtime configuration, notarization credentials, and stapling/verification workflow. Do not treat an unsigned build as distribution proof; signing and notarization are separate release actions.
+Local Xcode runs require selecting an Apple Developer Team. Package tests and unsigned command-line builds do not. Public distribution requires Developer ID signing, hardened runtime, notarization, stapling, and verification of the resulting artifact. Follow the distribution guide when preparing a release.
 
 ## Pull Request Checklist
 
-Before opening a PR:
+Before opening a PR, complete the checks that apply to the change. Documentation-only PRs need claim, link, command, and diff checks. Substantial code changes require the package suite and app build; app behavior or UI changes also require relevant hosted tests.
 
 - [ ] `swift test --package-path StenoKit` passes
 - [ ] `xcodegen generate` succeeds
 - [ ] `xcodebuild test -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` succeeds
 - [ ] `xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` succeeds
-- [ ] benchmark-facing changes were validated with the correct smoke or release path
-- [ ] public docs reflect current measured truth, not stale thread context
+- [ ] transcription/runtime, cleanup, ranking, or benchmark changes passed real-audio report and zero-regression pipeline checks; fixture smoke results are identified separately
+- [ ] public docs match the source and reported results
 - [ ] no generated benchmark bundles are staged
-- [ ] no generated Xcode project churn is staged unintentionally
+- [ ] no generated Xcode project changes are staged unintentionally
 - [ ] commit history keeps one concern per commit
 - [ ] any required live microphone, media-player, insertion, UI, VoiceOver, installed-app, and macOS 13 checks are reported separately instead of inferred from automated tests
 - [ ] distribution work, when in scope, has separate signing and notarization evidence
 
-## Where to Look Next
+## Related docs
 
 - Repo overview: [README.md](README.md)
 - Fast user setup: [QUICKSTART.md](QUICKSTART.md)

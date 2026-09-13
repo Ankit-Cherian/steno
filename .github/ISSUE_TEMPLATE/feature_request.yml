@@ -2,6 +2,9 @@ name: Feature Request
 description: Suggest a feature for Steno
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: "This issue is public. Use synthetic examples and keep private transcripts, audio, editor content, credentials, and personal file paths out of text and attachments."
   - type: textarea
     id: problem
     attributes:

@@ -25,3 +25,6 @@ changelog:
       labels:
         - chore
         - dependencies
+    - title: Other Changes
+      labels:
+        - '*'

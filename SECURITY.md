@@ -2,10 +2,11 @@
 
 ## Supported Versions
 
-Steno is currently pre-1.0. Security fixes are applied to:
+Security fixes are applied to the following versions:
 
 | Version | Supported |
 | --- | --- |
+| Latest stable release | Yes |
 | `main` | Yes |
 | Tagged releases older than latest | No |
 
@@ -14,12 +15,14 @@ Steno is currently pre-1.0. Security fixes are applied to:
 Please do not disclose security issues in public issues or discussions.
 
 Preferred reporting path:
+
 1. Open GitHub's private vulnerability report for this repository (`Security` -> `Report a vulnerability`).
 2. Include impact, reproduction steps, and any proof-of-concept details needed to validate the report.
 
 If private reporting is unavailable:
-1. Open a public issue titled `Security contact request` with no exploit details.
-2. A maintainer will provide a private follow-up channel.
+
+1. Use the [Private Contact Request form](https://github.com/Ankit-Cherian/steno/issues/new?template=contact_request.yml) to ask for a private follow-up channel.
+2. This request is public and identifies your GitHub account. Do not include exploit details, private data, or attachments. Wait for a maintainer to provide a private channel before sharing the report.
 
 ## Response Targets
 
@@ -33,6 +36,7 @@ If private reporting is unavailable:
 ## Disclosure
 
 After a fix is available, maintainers may publish a coordinated advisory that includes:
+
 - Affected versions
 - Impact summary
 - Remediation steps

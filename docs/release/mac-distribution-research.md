@@ -2,7 +2,7 @@
 
 Date: 2026-04-21
 
-> **Status:** This is the dated research that informed Steno’s direct-distribution design. It is not the current release checklist. The repository now contains a distribution entitlements path and `scripts/release-dmg.sh`; current operating instructions live in `docs/release/direct-distribution.md`.
+> **Status:** This is the dated research that informed Steno’s direct-distribution design. It is not the current release checklist. The repository now contains a distribution entitlements path and `scripts/release-dmg.sh`; current operating instructions live in the [direct-distribution guide](direct-distribution.md), with acceptance tracked in the [1.0 checklist](1.0-checklist.md). The original proposals below are April design context, not the current 1.0 roadmap or a fresh review of vendor requirements.
 
 ## 1.0 candidate update
 
@@ -15,7 +15,7 @@ The 1.0 candidate packaging path now:
 - keeps the retained helper private to the app process through inherited pipes, with no HTTP or other network listener
 - preserves the CLI fallback and includes Steno and third-party license notices
 
-This preparation has not performed or established Developer ID signing, notarization, stapling, a public DMG, release hosting, download-link correctness, installed-app behavior, manual microphone/media/UI/VoiceOver checks, or a macOS 13 compatibility run.
+For 1.0, this preparation has not established Developer ID signing, notarization, stapling, a public DMG, release hosting, download-link correctness, installed-app behavior, manual microphone/media/UI/VoiceOver checks, or a macOS 13 compatibility run. This does not describe the publication status of earlier Steno releases.
 
 ## Original recommendation
 
@@ -56,7 +56,7 @@ Compared to alternatives:
 - **ZIP** is simpler to produce, but the UX is less polished for first install
 - **PKG** is overkill unless Steno starts installing privileged helpers, background services, or system-wide components
 
-## Best practical release architecture
+## Original proposed release architecture
 
 ### Phase 1: First public downloadable release
 
@@ -200,17 +200,17 @@ Use only if you later need:
 - launch daemons
 - system-wide installation steps
 
-## Sparkle recommendation
+## Original Sparkle recommendation
 
 The research identified Sparkle as the likely future update framework, but **not the first thing to do**.
 
-Why it still matters:
+The April rationale was:
 
 - it is the de-facto standard for direct-distributed macOS app updates
 - it supports ZIP/DMG/TAR-style update archives
 - it gives Steno a good long-term update story once direct distribution is live
 
-Why it should wait:
+The proposed sequencing was:
 
 - first you need one good signed, notarized, manually downloadable artifact
 - then you can layer in Sparkle cleanly
@@ -239,7 +239,7 @@ This sequence is historical. For 1.0, use the current guide and record fresh aut
 7. Publish through GitHub Releases
 8. Consider Sparkle after the first downloadable release is working
 
-## Sources
+## Original research sources
 
 - Apple: Developer ID certificates  
   https://developer.apple.com/help/account/certificates/create-developer-id-certificates

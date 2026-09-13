@@ -1,0 +1,17 @@
+name: Private Contact Request
+description: Ask for a private reporting channel without sharing sensitive details.
+title: "Private contact request"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This request is public and identifies your GitHub account. Do not add incident details, vulnerability details, personal information, or attachments.
+
+        For vulnerabilities, use [private vulnerability reporting](https://github.com/Ankit-Cherian/steno/security/advisories/new) when available. Otherwise, submit this request and wait for a maintainer to provide a private channel. You do not need to say what the report concerns.
+  - type: checkboxes
+    id: contact-request
+    attributes:
+      label: Request
+      options:
+        - label: Please provide a private channel for my report.
+          required: true
