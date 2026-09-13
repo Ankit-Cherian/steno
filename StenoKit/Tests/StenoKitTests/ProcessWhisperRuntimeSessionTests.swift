@@ -1188,8 +1188,8 @@ func streamingRuntimeSupportsOneShotFinalTranscription() async throws {
 @Test("Transcription payload appends the vocabulary prompt behind flag bit 2 byte for byte")
 func transcriptionPayloadEncodesVocabularyPromptOnFlagBit2() throws {
     let audioURL = URL(fileURLWithPath: "/tmp/capture.wav")
-    let prompt = "Language: en. Terms: StenoKit, Steno, Turso, Ankit."
-    let vocabulary = "StenoKit, Steno, Turso, Ankit."
+    let prompt = "Language: en. Terms: StenoKit, Steno, Turso, Rowan."
+    let vocabulary = "StenoKit, Steno, Turso, Rowan."
     func request(prompt: String?, vocabularyPrompt: String?) -> WhisperRuntimeRequest {
         WhisperRuntimeRequest(
             id: UUID(),
@@ -1248,8 +1248,8 @@ func transcriptionPayloadEncodesVocabularyPromptOnFlagBit2() throws {
 
 @Test("Stream configuration payload appends the vocabulary prompt after the VAD identity byte for byte")
 func streamConfigurationPayloadEncodesVocabularyPromptOnFlagBit2() throws {
-    let prompt = "Language: en. Terms: StenoKit, Steno, Turso, Ankit."
-    let vocabulary = "StenoKit, Steno, Turso, Ankit."
+    let prompt = "Language: en. Terms: StenoKit, Steno, Turso, Rowan."
+    let vocabulary = "StenoKit, Steno, Turso, Rowan."
     let identity = LiveTranscriptionRuntimeIdentity(
         protocolVersion: 2,
         runtimeIdentifier: "runtime",

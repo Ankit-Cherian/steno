@@ -235,7 +235,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
               let destination = before.pauseDestination
         else {
             Self.logger.info(
-                "Media interruption skipped. Evidence: \(before.logValue, privacy: .public)"
+                "Media interruption skipped. Evidence: \(before.logValue, privacy: .private)"
             )
             return .noOwnership
         }
@@ -256,7 +256,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             dispatch.acceptedApplicationBundleIdentifiers
         ).intersection(requestedApplications)
         Self.logger.info(
-            "Semantic media Pause attempted: accepted=\(acceptedApplications.sorted().joined(separator: ","), privacy: .public) destination=\(verifiedDestination.logValue, privacy: .public) evidence=\(before.logValue, privacy: .public)"
+            "Semantic media Pause attempted: accepted=\(acceptedApplications.sorted().joined(separator: ","), privacy: .private) destination=\(verifiedDestination.logValue, privacy: .private) evidence=\(before.logValue, privacy: .private)"
         )
         guard !acceptedApplications.isEmpty else { return .noOwnership }
 
@@ -287,7 +287,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             let after = await driver.snapshot()
             guard pauseTransition?.id == id else { return .noOwnership }
             Self.logger.info(
-                "Media Pause verification pass \(index + 1, privacy: .public): \(after.logValue, privacy: .public)"
+                "Media Pause verification pass \(index + 1, privacy: .public): \(after.logValue, privacy: .private)"
             )
             let verifiedApplications = acceptedReceipt
                 .verifiedApplicationBundleIdentifiers(atRelease: after)
@@ -670,7 +670,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             guard let retainedReceipt else {
                 activeInterruption = nil
                 Self.logger.info(
-                    "Pending media custody was contradicted while owned; ownership was discarded without Play. Evidence: \(releaseSnapshot.logValue, privacy: .public)"
+                    "Pending media custody was contradicted while owned; ownership was discarded without Play. Evidence: \(releaseSnapshot.logValue, privacy: .private)"
                 )
                 return
             }
@@ -689,7 +689,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         )
         guard !resumableApplications.isEmpty else {
             Self.logger.info(
-                "Pending media custody was contradicted at release; no Play command was authorized. Evidence: \(releaseSnapshot.logValue, privacy: .public)"
+                "Pending media custody was contradicted at release; no Play command was authorized. Evidence: \(releaseSnapshot.logValue, privacy: .private)"
             )
             return
         }
@@ -780,7 +780,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             initialDispatch.acceptedApplicationBundleIdentifiers
         )
         Self.logger.info(
-            "Semantic media Play attempted destination=\(destination.logValue, privacy: .public)"
+            "Semantic media Play attempted destination=\(destination.logValue, privacy: .private)"
         )
 
         if hasJoiningResumeTokens(id: id) {
@@ -804,7 +804,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
 
             if snapshot.confirmsResumedProcessLineage(destination) {
                 Self.logger.info(
-                    "Semantic media Play verified by exact target playback evidence destination=\(destination.logValue, privacy: .public)"
+                    "Semantic media Play verified by exact target playback evidence destination=\(destination.logValue, privacy: .private)"
                 )
                 return .resumed
             }
@@ -813,7 +813,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 lastObservedActiveApplications = activeApplications
                 if expectedApplications.isSubset(of: activeApplications) {
                     Self.logger.info(
-                        "Semantic media Play verified destination=\(destination.logValue, privacy: .public)"
+                        "Semantic media Play verified destination=\(destination.logValue, privacy: .private)"
                     )
                     return .resumed
                 }
@@ -852,12 +852,12 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 resumeDestination: destination.narrowed(to: unconfirmedApplications)
             )
             Self.logger.info(
-                "Semantic media Play remained unverified; preserving bounded exact-app resume lineage destination=\(pendingReceipt.resumeDestination.logValue, privacy: .public)"
+                "Semantic media Play remained unverified; preserving bounded exact-app resume lineage destination=\(pendingReceipt.resumeDestination.logValue, privacy: .private)"
             )
             return .resumedWithPendingLineage(pendingReceipt)
         }
         Self.logger.info(
-            "Semantic media Play verification exhausted destination=\(destination.logValue, privacy: .public)"
+            "Semantic media Play verification exhausted destination=\(destination.logValue, privacy: .private)"
         )
         return .resumed
     }
@@ -890,7 +890,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             initialDispatch.acceptedApplicationBundleIdentifiers
         ).intersection(expectedApplications)
         Self.logger.info(
-            "In-flight media resume was re-paused for a new dictation owner destination=\(receipt.resumeDestination.logValue, privacy: .public)"
+            "In-flight media resume was re-paused for a new dictation owner destination=\(receipt.resumeDestination.logValue, privacy: .private)"
         )
 
         guard !acceptedPauseApplications.isEmpty else {
@@ -2102,7 +2102,7 @@ final class CoreAudioOutputMonitor: AudioOutputMonitoring {
             processes = try AudioHardwareSystem.shared.processes
         } catch {
             Self.logger.debug(
-                "Core Audio output discovery unavailable: \(String(describing: error), privacy: .public)"
+                "Core Audio output discovery unavailable: \(String(describing: error), privacy: .private)"
             )
             return nil
         }
@@ -2612,13 +2612,13 @@ final class MediaRemoteBridge: MediaRemoteBridging {
 
         guard let callbackError else {
             Self.logger.debug(
-                "Targeted semantic media \(command.logValue, privacy: .public) was not acknowledged within the bounded wait application=\(applicationBundleIdentifier, privacy: .public)"
+                "Targeted semantic media \(command.logValue, privacy: .public) was not acknowledged within the bounded wait application=\(applicationBundleIdentifier, privacy: .private)"
             )
             return false
         }
         guard callbackError == 0 else {
             Self.logger.debug(
-                "Targeted semantic media \(command.logValue, privacy: .public) callback error=\(callbackError, privacy: .public) application=\(applicationBundleIdentifier, privacy: .public)"
+                "Targeted semantic media \(command.logValue, privacy: .public) callback error=\(callbackError, privacy: .public) application=\(applicationBundleIdentifier, privacy: .private)"
             )
             return false
         }
