@@ -49,6 +49,7 @@ def download_existing(repository, version, sha, release_id, root):
     validate_release_request(repository, version, sha, release_id)
     receipt = release_receipt(repository, release_id)
     if (str(receipt['id']) != release_id or receipt['draft'] is not True
+            or receipt.get('prerelease') is not False
             or receipt['tag_name'] != 'v' + version or receipt['target_commitish'] != sha):
         raise ValueError('Requested draft ID, version, and source do not match')
     expected = {f'Steno-{version}.dmg', 'SHA256SUMS', 'release-manifest.json'}
@@ -86,6 +87,8 @@ def download_existing(repository, version, sha, release_id, root):
 def verify_remote_assets(receipt, assets, sha, release_id, *, draft=True):
     if str(receipt['id']) != release_id or receipt['draft'] is not draft:
         raise ValueError('Expected the unpublished draft created by this workflow run')
+    if receipt.get('prerelease') is not False:
+        raise ValueError('Only a full release can become the default download')
     if receipt['target_commitish'] != sha:
         raise ValueError('Draft release target does not match accepted source')
     remote = {asset['name']: asset for asset in receipt['assets']}
@@ -101,6 +104,23 @@ def verify_remote_assets(receipt, assets, sha, release_id, *, draft=True):
             raise ValueError('Remote asset upload is incomplete')
 
 
+def require_newer_stable_release(repository, version):
+    pages = json.loads(subprocess.check_output(['gh', 'api', '--paginate', '--slurp',
+        f'repos/{repository}/releases?per_page=100'], text=True))
+    requested = tuple(map(int, version.split('.')))
+    for page in pages:
+        for release in page:
+            if release['draft'] is True or release['prerelease'] is True:
+                continue
+            if release['draft'] is not False or release['prerelease'] is not False or not release.get('published_at'):
+                raise ValueError('Published release state is incomplete; inspect it before promotion')
+            match = re.fullmatch(r'v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))', release['tag_name'])
+            if not match:
+                raise ValueError('Published release has an unrecognized stable version; reconcile it before promotion')
+            if requested <= tuple(map(int, match[1].split('.'))):
+                raise ValueError('Default download must advance beyond every published stable version')
+
+
 def publish_existing(repository, version, sha, assets):
     release_id = os.environ.get('RELEASE_ID', '')
     validate_release_request(repository, version, sha, release_id)
@@ -108,16 +128,23 @@ def publish_existing(repository, version, sha, assets):
     if receipt['tag_name'] != 'v' + version:
         raise ValueError('Draft version tag changed')
     verify_remote_assets(receipt, assets, sha, release_id)
+    require_newer_stable_release(repository, version)
     # Exactly one publication attempt. A failed/ambiguous response requires
     # inspecting the release, never an automatic retry.
     subprocess.run(['gh', 'api', '--method', 'PATCH',
                     f'repos/{repository}/releases/{release_id}',
-                    '-F', 'draft=false', '-f', 'make_latest=true'], check=True, stdout=subprocess.DEVNULL)
+                    '-F', 'draft=false', '-F', 'prerelease=false',
+                    '-f', 'make_latest=true'], check=True, stdout=subprocess.DEVNULL)
     result = json.loads(subprocess.check_output(['gh', 'api',
         f'repos/{repository}/releases/{release_id}'], text=True))
     if result['draft'] or not result.get('published_at') or result['tag_name'] != 'v' + version:
         raise ValueError('Publication outcome is unknown; inspect release state before any retry')
     verify_remote_assets(result, assets, sha, release_id, draft=False)
+    latest = json.loads(subprocess.check_output(['gh', 'api',
+        f'repos/{repository}/releases/latest'], text=True))
+    if latest['tag_name'] != 'v' + version or not latest.get('published_at'):
+        raise ValueError('Latest release verification failed after publication; inspect state before any retry')
+    verify_remote_assets(latest, assets, sha, release_id, draft=False)
     print('Published release: ' + result['html_url'])
 
 

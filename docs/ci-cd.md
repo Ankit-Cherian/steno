@@ -1,8 +1,8 @@
 # Continuous integration and delivery
 
-Steno uses GitHub Actions to check contributions and prepare releases. **CI** means every pushed change is built and tested. **CD** means an approved version follows a repeatable path from tested source to a signed, notarized download. A passing pull request does not publish a release.
+Steno uses GitHub Actions to check contributions and prepare releases. **CI** runs build and test checks for branch pushes and pull requests. **CD** means an approved version follows a repeatable path from tested source to a signed, notarized download. A passing pull request does not publish a release.
 
-The workflow files become active after they are pushed to GitHub. Required merge checks and protected release environments are separate repository settings; follow [GitHub activation](maintainers/github-setup.md) before treating the pipeline as enforced.
+The workflow files define triggers after they are pushed to GitHub; execution also depends on Actions settings and any required fork-run approval. Required merge checks and protected release environments are separate repository settings; follow [GitHub activation](maintainers/github-setup.md) before treating the pipeline as enforced.
 
 ## What runs
 
@@ -31,8 +31,8 @@ The normal package suite includes opt-in runtime integration tests. CI activates
 1. Fork the repository, create a branch, and open a pull request.
 2. GitHub may ask a maintainer to approve running workflows from an external contributor. This grants permission for that run, not permission to merge or publish.
 3. Open the PR's **Checks** tab. Start with the first failing job and its failing step. Independent jobs continue so one run can show multiple failures.
-4. Test logs, `.xcresult` bundles, coverage JSON and synthetic renders are available as artifacts. Preview DMGs are named `unsigned-preview-arm64-<SHA>` and retained for seven days. Other test evidence is retained for fourteen days.
-5. Fix the issue and push again. A newer CI run cancels obsolete validation for the same branch or PR. Release runs are never cancelled automatically.
+4. Test logs, `.xcresult` bundles, coverage JSON and synthetic renders are available as artifacts. Preview artifacts are named `unsigned-preview-arm64-<SHA>` and retained for seven days; they contain a DMG named `Steno-<version>-<short-SHA>-preview.dmg`. Other test evidence is retained for fourteen days.
+5. Fix the issue and push again. A newer CI run cancels obsolete validation for the same branch or PR. The Release and Publish release workflows share a non-cancelling release lock; their reusable security checks have a separate cancellation policy.
 
 Preview DMGs use ad-hoc signatures. They have no Developer ID identity or notarization, may be blocked by Gatekeeper, and are not official releases. An artifact from a fork or pull request is untrusted contributor code; only test contributions you have reviewed. Do not treat download availability as release approval.
 
@@ -40,7 +40,7 @@ The project already has extensive tests around capture integrity, no-speech gati
 
 ## Local reproduction
 
-The same scripts can run on an Apple silicon Mac with Xcode 26.3, Python 3, CMake, Git and standard macOS tools. The CI image uses `DEVELOPER_DIR` to select Xcode without changing the machine's global developer directory.
+The same scripts can run on an Apple silicon Mac with Xcode 26.3, Python 3.11 or later, CMake, Git and standard macOS tools. The CI image uses `DEVELOPER_DIR` to select Xcode without changing the machine's global developer directory.
 
 ```bash
 # Tool archives are versioned and SHA-256 checked before extraction.
@@ -73,6 +73,7 @@ bash scripts/ci/runtime-checks.sh --backend cpu \
 GGML_METAL_DEVICES=0 \
 STENO_WHISPER_ROOT="$PWD/build/runtime-sources" \
 STENO_WHISPER_BUILD_DIR="$PWD/build/runtime-checks-cpu/build-steno" \
+STENO_CI_BENCHMARK_OUTPUT="$PWD/build/benchmark-cpu" \
   bash scripts/ci/benchmark.sh
 ```
 
@@ -80,7 +81,7 @@ For the production GPU path, use a new output directory and `--backend metal`. T
 
 ## Security design
 
-- PR code runs on disposable GitHub-hosted machines with read-only repository contents and no Apple credentials. There are no self-hosted PR runners, `pull_request_target`, privileged `workflow_run` handoffs, or automatic PR approval.
+- PR code runs on disposable GitHub-hosted machines with `contents: read` token permission and no Apple credentials. CodeQL jobs separately request `security-events: write` for scan uploads; this does not grant repository-content write access. There are no self-hosted PR runners, `pull_request_target`, privileged `workflow_run` handoffs, or automatic PR approval.
 - Every remote Action is pinned to a full commit SHA. Checkout removes persisted Git credentials. Release elevation is limited to the jobs and steps that need it.
 - Xcode is selected explicitly. XcodeGen and actionlint archives, Whisper source, speech model and VAD model are pinned. Downloads are checksum verified before use; native compiled artifacts are rebuilt rather than restored from a shared executable cache.
 - CodeQL scans the workflow language, Swift app and package, and native C++ compilation. The local SARIF gate blocks security severity 7.0 and above and non-security error-level findings, including existing and suppressed findings. Missing or invalid scan evidence also fails. Lower-severity results remain visible in GitHub's Security tab.
@@ -90,9 +91,9 @@ For the production GPU path, use a new output directory and `--backend metal`. T
 
 ## Release operation
 
-Complete the [1.0 checklist](release/1.0-checklist.md), integrate the intended source into main, and create the approved version tag before dispatching a release. Tag creation is deliberately not automatic. The selected source must be the dispatch's main commit, with matching `project.yml` version and existing `vX.Y.Z` tag. No metadata is bumped automatically.
+Complete the source checks, measured evaluation, and native-app acceptance in the [1.0 checklist](release/1.0-checklist.md), integrate the intended source into main, and create the approved version tag before dispatching a release. Distribution and publication receipts are completed later against the resulting signed artifact. Before approving the release tag, finalize the README candidate status and move the approved changelog entries from `[Unreleased]` to the selected version with its actual release date in that source. Keeping candidate wording and `[Unreleased]` during PR preparation is intentional; the tagged release must describe the released version. The `/releases/latest` download link needs no version-specific edit. Tag creation is deliberately not automatic. The selected source must be the dispatch's main commit, with matching `project.yml` version and existing `vX.Y.Z` tag. No metadata is bumped automatically.
 
-From **Actions → Release → Run workflow**, select main, enter the stable version and full 40-character commit SHA, and confirm manual acceptance only after completing it for that exact source. Leave `publish_release` false to stop at a draft. Enable it only when public publication is intended.
+From **Actions → Release → Run workflow**, select main, enter the stable version and full 40-character commit SHA, and confirm manual acceptance only after completing the source and native-app checks for that exact source. Leave `publish_release` false to stop at a draft. Enable it only when public publication is intended.
 
 The workflow then:
 
@@ -101,11 +102,13 @@ The workflow then:
 3. Builds a fresh self-contained distribution, imports the Developer ID certificate into a temporary keychain, signs, submits once to Apple, records the submission ID, waits for `Accepted`, staples the ticket and verifies Gatekeeper. The temporary signing material is cleaned up.
 4. Generates SHA-256 checksums and a manifest after stapling, then attests the final DMG. Only allowlisted public artifacts leave the signing job. Notary diagnostic logs and credentials are excluded.
 5. Waits at **release-draft**, verifies provenance and remote tag/source again, and creates one draft containing the verified assets. Existing releases/drafts are never overwritten.
-6. If publication was requested, waits at **release-publish**. It verifies the exact draft ID from this run, remote asset digests and source, publishes that ID once, and verifies the resulting receipt.
+6. If publication was requested, waits at **release-publish**. Before approving, inspect the draft, replace its placeholder notes with approved final release notes, and complete installation/distribution acceptance on its verified DMG. The workflow does not check note completeness or perform those manual tests. After approval, it verifies the exact draft ID from this run, remote asset digests and source, rejects prerelease drafts and versions that do not advance beyond every published stable version, then publishes that ID once as the latest full release. It verifies both the published release and GitHub's latest-release pointer against the same ID, tag, source and assets.
 
 The workflow refuses missing setup variables or credentials. GitHub environment names alone do not create approval protection; configure their reviewers and branch restrictions before enabling them. For a sole maintainer, permit the maintainer to approve their own deployment request, otherwise the workflow is impossible to finish. A second reviewer is preferable when available.
 
-For a completed draft-only run, inspect its verified assets and finish the release notes in GitHub's trusted UI. Then use **Actions → Publish release → Run workflow** with the same version, source SHA, exact numeric draft ID, and explicit publication acceptance. This workflow reruns validation/security, waits for `release-publish`, downloads only the three expected assets by numeric ID, and verifies their digests and original Release workflow attestation before publishing that exact draft once. It neither rebuilds nor resubmits to Apple. The source must still be the dispatch commit on main; if main has advanced, stop and reconcile the release instead of weakening the source guard. Rerunning Release intentionally refuses an existing draft.
+The [default download link](https://github.com/Ankit-Cherian/steno/releases/latest) follows each verified latest release without a README edit. Versioned DMG filenames remain unchanged within each release. Drafts, prereleases and older versions cannot take over this workflow's default download. An unrecognized published stable tag requires reconciliation before promotion. Historical tags and assets remain intact; this does not update already installed apps. GitHub documents the [stable latest-release URL](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases) and [latest/full-release API settings](https://docs.github.com/en/rest/releases/releases#update-a-release).
+
+For a completed draft-only run, inspect its verified assets and finish the release notes in GitHub's trusted UI. Then use **Actions → Publish release → Run workflow** with the same version, source SHA, exact numeric draft ID, and explicit publication acceptance. This workflow reruns validation/security, waits for `release-publish`, downloads only the three expected assets by numeric ID, and verifies their digests and original Release workflow attestation before publishing that exact draft once. It neither rebuilds nor resubmits to Apple. The requested source must equal main at the new dispatch. If main has advanced since the draft was built, reconcile the release before dispatching; the workflow will reject a different requested SHA. During a running workflow, remote rechecks verify tag identity and main ancestry, not that main has stayed at the same tip. Rerunning Release intentionally refuses an existing draft.
 
 ### Failure recovery
 
