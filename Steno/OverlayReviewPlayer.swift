@@ -85,7 +85,7 @@ final class OverlayReviewPlayer: ObservableObject {
     }
 
     static var sampleFrames: [String] {
-        let sample = "Send the revised agenda on Thursday. Keep the launch date at September 18, and leave the accessibility review in place. The next paragraph is a longer thought that grows naturally as more words arrive. It should remain comfortable to read without taking over the screen. When the passage fills the available space, the next part continues in the same position. Names, numbers, and punctuation remain exactly as the recognition snapshot supplies them. A correction may replace an earlier word instead of adding a duplicate sentence. Even a long sequence without a convenient pause should stay within the display and keep its latest words visible. This is the final sentence of the sample."
+        let sample = "Move the planning meeting from Thursday to Friday. Send the updated agenda before lunch so everyone has time to read it. We need to decide which rooms to book and check that there are enough chairs for the group. Leave a few minutes at the end for questions. After the meeting, pick up tomatoes, pasta, olive oil, and a loaf of bread. Check whether we need coffee before leaving. If the weather stays dry, take the path along the river and turn left at the bridge. The cafe has a few tables outside where we can stop after the walk. Bring a light jacket in case it gets cold on the way home."
         let words = sample.split(separator: " ")
         var frames: [String] = []
         for end in stride(from: 3, through: words.count, by: 4) {
