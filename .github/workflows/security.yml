@@ -102,9 +102,9 @@ jobs:
         if: matrix.language == 'swift'
         run: |
           xcodebuild build -project Steno.xcodeproj -scheme Steno \
-            -destination 'platform=macOS,arch=arm64' \
+            -destination 'generic/platform=macOS' \
             -derivedDataPath build/codeql-swift \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO
       - name: Build C++ runtime for analysis
         if: matrix.language == 'c-cpp'
         run: bash scripts/build-whisper-runtime-helper.sh
