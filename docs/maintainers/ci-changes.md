@@ -4,6 +4,12 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Allow packaging to finish after native validation
+
+The [PR #19 push runtime job](https://github.com/Ankit-Cherian/steno/actions/runs/34984483369/job/104432993535) exhausted its 60-minute allowance while creating the DMG. Native validation passed in 54 minutes 59 seconds; the public benchmark, Release app build, bundled transcription smoke test and distribution hygiene scan also passed before cancellation. GitHub reported that the job exceeded its one-hour execution limit.
+
+The runtime and distribution job now allows 75 minutes, leaving room for packaging after the measured CPU validation time. Individual test and diagnostic deadlines, assertions, security checks and required merge checks are unchanged. A fresh complete hosted run must still pass; the canceled job is not release evidence.
+
 ## Checkout maintenance
 
 [PR #19](https://github.com/Ankit-Cherian/steno/pull/19) updates Checkout to the pinned v7.0.1 release throughout validation, security and release workflows. Version comments match the pin. Credentials remain nonpersistent, release checkouts remain bound to the exact source, and the native library retains its separately pinned revision.
