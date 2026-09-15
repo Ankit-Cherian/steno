@@ -54,6 +54,7 @@ cmake --build "$BUILD_DIR" --config Release --target whisper-cli -j "$BUILD_JOBS
 mkdir -p "$(dirname "$OUTPUT")"
 
 xcrun clang++ \
+  -arch "$EXPECTED_ARCHITECTURE" \
   -std=c++17 \
   -O3 \
   -DNDEBUG \
