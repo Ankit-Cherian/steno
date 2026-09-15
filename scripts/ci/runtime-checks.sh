@@ -124,6 +124,13 @@ else
   run_check helper-diagnostic python3 "$ROOT_DIR/scripts/ci/diagnose-runtime-inference.py" \
     --helper "$STENO_TEST_RETAINED_HELPER" --model "$STENO_TEST_WHISPER_MODEL" \
     --audio "$STENO_TEST_WHISPER_AUDIO" || echo "Runtime diagnostic did not complete successfully."
+  run_check vad-diagnostic python3 "$ROOT_DIR/scripts/ci/diagnose-vad-runtime.py" \
+    --build-dir "$STENO_WHISPER_BUILD_DIR" --model "$STENO_TEST_WHISPER_VAD" \
+    --audio "$STENO_TEST_WHISPER_AUDIO" || echo "VAD diagnostic did not complete successfully."
+  run_check stream-diagnostic python3 "$ROOT_DIR/scripts/ci/diagnose-runtime-inference.py" \
+    --helper "$STENO_TEST_RETAINED_HELPER" --model "$STENO_TEST_WHISPER_MODEL" \
+    --audio "$STENO_TEST_WHISPER_AUDIO" --vad-model "$STENO_TEST_WHISPER_VAD" \
+    || echo "Stream diagnostic did not complete successfully."
   exit "$protocol_status"
 fi
 verify_receipt "$OUTPUT/helper-protocol.json" | tee "$OUTPUT/backend-verification.log"
