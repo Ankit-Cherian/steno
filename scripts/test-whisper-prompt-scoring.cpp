@@ -316,6 +316,8 @@ void release(Fixture & fixture) {
 } // namespace
 
 int main(int argc, char ** argv) {
+    // Keep fixture progress visible when CI pipes stdout into an evidence log.
+    std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
     if (argc != 3) {
         std::cerr << "usage: prompt-scoring-tests MODEL FIXTURE_DIR\n";
         return 2;
