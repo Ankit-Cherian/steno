@@ -982,6 +982,55 @@ func streamingRuntimeCorrelatesAppendErrorDuringPreview() async throws {
     await session.shutdown()
 }
 
+@Test("Helper pipe reads leave user-initiated cooperative work runnable", arguments: [1, 2])
+func helperPipeReadsDoNotOccupyCooperativeExecutor(protocolVersion: Int) async throws {
+    let helperSource = protocolVersion == 1 ? fakeLoadStalledHelperSource : fakeStreamingProtocolPrelude + "\n" + #"""
+shutdown = read_frame()
+write_frame(shutdown, 7)
+"""#
+    let fixture = try StreamingRuntimeFixture(helperSource: helperSource)
+    defer { fixture.remove() }
+    let watchdog = HelperSchedulingWatchdog(pidURL: fixture.pidURL)
+    watchdog.arm()
+    defer {
+        #expect(!watchdog.finish(), "Cooperative work required the independent watchdog to release the helper pipe")
+    }
+
+    // Match the runtime reader's priority so a strict cooperative pool cannot
+    // hide starvation by running the caller on a different priority pool.
+    try await Task.detached(priority: .userInitiated) {
+        if protocolVersion == 1 {
+            var environment = ProcessInfo.processInfo.environment
+            environment["STENO_TEST_HELPER_PID_FILE"] = fixture.pidURL.path
+            await #expect(throws: RetainedWhisperRuntimeError.helperUnavailable) {
+                _ = try await ProcessWhisperRuntimeSessionFactory().makeSession(
+                    configuration: .init(
+                        helperExecutableURL: fixture.helperURL,
+                        modelPath: fixture.modelURL,
+                        threadCount: 1,
+                        vadModelPath: nil,
+                        suppressNonSpeechTokens: true,
+                        suppressRegex: nil,
+                        modelLoadTimeout: .milliseconds(500),
+                        environment: environment
+                    )
+                )
+            }
+        } else {
+            let session = try await fixture.makeSession()
+            await Task.yield()
+            await session.shutdown()
+        }
+    }.value
+
+    _ = watchdog.finish()
+    if let text = try? String(contentsOf: fixture.pidURL, encoding: .utf8),
+       let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+        #expect(kill(pid, 0) == -1)
+        #expect(errno == ESRCH)
+    }
+}
+
 @Test("Streaming v2 rejects an unknown preview speech evidence value")
 func streamingRuntimeRejectsUnknownSpeechEvidenceWireValue() async throws {
     let fixture = try StreamingRuntimeFixture(helperSource: fakeStreamingInvalidSpeechEvidenceHelperSource)
@@ -1307,6 +1356,36 @@ private extension Data {
             UInt8(truncatingIfNeeded: value >> 8),
             UInt8(truncatingIfNeeded: value),
         ])
+    }
+}
+
+private final class HelperSchedulingWatchdog: @unchecked Sendable {
+    private let lock = NSLock()
+    private let pidURL: URL
+    private var completed = false
+    private var fired = false
+
+    init(pidURL: URL) { self.pidURL = pidURL }
+
+    func arm() {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15) { [self] in
+            lock.lock()
+            defer { lock.unlock() }
+            guard !completed else { return }
+            fired = true
+            guard let text = try? String(contentsOf: pidURL, encoding: .utf8),
+                  let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 else { return }
+            var status: Int32 = 0
+            // A live, unreaped child proves this PID has not been recycled.
+            if waitpid(pid, &status, WNOHANG) == 0 { _ = kill(pid, SIGKILL) }
+        }
+    }
+
+    func finish() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        completed = true
+        return fired
     }
 }
 

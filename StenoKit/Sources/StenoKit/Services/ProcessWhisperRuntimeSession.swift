@@ -339,6 +339,8 @@ private struct ProcessWhisperRuntimeSession: WhisperRuntimeSession {
 private final class WhisperHelperProcessState: @unchecked Sendable {
     private let stateLock = NSLock()
     private let exchangeLock = NSLock()
+    // Pipe reads can outlive an exchange deadline; keep them off the cooperative executor.
+    private let exchangeQueue = DispatchQueue(label: "steno.runtime.exchange", qos: .userInitiated)
     private let process: Process
     private let input: FileHandle
     private let output: FileHandle
@@ -392,9 +394,11 @@ private final class WhisperHelperProcessState: @unchecked Sendable {
         try await withTaskCancellationHandler {
             try await withThrowingTaskGroup(of: WhisperRuntimeProtocol.Frame.self) { group in
                 group.addTask { [self] in
-                    try await Task.detached(priority: .userInitiated) { [self] in
-                        try blockingExchange(frame)
-                    }.value
+                    try await withCheckedThrowingContinuation { continuation in
+                        exchangeQueue.async { [self] in
+                            continuation.resume(with: Result { try blockingExchange(frame) })
+                        }
+                    }
                 }
                 group.addTask { [self] in
                     try await Task.sleep(for: timeout)
@@ -1653,7 +1657,8 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
     private let output: FileHandle
     private let registry = WhisperStreamingResponseRegistry()
     private var isTerminated = false
-    private var readerTask: Task<Void, Never>?
+    // An idle helper leaves this read blocked until a frame or EOF arrives.
+    private let readerQueue = DispatchQueue(label: "steno.runtime.streaming-reader", qos: .userInitiated)
 
     init(configuration: RetainedWhisperTranscriptionConfiguration) throws {
         let inputPipe = Pipe()
@@ -1692,7 +1697,7 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
         self.process = process
         self.input = inputPipe.fileHandleForWriting
         self.output = outputPipe.fileHandleForReading
-        readerTask = Task.detached(priority: .userInitiated) { [weak self] in
+        readerQueue.async { [weak self] in
             self?.readResponsesUntilEOF()
         }
     }
@@ -1760,8 +1765,6 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
         }
         terminate()
         await WhisperProcessExitWaiter.wait { [process] in process.isRunning }
-        readerTask?.cancel()
-        readerTask = nil
         closeHandles()
     }
 

@@ -151,6 +151,20 @@ The scan compared the checkout basename with `Steno` case-sensitively. GitHub's 
 
 The comparison now treats capitalization consistently. Full home, checkout, runtime, model and build paths remain forbidden, as do distinctive private checkout names. Regression tests verify both the legitimate product metadata and rejection of those private paths. The original scan fails three assertions; the corrected release-guard suite passes all 27 tests, and the full CI contract suite passes 146. Workflow policy and shell syntax checks also pass. A complete scan of the final packaged app remains required.
 
+## Keep helper pipe reads off the cooperative executor
+
+The [push macOS 26 package job on `8c99926`](https://github.com/Ankit-Cherian/steno/actions/runs/34965776335/job/104369895545) stopped making progress with 223 test declarations unfinished and reached its 45-minute job limit. The log does not contain thread stacks, so it cannot identify the blocked operation directly.
+
+A local reproduction exposed a scheduling defect in the production helper connection. A streaming reader ran a synchronous pipe read inside `Task.detached`, occupying a Swift cooperative-executor worker while the helper was idle. With a constrained pool and a caller at the same priority, the test stalled beyond an external 20-second limit. Its thread sample showed that worker blocked in the pipe read. The legacy protocol used the same blocking approach for individual exchanges.
+
+Both blocking paths now run on per-helper serial dispatch queues. Async callers suspend while waiting for results, leaving cooperative workers available for timers, cancellation and other sessions. Existing protocol framing, deadlines, process termination and response validation retain their behavior. The streaming reader still exits on response failure or EOF.
+
+The regression exercises both protocol versions at the reader's priority. An independent watchdog releases only the fixture's owned child if progress stalls, and firing that watchdog fails the test. This prevents the failure case from hanging the test runner indefinitely or passing after forced recovery. The local reproduction confirms the scheduling defect; without hosted stacks, attributing the original job timeout to it remains an inference.
+
+Under strict cooperative-pool scheduling, the original implementation fails both protocol cases and the corrected implementation passes both without watchdog intervention. The normal package suite passes 723 tests, the app build and all 70 hosted tests pass, and the three-fixture benchmark passes its report and zero-regression gates.
+
+An additional full-suite strict-pool trial reaches its 90-second diagnostic limit. Its stack identifies an intentionally blocked Accessibility test fixture waiting on a condition variable while the test driver awaits session start; the runtime pipe reader is on its separate dispatch queue. That failed diagnostic is retained. It does not establish compatibility of the whole suite with one-worker scheduling, and it is separate from the normal package and hosted commands required by CI.
+
 ## Verification and remaining gates
 
 The cancellation and completed-final observation follow-up passed **130 CI contract tests**, **720 package tests**, **70 hosted macOS tests**, the unsigned app build, and all **26 protocol cases on CPU and Metal**. Each protocol suite verified 25 backend-attested processes and observed no network descriptors across all 28 owned processes. The final staged library also passed nine CPU cancellation regressions, ten Metal controls, seven allocation checks, prompt scoring and decision checks, VAD integrity, and five retained-helper silence repetitions. The three-fixture benchmark passed its report and zero cleanup-regression gates. These results cover local fixtures; fresh hosted CI and Security results remain required before merge.
