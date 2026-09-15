@@ -191,6 +191,43 @@ class ReviewedDispositionTests(unittest.TestCase):
         self.assertIn('rationale', reviewed[0])
         self.assertEqual(self.document, before)
 
+    def test_implicit_same_line_end_preserves_exact_review_identity(self):
+        original = deepcopy(self.document)
+        for omit_primary, omit_trace in ((True, False), (False, True), (True, True)):
+            with self.subTest(primary=omit_primary, trace=omit_trace):
+                self.document = deepcopy(original)
+                self.run = self.document['runs'][0]
+                self.result = self.run['results'][0]
+                if omit_primary:
+                    del self.result['locations'][0]['physicalLocation']['region']['endLine']
+                if omit_trace:
+                    del self.result['codeFlows'][0]['threadFlows'][0]['locations'][0]['location']['physicalLocation']['region']['endLine']
+                before = deepcopy(self.document)
+                blocked, reviewed = self.apply()
+                self.assertEqual(blocked, [])
+                self.assertEqual(len(reviewed), 1)
+                self.assertEqual(self.document, before)
+
+    def test_explicit_invalid_or_changed_end_line_cannot_match(self):
+        primary = self.result['locations'][0]['physicalLocation']['region']
+        trace = self.result['codeFlows'][0]['threadFlows'][0]['locations'][0]['location']['physicalLocation']['region']
+        for region in (primary, trace):
+            for value in (None, False, 0, -1, '3', 4):
+                with self.subTest(region='primary' if region is primary else 'trace', value=value):
+                    region['endLine'] = value
+                    with self.assertRaises(GATE.ScanError):
+                        self.apply()
+                    region['endLine'] = 3
+
+    def test_missing_nondefault_primary_coordinates_still_fail(self):
+        region = self.result['locations'][0]['physicalLocation']['region']
+        for key in ('startLine', 'startColumn', 'endColumn'):
+            with self.subTest(key=key):
+                value = region.pop(key)
+                with self.assertRaises(GATE.ScanError):
+                    self.apply()
+                region[key] = value
+
     def test_proposed_or_malformed_receipt_does_not_authorize_findings(self):
         for field, value in (('status', 'proposed'), ('schema_version', True),
                              ('category', '/language:swift'), ('reviewed_commit', 'main'),

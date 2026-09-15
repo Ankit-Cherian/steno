@@ -120,6 +120,15 @@ def artifact_uri(artifact, run):
     return uri
 
 
+def explicit_end_line(region):
+    # SARIF 2.1.0 section 3.30.7: an omitted endLine equals startLine.
+    # Preserve explicit values and every other field for exact identity checks.
+    normalized = dict(object_value(region, 'region'))
+    if 'endLine' not in normalized:
+        normalized['endLine'] = normalized.get('startLine')
+    return normalized
+
+
 def reviewed_location(result, run):
     locations = array_value(result.get('locations'), 'reviewed locations')
     if len(locations) != 1:
@@ -127,7 +136,7 @@ def reviewed_location(result, run):
     physical = object_value(object_value(locations[0], 'location').get('physicalLocation'), 'physicalLocation')
     artifact = object_value(physical.get('artifactLocation'), 'artifactLocation')
     uri = artifact_uri(artifact, run)
-    region = object_value(physical.get('region'), 'region')
+    region = explicit_end_line(physical.get('region'))
     position = {key: region.get(key) for key in ('startLine', 'startColumn', 'endLine', 'endColumn')}
     if any(type(value) is not int or value < 1 for value in position.values()):
         raise ScanError('reviewed location must have a complete positive source range')
@@ -154,6 +163,11 @@ def canonical_flow(value, run, paths):
                     uri = relative_source_path(uri)
                     paths.add(uri)
                 result[key] = {'uri': uri}
+            elif key == 'physicalLocation':
+                physical = canonical_flow(object_value(child, 'trace physical location'), run, paths)
+                if 'region' in physical:
+                    physical['region'] = explicit_end_line(physical['region'])
+                result[key] = physical
             else:
                 result[key] = canonical_flow(child, run, paths)
         return result

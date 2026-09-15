@@ -4,6 +4,14 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Read implicit single-line SARIF ranges
+
+The [final C++ scan](https://github.com/Ankit-Cherian/steno/actions/runs/35005628641/job/104504577186) completed analysis, but the local severity checker rejected a source range as incomplete. The fresh GitHub SARIF export contains the same four findings and complete trace hashes as the approved receipt. The runner's raw SARIF was not retained, so the log cannot identify which coordinate was omitted.
+
+[SARIF 2.1.0 section 3.30.7](https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/sarif-v2.1.0-os.html) defines an absent `endLine` as equal to `startLine`. Removing that redundant field from the exported findings reproduces the failure. The checker now applies that default to primary and trace locations before comparing identities. It retains explicit coordinates and all other trace fields. The four approved identity hashes, source hashes and review rationales are unchanged; altered ranges, changed traces and additional findings still fail.
+
+Regression tests cover omitted primary and trace end lines, explicit invalid or changed end lines, and other missing primary coordinates. The original checker fails three equivalent-representation cases; the corrected SARIF suite passes all 34 tests. The original scanner document remains unchanged. This confirms the representation correction locally; a fresh hosted gate must still pass.
+
 ## Validate the remaining workflow updates together
 
 The final repair PR includes the CodeQL action update from [PR #17](https://github.com/Ankit-Cherian/steno/pull/17) and Download Artifact update from [PR #18](https://github.com/Ankit-Cherian/steno/pull/18). Testing the combined revision avoids serial dependency merges that each invalidate the next branch's integration checks. The separate PRs remain traceable to their original commits and will be closed with the integration link after the combined change merges.
