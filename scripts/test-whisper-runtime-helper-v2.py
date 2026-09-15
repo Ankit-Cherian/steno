@@ -271,6 +271,11 @@ def qualifies_as_production_metal(
 
 class RuntimeNetworkMonitor:
     poll_interval_seconds = 0.05
+    lsof_timeout_seconds = 5.0
+    # Two complete launch scans require four bounded lsof queries. Measured
+    # queries can take two seconds each even when the helper is healthy.
+    startup_timeout_seconds = 4 * lsof_timeout_seconds + 5.0
+    stop_timeout_seconds = lsof_timeout_seconds + 1.0
     registry_lock = threading.Lock()
     owned_process_count = 0
     checked_process_count = 0
@@ -292,13 +297,25 @@ class RuntimeNetworkMonitor:
         with RuntimeNetworkMonitor.registry_lock:
             RuntimeNetworkMonitor.owned_process_count += 1
         self.thread.start()
-        require(
-            self.first_scan_completed.wait(timeout=3.0),
-            "runtime network monitor did not complete two launch scans",
-        )
-        if self.error is not None:
-            raise TestFailure(self.error)
-        require(self.scans >= 2, "runtime network monitor completed fewer than two launch scans")
+        try:
+            require(
+                self.first_scan_completed.wait(timeout=self.startup_timeout_seconds),
+                "runtime network monitor did not complete two launch scans",
+            )
+            if self.error is not None:
+                raise TestFailure(self.error)
+            require(self.scans >= 2, "runtime network monitor completed fewer than two launch scans")
+        except BaseException:
+            # A failed constructor is never assigned to Helper.monitor. It must
+            # therefore finish its own bounded query and join its worker here.
+            try:
+                self.stop()
+            except Exception as error:
+                print(f"Secondary network monitor cleanup failure: {error}", file=sys.stderr)
+            raise
+
+    def request_stop(self) -> None:
+        self.stop_requested.set()
 
     def stop(self) -> None:
         if self.stopped:
@@ -306,8 +323,8 @@ class RuntimeNetworkMonitor:
                 raise TestFailure(self.error)
             return
         self.stopped = True
-        self.stop_requested.set()
-        self.thread.join(timeout=3.0)
+        self.request_stop()
+        self.thread.join(timeout=self.stop_timeout_seconds)
         if self.thread.is_alive() and self.error is None:
             self.error = "runtime network monitor did not terminate"
         duration_ms = round((time.monotonic() - self.started) * 1_000)
@@ -327,29 +344,40 @@ class RuntimeNetworkMonitor:
         require(self.network_fd_count == 0, "owned helper opened a network file descriptor")
 
     def _run(self) -> None:
-        while not self.stop_requested.is_set() and self.process.poll() is None:
-            self._scan()
-            if self.scans >= 2 or self.error is not None:
-                self.first_scan_completed.set()
-            if self.error is not None:
-                return
-            self.stop_requested.wait(self.poll_interval_seconds)
-        self.first_scan_completed.set()
+        try:
+            while not self.stop_requested.is_set() and self.process.poll() is None:
+                self._scan()
+                if self.scans >= 2 or self.error is not None:
+                    self.first_scan_completed.set()
+                if self.error is not None:
+                    return
+                self.stop_requested.wait(self.poll_interval_seconds)
+        except subprocess.TimeoutExpired:
+            # subprocess.run kills and waits for its child before raising.
+            self.error = "runtime network monitor lsof query timed out"
+        except Exception:
+            self.error = "runtime network monitor could not complete observation"
+        finally:
+            self.first_scan_completed.set()
 
     def _scan(self) -> None:
         all_files = subprocess.run(
             ("/usr/sbin/lsof", "-nP", "-p", str(self.process.pid)),
             capture_output=True,
             text=True,
+            timeout=self.lsof_timeout_seconds,
         )
         if all_files.returncode != 0 or not all_files.stdout or all_files.stderr:
             if self.process.poll() is None:
                 self.error = "runtime network monitor could not inspect the owned helper"
             return
+        if self.stop_requested.is_set():
+            return
         network_files = subprocess.run(
             ("/usr/sbin/lsof", "-nP", "-a", "-p", str(self.process.pid), "-i"),
             capture_output=True,
             text=True,
+            timeout=self.lsof_timeout_seconds,
         )
         if network_files.returncode not in (0, 1) or network_files.stderr:
             if self.process.poll() is None:
@@ -361,6 +389,40 @@ class RuntimeNetworkMonitor:
         self.network_fd_count += observed
         if observed > 0:
             self.error = "owned helper opened a network file descriptor"
+
+
+def terminate_owned_process(
+    process: subprocess.Popen[bytes], stop_monitor: Callable[[], None]
+) -> None:
+    primary_error = sys.exc_info()[1]
+    cleanup_errors: list[Exception] = []
+    # Finish observation before intentionally killing the owned helper.
+    # A failed monitor must still leave the process killed and reaped.
+    try:
+        stop_monitor()
+    except Exception as error:
+        cleanup_errors.append(error)
+    try:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # The helper exited between poll and kill.
+    except Exception as error:
+        cleanup_errors.append(error)
+    finally:
+        try:
+            process.wait(timeout=5.0)
+        except Exception as error:
+            cleanup_errors.append(error)
+    if cleanup_errors:
+        if primary_error is not None:
+            for error in cleanup_errors:
+                print(f"Secondary helper cleanup failure: {error}", file=sys.stderr)
+        else:
+            for error in cleanup_errors[1:]:
+                print(f"Secondary helper cleanup failure: {error}", file=sys.stderr)
+            raise cleanup_errors[0]
 
 
 @dataclass(frozen=True)
@@ -526,12 +588,14 @@ class Helper:
         raise TestFailure("helper did not close stdout after input EOF")
 
     def force_crash_and_expect_eof(self, timeout: float = 5.0) -> None:
-        # End observation immediately before the harness intentionally kills
-        # the owned process. Otherwise lsof can race the SIGKILL and mislabel
-        # the expected disappearance as an inspection failure.
-        self._stop_monitor()
+        # Request observation shutdown without waiting for a slow lsof query.
+        # Joining first would let an in-flight decode finish before SIGKILL,
+        # turning its pre-crash output into a false late-response failure.
+        if self.monitor is not None:
+            self.monitor.request_stop()
         os.killpg(self.process.pid, signal.SIGKILL)
         self.process.wait(timeout=timeout)
+        self._stop_monitor()
         require(self.process.returncode == -signal.SIGKILL, "forced helper crash was not observed")
         ready, _, _ = select.select([self.output.fileno()], [], [], timeout)
         require(bool(ready), "stdout did not become readable after helper crash")
@@ -553,35 +617,7 @@ class Helper:
         require(self.process.returncode == 0, f"clean shutdown returned {self.process.returncode}")
 
     def terminate(self) -> None:
-        primary_error = sys.exc_info()[1]
-        cleanup_errors: list[Exception] = []
-        # Finish observation before intentionally killing the owned helper.
-        # A failed monitor must still leave the process killed and reaped.
-        try:
-            self._stop_monitor()
-        except Exception as error:
-            cleanup_errors.append(error)
-        try:
-            if self.process.poll() is None:
-                try:
-                    os.killpg(self.process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass  # The helper exited between poll and kill.
-        except Exception as error:
-            cleanup_errors.append(error)
-        finally:
-            try:
-                self.process.wait(timeout=5.0)
-            except Exception as error:
-                cleanup_errors.append(error)
-        if cleanup_errors:
-            if primary_error is not None:
-                for error in cleanup_errors:
-                    print(f"Secondary helper cleanup failure: {error}", file=sys.stderr)
-            else:
-                for error in cleanup_errors[1:]:
-                    print(f"Secondary helper cleanup failure: {error}", file=sys.stderr)
-                raise cleanup_errors[0]
+        terminate_owned_process(self.process, self._stop_monitor)
 
     def _stop_monitor(self) -> None:
         if self.monitor is not None:
@@ -1238,10 +1274,12 @@ def test_global_oversized_header(executable: Path, _: Path, __: Path, ___: bytes
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
-    require(process.stdin is not None and process.stdout is not None, "helper pipes unavailable")
-    monitor = RuntimeNetworkMonitor(process)
+    monitor: RuntimeNetworkMonitor | None = None
     try:
+        require(process.stdin is not None and process.stdout is not None, "helper pipes unavailable")
+        monitor = RuntimeNetworkMonitor(process)
         request_id = uuid.uuid4().bytes
         process.stdin.write(struct.pack(">IHH16sQI", MAGIC, VERSION_2, LOAD, request_id, 0, MAXIMUM_PAYLOAD_BYTES + 1))
         process.stdin.flush()
@@ -1250,10 +1288,7 @@ def test_global_oversized_header(executable: Path, _: Path, __: Path, ___: bytes
         require(process.returncode == 65, f"oversized header returned {process.returncode}, expected 65")
         require(process.stdout.read(1) == b"", "oversized header unexpectedly produced a response")
     finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5.0)
-        monitor.stop()
+        terminate_owned_process(process, lambda: monitor.stop() if monitor is not None else None)
 
 
 def run_before_ready_case(executable: Path, model: Path, eof: bool) -> None:
@@ -1264,9 +1299,10 @@ def run_before_ready_case(executable: Path, model: Path, eof: bool) -> None:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    require(process.stdin is not None and process.stdout is not None, "helper pipes unavailable")
-    monitor = RuntimeNetworkMonitor(process)
+    monitor: RuntimeNetworkMonitor | None = None
     try:
+        require(process.stdin is not None and process.stdout is not None, "helper pipes unavailable")
+        monitor = RuntimeNetworkMonitor(process)
         request_id = uuid.uuid4().bytes
         payload = string(str(model)) + string(RUNTIME_IDENTITY) + string(MODEL_IDENTITY) + string(VAD_IDENTITY)
         encoded = Frame(LOAD, request_id, 0, payload).encoded(VERSION_2)
@@ -1287,10 +1323,7 @@ def run_before_ready_case(executable: Path, model: Path, eof: bool) -> None:
         require(PUBLIC_CANARY not in drained, "public protocol canary escaped before readiness")
         require(not drained, "helper emitted readiness after pre-ready interruption")
     finally:
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=5.0)
-        monitor.stop()
+        terminate_owned_process(process, lambda: monitor.stop() if monitor is not None else None)
 
 
 def run_interruption_case(
@@ -1505,7 +1538,9 @@ def declared_configuration() -> dict[str, object]:
             "loadReady": 15.0,
             "backendAttestation": 2.0,
             "inference": inference_timeout(),
-            "networkMonitorStartup": 3.0,
+            "networkMonitorStartup": RuntimeNetworkMonitor.startup_timeout_seconds,
+            "networkMonitorQuery": RuntimeNetworkMonitor.lsof_timeout_seconds,
+            "networkMonitorStop": RuntimeNetworkMonitor.stop_timeout_seconds,
             "networkPollInterval": RuntimeNetworkMonitor.poll_interval_seconds,
         },
     }
