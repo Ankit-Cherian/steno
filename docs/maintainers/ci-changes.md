@@ -10,6 +10,11 @@ The [PR #19 push runtime job](https://github.com/Ankit-Cherian/steno/actions/run
 
 The runtime and distribution job now allows 75 minutes, leaving room for packaging after the measured CPU validation time. Individual test and diagnostic deadlines, assertions, security checks and required merge checks are unchanged. A fresh complete hosted run must still pass; the canceled job is not release evidence.
 
+## Checkout maintenance
+
+[PR #19](https://github.com/Ankit-Cherian/steno/pull/19) updates Checkout to the pinned v7.0.1 release throughout validation, security and release workflows. Version comments match the pin. Credentials remain nonpersistent, release checkouts remain bound to the exact source, and the native library retains its separately pinned revision.
+
+Checkout now runs on Node 24. Its new restrictions on fork code under privileged workflow triggers need no exception here: these workflows do not use `pull_request_target` or `workflow_run`. No unsafe-checkout opt-in is enabled. Required hosted CI and Security checks must pass on the updated source before merge.
 
 ## Explicit ARM build targets
 

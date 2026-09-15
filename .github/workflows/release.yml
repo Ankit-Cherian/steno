@@ -42,7 +42,7 @@ jobs:
       RELEASE_SHA: ${{ inputs.source_sha }}
       MANUAL_ACCEPTANCE: ${{ inputs.manual_acceptance }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -85,7 +85,7 @@ jobs:
       RELEASE_SHA: ${{ inputs.source_sha }}
       MANUAL_ACCEPTANCE: ${{ inputs.manual_acceptance }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -154,7 +154,7 @@ jobs:
       MANUAL_ACCEPTANCE: ${{ inputs.manual_acceptance }}
       RELEASE_ASSETS: ${{ github.workspace }}/build/release-assets
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -200,7 +200,7 @@ jobs:
       RELEASE_ASSETS: ${{ github.workspace }}/build/release-assets
       RELEASE_ID: ${{ needs.draft.outputs.release_id }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
