@@ -4,6 +4,12 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Review the four local-file path reports
+
+The [full PR #20 C++ scan](https://github.com/Ankit-Cherian/steno/actions/runs/34999812499/job/104485163486) no longer reports automatic backend loading. Four severity-7.5 path reports remain: the CLI response file and the helper's WAV, VAD-model and transcription-model reads. Review found intentional local inputs and no identified less-trusted route into the app-owned helper. The [individual review](reviewed-codeql-findings.md) records the source evidence and the limits of that conclusion.
+
+The C++ severity gate now checks an explicit review receipt for those four findings. It binds their complete traces and source hashes, prints their original severities and rationales, and rejects changed or missing evidence. New findings still block. This does not alter the scanner, dismiss GitHub alerts, or remove any query. Swift and Actions use the ordinary severity gate. All 176 local workflow and release contract tests pass. Against the actual four-result scan, the exact receipt passes; a missing receipt, changed contract, changed trace, duplicate finding or additional backend-loading result fails. Fresh hosted validation remains required.
+
 ## Finish observation before orderly helper shutdown
 
 The [PR #20 runtime job](https://github.com/Ankit-Cherian/steno/actions/runs/34993531190/job/104463996293) passed 25 of 26 protocol cases. Its v1 case failed because the network observer could not inspect the owned helper. The receipt checked 27 of 28 processes and correctly reported incomplete observation. A later diagnostic passed, but did not clear that failure.

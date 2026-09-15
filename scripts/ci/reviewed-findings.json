@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "category": "/language:c-cpp",
+  "status": "accepted",
+  "reviewed_commit": "3ec8431e6740f47e6f49a356c7ca3ebc87009bac",
+  "findings": [
+    {
+      "id": "cli-response-file",
+      "rule": "cpp/path-injection",
+      "location": {
+        "path": "vendor/whisper.cpp/build-steno/patched-source/764482c3175d9c3bc6089c1ec84df7d1b9537d83-57e0ef70eca680c78ca2b37497da2acc3799e17c894d54bdd98b2aa49e46ef0f/source/examples/cli/cli.cpp",
+        "startLine": 949,
+        "startColumn": 27,
+        "endLine": 949,
+        "endColumn": 34
+      },
+      "identity_sha256": "c289fa28bf3eb16b0ebcc694c78d1585ab9cede05167b7279641c8a26cae07ff",
+      "source_sha256": {
+        "Steno/DictationController.swift": "b3b39ffba54c479bef2fc63b1886b7c2da3dec171ca0c064bd21ab97df224958",
+        "Steno/Steno.entitlements": "d4ad464649384c808c34fcd081eaa2d673d4e57195a7a5c2f3d871495fc65c47",
+        "Steno/StenoDistribution.entitlements": "289696af9834a7ee41aca4c1cd3aa95fc38f9ae2e83655b1d4b86c1ccab771ee",
+        "StenoKit/Sources/StenoKit/Services/MacAudioCaptureService.swift": "e2f7f3bae2aff074a22983ffc3036316b31b58de0326d3f166c8ccc3a4b73cd3",
+        "StenoKit/Sources/StenoKit/Services/ProcessWhisperRuntimeSession.swift": "2dc018b3a1aa7c75e166d77e3a3308589e341a501a613976b6ce1af18a0d266b",
+        "StenoKit/Sources/StenoKit/Services/SessionCoordinator.swift": "2077ff87577841573bf4949f027a5f9ea054992251725a5b4741feb1babe31f3",
+        "StenoKit/Sources/StenoKit/Services/WhisperCLITranscriptionEngine.swift": "0d06fde22d8374a5a5d02bbc9de5255bc964c024babc4f3f7cd2d4bd6aeb657b",
+        "StenoKit/Sources/StenoKit/Services/WhisperRuntimeConfiguration.swift": "968b3b46971b0b7e9d502c287f134efa4f1302189ec9c2a2fc9c9fabc2aa93c9",
+        "StenoKit/Sources/StenoKit/Utilities/ProcessRunner.swift": "3012c4d61318079f3756620956e62e1d8935e645fecba85420ab4c276c6a9624",
+        "project.yml": "0c0d9a42c1617bb5af90cbe35c9edb4e515f7865a7def18cc2813df3162e95fc",
+        "runtime-helper/steno_whisper_runtime.cpp": "a5104164ec8526d88dd2b0362adb11bd751d3ded4cdd3f14e3d6b1b95cf5ed5a",
+        "scripts/build-whisper-runtime-helper.sh": "1f6717c2bc4f9402932701ecb729c9e6ef0bb9acf1992e6a5d0d83af9ff91a0a",
+        "scripts/ci/patches/whisper-security.patch": "57e0ef70eca680c78ca2b37497da2acc3799e17c894d54bdd98b2aa49e46ef0f",
+        "scripts/release-dmg.sh": "1ed29b0f974597ca60ef0aa93c59e831e584c7e33905898ad3bf198a7e325f2a",
+        "vendor/whisper.cpp/build-steno/patched-source/764482c3175d9c3bc6089c1ec84df7d1b9537d83-57e0ef70eca680c78ca2b37497da2acc3799e17c894d54bdd98b2aa49e46ef0f/source/examples/cli/cli.cpp": "053da25f98f0684104f24afa6184592ad6fc85681f13b32f0ff68bdff3901467"
+      },
+      "rationale": "The standalone CLI intentionally reads the response file selected by its local command-line caller. Steno always supplies explicit model, audio, output, and format arguments, so its invocation cannot enter the single @file argument branch. No built-in privilege transition, shared service, remote entry point, or attacker-controlled app route to this input was identified in the reviewed deployment.",
+      "reassess_when": "Reassess when any bound source or launching contract changes; when privileges, macOS privacy permissions, child invocation, file selection, transport, or deployment changes; or when a new source-to-sink trace, source range, message, severity, or query result appears. A new entry point outside the bound files may change the trust boundary even when recorded hashes still match.",
+      "classification": "not_actionable_in_supported_deployment"
+    },
+    {
+      "id": "helper-wave-file",
+      "rule": "cpp/path-injection",
+      "location": {
+        "path": "runtime-helper/steno_whisper_runtime.cpp",
+        "startLine": 1366,
+        "startColumn": 39,
+        "endLine": 1366,
+        "endColumn": 49
+      },
+      "identity_sha256": "71d01d0262b58c9ec1d234c9f1ecd11fb5691e285b183ddea0189358128de6d1",
+      "source_sha256": {
+        "Steno/DictationController.swift": "b3b39ffba54c479bef2fc63b1886b7c2da3dec171ca0c064bd21ab97df224958",
+        "Steno/Steno.entitlements": "d4ad464649384c808c34fcd081eaa2d673d4e57195a7a5c2f3d871495fc65c47",
+        "Steno/StenoDistribution.entitlements": "289696af9834a7ee41aca4c1cd3aa95fc38f9ae2e83655b1d4b86c1ccab771ee",
+        "StenoKit/Sources/StenoKit/Services/MacAudioCaptureService.swift": "e2f7f3bae2aff074a22983ffc3036316b31b58de0326d3f166c8ccc3a4b73cd3",
+        "StenoKit/Sources/StenoKit/Services/ProcessWhisperRuntimeSession.swift": "2dc018b3a1aa7c75e166d77e3a3308589e341a501a613976b6ce1af18a0d266b",
+        "StenoKit/Sources/StenoKit/Services/SessionCoordinator.swift": "2077ff87577841573bf4949f027a5f9ea054992251725a5b4741feb1babe31f3",
+        "StenoKit/Sources/StenoKit/Services/WhisperCLITranscriptionEngine.swift": "0d06fde22d8374a5a5d02bbc9de5255bc964c024babc4f3f7cd2d4bd6aeb657b",
+        "StenoKit/Sources/StenoKit/Services/WhisperRuntimeConfiguration.swift": "968b3b46971b0b7e9d502c287f134efa4f1302189ec9c2a2fc9c9fabc2aa93c9",
+        "StenoKit/Sources/StenoKit/Utilities/ProcessRunner.swift": "3012c4d61318079f3756620956e62e1d8935e645fecba85420ab4c276c6a9624",
+        "project.yml": "0c0d9a42c1617bb5af90cbe35c9edb4e515f7865a7def18cc2813df3162e95fc",
+        "runtime-helper/steno_whisper_runtime.cpp": "a5104164ec8526d88dd2b0362adb11bd751d3ded4cdd3f14e3d6b1b95cf5ed5a",
+        "scripts/build-whisper-runtime-helper.sh": "1f6717c2bc4f9402932701ecb729c9e6ef0bb9acf1992e6a5d0d83af9ff91a0a",
+        "scripts/ci/patches/whisper-security.patch": "57e0ef70eca680c78ca2b37497da2acc3799e17c894d54bdd98b2aa49e46ef0f",
+        "scripts/release-dmg.sh": "1ed29b0f974597ca60ef0aa93c59e831e584c7e33905898ad3bf198a7e325f2a"
+      },
+      "rationale": "The live helper receives the WAV path through anonymous inherited pipes owned by its launching app. The reviewed app passes a generated recording URL from its capture session; no attacker-controlled path route through editor text, a network request, or a shared helper transport was identified. The helper has no built-in privilege transition. This assessment does not assume identical macOS privacy permissions between the app and helper.",
+      "reassess_when": "Reassess when any bound source or launching contract changes; when privileges, macOS privacy permissions, child invocation, file selection, transport, or deployment changes; or when a new source-to-sink trace, source range, message, severity, or query result appears. A new entry point outside the bound files may change the trust boundary even when recorded hashes still match.",
+      "classification": "not_actionable_in_supported_deployment"
+    },
+    {
+      "id": "helper-vad-model",
+      "rule": "cpp/path-injection",
+      "location": {
+        "path": "runtime-helper/steno_whisper_runtime.cpp",
+        "startLine": 1419,
+        "startColumn": 40,
+        "endLine": 1419,
+        "endColumn": 45
+      },
+      "identity_sha256": "e40af91477fa15c3c84793feb91aeeaaaee8af828b74e19f662234b3667afe0c",
+      "source_sha256": {
+        "Steno/DictationController.swift": "b3b39ffba54c479bef2fc63b1886b7c2da3dec171ca0c064bd21ab97df224958",
+        "Steno/Steno.entitlements": "d4ad464649384c808c34fcd081eaa2d673d4e57195a7a5c2f3d871495fc65c47",
+        "Steno/StenoDistribution.entitlements": "289696af9834a7ee41aca4c1cd3aa95fc38f9ae2e83655b1d4b86c1ccab771ee",
+        "StenoKit/Sources/StenoKit/Services/MacAudioCaptureService.swift": "e2f7f3bae2aff074a22983ffc3036316b31b58de0326d3f166c8ccc3a4b73cd3",
+        "StenoKit/Sources/StenoKit/Services/ProcessWhisperRuntimeSession.swift": "2dc018b3a1aa7c75e166d77e3a3308589e341a501a613976b6ce1af18a0d266b",
+        "StenoKit/Sources/StenoKit/Services/SessionCoordinator.swift": "2077ff87577841573bf4949f027a5f9ea054992251725a5b4741feb1babe31f3",
+        "StenoKit/Sources/StenoKit/Services/WhisperCLITranscriptionEngine.swift": "0d06fde22d8374a5a5d02bbc9de5255bc964c024babc4f3f7cd2d4bd6aeb657b",
+        "StenoKit/Sources/StenoKit/Services/WhisperRuntimeConfiguration.swift": "968b3b46971b0b7e9d502c287f134efa4f1302189ec9c2a2fc9c9fabc2aa93c9",
+        "StenoKit/Sources/StenoKit/Utilities/ProcessRunner.swift": "3012c4d61318079f3756620956e62e1d8935e645fecba85420ab4c276c6a9624",
+        "project.yml": "0c0d9a42c1617bb5af90cbe35c9edb4e515f7865a7def18cc2813df3162e95fc",
+        "runtime-helper/steno_whisper_runtime.cpp": "a5104164ec8526d88dd2b0362adb11bd751d3ded4cdd3f14e3d6b1b95cf5ed5a",
+        "scripts/build-whisper-runtime-helper.sh": "1f6717c2bc4f9402932701ecb729c9e6ef0bb9acf1992e6a5d0d83af9ff91a0a",
+        "scripts/ci/patches/whisper-security.patch": "57e0ef70eca680c78ca2b37497da2acc3799e17c894d54bdd98b2aa49e46ef0f",
+        "scripts/release-dmg.sh": "1ed29b0f974597ca60ef0aa93c59e831e584c7e33905898ad3bf198a7e325f2a"
+      },
+      "rationale": "The live helper receives the explicitly configured local VAD model path through its launching app's anonymous inherited pipe. The reviewed app supports user-selected custom paths; no attacker-controlled app input route, shared helper transport, or built-in privilege transition was identified. This finding concerns path authorization, not the safety of arbitrary model contents or identical macOS privacy permissions.",
+      "reassess_when": "Reassess when any bound source or launching contract changes; when privileges, macOS privacy permissions, child invocation, file selection, transport, or deployment changes; or when a new source-to-sink trace, source range, message, severity, or query result appears. A new entry point outside the bound files may change the trust boundary even when recorded hashes still match.",
+      "classification": "not_actionable_in_supported_deployment"
+    },
+    {
+      "id": "helper-asr-model",
+      "rule": "cpp/path-injection",
+      "location": {
+        "path": "runtime-helper/steno_whisper_runtime.cpp",
+        "startLine": 2344,
+        "startColumn": 74,
+        "endLine": 2344,
+        "endColumn": 79
+      },
+      "identity_sha256": "a02f66a14d331bc704179f6e098b54916fc952b3b63ebccbc218643fdeae78bf",
+      "source_sha256": {
+        "Steno/DictationController.swift": "b3b39ffba54c479bef2fc63b1886b7c2da3dec171ca0c064bd21ab97df224958",
+        "Steno/Steno.entitlements": "d4ad464649384c808c34fcd081eaa2d673d4e57195a7a5c2f3d871495fc65c47",
+        "Steno/StenoDistribution.entitlements": "289696af9834a7ee41aca4c1cd3aa95fc38f9ae2e83655b1d4b86c1ccab771ee",
+        "StenoKit/Sources/StenoKit/Services/MacAudioCaptureService.swift": "e2f7f3bae2aff074a22983ffc3036316b31b58de0326d3f166c8ccc3a4b73cd3",
+        "StenoKit/Sources/StenoKit/Services/ProcessWhisperRuntimeSession.swift": "2dc018b3a1aa7c75e166d77e3a3308589e341a501a613976b6ce1af18a0d266b",
+        "StenoKit/Sources/StenoKit/Services/SessionCoordinator.swift": "2077ff87577841573bf4949f027a5f9ea054992251725a5b4741feb1babe31f3",
+        "StenoKit/Sources/StenoKit/Services/WhisperCLITranscriptionEngine.swift": "0d06fde22d8374a5a5d02bbc9de5255bc964c024babc4f3f7cd2d4bd6aeb657b",
+        "StenoKit/Sources/StenoKit/Services/WhisperRuntimeConfiguration.swift": "968b3b46971b0b7e9d502c287f134efa4f1302189ec9c2a2fc9c9fabc2aa93c9",
+        "StenoKit/Sources/StenoKit/Utilities/ProcessRunner.swift": "3012c4d61318079f3756620956e62e1d8935e645fecba85420ab4c276c6a9624",
+        "project.yml": "0c0d9a42c1617bb5af90cbe35c9edb4e515f7865a7def18cc2813df3162e95fc",
+        "runtime-helper/steno_whisper_runtime.cpp": "a5104164ec8526d88dd2b0362adb11bd751d3ded4cdd3f14e3d6b1b95cf5ed5a",
+        "scripts/build-whisper-runtime-helper.sh": "1f6717c2bc4f9402932701ecb729c9e6ef0bb9acf1992e6a5d0d83af9ff91a0a",
+        "scripts/ci/patches/whisper-security.patch": "57e0ef70eca680c78ca2b37497da2acc3799e17c894d54bdd98b2aa49e46ef0f",
+        "scripts/release-dmg.sh": "1ed29b0f974597ca60ef0aa93c59e831e584c7e33905898ad3bf198a7e325f2a"
+      },
+      "rationale": "The live helper receives the explicitly configured local transcription model path through its launching app's anonymous inherited pipe. The reviewed app supports user-selected custom paths; no attacker-controlled app input route, shared helper transport, or built-in privilege transition was identified. This finding concerns path authorization, not the safety of arbitrary model contents or identical macOS privacy permissions.",
+      "reassess_when": "Reassess when any bound source or launching contract changes; when privileges, macOS privacy permissions, child invocation, file selection, transport, or deployment changes; or when a new source-to-sink trace, source range, message, severity, or query result appears. A new entry point outside the bound files may change the trust boundary even when recorded hashes still match.",
+      "classification": "not_actionable_in_supported_deployment"
+    }
+  ]
+}

@@ -1,6 +1,9 @@
 """Regression tests for unsafe workflow structure and policy bypasses."""
 
 import importlib.util
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 import unittest
 
@@ -184,6 +187,33 @@ class WorkflowPolicyTests(unittest.TestCase):
         for action in ('upload-sarif', 'init-extra', 'analyze-extra'):
             with self.subTest(action=action):
                 self.assertEqual(POLICY.check_workflow(self.codeql_workflow(action)), [])
+
+    def test_security_workflow_dispatches_cpp_review_and_preserves_gate_failure(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
+        steps = [step for step in workflow['jobs']['native']['steps']
+                 if step.get('name') == 'Block high and critical findings']
+        self.assertEqual(len(steps), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = root / 'python3'
+            command.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGUMENT_LOG"\nexit "$GATE_EXIT_STATUS"\n')
+            command.chmod(0o755)
+            arguments = root / 'arguments.txt'
+            for category in ('/language:c-cpp', '/language:swift'):
+                for status in (0, 31):
+                    with self.subTest(category=category, status=status):
+                        environment = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                            'ANALYSIS_CATEGORY': category, 'ARGUMENT_LOG': str(arguments),
+                            'GATE_EXIT_STATUS': str(status)}
+                        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps[0]['run']],
+                                                env=environment, cwd=root, capture_output=True, text=True)
+                        self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                        expected = ['scripts/ci/check-sarif.py', '--directory', 'build/codeql-results',
+                                    '--category', category]
+                        if category == '/language:c-cpp':
+                            expected += ['--reviewed-dispositions', 'scripts/ci/reviewed-findings.json',
+                                         '--source-root', '.']
+                        self.assertEqual(arguments.read_text().splitlines(), expected)
 
     def test_tab_indentation_and_document_indirection_rejected(self):
         self.assertTrue(POLICY.check_workflow(VALID.replace('  test:', '\ttest:')))

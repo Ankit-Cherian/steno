@@ -119,7 +119,12 @@ jobs:
       - name: Block high and critical findings
         env:
           ANALYSIS_CATEGORY: /language:${{ matrix.language }}
-        run: python3 scripts/ci/check-sarif.py --directory build/codeql-results --category "$ANALYSIS_CATEGORY"
+        run: |
+          args=(--directory build/codeql-results --category "$ANALYSIS_CATEGORY")
+          if [ "$ANALYSIS_CATEGORY" = /language:c-cpp ]; then
+            args+=(--reviewed-dispositions scripts/ci/reviewed-findings.json --source-root .)
+          fi
+          python3 scripts/ci/check-sarif.py "${args[@]}"
 
   gate:
     name: Security Gate
