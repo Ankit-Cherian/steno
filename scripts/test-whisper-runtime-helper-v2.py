@@ -73,6 +73,12 @@ FINAL_RESULT = 16
 STREAM_CANCEL = 17
 
 
+def inference_timeout() -> float:
+    # Hosted CPU inference can exceed 30 seconds; device-suppressed runs are
+    # protocol diagnostics and do not qualify production Metal performance.
+    return 180.0 if os.environ.get("GGML_METAL_DEVICES") == "0" else 30.0
+
+
 class TestFailure(RuntimeError):
     pass
 
@@ -751,7 +757,7 @@ def test_v1_compatibility(executable: Path, model: Path, audio: Path, _: bytes) 
     try:
         request_id = uuid.uuid4().bytes
         helper.send(Frame(TRANSCRIBE, request_id, 7, one_shot_configuration(audio)))
-        response = helper.expect(RESULT, request_id, 7, timeout=30.0)
+        response = helper.expect(RESULT, request_id, 7, timeout=inference_timeout())
         decoded = json.loads(response.payload)
         require(isinstance(decoded.get("transcription"), list), "v1 result did not match rich transcript schema")
         helper.shutdown()
@@ -841,7 +847,7 @@ def test_finish_priority_and_exactly_one_final(executable: Path, model: Path, au
         helper.send(Frame(STREAM_FINISH, stream_id, generation, finish_payload(helper, audio, pcm)))
 
         final_count = 0
-        deadline = time.monotonic() + 30.0
+        deadline = time.monotonic() + inference_timeout()
         while final_count == 0:
             response = helper.read(max(0.1, deadline - time.monotonic()))
             require(response.request_id == stream_id and response.generation == generation, "finish response identity mismatch")
@@ -937,7 +943,7 @@ def test_preview_silence_resumption_and_unknown(executable: Path, model: Path, _
                     require(helper.expect(AUDIO_ACCEPTED, stream_id, generation).payload == u64(sequence) + u64(offset), "resumption append mismatch")
                     sequence += 1
                 helper.send(Frame(STREAM_DECODE, stream_id, generation, u64(revision) + u64(offset)))
-                response = helper.expect(HYPOTHESIS, stream_id, generation, timeout=30.0)
+                response = helper.expect(HYPOTHESIS, stream_id, generation, timeout=inference_timeout())
                 observed_revision, watermark, _, evidence, text = parse_hypothesis(response.payload)
                 require((observed_revision, watermark) == (revision, offset), "resumption response correlation mismatch")
                 expected_evidence = (1 if revision % 2 else 2) if use_vad else 0
@@ -995,7 +1001,7 @@ def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: by
                 HYPOTHESIS,
                 fixture_stream_id,
                 fixture_generation,
-                timeout=30.0,
+                timeout=inference_timeout(),
             )
             _, fixture_watermark, _, fixture_evidence, _ = parse_hypothesis(fixture_response.payload)
             helper.send(Frame(STREAM_CANCEL, fixture_stream_id, fixture_generation))
@@ -1012,7 +1018,7 @@ def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: by
         next_sequence = append_all(helper, stream_id, generation, early_speech)
         first_watermark = preview_sample_count
         helper.send(Frame(STREAM_DECODE, stream_id, generation, u64(1) + u64(first_watermark)))
-        first = helper.expect(HYPOTHESIS, stream_id, generation, timeout=30.0)
+        first = helper.expect(HYPOTHESIS, stream_id, generation, timeout=inference_timeout())
         revision, watermark, _, evidence, _ = parse_hypothesis(first.payload)
         require(
             (revision, watermark, evidence) == (1, first_watermark, 2),
@@ -1032,7 +1038,7 @@ def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: by
         second_watermark = first_watermark + preview_sample_count
         require(accepted.payload == u64(next_sequence) + u64(second_watermark), "silence append mismatch")
         helper.send(Frame(STREAM_DECODE, stream_id, generation, u64(2) + u64(second_watermark)))
-        second = helper.expect(HYPOTHESIS, stream_id, generation, timeout=30.0)
+        second = helper.expect(HYPOTHESIS, stream_id, generation, timeout=inference_timeout())
         revision, watermark, _, evidence, _ = parse_hypothesis(second.payload)
         require(
             (revision, watermark, evidence) == (2, second_watermark, 1),
@@ -1070,7 +1076,7 @@ def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: by
         start_stream(helper, phase_stream_id, phase_generation)
         append_all(helper, phase_stream_id, phase_generation, first_phase_slice)
         helper.send(Frame(STREAM_DECODE, phase_stream_id, phase_generation, u64(1) + u64(phase_slice_samples)))
-        first_phase_response = helper.expect(HYPOTHESIS, phase_stream_id, phase_generation, timeout=30.0)
+        first_phase_response = helper.expect(HYPOTHESIS, phase_stream_id, phase_generation, timeout=inference_timeout())
         _, first_phase_watermark, _, first_phase_evidence, _ = parse_hypothesis(first_phase_response.payload)
         require(first_phase_watermark == phase_slice_samples, "first phase-offset watermark mismatch")
 
@@ -1089,7 +1095,7 @@ def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: by
             "second phase-offset append mismatch",
         )
         helper.send(Frame(STREAM_DECODE, phase_stream_id, phase_generation, u64(2) + u64(second_phase_watermark)))
-        second_phase_response = helper.expect(HYPOTHESIS, phase_stream_id, phase_generation, timeout=30.0)
+        second_phase_response = helper.expect(HYPOTHESIS, phase_stream_id, phase_generation, timeout=inference_timeout())
         _, observed_second_watermark, _, second_phase_evidence, _ = parse_hypothesis(second_phase_response.payload)
         require(observed_second_watermark == second_phase_watermark, "second phase-offset watermark mismatch")
         require(
@@ -1135,7 +1141,7 @@ def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: by
         silence = b"\x00\x00" * 16_000
         append_all(no_vad, stream_id, generation, silence)
         no_vad.send(Frame(STREAM_DECODE, stream_id, generation, u64(1) + u64(16_000)))
-        response = no_vad.expect(HYPOTHESIS, stream_id, generation, timeout=30.0)
+        response = no_vad.expect(HYPOTHESIS, stream_id, generation, timeout=inference_timeout())
         _, _, _, evidence, _ = parse_hypothesis(response.payload)
         require(evidence == 0, "runtime without configured VAD did not emit unknown evidence")
         no_vad.send(Frame(STREAM_CANCEL, stream_id, generation))
@@ -1204,7 +1210,7 @@ def test_crash_after_final(executable: Path, model: Path, audio: Path, pcm: byte
         start_stream(helper, stream_id, generation)
         append_all(helper, stream_id, generation, pcm)
         helper.send(Frame(STREAM_FINISH, stream_id, generation, finish_payload(helper, audio, pcm)))
-        response = helper.expect(FINAL_RESULT, stream_id, generation, timeout=30.0)
+        response = helper.expect(FINAL_RESULT, stream_id, generation, timeout=inference_timeout())
         decoded = json.loads(response.payload)
         require(isinstance(decoded.get("transcription"), list), "pre-crash final result schema was malformed")
         helper.expect_no_frame()
@@ -1336,7 +1342,7 @@ def test_v2_stream_vocabulary_prompt_accepted(executable: Path, model: Path, aud
         require(started.payload == helper.identity_payload(), "stream-start identity payload mismatch")
         append_all(helper, stream_id, generation, pcm)
         helper.send(Frame(STREAM_FINISH, stream_id, generation, finish_with_configuration(audio, pcm, configuration)))
-        response = helper.expect(FINAL_RESULT, stream_id, generation, timeout=30.0)
+        response = helper.expect(FINAL_RESULT, stream_id, generation, timeout=inference_timeout())
         require_rich_result(response.payload)
         helper.shutdown()
     finally:
@@ -1359,7 +1365,7 @@ def test_v1_one_shot_vocabulary_prompt_accepted(executable: Path, model: Path, a
                 ),
             )
         )
-        response = helper.expect(RESULT, request_id, 8, timeout=30.0)
+        response = helper.expect(RESULT, request_id, 8, timeout=inference_timeout())
         require_rich_result(response.payload)
         helper.shutdown()
     finally:
@@ -1384,7 +1390,7 @@ def test_prompted_jfk_accepted_verification(executable: Path, model: Path, audio
                 ),
             )
         )
-        response = helper.expect(RESULT, request_id, 9, timeout=30.0)
+        response = helper.expect(RESULT, request_id, 9, timeout=inference_timeout())
         decoded = json.loads(response.payload)
         observed = decoded.get("verification") if isinstance(decoded, dict) else decoded
         try:
@@ -1498,7 +1504,7 @@ def declared_configuration() -> dict[str, object]:
             "defaultFrameRead": 5.0,
             "loadReady": 15.0,
             "backendAttestation": 2.0,
-            "inference": 30.0,
+            "inference": inference_timeout(),
             "networkMonitorStartup": 3.0,
             "networkPollInterval": RuntimeNetworkMonitor.poll_interval_seconds,
         },
