@@ -1,6 +1,6 @@
 # Steno Quickstart
 
-Build and run the unreleased Steno 1.0.0 candidate on an Apple silicon Mac. For an older release, use the guide at that version's tag.
+Build and run Steno 1.0.0 on an Apple silicon Mac. For an older release, use the guide at that version's tag.
 
 ## Prerequisites
 
@@ -138,7 +138,7 @@ Validate these behaviors against the exact app build being considered for releas
 - Check short and long dictations, opening words, silence, Stop, Cancel, and a fresh recording immediately after completion.
 - Check keyboard navigation, VoiceOver labels, reduced motion, sleep/wake, an installed app bundle, and a macOS 13 machine.
 
-Record each result and the tested build in [the 1.0 checklist](docs/release/1.0-checklist.md). These checks require using the app; automated tests and a single successful dictation cannot cover them all. Distribution signing and notarization remain pending.
+Record each result and the tested build in [the 1.0 checklist](docs/release/1.0-checklist.md). These checks require using the app; automated tests and a single successful dictation cannot cover them all. For distribution signing and notarization, follow [direct distribution](docs/release/direct-distribution.md).
 
 ## If something fails
 

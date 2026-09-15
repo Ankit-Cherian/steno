@@ -32,7 +32,7 @@ Once the model is installed, dictation works offline. Settings → Speech model 
 
 [View Insights](assets/1.0/insights-light.png) · [View Settings](assets/settings.png)
 
-This guide describes the **unreleased 1.0.0 candidate**. The download link points to the latest published release, which may have different features. Screenshots use fictional sample data. The [release checklist](docs/release/1.0-checklist.md) records the remaining acceptance and distribution checks.
+This guide describes **Steno 1.0**. The download link always opens the latest published release; check its version before downloading. Screenshots use fictional sample data. Build and distribution status is recorded in the [release checklist](docs/release/1.0-checklist.md).
 
 To build or contribute, follow the [source setup](QUICKSTART.md) and [contribution guide](CONTRIBUTING.md). Development requires Xcode with Swift 6.2 or later, XcodeGen, CMake, and the pinned local Whisper runtime and models described in the setup guide. The app uses SwiftUI and AppKit; [StenoKit](StenoKit/README.md) contains the core services and benchmark tools. The [CI guide](docs/ci-cd.md) explains the automated checks and packaging workflow.
 
