@@ -25,4 +25,8 @@ The patch also connects Whisper's existing request cancellation callback to its 
 
 Cancellation follows each backend's supported boundaries. CPU can stop between compute nodes. Metal keeps its existing command-buffer scheduling and cancellation granularity; this patch does not promise immediate interruption of a submitted GPU graph.
 
+Steno explicitly builds with `GGML_BACKEND_DL=OFF`. In that configuration, automatic backend initialization now registers the linked CPU and Metal libraries without searching the environment, current directory, executable directory, or a supplied discovery directory. The upstream implementation searched these locations even with dynamic backend modules disabled. The explicit `ggml_backend_load(path)` API remains available to callers; this correction removes automatic discovery, not every possible library load. Builds that enable dynamic backend modules retain the upstream discovery path.
+
+The native lane tests each automatic search route using a temporary plugin whose constructor only writes a marker. No automatic route may execute it. An explicit-load control must execute the same kind of fixture, and the linked CPU and Metal registries must remain present. Temporary fixture code is not shipped. Separate inference and protocol checks exercise the actual backends.
+
 When changing the upstream pin or this patch, select a fresh build directory. A CMake cache bound to different source content fails rather than being retargeted or deleted. Keep the upstream license notices, review every patch hunk against the new revision, and rerun allocation, runtime, transcription and security checks. No scanner rule or severity threshold is suppressed by this patch.

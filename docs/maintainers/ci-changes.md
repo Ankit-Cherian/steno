@@ -4,6 +4,16 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Full security analysis after integration
+
+[PR #16](https://github.com/Ankit-Cherian/steno/pull/16) merged at `9356e7a` after all 16 PR checks passed. The [subsequent main scan](https://github.com/Ankit-Cherian/steno/actions/runs/34981945058) reported five native findings. Both runs built the full source, but the PR query command also loaded CodeQL's diff-range extension. That restricted the reported findings even though the local severity checker examined every result it received.
+
+The correction requires `CODEQL_ACTION_DIFF_INFORMED_QUERIES=false` on CodeQL initialization and analysis. Workflow-policy tests reject missing configuration, expressions, and unsafe job or step overrides. This changes query coverage; the severity threshold remains 7.0, and each reported finding still needs repair or an explicit review.
+
+The native library-loading finding exposed automatic backend discovery in the bundled CLI. Steno links its CPU and Metal backends, but upstream initialization still searched for plugins before parsing CLI arguments. The runtime patch now initializes the linked registry directly when dynamic backend modules are disabled, and the builder explicitly sets and verifies that configuration. The explicit library-loading API remains available; this is not a general prohibition on dynamic loading. See the [patch inventory](../../scripts/ci/patches/README.md) for that boundary.
+
+The regression loads a harmless constructor-marker plugin through each automatic entry point on the original build and rejects all four loads on the repaired build. An explicit-load control still executes the fixture. The repaired build also registers CPU and Metal and transcribes the public JFK sample on both backends, including model and audio paths with spaces. Package tests pass all 726 cases, the unsigned app builds, all 70 hosted macOS tests pass, and the three-fixture benchmark passes its report and zero-regression gates. Both CPU and Metal protocol suites pass all 26 cases, with all 25 eligible processes attested on each backend. Fresh hosted security results remain required; these local checks do not complete signed-release acceptance.
+
 ## Explicit ARM build targets
 
 [`22c4ae9` — Specify ARM targets for native security builds](https://github.com/Ankit-Cherian/steno/commit/22c4ae98b2cc05fa1a13ddd82e9253b279d14720) makes the architecture explicit in both native build paths:
