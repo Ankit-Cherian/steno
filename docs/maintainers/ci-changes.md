@@ -4,6 +4,12 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Checkout maintenance
+
+[PR #19](https://github.com/Ankit-Cherian/steno/pull/19) updates Checkout to the pinned v7.0.1 release throughout validation, security and release workflows. Version comments match the pin. Credentials remain nonpersistent, release checkouts remain bound to the exact source, and the native library retains its separately pinned revision.
+
+Checkout now runs on Node 24. Its new restrictions on fork code under privileged workflow triggers need no exception here: these workflows do not use `pull_request_target` or `workflow_run`. No unsafe-checkout opt-in is enabled. Required hosted CI and Security checks must pass on the updated source before merge.
+
 ## Explicit ARM build targets
 
 [`22c4ae9` — Specify ARM targets for native security builds](https://github.com/Ankit-Cherian/steno/commit/22c4ae98b2cc05fa1a13ddd82e9253b279d14720) makes the architecture explicit in both native build paths:
