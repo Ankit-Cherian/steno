@@ -4,6 +4,8 @@ Steno uses GitHub Actions to check contributions and prepare releases. **CI** ru
 
 The workflow files define triggers after they are pushed to GitHub; execution also depends on Actions settings and any required fork-run approval. Required merge checks and protected release environments are separate repository settings; follow [GitHub activation](maintainers/github-setup.md) before treating the pipeline as enforced.
 
+The runtime and distribution job has a 75-minute overall limit. It includes native tests, the public benchmark, app packaging and DMG verification. Individual inference and diagnostic deadlines remain separate.
+
 ## What runs
 
 | Stage | When | What it proves |
