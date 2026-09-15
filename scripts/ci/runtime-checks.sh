@@ -110,8 +110,17 @@ run_check() {
 run_check build bash "$ROOT_DIR/scripts/build-whisper-runtime-helper.sh"
 run_check prompt-verification bash "$ROOT_DIR/scripts/test-whisper-prompt-verification.sh"
 run_check vad-integrity bash "$ROOT_DIR/scripts/test-whisper-vad-integrity.sh"
-run_check helper-protocol bash "$ROOT_DIR/scripts/test-whisper-runtime-helper-v2.sh" \
-  --vad-model "$STENO_TEST_WHISPER_VAD" --receipt "$OUTPUT/helper-protocol.json"
+if run_check helper-protocol bash "$ROOT_DIR/scripts/test-whisper-runtime-helper-v2.sh" \
+  --vad-model "$STENO_TEST_WHISPER_VAD" --receipt "$OUTPUT/helper-protocol.json"; then
+  :
+else
+  protocol_status=$?
+  # Additional evidence cannot turn the failed protocol gate into a pass.
+  run_check helper-diagnostic python3 "$ROOT_DIR/scripts/ci/diagnose-runtime-inference.py" \
+    --helper "$STENO_TEST_RETAINED_HELPER" --model "$STENO_TEST_WHISPER_MODEL" \
+    --audio "$STENO_TEST_WHISPER_AUDIO" || echo "Runtime diagnostic did not complete successfully."
+  exit "$protocol_status"
+fi
 verify_receipt "$OUTPUT/helper-protocol.json" | tee "$OUTPUT/backend-verification.log"
 run_check prompt-scoring bash "$ROOT_DIR/scripts/test-whisper-prompt-scoring.sh"
 
