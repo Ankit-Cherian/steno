@@ -22,6 +22,10 @@ The workflow files define triggers after they are pushed to GitHub; execution al
 
 Hosted runtime checks explicitly use CPU inference through the upstream `GGML_METAL_DEVICES=0` test setting. The shipped helper is still compiled with Metal support. The protocol receipt verifies which backend actually ran; CPU results cannot qualify as production Metal evidence. Standard hosted Apple silicon architecture alone is not proof of GPU availability.
 
+CPU protocol tests allow up to 180 seconds for each inference response; the default and Metal limit remains 30 seconds. Model loading, protocol acknowledgements, cancellation and shutdown retain their separate shorter deadlines. The receipt records the limits used. These are test completion limits, not advertised dictation latency.
+
+If the protocol suite fails, the runtime lane keeps the failure and runs a bounded diagnostic using the same public sample. Its log records CPU progress, response timing, backend identity and network observations. A successful diagnostic cannot turn the failed suite into a pass. Cleanup stops the network observer before terminating and reaping the owned helper, so teardown does not replace the original failure.
+
 The public benchmark is a **single-fixture smoke regression**, not a general recognition-accuracy score or a comparison against the previous release. It compares raw recognition against Steno's cleanup pipeline on that fixture. The existing broader benchmark manifest and release evaluation remain separate requirements for relevant changes. Some historical fixtures are local-only and are deliberately not uploaded by CI.
 
 The normal package suite includes opt-in runtime integration tests. CI activates the retained-helper contract explicitly in the native lane. Ordinary package-test success alone is not proof that a real model or helper executed. Real microphone behavior, actual editor insertion, permissions, supported media applications, native Metal inference, and macOS 13 acceptance remain in the [release checklist](release/1.0-checklist.md).
@@ -85,6 +89,8 @@ For the production GPU path, use a new output directory and `--backend metal`. T
 - Every remote Action is pinned to a full commit SHA. Checkout removes persisted Git credentials. Release elevation is limited to the jobs and steps that need it.
 - Xcode is selected explicitly. XcodeGen and actionlint archives, Whisper source, speech model and VAD model are pinned. Downloads are checksum verified before use; native compiled artifacts are rebuilt rather than restored from a shared executable cache.
 - CodeQL scans the workflow language, Swift app and package, and native C++ compilation. The local SARIF gate blocks security severity 7.0 and above and non-security error-level findings, including existing and suppressed findings. Missing or invalid scan evidence also fails. Lower-severity results remain visible in GitHub's Security tab.
+- Native security builds target ARM explicitly. The Swift scan uses a generic macOS destination with `ARCHS=arm64`; the C++ helper compiler receives its architecture explicitly. This keeps the output architecture correct when CodeQL traces the build through a translated process.
+- Blocking SARIF findings include their source location and scanner message in the job log. Check that output even when GitHub's PR summary says there are no new alerts: the local gate also examines results outside the changed lines, including compiled vendor code. An empty uploaded alert list does not override a failing local severity gate.
 - Dependency review blocks newly introduced high/critical vulnerable dependencies. Dependabot proposes updates; it never approves or merges them. Model files and the manually pinned native runtime are outside ordinary Swift dependency advisory coverage and need deliberate review.
 - `CODEOWNERS` identifies sensitive paths. Review enforcement, secret scanning and push protection require the repository settings described in the activation guide. A CODEOWNERS file by itself cannot prevent a merge.
 - No system can prove the absence of vulnerabilities. Static checks, behavioral tests, contributor review, secret protection and distribution provenance address different risks.
@@ -128,6 +134,8 @@ gh attestation verify Steno-X.Y.Z.dmg --repo Ankit-Cherian/steno \
 ## Maintenance and design references
 
 The workflow favors ordinary GitHub Actions over a second external CI service: contributors can see checks beside their PRs, and release permissions stay in the repository. It uses a shared validation workflow to avoid separate, drifting PR and release test definitions. Fast assertions and security analysis run in parallel; releases retain explicit human approval because automated tests cannot exercise the maintainer's complete native acceptance checklist.
+
+The [CI change record](maintainers/ci-changes.md) records corrections made during hosted activation and the checks used to verify them. Update this guide when a correction changes contributor commands, limits, artifacts or merge requirements.
 
 Review Dependabot's weekly Action/Swift updates. Tool archive pins in `tools.sh`, Xcode image availability, and runtime/model pins in `runtime-lock.json` require manual maintenance and the same checks as other changes. A pinned Xcode removed from the hosted image should fail clearly; do not silently select a different toolchain. Tune timeouts and runner usage from actual workflow timings rather than estimated speedups.
 

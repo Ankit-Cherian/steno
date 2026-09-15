@@ -13,7 +13,7 @@ gh api --paginate repos/Ankit-Cherian/steno/commits/main/check-runs \
   --jq '.check_runs[] | {name,conclusion,app:.app.slug,details_url}'
 ```
 
-Select the checks corresponding to `CI Gate` and `Security Gate`, produced by **GitHub Actions**. Do not substitute a similarly named check from another integration. Confirm branch protection against an actual test PR; configuration presence alone is not enforcement proof.
+Select the checks corresponding to `CI Gate` and `Security Gate`, produced by **GitHub Actions**. The reusable validation workflow currently reports `validate / CI Gate`; the security workflow reports `Security Gate`. Verify these names from a real run before applying them. Do not substitute a similarly named check from another integration. Confirm branch protection against an actual test PR; configuration presence alone is not enforcement proof.
 
 ## 2. Enforce main's checks
 
@@ -27,6 +27,8 @@ Create an active **branch ruleset** for the default branch with:
 Inspect and preserve any existing review, conversation-resolution, and linear-history protections; configure the intended policy if it is absent. Require code-owner review for outside contributions to the sensitive paths in `.github/CODEOWNERS`.
 
 For a sole maintainer, keep review policy separate from the required-check ruleset: the maintainer may need a review-policy bypass for their own contribution because GitHub does not permit self-approval of a PR. That exception must not bypass CI or security checks. Once there is another trusted maintainer, require independent review for maintainer changes as well. A protection that nobody can satisfy is not a useful release process.
+
+If classic branch protection already requires a review, it also applies alongside the ruleset. Check both surfaces when configuring a maintainer exception; a bypass on one review rule does not remove another rule's requirement. Preserve the separate required-check protection throughout any migration.
 
 Verify that a tag ruleset protects `v*` tags against updates and deletion, preserving any existing protection. Enable immutable releases if available, after reviewing its irreversible effects; attach all intended assets before publishing. Do not rewrite existing release tags.
 
