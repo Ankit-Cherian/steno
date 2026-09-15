@@ -5,12 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] — Release preparation
 
-_Target version: 1.0.0. The repeated-Terms fix is complete and accepted in maintainer testing. Release acceptance and distribution approval remain pending._
+_Signing is configured. The signed installer, notarization, and final distribution checks are pending; 1.0.0 has not been published._
 
 ### Added
-- Added a shared CI/CD pipeline for contribution tests, runtime and security checks, preview DMGs, and approved signed/notarized releases with artifact provenance. Approved publication advances the default download to a newer stable version and rejects version rollback. Repository activation and release validation remain pending.
+- Added GitHub Actions checks for package and app tests, native runtime behavior, security analysis, and downloadable preview installers. The release workflow signs and notarizes an approved build, records its source and installer checksum, and updates the default download after publication.
 - Added a ribbon S app icon and transparent in-app mark, centered in the sidebar and used throughout onboarding.
 - Added an optional live transcript that follows recording in a nonactivating overlay while preserving the completed recording as the source of final insertion.
 - Added opt-in, bounded nearby-text continuation for insertion spacing and conservative casing, with editor identity revalidation and no persistence of surrounding text.
@@ -18,7 +18,8 @@ _Target version: 1.0.0. The repeated-Terms fix is complete and accepted in maint
 - Added a retained local Whisper context that communicates with a bundled helper over inherited process pipes, without opening a network listener.
 
 ### Changed
-- Reworked the README around the 1.0 interface with current native screenshots using sample data, and aligned source setup and contributor documentation with the new candidate.
+- Updated the GitHub Actions dependencies and removed duplicate validation runs for pull-request pushes.
+- Reworked the README around the 1.0 interface with current native screenshots using sample data, and aligned source setup and contributor documentation with Steno 1.0.
 - Unified Dictate, History, Insights, Settings, and onboarding around the Manuscript design, with clearer typography, quieter metadata, responsive reading layouts, and consistent navigation.
 - Replaced the large Dictate control with a centered compact pill that reflects microphone access, listening, elapsed time, and transcription state, with configured shortcuts grouped beneath it.
 - Redesigned the floating overlay as a bounded reading panel that grows downward, follows the current live hypothesis, and keeps Stop and Cancel controls stable. Long previews show a readable portion without changing final transcription.
@@ -34,6 +35,11 @@ _Target version: 1.0.0. The repeated-Terms fix is complete and accepted in maint
 - Direct-distribution builds package the retained-runtime helper and validate its local `whisper.cpp` dependency set alongside the app.
 
 ### Fixed
+- Disabled automatic native backend discovery so the bundled runtime does not search for additional backend libraries.
+- Fixed memory-allocation failure handling and integer arithmetic in the pinned native runtime.
+- Passed cancellation through native encoder and decoder work, and limited voice-activity detection workers to the CPUs available.
+- Moved helper pipe reads off Swift’s cooperative executor and preserved remaining pipe output during process termination.
+- Kept editor preparation tied to its dictation session when cancellation overlaps setup.
 - Marked preference errors and application identities in media diagnostics as private in unified logs.
 - Fixed unwanted repeated text such as "Terms, Terms, Terms" appearing without corresponding speech. The retained Whisper helper checks acoustic support and corroborates suspected repetitions with a prompt-free decode while preserving deliberately dictated words.
 - Reject incomplete or malformed capture WAVs before recognition so unfinished audio cannot produce an insertion or history entry.
@@ -46,6 +52,8 @@ _Target version: 1.0.0. The repeated-Terms fix is complete and accepted in maint
 - Kept media that was already paused unchanged and resumed only media that Steno itself verified it paused.
 
 ### Tests
+- Added full-source Swift, C++, and workflow security analysis. Reviewed findings are bound to their exact source and report details; changed or unreviewed high-severity findings still block the security gate.
+- Added native allocation-failure checks, backend-discovery regression coverage, and an upload/download check for release artifacts. Hosted inference checks use CPU execution; native Metal and real-device acceptance remain separate.
 - Added shared C++ decision tests, real-inference scoring controls, vocabulary-prompt protocol checks, and opt-in retained-helper tests across preview modes, cleanup, insertion, and history. Verification metadata is covered without making it part of saved transcripts.
 - Added focused coverage for Settings drafts and conflicts, recording Stop behavior, overlay layout and revisions, and synthetic app states.
 - Expanded automated package and hosted macOS coverage for retained-runtime lifecycle and fallback behavior, exact-process media ownership, cancellation and rapid-restart races, conservative cleanup, insertion ownership, helper packaging, and dependency validation.
@@ -54,10 +62,10 @@ _Target version: 1.0.0. The repeated-Terms fix is complete and accepted in maint
 - Removed the temporary three-design selection from the app; Manuscript is the single interface.
 
 ### Compatibility
-- The 1.0 candidate targets Apple silicon Macs running macOS 13 or later. Minimum-version runtime and distribution acceptance remain pending; Intel Macs are not supported.
+- Steno 1.0 targets Apple silicon Macs running macOS 13 or later. Minimum-version runtime and distribution acceptance remain pending; Intel Macs are not supported.
 
 ### Known issues
-- Voice-activity detection can omit words in quiet speech after a long silent lead-in. A separate experimental correction is deferred and is not included in this candidate; the retained limitation remains documented for the release decision.
+- Voice-activity detection can omit words in quiet speech after a long silent lead-in. A separate experimental correction is deferred and is not included in 1.0; the retained limitation remains documented for the release decision.
 - The legacy CLI fallback does not include the retained helper's prompt-verification correction. A separate small.en control can mistake deliberately spoken "Terms" for "Churns"; that recognition limitation is deferred from this bug closeout.
 
 ## [0.2.0] - 2026-04-21

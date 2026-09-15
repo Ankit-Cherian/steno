@@ -4,7 +4,7 @@ Package Steno as a self-contained app in a DMG for distribution outside the Mac 
 
 The packaging entry point is `scripts/release-dmg.sh`. Use the preview command below to test it without Apple credentials; its default mode signs and submits the DMG for notarization.
 
-The current candidate is unreleased. Its development build is an ad-hoc signed Debug app. Developer ID signing, notarization, stapling, installation, manual macOS checks, hosting, and download-link verification remain pending for the release. Complete [the release checklist](1.0-checklist.md) and obtain release approval before running the signing and publication steps below.
+Preview packaging produces an ad-hoc signed Release app for testing. Public distribution uses Developer ID signing, notarization, and stapling. Record installation, app acceptance, and download verification in [the release checklist](1.0-checklist.md); a successful preview does not establish those results. Obtain release approval before signing or publishing.
 
 ## Prerequisites
 
