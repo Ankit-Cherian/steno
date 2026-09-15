@@ -44,6 +44,30 @@ class SarifGateTests(unittest.TestCase):
             self.finding(suppressions=[{'kind': 'external', 'status': 'accepted'}], baselineState='unchanged')
             self.assertEqual(len(GATE.inspect_sarif(self.document, CATEGORY)), 1)
 
+    def test_blocking_output_preserves_location_and_escapes_scanner_text(self):
+        self.finding(
+            locations=[{'physicalLocation': {
+                'artifactLocation': {'uri': 'vendor/runtime.cpp'},
+                'region': {'startLine': 42, 'startColumn': 9},
+            }}],
+            message={'text': 'Allocation failed\nsecond line'},
+        )
+        finding, = GATE.inspect_sarif(self.document, CATEGORY)
+        context = json.loads(finding[finding.index('{'):])
+        self.assertEqual(context['locations'][0]['uri'], 'vendor/runtime.cpp')
+        self.assertEqual(context['locations'][0]['line'], 42)
+        self.assertEqual(context['locations'][0]['column'], 9)
+        self.assertEqual(context['message']['text'], 'Allocation failed\nsecond line')
+        self.assertNotIn('\n', finding)
+
+    def test_blocking_output_resolves_indexed_artifact_location(self):
+        self.run['artifacts'] = [{'location': {'uri': 'vendor/indexed.cpp'}}]
+        self.finding(locations=[{'physicalLocation': {
+            'artifactLocation': {'index': 0}, 'region': {'startLine': 7},
+        }}])
+        finding, = GATE.inspect_sarif(self.document, CATEGORY)
+        self.assertIn('vendor/indexed.cpp', finding)
+
     def test_medium_finding_remains_available_without_blocking(self):
         self.rule['properties']['security-severity'] = '6.9'
         self.finding()
