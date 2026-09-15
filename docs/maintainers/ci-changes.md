@@ -1,6 +1,6 @@
 # CI activation corrections
 
-This record explains the corrections made while activating the 1.0 pipeline in [PR #16](https://github.com/Ankit-Cherian/steno/pull/16). It covers changes through [`f54c2e2`](https://github.com/Ankit-Cherian/steno/commit/f54c2e2b26bfd6729b8c030ba0cf26dac05e14b8), recorded on September 15, 2026 UTC. It is a dated engineering record, not a claim that all hosted checks passed or that 1.0 was released.
+This record explains the corrections made while activating the 1.0 pipeline in [PR #16](https://github.com/Ankit-Cherian/steno/pull/16). Recorded on September 15, 2026 UTC. It is a dated engineering record, not a claim that all hosted checks passed or that 1.0 was released.
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
@@ -39,8 +39,18 @@ This was needed because the [completed C++ scan](https://github.com/Ankit-Cheria
 
 The high/critical threshold and treatment of existing or suppressed findings are unchanged. Two regressions cover location reporting and indexed artifacts. Diagnose findings from generated SARIF and source evidence; do not bypass the gate because the upload view differs or because a result may involve vendored code.
 
+## Cancellation test scheduling
+
+Three [coordinator tests](../../StenoKit/Tests/StenoKitTests/SessionCoordinatorLiveContextTests.swift) deliberately hold a synchronous Accessibility call while a second task stops or cancels the session. Under constrained cooperative scheduling, the held call could occupy the executor needed by the test driver. The suite then stopped making progress instead of evaluating its assertions.
+
+The fixtures now use an independent dispatch-backed task executor on macOS 15 and later. The deferred-setup test starts capture independently, obtains its session identity from the capture callback, and uses a bounded condition wait to observe the blocked call before canceling. Its readiness wait remains one second. The final-revalidation test arms its block when final transcription starts, after setup has finished, so it cannot accidentally cancel an earlier setup phase.
+
+The existing focus-drift, exactly-once stop, cancellation, no-context-read, no-insertion, no-history and no-usage assertions remain. Production coordinator and helper code did not change. The deployment target remains macOS 13; older systems retain the previous executor path.
+
+Before the correction, the isolated capture test and full suite stalled with `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`. Afterward, all three tests passed ten consecutive strict runs, and the full strict suite passed all 720 tests. The normal coverage-enabled suite and unsigned app build also passed. Hosted checks still need to verify the committed correction on both runner versions.
+
 ## Verification and remaining gates
 
 Local verification after the ARM and teardown corrections passed **85 CI contract tests**, **720 package tests**, unsigned ARM app/helper builds, workflow policy checks, and actionlint. The CPU-budget and SARIF-output follow-up passed **89 CI contract tests**. These counts describe those revisions and must not be reused as validation of later edits.
 
-Hosted validation remained incomplete at this checkpoint. Security findings still required location-level review, and hosted macOS test failures remained under investigation. No pending Accessibility test correction is recorded here as complete. Merge, signing, notarization, release publication, and manual app acceptance require their own evidence and approvals in the [1.0 release checklist](../release/1.0-checklist.md).
+Hosted validation remained incomplete at this checkpoint. Security findings still required location-level review, and the locally verified test correction had not yet passed hosted validation. Merge, signing, notarization, release publication, and manual app acceptance require their own evidence and approvals in the [1.0 release checklist](../release/1.0-checklist.md).

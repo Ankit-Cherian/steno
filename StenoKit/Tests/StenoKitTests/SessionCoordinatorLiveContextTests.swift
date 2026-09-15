@@ -144,6 +144,7 @@ private actor LiveCoordinatorEngine: LiveTranscriptionEngine {
     let provisionalTextSequence: [String]
     let finalText: String
     let finishShouldThrow: Bool
+    let beforeTranscribe: @Sendable () -> Void
     let speechEvidenceSequence: [LiveTranscriptionSpeechEvidence]
     let hypothesisResponseMetadataSequence: [HypothesisResponseMetadata]
     private(set) var appendCalls = 0
@@ -176,7 +177,8 @@ private actor LiveCoordinatorEngine: LiveTranscriptionEngine {
         finalText: String = "Authoritative final",
         finishShouldThrow: Bool = false,
         speechEvidenceSequence: [LiveTranscriptionSpeechEvidence] = [.speechDetected],
-        hypothesisResponseMetadataSequence: [HypothesisResponseMetadata] = [.requested]
+        hypothesisResponseMetadataSequence: [HypothesisResponseMetadata] = [.requested],
+        beforeTranscribe: @escaping @Sendable () -> Void = {}
     ) {
         self.mode = mode
         self.trace = trace
@@ -184,6 +186,7 @@ private actor LiveCoordinatorEngine: LiveTranscriptionEngine {
         self.provisionalTextSequence = provisionalTextSequence
         self.finalText = finalText
         self.finishShouldThrow = finishShouldThrow
+        self.beforeTranscribe = beforeTranscribe
         self.speechEvidenceSequence = speechEvidenceSequence.isEmpty
             ? [.unknown]
             : speechEvidenceSequence
@@ -342,6 +345,7 @@ private actor LiveCoordinatorEngine: LiveTranscriptionEngine {
     }
 
     func transcribe(audioURL: URL, request: TranscriptionRequest) async throws -> RawTranscript {
+        beforeTranscribe()
         _ = audioURL
         requests.append(request)
         transcribeCalls += 1
@@ -736,6 +740,20 @@ private final class CoordinatorAXClient: MacAccessibilityClient, @unchecked Send
 
     var isCaptureBlocked: Bool {
         captureCondition.withLock { captureIsBlocked }
+    }
+
+    // Called by the independent blocking-test executor. The held AX call may
+    // occupy the cooperative pool, so readiness cannot depend on Task.sleep.
+    func waitUntilCaptureBlocked(timeout: TimeInterval = 1) -> Bool {
+        captureCondition.lock()
+        defer { captureCondition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !captureIsBlocked {
+            if !captureCondition.wait(until: deadline) {
+                return captureIsBlocked
+            }
+        }
+        return true
     }
 
     func releaseCapture() {
@@ -1145,6 +1163,48 @@ func captureAcknowledgementOrdering() async throws {
     await coordinator.cancel(sessionID: sessionID)
 }
 
+// These fixtures deliberately block synchronous AX calls while another task
+// stops or cancels the session. Their driver must have an independent executor.
+@available(macOS 15.0, *)
+private final class BlockingAXTestExecutor: TaskExecutor {
+    static let shared = BlockingAXTestExecutor()
+
+    private let queue = DispatchQueue(
+        label: "StenoKitTests.blockingAX",
+        attributes: .concurrent
+    )
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        queue.async {
+            job.runSynchronously(on: self.asUnownedTaskExecutor())
+        }
+    }
+}
+
+private func runBlockingAXScenario(
+    _ operation: @Sendable () async throws -> Void
+) async throws {
+    if #available(macOS 15.0, *) {
+        try await withTaskExecutorPreference(
+            BlockingAXTestExecutor.shared,
+            operation: operation
+        )
+    } else {
+        try await operation()
+    }
+}
+
+private func blockingAXTask<Value: Sendable>(
+    _ operation: @escaping @Sendable () async throws -> Value
+) -> Task<Value, Error> {
+    if #available(macOS 15.0, *) {
+        return Task(executorPreference: BlockingAXTestExecutor.shared, operation: operation)
+    } else {
+        return Task(operation: operation)
+    }
+}
+
 private func capabilityStopsBlockedExactTargetCaptureExactlyOnceScenario() async throws {
     let url = try makeCoordinatorWAV()
     let trace = CoordinatorTrace()
@@ -1174,7 +1234,7 @@ private func capabilityStopsBlockedExactTargetCaptureExactlyOnceScenario() async
         editorTargetCapture: { EditorTargetHandle.capture(target: $0, client: ax) }
     )
 
-    let start = Task {
+    let start = blockingAXTask {
         try await coordinator.startPressToTalkWithCaptureStopCapability(
             appContext: app,
             options: SessionStartOptions(
@@ -1195,8 +1255,8 @@ private func capabilityStopsBlockedExactTargetCaptureExactlyOnceScenario() async
     }
 
     capability.markStopRequested()
-    let firstStop = Task { try await capability.stopCapture() }
-    let secondStop = Task { try await capability.stopCapture() }
+    let firstStop = blockingAXTask { try await capability.stopCapture() }
+    let secondStop = blockingAXTask { try await capability.stopCapture() }
     #expect(await waitUntil { await capture.endCalls == 1 })
     #expect(ax.isCaptureBlocked)
     #expect(!trace.snapshot().contains("live"))
@@ -2297,7 +2357,13 @@ private func coordinatorCancelDuringFinalTargetRevalidationPreventsCommitScenari
     let usage = CoordinatorUsage()
     let coordinator = SessionCoordinator(
         captureService: LiveCoordinatorCapture(url: url, trace: trace),
-        transcriptionEngine: LiveCoordinatorEngine(trace: trace, finalText: "This works"),
+        transcriptionEngine: LiveCoordinatorEngine(
+            trace: trace,
+            finalText: "This works",
+            // Setup has finished before final transcription begins. Block only
+            // the final revalidation, never a trailing setup capture.
+            beforeTranscribe: { ax.blockNextCapture() }
+        ),
         cleanupEngine: CoordinatorCleanup(),
         insertionService: insertion,
         historyStore: history,
@@ -2312,9 +2378,8 @@ private func coordinatorCancelDuringFinalTargetRevalidationPreventsCommitScenari
     )
     #expect(await waitUntil { ax.counts().reads > 0 })
     try await coordinator.endPressToTalkCapture(sessionID: sessionID)
-    ax.blockNextCapture()
 
-    let completion = Task {
+    let completion = blockingAXTask {
         try await coordinator.completePressToTalk(sessionID: sessionID)
     }
     #expect(await waitUntil { ax.isCaptureBlocked })
@@ -2332,6 +2397,7 @@ private func coordinatorCancelDuringFinalTargetRevalidationPreventsCommitScenari
 private func coordinatorCancelDuringInitialEditorSetupPreventsContextReadScenario() async throws {
     let url = try makeCoordinatorWAV()
     let trace = CoordinatorTrace()
+    let recorder = CaptureStopCapabilityRecorder()
     let app = AppContext(bundleIdentifier: "com.apple.Notes", appName: "Notes")
     let ax = CoordinatorAXClient(document: "private nearby text", cursor: 19, bundleIdentifier: app.bundleIdentifier)
     let coordinator = SessionCoordinator(
@@ -2351,14 +2417,25 @@ private func coordinatorCancelDuringInitialEditorSetupPreventsContextReadScenari
         }
     )
 
-    let sessionID = try await coordinator.startPressToTalk(
-        appContext: app,
-        options: SessionStartOptions(nearbyContextEnabled: true)
-    )
-    #expect(await waitUntil { ax.isCaptureBlocked })
-
+    defer { ax.releaseCapture() }
+    let start = blockingAXTask {
+        try await coordinator.startPressToTalkWithCaptureStopCapability(
+            appContext: app,
+            options: SessionStartOptions(nearbyContextEnabled: true),
+            captureStarted: { recorder.record($0) }
+        )
+    }
+    #expect(ax.waitUntilCaptureBlocked())
+    guard let capability = recorder.value else {
+        Issue.record("Capture stop capability was not published")
+        ax.releaseCapture()
+        _ = try? await start.value
+        return
+    }
+    let sessionID = capability.sessionID
     await coordinator.cancel(sessionID: sessionID)
     ax.releaseCapture()
+    #expect(try await start.value == sessionID)
 
     #expect(await waitUntil { ax.counts().capture >= 2 })
     try? await Task.sleep(for: .milliseconds(20))
@@ -2372,17 +2449,23 @@ private func coordinatorCancelDuringInitialEditorSetupPreventsContextReadScenari
 struct BlockingAXCoordinatorTests {
     @Test("Capability closes capture during exact target binding without live setup or focus drift")
     func capabilityStopsBlockedExactTargetCaptureExactlyOnce() async throws {
-        try await capabilityStopsBlockedExactTargetCaptureExactlyOnceScenario()
+        try await runBlockingAXScenario {
+            try await capabilityStopsBlockedExactTargetCaptureExactlyOnceScenario()
+        }
     }
 
     @Test("Cancel during final target revalidation prevents every authoritative sink")
     func coordinatorCancelDuringFinalTargetRevalidationPreventsCommit() async throws {
-        try await coordinatorCancelDuringFinalTargetRevalidationPreventsCommitScenario()
+        try await runBlockingAXScenario {
+            try await coordinatorCancelDuringFinalTargetRevalidationPreventsCommitScenario()
+        }
     }
 
     @Test("Cancel during deferred editor setup prevents bounded AX text reads")
     func coordinatorCancelDuringInitialEditorSetupPreventsContextRead() async throws {
-        try await coordinatorCancelDuringInitialEditorSetupPreventsContextReadScenario()
+        try await runBlockingAXScenario {
+            try await coordinatorCancelDuringInitialEditorSetupPreventsContextReadScenario()
+        }
     }
 }
 
