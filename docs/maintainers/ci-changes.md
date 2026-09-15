@@ -4,6 +4,12 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Validate the remaining workflow updates together
+
+The final repair PR includes the CodeQL action update from [PR #17](https://github.com/Ankit-Cherian/steno/pull/17) and Download Artifact update from [PR #18](https://github.com/Ankit-Cherian/steno/pull/18). Testing the combined revision avoids serial dependency merges that each invalidate the next branch's integration checks. The separate PRs remain traceable to their original commits and will be closed with the integration link after the combined change merges.
+
+CodeQL uses the pinned v4.38.0 action in all initialization and analysis steps. Download Artifact uses pinned v8.0.1, with a hosted upload/download round trip that verifies both file layout and checksums. Full-source queries, the exact reviewed-finding gate, build and runtime checks, and post-merge validation remain required.
+
 ## Avoid duplicate contribution runs
 
 CI previously ran the full macOS validation workflow twice when a branch with an open PR was pushed: once for the branch push and once for the PR update. The two runs used different concurrency groups and competed for hosted runners.
@@ -233,3 +239,9 @@ For the VAD-worker correction, local verification passed **127 CI contract tests
 Local verification after the ARM and teardown corrections passed **85 CI contract tests**, **720 package tests**, unsigned ARM app/helper builds, workflow policy checks, and actionlint. The CPU-budget and SARIF-output follow-up passed **89 CI contract tests**. These counts describe those revisions and must not be reused as validation of later edits.
 
 On `043314a`, the [full Security workflow](https://github.com/Ankit-Cherian/steno/actions/runs/34923182707) passed, including the C++ high/critical severity gate after repair of the 61 prior blocking results. Package and hosted-app jobs passed on both macOS 15 and 26. The runtime suite still had three VAD-related timeouts; the diagnostic comparison above identified a VAD worker-count correction. On `e48c48d`, the [Security workflow](https://github.com/Ankit-Cherian/steno/actions/runs/34925598286) and both macOS test matrices passed. Both runtime runs passed the previously failing long transcription cases and 25 of 26 cases overall. The push run failed completed-final network observation; the [PR run](https://github.com/Ankit-Cherian/steno/actions/runs/34925599511/job/104242870245) timed out in cancellation/restart. These results validate the VAD timing improvement but leave CI blocked pending the follow-up corrections. Merge, signing, notarization, release publication, and manual app acceptance require their own evidence and approvals in the [1.0 release checklist](../release/1.0-checklist.md).
+
+## Artifact download maintenance
+
+[PR #18](https://github.com/Ankit-Cherian/steno/pull/18) updates Download Artifact to the pinned v8.0.1 release. Named artifacts still extract directly into the requested directory. The action now uses Node 24 and fails on artifact digest mismatches by default; the release workflow retains that default. Upload Artifact remains on its existing v4 pin.
+
+The workflow-contract job uploads a small text fixture and checksum with that upload pin, downloads it with the release download pin, then checks the checksum and direct extraction layout. This exercises the action pairing without signing an app, accessing Apple credentials, creating a GitHub release, or publishing files as a stable download. Hosted success is required before merging; this check does not establish notarization or release acceptance.
