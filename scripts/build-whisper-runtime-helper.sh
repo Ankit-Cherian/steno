@@ -27,14 +27,19 @@ actual_revision="$(git -C "$WHISPER_ROOT" rev-parse HEAD)"
 [[ -z "$(git -C "$WHISPER_ROOT" status --porcelain --untracked-files=no)" ]] \
   || die "whisper.cpp tracked sources must be clean before building."
 
-cmake \
-  -S "$WHISPER_ROOT" \
+PATCHED_ROOT="$(python3 "$ROOT_DIR/scripts/ci/prepare-patched-runtime.py" \
+  --root "$WHISPER_ROOT" --build-dir "$BUILD_DIR" --revision "$EXPECTED_REVISION")"
+# Read build metadata from the pristine upstream repository. The generated
+# source manifest records the patch separately; never inherit the app's Git ID.
+UPSTREAM_GIT_DIR="$(git -C "$WHISPER_ROOT" rev-parse --absolute-git-dir)"
+GIT_DIR="$UPSTREAM_GIT_DIR" GIT_WORK_TREE="$PATCHED_ROOT" cmake \
+  -S "$PATCHED_ROOT" \
   -B "$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
   -DCMAKE_OSX_ARCHITECTURES="$EXPECTED_ARCHITECTURE" \
-  -DCMAKE_C_FLAGS="-ffile-prefix-map=$WHISPER_ROOT=whisper.cpp -fdebug-prefix-map=$WHISPER_ROOT=whisper.cpp" \
-  -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$WHISPER_ROOT=whisper.cpp -fdebug-prefix-map=$WHISPER_ROOT=whisper.cpp" \
+  -DCMAKE_C_FLAGS="-ffile-prefix-map=$PATCHED_ROOT=whisper.cpp -fdebug-prefix-map=$PATCHED_ROOT=whisper.cpp" \
+  -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$PATCHED_ROOT=whisper.cpp -fdebug-prefix-map=$PATCHED_ROOT=whisper.cpp" \
   -DBUILD_SHARED_LIBS=ON \
   -DGGML_ACCELERATE=ON \
   -DGGML_BLAS=OFF \
@@ -46,7 +51,7 @@ cmake \
   -DWHISPER_BUILD_TESTS=OFF \
   -DWHISPER_CURL=OFF
 
-cmake --build "$BUILD_DIR" --config Release --target whisper-cli -j "$BUILD_JOBS"
+GIT_DIR="$UPSTREAM_GIT_DIR" GIT_WORK_TREE="$PATCHED_ROOT" cmake --build "$BUILD_DIR" --config Release --target whisper-cli -j "$BUILD_JOBS"
 
 [[ -f "$BUILD_DIR/src/libwhisper.dylib" || -f "$BUILD_DIR/src/libwhisper.1.dylib" ]] \
   || die "Canonical whisper.cpp build did not produce libwhisper."
@@ -59,10 +64,12 @@ xcrun clang++ \
   -O3 \
   -DNDEBUG \
   -mmacosx-version-min="$MACOS_DEPLOYMENT_TARGET" \
+  -ffile-prefix-map="$PATCHED_ROOT"=whisper.cpp \
+  -fdebug-prefix-map="$PATCHED_ROOT"=whisper.cpp \
   -ffile-prefix-map="$ROOT_DIR"=. \
   -fdebug-prefix-map="$ROOT_DIR"=. \
-  -I "$WHISPER_ROOT/include" \
-  -I "$WHISPER_ROOT/ggml/include" \
+  -I "$PATCHED_ROOT/include" \
+  -I "$PATCHED_ROOT/ggml/include" \
   "$SOURCE" \
   -L "$BUILD_DIR/src" \
   -lwhisper \
