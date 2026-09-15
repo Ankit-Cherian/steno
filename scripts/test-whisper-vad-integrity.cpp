@@ -6,6 +6,7 @@
 #undef main
 
 #include <iostream>
+#include <utility>
 
 struct whisper_vad_segments {
     int count;
@@ -56,6 +57,20 @@ extern "C" void whisper_vad_free_segments(whisper_vad_segments * segments) { del
 extern "C" void whisper_vad_free(whisper_vad_context *) { ++freed_contexts; }
 
 int main() {
+    const auto default_context_parameters = whisper_vad_default_context_params();
+    const std::pair<unsigned, int> thread_cases[] = {
+        {0, 1}, {1, 1}, {2, 2}, {3, 3}, {4, 4}, {8, 4},
+        {std::numeric_limits<unsigned>::max(), 4},
+    };
+    for (const auto & [hardware_threads, expected_threads] : thread_cases) {
+        const auto bounded = bounded_vad_context_parameters(hardware_threads);
+        require(bounded.n_threads == expected_threads,
+            "VAD workers must respect the hardware count with a nonzero fallback");
+        require(bounded.use_gpu == default_context_parameters.use_gpu
+            && bounded.gpu_device == default_context_parameters.gpu_device,
+            "bounding VAD workers must preserve backend selection");
+    }
+
     int context_marker = 0;
     auto * context = reinterpret_cast<whisper_vad_context *>(&context_marker);
     const std::vector<float> input(16000, 0.125f);

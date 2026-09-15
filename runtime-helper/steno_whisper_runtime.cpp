@@ -28,6 +28,17 @@
 
 namespace {
 
+whisper_vad_context_params bounded_vad_context_parameters(
+    unsigned hardware_threads = std::thread::hardware_concurrency()
+) {
+    auto parameters = whisper_vad_default_context_params();
+    // Requesting more VAD workers than available CPUs can severely slow inference.
+    parameters.n_threads = static_cast<int>(std::min(
+        static_cast<unsigned>(parameters.n_threads), std::max(1u, hardware_threads)
+    ));
+    return parameters;
+}
+
 constexpr uint32_t kMagic = 0x53545752;
 constexpr uint16_t kVersion1 = 1;
 constexpr uint16_t kVersion2 = 2;
@@ -1403,7 +1414,7 @@ bool transcribe(
                 whisper_vad_free(vad_context);
                 vad_context = nullptr;
             }
-            const whisper_vad_context_params vad_context_parameters = whisper_vad_default_context_params();
+            const whisper_vad_context_params vad_context_parameters = bounded_vad_context_parameters();
             vad_context = whisper_vad_init_from_file_with_params(
                 request.vad_model_path.c_str(),
                 vad_context_parameters
@@ -1573,7 +1584,7 @@ bool detect_preview_speech(
                 whisper_vad_free(vad_context);
                 vad_context = nullptr;
             }
-            const whisper_vad_context_params context_parameters = whisper_vad_default_context_params();
+            const whisper_vad_context_params context_parameters = bounded_vad_context_parameters();
             vad_context = whisper_vad_init_from_file_with_params(
                 request.vad_model_path.c_str(),
                 context_parameters
