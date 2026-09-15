@@ -10,7 +10,7 @@ The workflow files define triggers after they are pushed to GitHub; execution al
 | --- | --- | --- |
 | Workflow and release contracts | Branch pushes, PRs, merge queue, release | Workflow syntax/security policy; automation regression tests; generated-project hygiene |
 | Package and hosted tests | Same events, macOS 15 and 26 | Swift package assertions, app compilation, hosted controller/state tests, production-view render assertions and coverage artifacts |
-| Native runtime | Same events, Apple silicon | Clean pinned native build, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-process silence contract |
+| Native runtime | Same events, Apple silicon | Pinned native build with reviewed source corrections, allocation-failure regressions, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-process silence contract |
 | Public audio benchmark | Same native lane | Actual inference on the pinned public JFK sample and zero WER/CER regression introduced by the cleanup pipeline |
 | Distribution preview | Same native lane | Self-contained ad-hoc app/DMG, bundled libraries and models, architecture, deployment target, code signature structure, relocatable dependencies, bundled inference |
 | Security | PRs, main, merge queue, weekly, release | CodeQL Actions/Swift/C++ analysis; high/critical SARIF gate; high/critical dependency review on PRs |
@@ -20,11 +20,17 @@ The workflow files define triggers after they are pushed to GitHub; execution al
 
 ### Runtime and accuracy boundaries
 
+The runtime builder retains a clean upstream checkout and applies the [reviewed native corrections](../scripts/ci/patches/README.md) to isolated source beneath the selected build directory. A manifest records the upstream revision, patch hash and staged file hashes. Every reuse verifies that content; mismatches fail without repairing or deleting existing state. CMake generates its files outside the staged source. Existing CMake caches tied to different source content require a fresh build directory.
+
+The native lane also runs four deterministic allocation-failure regressions and three successful controls against the actual patched vendor implementations. These verify error returns, owned-memory cleanup and synthetic VAD boundaries. Fault injection exists only in separate test executables.
+
 Hosted runtime checks explicitly use CPU inference through the upstream `GGML_METAL_DEVICES=0` test setting. The shipped helper is still compiled with Metal support. The protocol receipt verifies which backend actually ran; CPU results cannot qualify as production Metal evidence. Standard hosted Apple silicon architecture alone is not proof of GPU availability.
 
 CPU protocol tests allow up to 180 seconds for each inference response; the default and Metal limit remains 30 seconds. Model loading, protocol acknowledgements, cancellation and shutdown retain their separate shorter deadlines. The receipt records the limits used. These are test completion limits, not advertised dictation latency.
 
-If the protocol suite fails, the runtime lane keeps the failure and runs a bounded diagnostic using the same public sample. Its log records CPU progress, response timing, backend identity and network observations. A successful diagnostic cannot turn the failed suite into a pass. Cleanup stops the network observer before terminating and reaping the owned helper, so teardown does not replace the original failure.
+The network observer still requires two complete launch scans, each checking all open files and network descriptors. Each process-inspection query is bounded to five seconds; startup allows 25 seconds for the four queries and scheduling, and observer shutdown allows six seconds. Inspection errors, timeouts or observed network descriptors fail the gate. These separate observer budgets are recorded in the protocol receipt. Forced-crash tests request observer shutdown without waiting, kill and reap the helper, then join the observer and check for unexpected output; slow inspection must not delay the intended crash.
+
+If the protocol suite fails, the runtime lane keeps that failure and checks the same public sample through three diagnostic paths: ASR alone, VAD alone, and a complete v2 stream with VAD. The ASR and stream work budgets are 180 seconds each. The VAD comparison builds the upstream example with a 120-second limit, verifies its flags within ten seconds, then compares four threads with the available-CPU count capped at four; each trial has 60 seconds. Bounded cleanup may follow. Logs record timings, CPU use and backend/network evidence where applicable, without transcripts. None of these diagnostics can turn a failed protocol gate into a pass. Cleanup stops the network observer before terminating and reaping the owned helper, so teardown does not replace the original failure.
 
 The public benchmark is a **single-fixture smoke regression**, not a general recognition-accuracy score or a comparison against the previous release. It compares raw recognition against Steno's cleanup pipeline on that fixture. The existing broader benchmark manifest and release evaluation remain separate requirements for relevant changes. Some historical fixtures are local-only and are deliberately not uploaded by CI.
 

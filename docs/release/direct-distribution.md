@@ -15,7 +15,7 @@ The app targets Apple silicon and macOS 13 or later. Use a packaging Mac with:
 - `vendor/whisper.cpp` at revision `764482c3175d9c3bc6089c1ec84df7d1b9537d83`
 - the selected Whisper model and Silero VAD model
 
-Packaging invokes `scripts/build-whisper-runtime-helper.sh` itself: it verifies the pinned source revision and builds the Apple silicon runtime for macOS 13. A prebuilt helper is not required. The selected build directory is writable build state; choose a separate directory when preserving an existing helper. See [local runtime provisioning](../ci-cd.md#local-reproduction) for checksum-verified source and model setup.
+Packaging invokes `scripts/build-whisper-runtime-helper.sh` itself: it verifies the pinned source revision, applies the [reviewed native corrections](../../scripts/ci/patches/README.md) to isolated source, and builds the Apple silicon runtime for macOS 13. A prebuilt helper is not required. The selected build directory is writable build state; choose a separate directory when preserving an existing helper. See [local runtime provisioning](../ci-cd.md#local-reproduction) for checksum-verified source and model setup.
 
 Run from the repository root with a clean worktree. The script regenerates `Steno.xcodeproj`, builds in its distribution directory, and runs a focused Swift package inference test, which can update the package build cache.
 
