@@ -1,6 +1,6 @@
 # Continuous integration and delivery
 
-Steno uses GitHub Actions to check contributions and prepare releases. **CI** runs build and test checks for branch pushes and pull requests. **CD** means an approved version follows a repeatable path from tested source to a signed, notarized download. A passing pull request does not publish a release.
+Steno uses GitHub Actions to check contributions and prepare releases. **CI** runs build and test checks for pull requests and changes merged into main. **CD** means an approved version follows a repeatable path from tested source to a signed, notarized download. A passing pull request does not publish a release.
 
 The workflow files define triggers after they are pushed to GitHub; execution also depends on Actions settings and any required fork-run approval. Required merge checks and protected release environments are separate repository settings; follow [GitHub activation](maintainers/github-setup.md) before treating the pipeline as enforced.
 
@@ -10,7 +10,7 @@ The runtime and distribution job has a 75-minute overall limit. It includes nati
 
 | Stage | When | What it proves |
 | --- | --- | --- |
-| Workflow and release contracts | Branch pushes, PRs, merge queue, release | Workflow syntax/security policy; automation regression tests; generated-project hygiene |
+| Workflow and release contracts | PRs, main, merge queue, manual dispatch, release | Workflow syntax/security policy; automation regression tests; generated-project hygiene |
 | Package and hosted tests | Same events, macOS 15 and 26 | Swift package assertions, app compilation, hosted controller/state tests, production-view render assertions and coverage artifacts |
 | Native runtime | Same events, Apple silicon | Pinned native build with reviewed source corrections, allocation-failure regressions, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-process silence contract |
 | Public audio benchmark | Same native lane | Actual inference on the pinned public JFK sample and zero WER/CER regression introduced by the cleanup pipeline |
@@ -18,7 +18,7 @@ The runtime and distribution job has a 75-minute overall limit. It includes nati
 | Security | PRs, main, merge queue, weekly, release | CodeQL Actions/Swift/C++ analysis; high/critical SARIF gate; high/critical dependency review on PRs |
 | Release | Maintainer dispatch from main | Exact-source validation, protected signing/notarization, final-DMG provenance, verified draft, optional separately approved publication |
 
-`CI Gate` requires every validation job to succeed. `Security Gate` requires every applicable scan and its severity gate to succeed. Failed, cancelled or unexpectedly skipped jobs cannot satisfy those aggregate checks. There are no path filters that can leave required checks permanently pending on a documentation PR. A local commit runs no remote checks until it is pushed.
+`CI Gate` requires every validation job to succeed. `Security Gate` requires every applicable scan and its severity gate to succeed. Failed, cancelled or unexpectedly skipped jobs cannot satisfy those aggregate checks. There are no path filters that can leave required checks permanently pending on a documentation PR. A feature-branch push updates its PR checks without launching a duplicate branch run. Before opening a PR, use the manual CI dispatch if a hosted preview is needed. Main retains its post-merge checks. A local commit runs no remote checks until it is pushed.
 
 ### Runtime and accuracy boundaries
 

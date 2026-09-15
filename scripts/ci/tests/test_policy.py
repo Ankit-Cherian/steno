@@ -188,6 +188,13 @@ class WorkflowPolicyTests(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertEqual(POLICY.check_workflow(self.codeql_workflow(action)), [])
 
+    def test_ci_avoids_duplicate_feature_pushes_and_keeps_validation_entrypoints(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/ci.yml').read_text())
+        self.assertEqual(workflow['on']['push'], {'branches': ['main']})
+        self.assertTrue({'pull_request', 'merge_group', 'workflow_dispatch'} <= set(workflow['on']))
+        self.assertEqual(workflow['jobs']['validate']['uses'], './.github/workflows/validate.yml')
+        self.assertNotIn('if', workflow['jobs']['validate'])
+
     def test_security_workflow_dispatches_cpp_review_and_preserves_gate_failure(self):
         workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
         steps = [step for step in workflow['jobs']['native']['steps']

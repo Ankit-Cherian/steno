@@ -4,6 +4,12 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Avoid duplicate contribution runs
+
+CI previously ran the full macOS validation workflow twice when a branch with an open PR was pushed: once for the branch push and once for the PR update. The two runs used different concurrency groups and competed for hosted runners.
+
+Automatic push validation now runs only on main. Pull requests retain every validation job, as do the merge queue, manual CI dispatch and release workflow. Contributors can request a hosted run before opening a PR through manual dispatch. No test, security scan, timeout or required merge check was removed.
+
 ## Review the four local-file path reports
 
 The [full PR #20 C++ scan](https://github.com/Ankit-Cherian/steno/actions/runs/34999812499/job/104485163486) no longer reports automatic backend loading. Four severity-7.5 path reports remain: the CLI response file and the helper's WAV, VAD-model and transcription-model reads. Review found intentional local inputs and no identified less-trusted route into the app-owned helper. The [individual review](reviewed-codeql-findings.md) records the source evidence and the limits of that conclusion.
