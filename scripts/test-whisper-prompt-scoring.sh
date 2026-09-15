@@ -18,8 +18,10 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 
 synthesize() {
   local name="$1" text="$2"
+  printf 'Synthesizing prompt-scoring fixture: %s\n' "$name"
   say -v "$VOICE" -r 150 -o "$TEST_DIR/$name.aiff" "$text"
   afconvert -f WAVE -d LEI16@16000 -c 1 "$TEST_DIR/$name.aiff" "$TEST_DIR/$name.wav" >/dev/null
+  printf 'Prepared prompt-scoring fixture: %s\n' "$name"
 }
 
 cp "$WHISPER_ROOT/samples/jfk.wav" "$TEST_DIR/jfk.wav"
@@ -37,6 +39,7 @@ with wave.open(sys.argv[1], "wb") as output:
     output.writeframes(struct.pack("<%dh" % 32000, *([0] * 32000)))
 EOF
 
+echo "Compiling prompt-scoring checks"
 xcrun clang++ -std=c++17 -O2 -Wall -Wextra -Werror \
   -I "$WHISPER_ROOT/include" -I "$WHISPER_ROOT/ggml/include" \
   "$ROOT_DIR/scripts/test-whisper-prompt-scoring.cpp" \
@@ -46,4 +49,5 @@ xcrun clang++ -std=c++17 -O2 -Wall -Wextra -Werror \
   -Wl,-rpath,"$BUILD_DIR/ggml/src/ggml-metal" \
   -o "$TEST_DIR/prompt-scoring-tests"
 
+echo "Running prompt-scoring inference checks"
 "$TEST_DIR/prompt-scoring-tests" "$MODEL" "$TEST_DIR"
