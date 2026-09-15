@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # The severity gate needs full results on PRs as well as main.
+  CODEQL_ACTION_DIFF_INFORMED_QUERIES: 'false'
+
 concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
