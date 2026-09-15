@@ -633,12 +633,14 @@ class Helper:
         if self.process.poll() is not None:
             self._stop_monitor()
             return
+        # Finish observation before this deliberate clean-exit trigger. A
+        # concurrent wait can hide an already-exited process from poll().
+        self._stop_monitor()
         request_id = uuid.uuid4().bytes
         self.send(Frame(SHUTDOWN, request_id, 0))
         self.expect(STOPPED, request_id, 0)
         self.input.close()
         self.process.wait(timeout=5.0)
-        self._stop_monitor()
         require(self.process.returncode == 0, f"clean shutdown returned {self.process.returncode}")
 
     def terminate(self) -> None:
@@ -1260,12 +1262,14 @@ def test_shutdown_validation(executable: Path, model: Path, _: Path, __: bytes) 
         helper.send(Frame(SHUTDOWN, wrong_generation_id, 1))
         require_error(helper.expect(ERROR, wrong_generation_id, 1), 1, SHUTDOWN)
 
+        # Malformed requests remain observed; only the valid terminal request
+        # follows the completed observation boundary.
+        helper._stop_monitor()
         valid_id = uuid.uuid4().bytes
         helper.send(Frame(SHUTDOWN, valid_id, 0))
         helper.expect(STOPPED, valid_id, 0)
         helper.input.close()
         helper.process.wait(timeout=5.0)
-        helper._stop_monitor()
         require(helper.process.returncode == 0, "valid active-session shutdown did not stop cleanly")
     finally:
         helper.terminate()

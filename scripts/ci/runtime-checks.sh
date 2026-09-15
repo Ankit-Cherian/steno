@@ -111,6 +111,8 @@ run_check build bash "$ROOT_DIR/scripts/build-whisper-runtime-helper.sh"
 PATCHED_SOURCE="$(python3 "$ROOT_DIR/scripts/ci/prepare-patched-runtime.py" \
   --root "$WHISPER_ROOT" --build-dir "$STENO_WHISPER_BUILD_DIR" \
   --revision "$(git -C "$WHISPER_ROOT" rev-parse HEAD)")"
+run_check backend-discovery python3 "$ROOT_DIR/scripts/ci/test-backend-discovery.py" \
+  --whisper-root "$PATCHED_SOURCE" --build-dir "$STENO_WHISPER_BUILD_DIR"
 run_check allocation-failures python3 "$ROOT_DIR/scripts/ci/test-vendor-allocation-failures.py" \
   --whisper-root "$PATCHED_SOURCE" --build-dir "$STENO_WHISPER_BUILD_DIR"
 run_check cancellation python3 "$ROOT_DIR/scripts/ci/test-native-cancellation.py" \

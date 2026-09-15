@@ -4,12 +4,69 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Bind reviews to the original security report
+
+The diagnostic [C++ run](https://github.com/Ankit-Cherian/steno/actions/runs/35011924461/job/104533422378) retained the original SARIF. Comparing it with GitHub's API export identified the remaining mismatch: the export omits trace taxonomy annotations (`taxa`). The four findings have identical source locations, messages and trace steps after the documented end-line default. All bound source hashes match.
+
+The receipt now records the original report's hashes for the three helper findings. The CLI hash is unchanged. The checker still binds every trace field, including taxonomy annotations; no query, severity threshold, source contract or review rationale changed. Future receipts must be derived from the retained original SARIF, because an API export does not preserve every field.
+
+## Read implicit single-line SARIF ranges
+
+The [final C++ scan](https://github.com/Ankit-Cherian/steno/actions/runs/35005628641/job/104504577186) completed analysis, but the local severity checker rejected a source range as incomplete. The fresh GitHub SARIF export contains the same four findings and complete trace hashes as the approved receipt. The runner's raw SARIF was not retained, so the log cannot identify which coordinate was omitted.
+
+[SARIF 2.1.0 section 3.30.7](https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/sarif-v2.1.0-os.html) defines an absent `endLine` as equal to `startLine`. Removing that redundant field from the exported findings reproduces the failure. The checker now applies that default to primary and trace locations before comparing identities. It retains explicit coordinates and all other trace fields. The four approved identity hashes, source hashes and review rationales are unchanged; altered ranges, changed traces and additional findings still fail.
+
+Regression tests cover omitted primary and trace end lines, explicit invalid or changed end lines, and other missing primary coordinates. The original checker fails three equivalent-representation cases; the corrected SARIF suite passes all 34 tests. The original scanner document remains unchanged. This confirms the representation correction locally; a fresh hosted gate must still pass.
+
+## Validate the remaining workflow updates together
+
+The final repair PR includes the CodeQL action update from [PR #17](https://github.com/Ankit-Cherian/steno/pull/17) and Download Artifact update from [PR #18](https://github.com/Ankit-Cherian/steno/pull/18). Testing the combined revision avoids serial dependency merges that each invalidate the next branch's integration checks. The separate PRs remain traceable to their original commits and will be closed with the integration link after the combined change merges.
+
+CodeQL uses the pinned v4.38.0 action in all initialization and analysis steps. Download Artifact uses pinned v8.0.1, with a hosted upload/download round trip that verifies both file layout and checksums. Full-source queries, the exact reviewed-finding gate, build and runtime checks, and post-merge validation remain required.
+
+## Avoid duplicate contribution runs
+
+CI previously ran the full macOS validation workflow twice when a branch with an open PR was pushed: once for the branch push and once for the PR update. The two runs used different concurrency groups and competed for hosted runners.
+
+Automatic push validation now runs only on main. Pull requests retain every validation job, as do the merge queue, manual CI dispatch and release workflow. Contributors can request a hosted run before opening a PR through manual dispatch. No test, security scan, timeout or required merge check was removed.
+
+## Review the four local-file path reports
+
+The [full PR #20 C++ scan](https://github.com/Ankit-Cherian/steno/actions/runs/34999812499/job/104485163486) no longer reports automatic backend loading. Four severity-7.5 path reports remain: the CLI response file and the helper's WAV, VAD-model and transcription-model reads. Review found intentional local inputs and no identified less-trusted route into the app-owned helper. The [individual review](reviewed-codeql-findings.md) records the source evidence and the limits of that conclusion.
+
+The C++ severity gate now checks an explicit review receipt for those four findings. It binds their complete traces and source hashes, prints their original severities and rationales, and rejects changed or missing evidence. New findings still block. This does not alter the scanner, dismiss GitHub alerts, or remove any query. Swift and Actions use the ordinary severity gate. All 176 local workflow and release contract tests pass. Against the actual four-result scan, the exact receipt passes; a missing receipt, changed contract, changed trace, duplicate finding or additional backend-loading result fails. Fresh hosted validation remains required.
+
+## Finish observation before orderly helper shutdown
+
+The [PR #20 runtime job](https://github.com/Ankit-Cherian/steno/actions/runs/34993531190/job/104463996293) passed 25 of 26 protocol cases. Its v1 case failed because the network observer could not inspect the owned helper. The receipt checked 27 of 28 processes and correctly reported incomplete observation. A later diagnostic passed, but did not clear that failure.
+
+A local reproduction uses a real child process and process inspection to demonstrate a reachable shutdown race. Python can report no exit status while another thread has reaped the child but has not yet published its return code. The old harness waited for the helper to exit while observation was still running. The hosted receipt does not retain the failed query response or lifecycle stage, so it cannot establish that exact interleaving as the hosted cause.
+
+The two orderly shutdown paths now stop and join observation before sending a valid shutdown request. Observation still covers normal responses and malformed shutdown requests. Its coverage ends before the valid terminal request; it does not establish absence of network activity during the shutdown acknowledgement or native teardown. Existing inspection failures remain failures, and the two complete startup scans, protocol correlation checks, exit checks and deadlines are unchanged. Timed EOF and crash paths retain their existing behavior.
+
+The new regressions fail against the original ordering and pass with the correction. All 157 CI contract tests pass locally. The corrected harness also passes all 26 protocol cases on CPU and all 26 on Metal. Each receipt verifies 25 eligible backend-attested processes and 28 observed processes, with at least two complete scans per process and no network descriptors during the stated observation interval. Fresh hosted results remain required; this test-harness change does not alter app or native runtime behavior.
+
 ## Allow packaging to finish after native validation
 
 The [PR #19 push runtime job](https://github.com/Ankit-Cherian/steno/actions/runs/34984483369/job/104432993535) exhausted its 60-minute allowance while creating the DMG. Native validation passed in 54 minutes 59 seconds; the public benchmark, Release app build, bundled transcription smoke test and distribution hygiene scan also passed before cancellation. GitHub reported that the job exceeded its one-hour execution limit.
 
 The runtime and distribution job now allows 75 minutes, leaving room for packaging after the measured CPU validation time. Individual test and diagnostic deadlines, assertions, security checks and required merge checks are unchanged. A fresh complete hosted run must still pass; the canceled job is not release evidence.
 
+## Full security analysis after integration
+
+[PR #16](https://github.com/Ankit-Cherian/steno/pull/16) merged at `9356e7a` after all 16 PR checks passed. The [subsequent main scan](https://github.com/Ankit-Cherian/steno/actions/runs/34981945058) reported five native findings. Both runs built the full source, but the PR query command also loaded CodeQL's diff-range extension. That restricted the reported findings even though the local severity checker examined every result it received.
+
+The correction requires `CODEQL_ACTION_DIFF_INFORMED_QUERIES=false` on CodeQL initialization and analysis. Workflow-policy tests reject missing configuration, expressions, and unsafe job or step overrides. This changes query coverage; the severity threshold remains 7.0, and each reported finding still needs repair or an explicit review.
+
+The native library-loading finding exposed automatic backend discovery in the bundled CLI. Steno links its CPU and Metal backends, but upstream initialization still searched for plugins before parsing CLI arguments. The runtime patch now initializes the linked registry directly when dynamic backend modules are disabled, and the builder explicitly sets and verifies that configuration. The explicit library-loading API remains available; this is not a general prohibition on dynamic loading. See the [patch inventory](../../scripts/ci/patches/README.md) for that boundary.
+
+The regression loads a harmless constructor-marker plugin through each automatic entry point on the original build and rejects all four loads on the repaired build. An explicit-load control still executes the fixture. The repaired build also registers CPU and Metal and transcribes the public JFK sample on both backends, including model and audio paths with spaces. Package tests pass all 726 cases, the unsigned app builds, all 70 hosted macOS tests pass, and the three-fixture benchmark passes its report and zero-regression gates. Both CPU and Metal protocol suites pass all 26 cases, with all 25 eligible processes attested on each backend. Fresh hosted security results remain required; these local checks do not complete signed-release acceptance.
+
+## Include backend discovery in the runtime test fixtures
+
+The [first PR #20 contract job](https://github.com/Ankit-Cherian/steno/actions/runs/34988763003/job/104447616481) failed six tests. Each test copied the runtime gate into a temporary repository, but its fixture omitted the newly added backend-discovery script. The gate therefore stopped before reaching the allocation, cancellation or protocol behavior the test intended to exercise. The earlier local 153-test result preceded that integration and did not validate the committed script.
+
+The fixtures now include a configurable backend check. A new regression verifies its arguments and confirms that a backend-check failure preserves its exit status and prevents every later stage from running. Removing the real invocation from a disposable test copy makes that regression fail. All 154 CI contract tests pass locally. The production runtime gate is unchanged; fresh hosted checks remain required.
 ## Checkout maintenance
 
 [PR #19](https://github.com/Ankit-Cherian/steno/pull/19) updates Checkout to the pinned v7.0.1 release throughout validation, security and release workflows. Version comments match the pin. Credentials remain nonpersistent, release checkouts remain bound to the exact source, and the native library retains its separately pinned revision.
@@ -196,3 +253,9 @@ For the VAD-worker correction, local verification passed **127 CI contract tests
 Local verification after the ARM and teardown corrections passed **85 CI contract tests**, **720 package tests**, unsigned ARM app/helper builds, workflow policy checks, and actionlint. The CPU-budget and SARIF-output follow-up passed **89 CI contract tests**. These counts describe those revisions and must not be reused as validation of later edits.
 
 On `043314a`, the [full Security workflow](https://github.com/Ankit-Cherian/steno/actions/runs/34923182707) passed, including the C++ high/critical severity gate after repair of the 61 prior blocking results. Package and hosted-app jobs passed on both macOS 15 and 26. The runtime suite still had three VAD-related timeouts; the diagnostic comparison above identified a VAD worker-count correction. On `e48c48d`, the [Security workflow](https://github.com/Ankit-Cherian/steno/actions/runs/34925598286) and both macOS test matrices passed. Both runtime runs passed the previously failing long transcription cases and 25 of 26 cases overall. The push run failed completed-final network observation; the [PR run](https://github.com/Ankit-Cherian/steno/actions/runs/34925599511/job/104242870245) timed out in cancellation/restart. These results validate the VAD timing improvement but leave CI blocked pending the follow-up corrections. Merge, signing, notarization, release publication, and manual app acceptance require their own evidence and approvals in the [1.0 release checklist](../release/1.0-checklist.md).
+
+## Artifact download maintenance
+
+[PR #18](https://github.com/Ankit-Cherian/steno/pull/18) updates Download Artifact to the pinned v8.0.1 release. Named artifacts still extract directly into the requested directory. The action now uses Node 24 and fails on artifact digest mismatches by default; the release workflow retains that default. Upload Artifact remains on its existing v4 pin.
+
+The workflow-contract job uploads a small text fixture and checksum with that upload pin, downloads it with the release download pin, then checks the checksum and direct extraction layout. This exercises the action pairing without signing an app, accessing Apple credentials, creating a GitHub release, or publishing files as a stable download. Hosted success is required before merging; this check does not establish notarization or release acceptance.

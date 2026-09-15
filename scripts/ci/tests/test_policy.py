@@ -1,6 +1,9 @@
 """Regression tests for unsafe workflow structure and policy bypasses."""
 
 import importlib.util
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 import unittest
 
@@ -108,6 +111,116 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assert_rejected(VALID.replace("echo 'uses: not-a-real-action@v1'", 'echo "${{ github.event.pull_request.title }}"'), 'pass event data through env')
         source = VALID.replace('        run: |', '        env:\n          TITLE: ${{ github.event.pull_request.title }}\n        run: |')
         self.assertEqual(POLICY.check_workflow(source), [])
+
+    def codeql_workflow(self, action, workflow_env=None, job_env=None, step_env=None):
+        source = VALID.replace('actions/checkout@', f'github/codeql-action/{action}@')
+        for marker, indent, values in (
+            ('jobs:', '', workflow_env),
+            ('    steps:', '    ', job_env),
+            ('        with:', '        ', step_env),
+        ):
+            if values is not None:
+                env = indent + 'env:\n'
+                env += ''.join(f'{indent}  {key}: {value}\n' for key, value in values.items())
+                source = source.replace(marker, env + marker)
+        return source
+
+    def test_codeql_requires_full_source_queries_for_init_and_analyze(self):
+        for action in ('init', 'analyze'):
+            with self.subTest(action=action):
+                self.assert_rejected(self.codeql_workflow(action), 'CODEQL_ACTION_DIFF_INFORMED_QUERIES')
+
+    def test_codeql_inherits_explicit_false_at_each_environment_scope(self):
+        for action in ('init', 'analyze'):
+            for scope in ('workflow_env', 'job_env', 'step_env'):
+                for literal in ('false', '"false"', "'false'"):
+                    with self.subTest(action=action, scope=scope, literal=literal):
+                        source = self.codeql_workflow(action, **{scope: {
+                            'CODEQL_ACTION_DIFF_INFORMED_QUERIES': literal,
+                        }})
+                        self.assertEqual(POLICY.check_workflow(source), [])
+
+    def test_codeql_rejects_nonliteral_or_enabled_queries_at_each_scope(self):
+        for action in ('init', 'analyze'):
+            for scope in ('workflow_env', 'job_env', 'step_env'):
+                for value in ('true', '${{ false }}', '${{ vars.DIFF_QUERIES }}', '""', 'False', ''):
+                    with self.subTest(action=action, scope=scope, value=value):
+                        source = self.codeql_workflow(action, **{scope: {
+                            'CODEQL_ACTION_DIFF_INFORMED_QUERIES': value,
+                        }})
+                        self.assert_rejected(source, 'CODEQL_ACTION_DIFF_INFORMED_QUERIES')
+
+    def test_codeql_narrower_unsafe_override_cannot_hide_behind_workflow_false(self):
+        for action in ('init', 'analyze'):
+            for scope in ('job_env', 'step_env'):
+                for value in ('true', '${{ false }}', ''):
+                    with self.subTest(action=action, scope=scope, value=value):
+                        source = self.codeql_workflow(action,
+                            workflow_env={'CODEQL_ACTION_DIFF_INFORMED_QUERIES': 'false'},
+                            **{scope: {'CODEQL_ACTION_DIFF_INFORMED_QUERIES': value}})
+                        self.assert_rejected(source, 'CODEQL_ACTION_DIFF_INFORMED_QUERIES')
+
+    def test_codeql_uses_most_specific_environment_value(self):
+        for action in ('init', 'analyze'):
+            with self.subTest(action=action):
+                source = self.codeql_workflow(action,
+                    workflow_env={'CODEQL_ACTION_DIFF_INFORMED_QUERIES': 'true'},
+                    job_env={'CODEQL_ACTION_DIFF_INFORMED_QUERIES': 'true'},
+                    step_env={'CODEQL_ACTION_DIFF_INFORMED_QUERIES': 'false'})
+                self.assertEqual(POLICY.check_workflow(source), [])
+                inherited = self.codeql_workflow(action,
+                    workflow_env={'CODEQL_ACTION_DIFF_INFORMED_QUERIES': 'false'},
+                    job_env={'OTHER': 'true'}, step_env={'ANOTHER': 'true'})
+                self.assertEqual(POLICY.check_workflow(inherited), [])
+
+    def test_codeql_environment_indirection_fails_closed(self):
+        for action in ('init', 'analyze'):
+            for scope, marker in (('workflow_env', 'jobs:'), ('job_env', '    steps:'), ('step_env', '        with:')):
+                for value in ('${{ fromJSON(vars.ENV) }}', '[false]', ''):
+                    with self.subTest(action=action, scope=scope, value=value):
+                        source = self.codeql_workflow(action)
+                        indent = marker[:len(marker) - len(marker.lstrip())]
+                        source = source.replace(marker, f'{indent}env: {value}\n' + marker)
+                        self.assert_rejected(source, 'CodeQL env must be an explicit mapping')
+
+    def test_codeql_similarly_named_or_unrelated_actions_do_not_require_flag(self):
+        for action in ('upload-sarif', 'init-extra', 'analyze-extra'):
+            with self.subTest(action=action):
+                self.assertEqual(POLICY.check_workflow(self.codeql_workflow(action)), [])
+
+    def test_ci_avoids_duplicate_feature_pushes_and_keeps_validation_entrypoints(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/ci.yml').read_text())
+        self.assertEqual(workflow['on']['push'], {'branches': ['main']})
+        self.assertTrue({'pull_request', 'merge_group', 'workflow_dispatch'} <= set(workflow['on']))
+        self.assertEqual(workflow['jobs']['validate']['uses'], './.github/workflows/validate.yml')
+        self.assertNotIn('if', workflow['jobs']['validate'])
+
+    def test_security_workflow_dispatches_cpp_review_and_preserves_gate_failure(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
+        steps = [step for step in workflow['jobs']['native']['steps']
+                 if step.get('name') == 'Block high and critical findings']
+        self.assertEqual(len(steps), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = root / 'python3'
+            command.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGUMENT_LOG"\nexit "$GATE_EXIT_STATUS"\n')
+            command.chmod(0o755)
+            arguments = root / 'arguments.txt'
+            for category in ('/language:c-cpp', '/language:swift'):
+                for status in (0, 31):
+                    with self.subTest(category=category, status=status):
+                        environment = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                            'ANALYSIS_CATEGORY': category, 'ARGUMENT_LOG': str(arguments),
+                            'GATE_EXIT_STATUS': str(status)}
+                        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps[0]['run']],
+                                                env=environment, cwd=root, capture_output=True, text=True)
+                        self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                        expected = ['scripts/ci/check-sarif.py', '--directory', 'build/codeql-results',
+                                    '--category', category]
+                        if category == '/language:c-cpp':
+                            expected += ['--reviewed-dispositions', 'scripts/ci/reviewed-findings.json',
+                                         '--source-root', '.']
+                        self.assertEqual(arguments.read_text().splitlines(), expected)
 
     def test_tab_indentation_and_document_indirection_rejected(self):
         self.assertTrue(POLICY.check_workflow(VALID.replace('  test:', '\ttest:')))

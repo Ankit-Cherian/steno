@@ -558,3 +558,25 @@
      if (vad_segments == NULL) {
          WHISPER_LOG_ERROR("%s: failed to allocate memory for whisper_vad_segments\n", __func__);
          return nullptr;
+diff --git a/ggml/src/ggml-backend-reg.cpp b/ggml/src/ggml-backend-reg.cpp
+--- a/ggml/src/ggml-backend-reg.cpp
++++ b/ggml/src/ggml-backend-reg.cpp
+@@ -537,6 +537,11 @@
+ }
+
+ void ggml_backend_load_all_from_path(const char * dir_path) {
++#ifndef GGML_BACKEND_DL
++    // Linked backends are registered without probing paths or the environment.
++    (void) dir_path;
++    (void) get_reg();
++#else
+ #ifdef NDEBUG
+     bool silent = true;
+ #else
+@@ -562,4 +567,5 @@
+     if (backend_path) {
+         ggml_backend_load(backend_path);
+     }
+-}
++#endif
++}

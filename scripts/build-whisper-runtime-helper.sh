@@ -41,6 +41,7 @@ GIT_DIR="$UPSTREAM_GIT_DIR" GIT_WORK_TREE="$PATCHED_ROOT" cmake \
   -DCMAKE_C_FLAGS="-ffile-prefix-map=$PATCHED_ROOT=whisper.cpp -fdebug-prefix-map=$PATCHED_ROOT=whisper.cpp" \
   -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$PATCHED_ROOT=whisper.cpp -fdebug-prefix-map=$PATCHED_ROOT=whisper.cpp" \
   -DBUILD_SHARED_LIBS=ON \
+  -DGGML_BACKEND_DL=OFF \
   -DGGML_ACCELERATE=ON \
   -DGGML_BLAS=OFF \
   -DGGML_METAL=ON \
@@ -96,6 +97,7 @@ require_cache_value() {
 require_cache_value CMAKE_OSX_DEPLOYMENT_TARGET "$MACOS_DEPLOYMENT_TARGET"
 require_cache_value CMAKE_OSX_ARCHITECTURES "$EXPECTED_ARCHITECTURE"
 require_cache_value BUILD_SHARED_LIBS ON
+require_cache_value GGML_BACKEND_DL OFF
 require_cache_value GGML_ACCELERATE ON
 require_cache_value GGML_BLAS OFF
 require_cache_value GGML_METAL ON

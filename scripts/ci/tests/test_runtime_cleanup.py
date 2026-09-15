@@ -577,6 +577,112 @@ class ForcedCrashScanBoundaryTests(unittest.TestCase):
         self.assertEqual(monitor.network_fd_count, 1)
 
 
+class CleanShutdownObservationTests(unittest.TestCase):
+    def run_shutdown_case(self, version, observation_error=None):
+        events = []
+        helper = harness.Helper.__new__(harness.Helper)
+        helper.version = version
+        process = Mock(pid=123, returncode=None)
+        process.poll.side_effect = lambda: process.returncode
+        helper.process = process
+        helper.input = Mock()
+        helper.input.close.side_effect = lambda: events.append("close input")
+        monitor = Mock()
+        helper.monitor = monitor
+        terminal_requested = False
+        sent = None
+
+        def stop():
+            events.append("observe and join")
+            if observation_error is not None:
+                raise observation_error
+            # Reproduce the observer losing its target during an intentional
+            # exit. It must finish while the helper still accepts requests.
+            if terminal_requested:
+                raise harness.TestFailure("runtime network monitor could not inspect the owned helper")
+
+        monitor.stop.side_effect = stop
+
+        def send(frame):
+            nonlocal terminal_requested, sent
+            sent = frame
+            if frame.operation == harness.SHUTDOWN:
+                if frame.payload or frame.generation:
+                    self.assertIsNotNone(helper.monitor, "malformed shutdown escaped observation")
+                    events.append("malformed shutdown")
+                else:
+                    terminal_requested = True
+                    events.append("valid shutdown")
+            else:
+                self.assertEqual(frame.operation, harness.TRANSCRIBE)
+                self.assertIsNotNone(helper.monitor, "inference escaped observation")
+                events.append("transcribe")
+
+        def read(timeout=5.0):
+            self.assertEqual(timeout, harness.inference_timeout() if sent.operation == harness.TRANSCRIBE else 5.0)
+            if sent.operation == harness.TRANSCRIBE:
+                events.append("result")
+                operation, payload = harness.RESULT, b'{"transcription": []}'
+            elif sent.payload or sent.generation:
+                events.append("error acknowledgement")
+                operation = harness.ERROR
+                payload = harness.struct.pack(">IHHQ", 1, harness.SHUTDOWN, 0, 0xFFFFFFFFFFFFFFFF)
+            else:
+                events.append("stopped acknowledgement")
+                operation, payload = harness.STOPPED, b""
+            return harness.Frame(operation, sent.request_id, sent.generation, payload)
+
+        def wait(timeout):
+            self.assertEqual(timeout, 5.0)
+            events.append("reap")
+            process.returncode = 0
+            return 0
+
+        helper.send = send
+        helper.read = read  # Keep Helper.expect and its correlation checks real.
+        process.wait.side_effect = wait
+        terminate = helper.terminate
+
+        def cleanup():
+            events.append("cleanup")
+            terminate()
+
+        helper.terminate = cleanup
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(harness.Helper, "__new__", return_value=helper))
+            stack.enter_context(patch.object(harness.Helper, "__init__", return_value=None))
+            stack.enter_context(patch.object(harness, "one_shot_configuration", return_value=b""))
+            stack.enter_context(patch.object(harness, "start_stream", side_effect=lambda *_: events.append("start stream")))
+            stack.enter_context(patch.object(harness.os, "killpg", side_effect=lambda *_: events.append("cleanup kill")))
+            function = harness.test_v1_compatibility if version == harness.VERSION_1 else harness.test_shutdown_validation
+            try:
+                function(Path("helper"), Path("model"), Path("audio"), b"")
+            finally:
+                self.events = events
+        return events
+
+    def test_v1_observation_covers_result_and_joins_before_clean_shutdown(self):
+        events = self.run_shutdown_case(harness.VERSION_1)
+        self.assertEqual(events, ["transcribe", "result", "observe and join", "valid shutdown",
+                                  "stopped acknowledgement", "close input", "reap", "cleanup", "reap"])
+
+    def test_v2_invalid_shutdowns_stay_observed_before_valid_terminal_request(self):
+        events = self.run_shutdown_case(harness.VERSION_2)
+        self.assertEqual(events, ["malformed shutdown", "error acknowledgement", "start stream",
+                                  "malformed shutdown", "error acknowledgement", "observe and join",
+                                  "valid shutdown", "stopped acknowledgement", "close input", "reap", "cleanup", "reap"])
+
+    def test_failed_observation_never_sends_valid_shutdown_and_preserves_cleanup(self):
+        for version in (harness.VERSION_1, harness.VERSION_2):
+            with self.subTest(version=version):
+                failure = harness.TestFailure("earlier observation failure")
+                with self.assertRaises(harness.TestFailure) as raised:
+                    self.run_shutdown_case(version, observation_error=failure)
+                self.assertIs(raised.exception, failure)
+                self.assertNotIn("valid shutdown", self.events)
+                self.assertEqual(self.events[-3:], ["cleanup", "cleanup kill", "reap"])
+
+
 class CompletedFinalCrashOrderingTests(unittest.TestCase):
     def run_completed_final(self, events, observation_error=None):
         helper = harness.Helper.__new__(harness.Helper)
@@ -684,7 +790,12 @@ class GateDiagnosticTests(unittest.TestCase):
         git.chmod(0o755)
         self.environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
 
-    def run_gate(self, protocol_status, diagnostic_status, allocation_status=0, vad_status=0, cancellation_status=0):
+    def run_gate(self, protocol_status, diagnostic_status, allocation_status=0, vad_status=0,
+                 cancellation_status=0, backend_status=0):
+        (self.scripts / "ci/test-backend-discovery.py").write_text(
+            "import json, sys\nprint('backend-check-called')\n"
+            "print('backend-check-args: ' + json.dumps(sys.argv[1:]))\n"
+            f"raise SystemExit({backend_status})\n")
         (self.scripts / "ci/test-vendor-allocation-failures.py").write_text(
             f"print('allocation-check-called')\nraise SystemExit({allocation_status})\n")
         (self.scripts / "ci/test-native-cancellation.py").write_text(
@@ -698,6 +809,22 @@ class GateDiagnosticTests(unittest.TestCase):
         return subprocess.run(["bash", str(self.scripts / "ci/runtime-checks.sh"), "--root",
                                str(self.runtime), "--output", str(self.root / "output")],
                               env=self.environment, capture_output=True, text=True)
+
+    def test_backend_discovery_failure_stops_runtime_gate(self):
+        result = self.run_gate(17, 0, backend_status=37)
+        self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.count("backend-check-called"), 1)
+        arguments = next(line.removeprefix("backend-check-args: ")
+                         for line in result.stdout.splitlines()
+                         if line.startswith("backend-check-args: "))
+        self.assertEqual(json.loads(arguments), [
+            "--whisper-root", "staged-source", "--build-dir", str(self.root / "output/build-steno"),
+        ])
+        self.assertNotIn("allocation-check-called", result.stdout)
+        self.assertNotIn("cancellation-check-called", result.stdout)
+        self.assertNotIn("==> helper-protocol", result.stdout)
+        self.assertNotIn("diagnostic-called", result.stdout)
+        self.assertNotIn("unexpected-later-check", result.stdout)
 
     def test_allocation_failure_stops_runtime_gate(self):
         result = self.run_gate(17, 0, allocation_status=29)
