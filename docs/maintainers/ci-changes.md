@@ -20,7 +20,6 @@ The [PR #19 push runtime job](https://github.com/Ankit-Cherian/steno/actions/run
 
 The runtime and distribution job now allows 75 minutes, leaving room for packaging after the measured CPU validation time. Individual test and diagnostic deadlines, assertions, security checks and required merge checks are unchanged. A fresh complete hosted run must still pass; the canceled job is not release evidence.
 
-
 ## Full security analysis after integration
 
 [PR #16](https://github.com/Ankit-Cherian/steno/pull/16) merged at `9356e7a` after all 16 PR checks passed. The [subsequent main scan](https://github.com/Ankit-Cherian/steno/actions/runs/34981945058) reported five native findings. Both runs built the full source, but the PR query command also loaded CodeQL's diff-range extension. That restricted the reported findings even though the local severity checker examined every result it received.
@@ -36,6 +35,11 @@ The regression loads a harmless constructor-marker plugin through each automatic
 The [first PR #20 contract job](https://github.com/Ankit-Cherian/steno/actions/runs/34988763003/job/104447616481) failed six tests. Each test copied the runtime gate into a temporary repository, but its fixture omitted the newly added backend-discovery script. The gate therefore stopped before reaching the allocation, cancellation or protocol behavior the test intended to exercise. The earlier local 153-test result preceded that integration and did not validate the committed script.
 
 The fixtures now include a configurable backend check. A new regression verifies its arguments and confirms that a backend-check failure preserves its exit status and prevents every later stage from running. Removing the real invocation from a disposable test copy makes that regression fail. All 154 CI contract tests pass locally. The production runtime gate is unchanged; fresh hosted checks remain required.
+## Checkout maintenance
+
+[PR #19](https://github.com/Ankit-Cherian/steno/pull/19) updates Checkout to the pinned v7.0.1 release throughout validation, security and release workflows. Version comments match the pin. Credentials remain nonpersistent, release checkouts remain bound to the exact source, and the native library retains its separately pinned revision.
+
+Checkout now runs on Node 24. Its new restrictions on fork code under privileged workflow triggers need no exception here: these workflows do not use `pull_request_target` or `workflow_run`. No unsafe-checkout opt-in is enabled. Required hosted CI and Security checks must pass on the updated source before merge.
 
 ## Explicit ARM build targets
 
