@@ -547,10 +547,35 @@ class Helper:
         require(self.process.returncode == 0, f"clean shutdown returned {self.process.returncode}")
 
     def terminate(self) -> None:
-        if self.process.poll() is None:
-            os.killpg(self.process.pid, signal.SIGKILL)
-            self.process.wait(timeout=5.0)
-        self._stop_monitor()
+        primary_error = sys.exc_info()[1]
+        cleanup_errors: list[Exception] = []
+        # Finish observation before intentionally killing the owned helper.
+        # A failed monitor must still leave the process killed and reaped.
+        try:
+            self._stop_monitor()
+        except Exception as error:
+            cleanup_errors.append(error)
+        try:
+            if self.process.poll() is None:
+                try:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # The helper exited between poll and kill.
+        except Exception as error:
+            cleanup_errors.append(error)
+        finally:
+            try:
+                self.process.wait(timeout=5.0)
+            except Exception as error:
+                cleanup_errors.append(error)
+        if cleanup_errors:
+            if primary_error is not None:
+                for error in cleanup_errors:
+                    print(f"Secondary helper cleanup failure: {error}", file=sys.stderr)
+            else:
+                for error in cleanup_errors[1:]:
+                    print(f"Secondary helper cleanup failure: {error}", file=sys.stderr)
+                raise cleanup_errors[0]
 
     def _stop_monitor(self) -> None:
         if self.monitor is not None:
