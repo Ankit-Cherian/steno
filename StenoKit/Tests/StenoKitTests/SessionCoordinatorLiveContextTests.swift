@@ -1892,13 +1892,28 @@ func liveCoordinatorStopSerializesDelayedAppendBeforeTail() async throws {
     #expect(await waitUntil { await engine.appendCalls == 1 })
     try await coordinator.endPressToTalkCapture(sessionID: sessionID)
 
+    #if DEBUG
+    let appendWaitGate = CoordinatorAsyncGate()
+    await coordinator.setLiveAppendWaitObserver {
+        trace.record("append-wait")
+        await appendWaitGate.block()
+    }
+    #endif
     let completion = Task {
         try await coordinator.completePressToTalk(sessionID: sessionID)
     }
+    #if DEBUG
+    #expect(await waitUntil { trace.snapshot().contains("append-wait") })
+    #else
     try? await Task.sleep(for: .milliseconds(30))
+    #endif
     #expect(await engine.finishCalls == 0)
     #expect(await engine.appendCalls == 1)
     await engine.releaseBlockedAppend()
+    #if DEBUG
+    #expect(await waitUntil { await engine.acceptedSamples > 0 })
+    await appendWaitGate.release()
+    #endif
 
     _ = try await completion.value
     #expect(await engine.finishCalls == 1)

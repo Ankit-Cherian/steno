@@ -615,6 +615,14 @@ public actor SessionCoordinator {
         return sessionID
     }
 
+    #if DEBUG
+    private var liveAppendWaitObserver: (@Sendable () async -> Void)?
+
+    func setLiveAppendWaitObserver(_ observer: (@Sendable () async -> Void)?) {
+        liveAppendWaitObserver = observer
+    }
+    #endif
+
     func liveHypothesisSchedulingEvaluationWatermark(
         sessionID: SessionID
     ) -> UInt64? {
@@ -1285,6 +1293,13 @@ public actor SessionCoordinator {
         _ activity: LiveAppendActivity,
         sessionID: SessionID
     ) async throws -> Bool {
+        #if DEBUG
+        if !activity.isIdle, let liveAppendWaitObserver {
+            // Let tests observe the busy append before starting its grace period.
+            await liveAppendWaitObserver()
+            try checkCompletionOwnership(sessionID: sessionID)
+        }
+        #endif
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .milliseconds(150))
         while !activity.isIdle {
