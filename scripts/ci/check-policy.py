@@ -219,6 +219,17 @@ def check_workflow(source):
                 continue
             if 'uses' in step:
                 action(step['uses'], location)
+                reference = step['uses'].split('@', 1)[0].lower() if isinstance(step['uses'], str) else ''
+                if reference in ('github/codeql-action/init', 'github/codeql-action/analyze'):
+                    environment = {}
+                    for scope in (workflow, job, step):
+                        values = scope.get('env', {})
+                        if not isinstance(values, dict):
+                            errors.append(f'{location}: CodeQL env must be an explicit mapping')
+                        else:
+                            environment.update(values)
+                    if environment.get('CODEQL_ACTION_DIFF_INFORMED_QUERIES') != 'false':
+                        errors.append(f'{location}: CodeQL must set CODEQL_ACTION_DIFF_INFORMED_QUERIES to literal false for full-source analysis')
                 if isinstance(step['uses'], str) and step['uses'].lower().startswith('actions/checkout@'):
                     settings = step.get('with', {})
                     if not isinstance(settings, dict) or settings.get('persist-credentials') != 'false':
