@@ -337,7 +337,7 @@ class ForcedCrashTimingTests(unittest.TestCase):
             "sys.stdin.buffer.read()")
         monitor = helper.monitor
         events = []
-        monitor.request_stop.side_effect = lambda: events.append("request-stop")
+        monitor.request_stop_for_sigkill.side_effect = lambda: events.append("request-stop")
 
         def join_monitor():
             events.append("join")
@@ -375,6 +375,206 @@ class ForcedCrashTimingTests(unittest.TestCase):
         self.assertEqual(helper.process.returncode, -9)
         with self.assertRaises(ChildProcessError):
             os.waitpid(helper.process.pid, os.WNOHANG)
+
+
+class ForcedCrashScanBoundaryTests(unittest.TestCase):
+    make_helper = ForcedCrashTimingTests.make_helper
+    def test_inflight_empty_query_waits_for_confirmed_owned_sigkill(self):
+        helper = self.make_helper("import sys; sys.stdin.buffer.read()")
+        query_started = harness.threading.Event()
+        release_query = harness.threading.Event()
+        all_file_queries = 0
+
+        def query(command, **kwargs):
+            nonlocal all_file_queries
+            if "-i" in command:
+                return Mock(returncode=1, stdout="", stderr="")
+            all_file_queries += 1
+            if all_file_queries <= 2:
+                return Mock(returncode=0, stdout="COMMAND PID FD\nhelper 1 txt\n", stderr="")
+            query_started.set()
+            if not release_query.wait(timeout=2):
+                raise RuntimeError("fixture query was not released")
+            return Mock(returncode=1, stdout="", stderr="")
+
+        real_killpg = harness.os.killpg
+        with patch.object(harness.subprocess, "run", side_effect=query):
+            monitor = harness.RuntimeNetworkMonitor(helper.process)
+            helper.monitor = monitor
+            try:
+                self.assertTrue(query_started.wait(timeout=2))
+
+                def kill_after_query(pid, sig):
+                    release_query.set()
+                    monitor.thread.join(timeout=2)
+                    self.assertFalse(monitor.thread.is_alive())
+                    self.assertIsNone(helper.process.poll())
+                    real_killpg(pid, sig)
+
+                with patch.object(harness.os, "killpg", side_effect=kill_after_query):
+                    helper.force_crash_and_expect_eof()
+                self.assertEqual(helper.process.returncode, -harness.signal.SIGKILL)
+                self.assertTrue(monitor.interrupted_sigkill_scan)
+                self.assertTrue(monitor.sigkill_confirmed)
+                self.assertEqual(monitor.scans, 2, "incomplete scan must not count as observation")
+            finally:
+                release_query.set()
+                monitor.thread.join(timeout=2)
+
+    def bare_monitor(self):
+        monitor = harness.RuntimeNetworkMonitor.__new__(harness.RuntimeNetworkMonitor)
+        monitor.process = Mock(poll=Mock(return_value=None))
+        monitor.started = time.monotonic()
+        monitor.stop_requested = harness.threading.Event()
+        monitor.sigkill_requested = harness.threading.Event()
+        monitor.first_scan_completed = harness.threading.Event()
+        monitor.sigkill_confirmed = False
+        monitor.interrupted_sigkill_scan = False
+        monitor.scans, monitor.network_fd_count = 2, 0
+        monitor.error, monitor.stopped = None, False
+        monitor.thread = Mock(is_alive=Mock(return_value=False))
+        return monitor
+
+    def test_empty_query_without_intentional_crash_remains_failure(self):
+        monitor = self.bare_monitor()
+        monitor.request_stop()
+        with patch.object(harness.subprocess, "run", return_value=Mock(returncode=1, stdout="", stderr="")):
+            monitor._scan()
+        with self.assertRaisesRegex(harness.TestFailure, "could not inspect"):
+            monitor.stop()
+
+    def test_boundary_requires_confirmed_reaped_sigkill(self):
+        for confirmed, returncode in ((False, None), (False, -9), (True, None), (True, 0), (True, -15)):
+            with self.subTest(confirmed=confirmed, returncode=returncode):
+                monitor = self.bare_monitor()
+                monitor.request_stop_for_sigkill()
+                with patch.object(harness.subprocess, "run", return_value=Mock(returncode=1, stdout="", stderr="")):
+                    monitor._scan()
+                monitor.sigkill_confirmed = confirmed
+                monitor.process.poll.return_value = returncode
+                with self.assertRaisesRegex(harness.TestFailure, "could not verify"):
+                    monitor.stop()
+
+    def test_sigkill_confirmation_rejects_a_live_or_differently_exited_process(self):
+        for returncode in (None, 0, -15):
+            monitor = self.bare_monitor()
+            monitor.process.poll.return_value = returncode
+            with self.assertRaisesRegex(harness.TestFailure, "SIGKILL was not reaped"):
+                monitor.confirm_sigkill()
+            self.assertFalse(monitor.sigkill_confirmed)
+
+    def test_boundary_preserves_prior_errors_and_minimum_scan_requirement(self):
+        for prior_error, scans, expected in (("prior observation failure", 2, "prior observation failure"),
+                                             (None, 1, "fewer than two")):
+            monitor = self.bare_monitor()
+            monitor.error, monitor.scans = prior_error, scans
+            monitor.request_stop_for_sigkill()
+            with patch.object(harness.subprocess, "run", return_value=Mock(returncode=1, stdout="", stderr="")):
+                monitor._scan()
+            monitor.process.poll.return_value = -9
+            monitor.confirm_sigkill()
+            with self.assertRaisesRegex(harness.TestFailure, expected):
+                monitor.stop()
+
+    def test_boundary_never_accepts_stderr_or_other_query_failures(self):
+        for returncode, stdout, stderr in ((1, "", "denied"), (2, "", ""), (0, "", ""),
+                                            (1, "unexpected output", "")):
+            with self.subTest(returncode=returncode, stdout=stdout, stderr=stderr):
+                monitor = self.bare_monitor()
+                monitor.request_stop_for_sigkill()
+                monitor.process.poll.return_value = -9
+                monitor.confirm_sigkill()
+                with patch.object(harness.subprocess, "run", return_value=Mock(
+                        returncode=returncode, stdout=stdout, stderr=stderr)):
+                    monitor._scan()
+                with self.assertRaisesRegex(harness.TestFailure, "could not inspect"):
+                    monitor.stop()
+
+    def test_inflight_query_timeout_remains_failure_at_boundary(self):
+        monitor = self.bare_monitor()
+
+        def timeout_query(*args, **kwargs):
+            monitor.request_stop_for_sigkill()
+            raise subprocess.TimeoutExpired(args[0], 5)
+
+        with patch.object(harness.subprocess, "run", side_effect=timeout_query):
+            monitor._run()
+        monitor.process.poll.return_value = -9
+        monitor.confirm_sigkill()
+        with self.assertRaisesRegex(harness.TestFailure, "query timed out"):
+            monitor.stop()
+
+    def test_failed_kill_cannot_confirm_or_accept_an_interrupted_scan(self):
+        helper = self.make_helper("import sys; sys.stdin.buffer.read()")
+        monitor = self.bare_monitor()
+        monitor.process = helper.process
+        helper.monitor = monitor
+
+        def failed_kill(*args):
+            with patch.object(harness.subprocess, "run", return_value=Mock(returncode=1, stdout="", stderr="")):
+                monitor._scan()
+            raise PermissionError("injected SIGKILL failure")
+
+        with patch.object(harness.os, "killpg", side_effect=failed_kill):
+            with self.assertRaisesRegex(PermissionError, "SIGKILL failure"):
+                helper.force_crash_and_expect_eof()
+        self.assertIsNone(helper.process.poll())
+        self.assertFalse(monitor.sigkill_confirmed)
+        with self.assertRaisesRegex(harness.TestFailure, "could not verify"):
+            monitor.stop()
+
+    def test_inflight_empty_network_query_does_not_count_as_a_completed_scan(self):
+        monitor = self.bare_monitor()
+
+        def query(command, **kwargs):
+            if "-i" not in command:
+                return Mock(returncode=0, stdout="COMMAND PID FD\nhelper 1 txt\n", stderr="")
+            monitor.request_stop_for_sigkill()
+            return Mock(returncode=1, stdout="", stderr="")
+
+        with patch.object(harness.subprocess, "run", side_effect=query):
+            monitor._scan()
+        monitor.process.poll.return_value = -9
+        monitor.confirm_sigkill()
+        monitor.stop()
+        self.assertTrue(monitor.interrupted_sigkill_scan)
+        self.assertEqual(monitor.scans, 2)
+        self.assertEqual(monitor.network_fd_count, 0)
+
+    def test_inflight_network_query_errors_remain_failure_at_boundary(self):
+        for returncode, stderr in ((1, "denied"), (2, "")):
+            with self.subTest(returncode=returncode, stderr=stderr):
+                monitor = self.bare_monitor()
+
+                def query(command, **kwargs):
+                    if "-i" not in command:
+                        return Mock(returncode=0, stdout="COMMAND PID FD\nhelper 1 txt\n", stderr="")
+                    monitor.request_stop_for_sigkill()
+                    monitor.process.poll.return_value = -9
+                    monitor.confirm_sigkill()
+                    return Mock(returncode=returncode, stdout="", stderr=stderr)
+
+                with patch.object(harness.subprocess, "run", side_effect=query):
+                    monitor._scan()
+                with self.assertRaisesRegex(harness.TestFailure, "failed closed"):
+                    monitor.stop()
+
+    def test_inflight_network_rows_remain_failure_at_boundary(self):
+        monitor = self.bare_monitor()
+
+        def query(command, **kwargs):
+            if "-i" not in command:
+                return Mock(returncode=0, stdout="COMMAND PID FD\nhelper 1 txt\n", stderr="")
+            monitor.request_stop_for_sigkill()
+            return Mock(returncode=0, stdout="COMMAND PID FD\nhelper 1 TCP\n", stderr="")
+
+        with patch.object(harness.subprocess, "run", side_effect=query):
+            monitor._scan()
+        monitor.process.poll.return_value = -9
+        monitor.confirm_sigkill()
+        with self.assertRaisesRegex(harness.TestFailure, "network file descriptor"):
+            monitor.stop()
+        self.assertEqual(monitor.network_fd_count, 1)
 
 
 class CompletedFinalCrashOrderingTests(unittest.TestCase):

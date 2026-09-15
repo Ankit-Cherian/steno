@@ -288,6 +288,9 @@ class RuntimeNetworkMonitor:
         self.process = process
         self.started = time.monotonic()
         self.stop_requested = threading.Event()
+        self.sigkill_requested = threading.Event()
+        self.sigkill_confirmed = False
+        self.interrupted_sigkill_scan = False
         self.first_scan_completed = threading.Event()
         self.thread = threading.Thread(target=self._run, name="helper-network-monitor", daemon=True)
         self.scans = 0
@@ -317,6 +320,14 @@ class RuntimeNetworkMonitor:
     def request_stop(self) -> None:
         self.stop_requested.set()
 
+    def request_stop_for_sigkill(self) -> None:
+        self.sigkill_requested.set()
+        self.request_stop()
+
+    def confirm_sigkill(self) -> None:
+        require(self.process.poll() == -signal.SIGKILL, "owned helper SIGKILL was not reaped")
+        self.sigkill_confirmed = True
+
     def stop(self) -> None:
         if self.stopped:
             if self.error is not None:
@@ -327,6 +338,9 @@ class RuntimeNetworkMonitor:
         self.thread.join(timeout=self.stop_timeout_seconds)
         if self.thread.is_alive() and self.error is None:
             self.error = "runtime network monitor did not terminate"
+        if self.interrupted_sigkill_scan and self.error is None:
+            if not self.sigkill_confirmed or self.process.poll() != -signal.SIGKILL:
+                self.error = "runtime network monitor could not verify the owned helper SIGKILL"
         duration_ms = round((time.monotonic() - self.started) * 1_000)
         with RuntimeNetworkMonitor.registry_lock:
             RuntimeNetworkMonitor.scan_count += self.scans
@@ -368,7 +382,12 @@ class RuntimeNetworkMonitor:
             timeout=self.lsof_timeout_seconds,
         )
         if all_files.returncode != 0 or not all_files.stdout or all_files.stderr:
-            if self.process.poll() is None:
+            if (self.sigkill_requested.is_set() and self.stop_requested.is_set()
+                    and all_files.returncode == 1 and not all_files.stdout and not all_files.stderr):
+                # A query already in flight can lose its target before wait() reaps it.
+                # This incomplete scan counts only as a boundary, never as evidence.
+                self.interrupted_sigkill_scan = True
+            elif self.sigkill_requested.is_set() or self.process.poll() is None:
                 self.error = "runtime network monitor could not inspect the owned helper"
             return
         if self.stop_requested.is_set():
@@ -380,8 +399,12 @@ class RuntimeNetworkMonitor:
             timeout=self.lsof_timeout_seconds,
         )
         if network_files.returncode not in (0, 1) or network_files.stderr:
-            if self.process.poll() is None:
+            if self.sigkill_requested.is_set() or self.process.poll() is None:
                 self.error = "runtime network monitor failed closed"
+            return
+        if (self.sigkill_requested.is_set() and self.stop_requested.is_set()
+                and network_files.returncode == 1 and not network_files.stdout and not network_files.stderr):
+            self.interrupted_sigkill_scan = True
             return
         network_rows = [line for line in network_files.stdout.splitlines() if line.strip()]
         observed = max(0, len(network_rows) - 1) if network_rows else 0
@@ -592,11 +615,13 @@ class Helper:
         # Joining first would let an in-flight decode finish before SIGKILL,
         # turning its pre-crash output into a false late-response failure.
         if self.monitor is not None:
-            self.monitor.request_stop()
+            self.monitor.request_stop_for_sigkill()
         os.killpg(self.process.pid, signal.SIGKILL)
         self.process.wait(timeout=timeout)
-        self._stop_monitor()
         require(self.process.returncode == -signal.SIGKILL, "forced helper crash was not observed")
+        if self.monitor is not None:
+            self.monitor.confirm_sigkill()
+        self._stop_monitor()
         ready, _, _ = select.select([self.output.fileno()], [], [], timeout)
         require(bool(ready), "stdout did not become readable after helper crash")
         drained = self.output.read()
