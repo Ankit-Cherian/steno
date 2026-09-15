@@ -165,6 +165,16 @@ Under strict cooperative-pool scheduling, the original implementation fails both
 
 An additional full-suite strict-pool trial reaches its 90-second diagnostic limit. Its stack identifies an intentionally blocked Accessibility test fixture waiting on a condition variable while the test driver awaits session start; the runtime pipe reader is on its separate dispatch queue. That failed diagnostic is retained. It does not establish compatibility of the whole suite with one-worker scheduling, and it is separate from the normal package and hosted commands required by CI.
 
+## Preserve output read just before process exit
+
+The [push macOS 15 package job on `21c10b9`](https://github.com/Ankit-Cherian/steno/actions/runs/34973063324/job/104393830471) completed all 723 tests with one failure: a child exited with the expected status of 42, but its `boom failure` error message was missing from the returned stderr. The same suite passed in the separate PR job, so a passing retry alone would not explain the failure.
+
+The readability callback could remove bytes from the pipe and pause before appending them to its accumulator. Meanwhile, the termination handler could disable future callbacks, drain the now-empty pipe and return an empty result. The accumulator's lock protected individual appends and snapshots, but not the transfer between them.
+
+Each stream now holds its lock across the read and append. Final drainage and the result snapshot use that same lock, so they wait for any reader that has already taken bytes from the pipe. The termination handler disables readability callbacks before acquiring the lock and resumes the caller after releasing it. Standard output and standard error retain separate locks.
+
+A regression uses a real pipe and holds the callback after it has read the bytes. The original ordering returns zero of the expected 13 bytes; the repaired ordering preserves the complete message. All 11 focused tests pass, including the unchanged failing CLI assertion, simultaneous output beyond pipe capacity, cancellation, and caller-owned redirected handles. The full package suite passes 726 tests, the app build and all 70 hosted tests pass, and the three-fixture benchmark passes its report and zero-regression gates. Ten further normal-scheduler package runs pass all 7,260 test executions. Fresh hosted checks on the committed repair remain required.
+
 ## Verification and remaining gates
 
 The cancellation and completed-final observation follow-up passed **130 CI contract tests**, **720 package tests**, **70 hosted macOS tests**, the unsigned app build, and all **26 protocol cases on CPU and Metal**. Each protocol suite verified 25 backend-attested processes and observed no network descriptors across all 28 owned processes. The final staged library also passed nine CPU cancellation regressions, ten Metal controls, seven allocation checks, prompt scoring and decision checks, VAD integrity, and five retained-helper silence repetitions. The three-fixture benchmark passed its report and zero cleanup-regression gates. These results cover local fixtures; fresh hosted CI and Security results remain required before merge.
