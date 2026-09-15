@@ -4,6 +4,12 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Bind reviews to the original security report
+
+The diagnostic [C++ run](https://github.com/Ankit-Cherian/steno/actions/runs/35011924461/job/104533422378) retained the original SARIF. Comparing it with GitHub's API export identified the remaining mismatch: the export omits trace taxonomy annotations (`taxa`). The four findings have identical source locations, messages and trace steps after the documented end-line default. All bound source hashes match.
+
+The receipt now records the original report's hashes for the three helper findings. The CLI hash is unchanged. The checker still binds every trace field, including taxonomy annotations; no query, severity threshold, source contract or review rationale changed. Future receipts must be derived from the retained original SARIF, because an API export does not preserve every field.
+
 ## Read implicit single-line SARIF ranges
 
 The [final C++ scan](https://github.com/Ankit-Cherian/steno/actions/runs/35005628641/job/104504577186) completed analysis, but the local severity checker rejected a source range as incomplete. The fresh GitHub SARIF export contains the same four findings and complete trace hashes as the approved receipt. The runner's raw SARIF was not retained, so the log cannot identify which coordinate was omitted.
