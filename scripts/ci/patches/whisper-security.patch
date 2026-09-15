@@ -1,0 +1,474 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -26,7 +26,7 @@
+     include(git-vars)
+ 
+     # configure project version
+-    configure_file(${CMAKE_SOURCE_DIR}/bindings/javascript/package-tmpl.json ${CMAKE_SOURCE_DIR}/bindings/javascript/package.json @ONLY)
++    configure_file(${CMAKE_SOURCE_DIR}/bindings/javascript/package-tmpl.json ${CMAKE_BINARY_DIR}/bindings/javascript/package.json @ONLY)
+ else()
+     set(WHISPER_STANDALONE OFF)
+ endif()
+--- a/examples/common-ggml.cpp
++++ b/examples/common-ggml.cpp
+@@ -159,7 +159,7 @@
+ 
+             ttype = qtype;
+         } else {
+-            const int bpe = (ttype == 0) ? sizeof(float) : sizeof(uint16_t);
++            const size_t bpe = (ttype == 0) ? sizeof(float) : sizeof(uint16_t);
+ 
+             data_u8.resize(nelements*bpe);
+             finp.read(reinterpret_cast<char *>(data_u8.data()), nelements * bpe);
+--- a/examples/miniaudio.h
++++ b/examples/miniaudio.h
+@@ -57112,7 +57112,7 @@
+         return MA_INVALID_ARGS;
+     }
+ 
+-    result = ma_rb_init_ex(subbufferSizeInFrames*bpf, subbufferCount, subbufferStrideInFrames*bpf, pOptionalPreallocatedBuffer, pAllocationCallbacks, &pRB->rb);
++    result = ma_rb_init_ex((size_t)subbufferSizeInFrames*bpf, subbufferCount, (size_t)subbufferStrideInFrames*bpf, pOptionalPreallocatedBuffer, pAllocationCallbacks, &pRB->rb);
+     if (result != MA_SUCCESS) {
+         return result;
+     }
+@@ -57169,7 +57169,7 @@
+         return MA_INVALID_ARGS;
+     }
+ 
+-    sizeInBytes = *pSizeInFrames * ma_pcm_rb_get_bpf(pRB);
++    sizeInBytes = (size_t)*pSizeInFrames * ma_pcm_rb_get_bpf(pRB);
+ 
+     result = ma_rb_acquire_read(&pRB->rb, &sizeInBytes, ppBufferOut);
+     if (result != MA_SUCCESS) {
+@@ -57186,7 +57186,7 @@
+         return MA_INVALID_ARGS;
+     }
+ 
+-    return ma_rb_commit_read(&pRB->rb, sizeInFrames * ma_pcm_rb_get_bpf(pRB));
++    return ma_rb_commit_read(&pRB->rb, (size_t)sizeInFrames * ma_pcm_rb_get_bpf(pRB));
+ }
+ 
+ MA_API ma_result ma_pcm_rb_acquire_write(ma_pcm_rb* pRB, ma_uint32* pSizeInFrames, void** ppBufferOut)
+@@ -57198,7 +57198,7 @@
+         return MA_INVALID_ARGS;
+     }
+ 
+-    sizeInBytes = *pSizeInFrames * ma_pcm_rb_get_bpf(pRB);
++    sizeInBytes = (size_t)*pSizeInFrames * ma_pcm_rb_get_bpf(pRB);
+ 
+     result = ma_rb_acquire_write(&pRB->rb, &sizeInBytes, ppBufferOut);
+     if (result != MA_SUCCESS) {
+@@ -57215,7 +57215,7 @@
+         return MA_INVALID_ARGS;
+     }
+ 
+-    return ma_rb_commit_write(&pRB->rb, sizeInFrames * ma_pcm_rb_get_bpf(pRB));
++    return ma_rb_commit_write(&pRB->rb, (size_t)sizeInFrames * ma_pcm_rb_get_bpf(pRB));
+ }
+ 
+ MA_API ma_result ma_pcm_rb_seek_read(ma_pcm_rb* pRB, ma_uint32 offsetInFrames)
+@@ -57224,7 +57224,7 @@
+         return MA_INVALID_ARGS;
+     }
+ 
+-    return ma_rb_seek_read(&pRB->rb, offsetInFrames * ma_pcm_rb_get_bpf(pRB));
++    return ma_rb_seek_read(&pRB->rb, (size_t)offsetInFrames * ma_pcm_rb_get_bpf(pRB));
+ }
+ 
+ MA_API ma_result ma_pcm_rb_seek_write(ma_pcm_rb* pRB, ma_uint32 offsetInFrames)
+@@ -57233,7 +57233,7 @@
+         return MA_INVALID_ARGS;
+     }
+ 
+-    return ma_rb_seek_write(&pRB->rb, offsetInFrames * ma_pcm_rb_get_bpf(pRB));
++    return ma_rb_seek_write(&pRB->rb, (size_t)offsetInFrames * ma_pcm_rb_get_bpf(pRB));
+ }
+ 
+ MA_API ma_int32 ma_pcm_rb_pointer_distance(ma_pcm_rb* pRB)
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -740,7 +740,7 @@
+ 
+ #define hash_id(tensor) ggml_hash_find_or_insert(&sched->hash_set, tensor)
+ #define tensor_backend_id(tensor) sched->hv_tensor_backend_ids[hash_id(tensor)]
+-#define tensor_id_copy(id, backend_id, copy_id) sched->hv_tensor_copies[(id) * sched->n_backends * sched->n_copies + (backend_id) * sched->n_copies + (copy_id)]
++#define tensor_id_copy(id, backend_id, copy_id) sched->hv_tensor_copies[(id) * sched->n_backends * sched->n_copies + static_cast<size_t>(backend_id) * sched->n_copies + (copy_id)]
+ #define tensor_copy(tensor, backend_id, copy_id) tensor_id_copy(hash_id(tensor), backend_id, copy_id)
+ 
+ // returns the priority of the backend, lower id is higher priority
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -7,6 +7,7 @@
+ #include "amx/amx.h"
+ 
+ #include <cctype>
++#include <new>
+ #include <string>
+ #include <vector>
+ 
+@@ -136,7 +137,7 @@
+     cpu_plan->cgraph = *cgraph; // FIXME: deep copy
+ 
+     if (cpu_plan->cplan.work_size > 0) {
+-        cpu_plan->cplan.work_data = new uint8_t[cpu_plan->cplan.work_size];
++        cpu_plan->cplan.work_data = new (std::nothrow) uint8_t[cpu_plan->cplan.work_size];
+         if (cpu_plan->cplan.work_data == NULL) {
+             delete cpu_plan;
+             return NULL;
+@@ -216,7 +217,7 @@
+     // initialize CPU backend now to avoid slowing the first graph computation
+     ggml_cpu_init();
+ 
+-    struct ggml_backend_cpu_context * ctx = new ggml_backend_cpu_context;
++    struct ggml_backend_cpu_context * ctx = new (std::nothrow) ggml_backend_cpu_context;
+     if (ctx == NULL) {
+         return NULL;
+     }
+@@ -229,7 +230,7 @@
+     ctx->abort_callback_data = NULL;
+     ctx->use_ref             = false;
+ 
+-    ggml_backend_t cpu_backend = new ggml_backend {
++    ggml_backend_t cpu_backend = new (std::nothrow) ggml_backend {
+         /* .guid    = */ ggml_backend_cpu_guid(),
+         /* .iface   = */ ggml_backend_cpu_i,
+         /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
+--- a/ggml/src/ggml-cpu/repack.cpp
++++ b/ggml/src/ggml-cpu/repack.cpp
+@@ -2143,8 +2143,8 @@
+     block_q4_0x4 * dst = (block_q4_0x4 *)t->data;
+     const block_q4_0 * src = (const block_q4_0 *)data;
+     block_q4_0 dst_tmp[4];
+-    int nrow = ggml_nrows(t);
+-    int nblocks = t->ne[0] / QK4_0;
++    const int64_t nrow = ggml_nrows(t);
++    const int64_t nblocks = t->ne[0] / QK4_0;
+ 
+     GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q4_0));
+ 
+@@ -2152,7 +2152,7 @@
+         return -1;
+     }
+ 
+-    for (int b = 0; b < nrow; b += nrows_interleaved) {
++    for (int64_t b = 0; b < nrow; b += nrows_interleaved) {
+         for (int64_t x = 0; x < nblocks; x++) {
+             for (int i = 0; i < nrows_interleaved; i++) {
+                 dst_tmp[i] = src[x + i * nblocks];
+@@ -2174,8 +2174,8 @@
+     block_q4_Kx8 * dst = (block_q4_Kx8*)t->data;
+     const block_q4_K * src = (const block_q4_K*) data;
+     block_q4_K dst_tmp[8];
+-    int nrow = ggml_nrows(t);
+-    int nblocks = t->ne[0] / QK_K;
++    const int64_t nrow = ggml_nrows(t);
++    const int64_t nblocks = t->ne[0] / QK_K;
+ 
+     GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q4_K));
+ 
+@@ -2183,7 +2183,7 @@
+         return -1;
+     }
+ 
+-    for (int b = 0; b < nrow; b += nrows_interleaved) {
++    for (int64_t b = 0; b < nrow; b += nrows_interleaved) {
+         for (int64_t x = 0; x < nblocks; x++) {
+             for (int i  = 0; i < nrows_interleaved; i++ ) {
+                 dst_tmp[i] = src[x + i * nblocks];
+@@ -2205,8 +2205,8 @@
+     block_q2_Kx8 * dst = (block_q2_Kx8*)t->data;
+     const block_q2_K * src = (const block_q2_K*) data;
+     block_q2_K dst_tmp[8];
+-    int nrow = ggml_nrows(t);
+-    int nblocks = t->ne[0] / QK_K;
++    const int64_t nrow = ggml_nrows(t);
++    const int64_t nblocks = t->ne[0] / QK_K;
+ 
+     GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q2_K));
+ 
+@@ -2214,7 +2214,7 @@
+         return -1;
+     }
+ 
+-    for (int b = 0; b < nrow; b += nrows_interleaved) {
++    for (int64_t b = 0; b < nrow; b += nrows_interleaved) {
+         for (int64_t x = 0; x < nblocks; x++) {
+             for (int i = 0; i < nrows_interleaved; i++) {
+                 dst_tmp[i] = src[x + i * nblocks];
+@@ -2239,8 +2239,8 @@
+     block_q5_Kx8 *     dst = (block_q5_Kx8 *) t->data;
+     const block_q5_K * src = (const block_q5_K *) data;
+     block_q5_K         dst_tmp[8];
+-    int                nrow    = ggml_nrows(t);
+-    int                nblocks = t->ne[0] / QK_K;
++    const int64_t nrow = ggml_nrows(t);
++    const int64_t nblocks = t->ne[0] / QK_K;
+ 
+     GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q5_K));
+ 
+@@ -2248,7 +2248,7 @@
+         return -1;
+     }
+ 
+-    for (int b = 0; b < nrow; b += nrows_interleaved) {
++    for (int64_t b = 0; b < nrow; b += nrows_interleaved) {
+         for (int64_t x = 0; x < nblocks; x++) {
+             for (int i = 0; i < nrows_interleaved; i++) {
+                 dst_tmp[i] = src[x + i * nblocks];
+@@ -2268,8 +2268,8 @@
+     block_q6_Kx8 * dst = (block_q6_Kx8 *)t->data;
+     const block_q6_K * src = (const block_q6_K *) data;
+     block_q6_K dst_tmp[8];
+-    int nrow = ggml_nrows(t);
+-    int nblocks = t->ne[0] / QK_K;
++    const int64_t nrow = ggml_nrows(t);
++    const int64_t nblocks = t->ne[0] / QK_K;
+ 
+     GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q6_K));
+ 
+@@ -2277,7 +2277,7 @@
+         return -1;
+     }
+ 
+-    for (int b = 0; b < nrow; b += nrows_interleaved) {
++    for (int64_t b = 0; b < nrow; b += nrows_interleaved) {
+         for (int64_t x = 0; x < nblocks; x++) {
+             for (int i = 0; i < nrows_interleaved; i++) {
+                 dst_tmp[i] = src[x + i * nblocks];
+@@ -2297,8 +2297,8 @@
+     block_q4_0x8 * dst = (block_q4_0x8*)t->data;
+     const block_q4_0 * src = (const block_q4_0*) data;
+     block_q4_0 dst_tmp[8];
+-    int nrow = ggml_nrows(t);
+-    int nblocks = t->ne[0] / QK4_0;
++    const int64_t nrow = ggml_nrows(t);
++    const int64_t nblocks = t->ne[0] / QK4_0;
+ 
+     GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q4_0));
+ 
+@@ -2306,7 +2306,7 @@
+         return -1;
+     }
+ 
+-    for (int b = 0; b < nrow; b += nrows_interleaved) {
++    for (int64_t b = 0; b < nrow; b += nrows_interleaved) {
+         for (int64_t x = 0; x < nblocks; x++) {
+             for (int i  = 0; i < nrows_interleaved; i++ ) {
+                 dst_tmp[i] = src[x + i * nblocks];
+@@ -2331,8 +2331,8 @@
+     block_q8_0x4 *     dst = (block_q8_0x4 *) t->data;
+     const block_q8_0 * src = (const block_q8_0 *) data;
+     block_q8_0         dst_tmp[4];
+-    int                nrow    = ggml_nrows(t);
+-    int                nblocks = t->ne[0] / QK8_0;
++    const int64_t nrow = ggml_nrows(t);
++    const int64_t nblocks = t->ne[0] / QK8_0;
+ 
+     GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_q8_0));
+ 
+@@ -2340,7 +2340,7 @@
+         return -1;
+     }
+ 
+-    for (int b = 0; b < nrow; b += nrows_interleaved) {
++    for (int64_t b = 0; b < nrow; b += nrows_interleaved) {
+         for (int64_t x = 0; x < nblocks; x++) {
+             for (int i = 0; i < nrows_interleaved; i++) {
+                 dst_tmp[i] = src[x + i * nblocks];
+@@ -2396,9 +2396,9 @@
+ 
+     block_iq4_nl dst_tmp[4];
+ 
+-    int nrow = ggml_nrows(t);
++    const int64_t nrow = ggml_nrows(t);
+     int nrows_interleaved = 4;
+-    int nblocks = t->ne[0] / QK4_NL;
++    const int64_t nblocks = t->ne[0] / QK4_NL;
+ 
+     GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_iq4_nl));
+ 
+@@ -2406,7 +2406,7 @@
+         return -1;
+     }
+ 
+-    for (int b = 0; b < nrow; b += nrows_interleaved) {
++    for (int64_t b = 0; b < nrow; b += nrows_interleaved) {
+         for (int64_t x = 0; x < nblocks; x++) {
+             for (int i = 0; i < nrows_interleaved; i++) {
+                 dst_tmp[i] = src[x + i * nblocks];
+@@ -2453,9 +2453,9 @@
+ 
+     block_iq4_nl dst_tmp[8];
+ 
+-    int nrow = ggml_nrows(t);
++    const int64_t nrow = ggml_nrows(t);
+     int nrows_interleaved = 8;
+-    int nblocks = t->ne[0] / QK4_NL;
++    const int64_t nblocks = t->ne[0] / QK4_NL;
+ 
+     GGML_ASSERT(data_size == nrow * nblocks * sizeof(block_iq4_nl));
+ 
+@@ -2463,7 +2463,7 @@
+         return -1;
+     }
+ 
+-    for (int b = 0; b < nrow; b += nrows_interleaved) {
++    for (int64_t b = 0; b < nrow; b += nrows_interleaved) {
+         for (int64_t x = 0; x < nblocks; x++) {
+             for (int i = 0; i < nrows_interleaved; i++) {
+                 dst_tmp[i] = src[x + i * nblocks];
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -2255,7 +2255,7 @@
+         ggml_metal_encoder_set_buffer(enc, bid_src2, 4);
+ 
+         const int64_t _ne1 = 1;
+-        const int64_t ne123 = ne20*ne21;
++        const int64_t ne123 = static_cast<int64_t>(ne20)*ne21;
+ 
+         ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
+ 
+@@ -3607,7 +3607,7 @@
+     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         3);
+ 
+     // Metal requires buffer size to be multiple of 16 bytes
+-    const size_t smem = GGML_PAD(KW * KH * sizeof(float), 16);
++    const size_t smem = GGML_PAD(static_cast<size_t>(KW) * KH * sizeof(float), 16);
+     ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
+ 
+     ggml_metal_encoder_dispatch_threadgroups(enc, OW, OH, OC, KW, KH, 1);
+--- a/ggml/src/ggml-opt.cpp
++++ b/ggml/src/ggml-opt.cpp
+@@ -670,7 +670,7 @@
+         // If the loss is per datapoint it was scaled by 1.0f/opt_period for each physical batch.
+         const float loss_scaled = result->loss_per_datapoint ? loss*result->opt_period : loss;
+         sum         += loss_scaled;
+-        sum_squared += loss_scaled*loss_scaled;
++        sum_squared += static_cast<double>(loss_scaled)*loss_scaled;
+     }
+ 
+     const double mean = sum/nbatches;
+--- a/src/whisper.cpp
++++ b/src/whisper.cpp
+@@ -27,6 +27,7 @@
+ #include <fstream>
+ #include <functional>
+ #include <map>
++#include <new>
+ #include <random>
+ #include <regex>
+ #include <set>
+@@ -1580,7 +1581,7 @@
+         read_safe(loader, filters.n_mel);
+         read_safe(loader, filters.n_fft);
+ 
+-        filters.data.resize(filters.n_mel * filters.n_fft);
++        filters.data.resize(static_cast<size_t>(filters.n_mel) * filters.n_fft);
+         loader->read(loader->context, filters.data.data(), filters.data.size() * sizeof(float));
+         BYTESWAP_FILTERS(filters);
+     }
+@@ -2139,8 +2140,8 @@
+                         0, 2, 1, 3);
+ 
+             if (wctx.params.flash_attn) {
+-                ggml_build_forward_expand(gf, ggml_cpy(ctx0, Kcur, ggml_view_1d(ctx0, kv_pad.k, n_ctx*n_state, 0)));
+-                ggml_build_forward_expand(gf, ggml_cpy(ctx0, Vcur, ggml_view_1d(ctx0, kv_pad.v, n_ctx*n_state, 0)));
++                ggml_build_forward_expand(gf, ggml_cpy(ctx0, Kcur, ggml_view_1d(ctx0, kv_pad.k, static_cast<int64_t>(n_ctx)*n_state, 0)));
++                ggml_build_forward_expand(gf, ggml_cpy(ctx0, Vcur, ggml_view_1d(ctx0, kv_pad.v, static_cast<int64_t>(n_ctx)*n_state, 0)));
+ 
+                 struct ggml_tensor * K =
+                     ggml_view_3d(ctx0, kv_pad.k,
+@@ -2318,15 +2319,15 @@
+         struct ggml_tensor * v;
+ 
+         if (wctx.params.flash_attn) {
+-            k = ggml_view_1d(ctx0, wstate.kv_cross.k, n_state*n_ctx,
++            k = ggml_view_1d(ctx0, wstate.kv_cross.k, static_cast<int64_t>(n_state)*n_ctx,
+                     (ggml_element_size(wstate.kv_cross.k)*n_state)*(il*n_ctx_pad));
+ 
+-            v = ggml_view_1d(ctx0, wstate.kv_cross.v, n_state*n_ctx,
++            v = ggml_view_1d(ctx0, wstate.kv_cross.v, static_cast<int64_t>(n_state)*n_ctx,
+                     (ggml_element_size(wstate.kv_cross.v)*n_state)*(il*n_ctx_pad));
+         } else {
+             Vcross = ggml_transpose(ctx0, ggml_reshape_2d(ctx0, Vcross, n_state, n_ctx));
+ 
+-            k = ggml_view_1d(ctx0, wstate.kv_cross.k, n_state*n_ctx,
++            k = ggml_view_1d(ctx0, wstate.kv_cross.k, static_cast<int64_t>(n_state)*n_ctx,
+                     (ggml_element_size(wstate.kv_cross.k)*n_state)*(il*n_ctx));
+ 
+             v = ggml_view_2d(ctx0, wstate.kv_cross.v, n_ctx, n_state,
+@@ -2570,15 +2571,15 @@
+                 struct ggml_tensor * v;
+ 
+                 if (wctx.params.flash_attn) {
+-                    k = ggml_view_1d(ctx0, kv_self.k, n_tokens*n_state,
++                    k = ggml_view_1d(ctx0, kv_self.k, static_cast<int64_t>(n_tokens)*n_state,
+                             (ggml_element_size(kv_self.k)*n_state)*(il*n_ctx + kv_head));
+ 
+-                    v = ggml_view_1d(ctx0, kv_self.v, n_tokens*n_state,
++                    v = ggml_view_1d(ctx0, kv_self.v, static_cast<int64_t>(n_tokens)*n_state,
+                             (ggml_element_size(kv_self.v)*n_state)*(il*n_ctx + kv_head));
+                 } else {
+                     Vcur = ggml_transpose(ctx0, ggml_reshape_2d(ctx0, Vcur, n_state, n_tokens));
+ 
+-                    k = ggml_view_1d(ctx0, kv_self.k, n_tokens*n_state,
++                    k = ggml_view_1d(ctx0, kv_self.k, static_cast<int64_t>(n_tokens)*n_state,
+                             (ggml_element_size(kv_self.k)*n_state)*(il*n_ctx + kv_head));
+ 
+                     v = ggml_view_2d(ctx0, kv_self.v, n_tokens, n_state,
+@@ -2946,7 +2947,7 @@
+         }
+     }
+ 
+-    logits_out.resize(n_tokens*n_vocab);
++    logits_out.resize(static_cast<size_t>(n_tokens)*n_vocab);
+     for (int i = 0; i < n_tokens; i++) {
+         if (batch.logits[i] == 0) {
+             continue;
+@@ -3150,7 +3151,7 @@
+             }
+             // handle n_fft remainder
+             for (; k < n_fft; k++) {
+-                sum += fft_out[k] * filters.data[j * n_fft + k];
++                sum += static_cast<double>(fft_out[k]) * filters.data[j * n_fft + k];
+             }
+             sum = log10(std::max(sum, 1e-10));
+             mel.data[j * mel.n_len + i] = sum;
+@@ -3206,7 +3207,7 @@
+     mel.n_len     = (samples_padded.size() - frame_size) / frame_step;
+     // Calculate semi-padded sample length to ensure compatibility
+     mel.n_len_org = 1 + (n_samples + stage_2_pad - frame_size) / frame_step;
+-    mel.data.resize(mel.n_mel * mel.n_len);
++    mel.data.resize(static_cast<size_t>(mel.n_mel) * mel.n_len);
+ 
+     {
+         std::vector<std::thread> workers(n_threads - 1);
+@@ -3455,7 +3456,7 @@
+     }
+ #endif
+ 
+-    state->logits.reserve(ctx->vocab.n_vocab * ctx->model.hparams.n_text_ctx);
++    state->logits.reserve(static_cast<size_t>(ctx->vocab.n_vocab) * ctx->model.hparams.n_text_ctx);
+ 
+     state->batch = whisper_batch_init(ctx->model.hparams.n_text_ctx, WHISPER_MAX_DECODERS);
+ 
+@@ -3900,8 +3901,8 @@
+     state->mel.n_len_org = n_len;
+     state->mel.n_mel     = n_mel;
+ 
+-    state->mel.data.resize(n_len*n_mel);
+-    memcpy(state->mel.data.data(), data, n_len*n_mel*sizeof(float));
++    state->mel.data.resize(static_cast<size_t>(n_len)*n_mel);
++    memcpy(state->mel.data.data(), data, static_cast<size_t>(n_len)*n_mel*sizeof(float));
+ 
+     return 0;
+ }
+@@ -5410,7 +5411,7 @@
+                         __func__, i, segments[i].start/100.0, segments[i].end/100.0, (segments[i].end - segments[i].start)/100.0);
+     }
+ 
+-    whisper_vad_segments * vad_segments = new whisper_vad_segments;
++    whisper_vad_segments * vad_segments = new (std::nothrow) whisper_vad_segments;
+     if (vad_segments == NULL) {
+         WHISPER_LOG_ERROR("%s: failed to allocate memory for whisper_vad_segments\n", __func__);
+         return nullptr;

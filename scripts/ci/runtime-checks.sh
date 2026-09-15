@@ -108,6 +108,11 @@ run_check() {
   "$@" 2>&1 | tee "$OUTPUT/$name.log"
 }
 run_check build bash "$ROOT_DIR/scripts/build-whisper-runtime-helper.sh"
+PATCHED_SOURCE="$(python3 "$ROOT_DIR/scripts/ci/prepare-patched-runtime.py" \
+  --root "$WHISPER_ROOT" --build-dir "$STENO_WHISPER_BUILD_DIR" \
+  --revision "$(git -C "$WHISPER_ROOT" rev-parse HEAD)")"
+run_check allocation-failures python3 "$ROOT_DIR/scripts/ci/test-vendor-allocation-failures.py" \
+  --whisper-root "$PATCHED_SOURCE" --build-dir "$STENO_WHISPER_BUILD_DIR"
 run_check prompt-verification bash "$ROOT_DIR/scripts/test-whisper-prompt-verification.sh"
 run_check vad-integrity bash "$ROOT_DIR/scripts/test-whisper-vad-integrity.sh"
 if run_check helper-protocol bash "$ROOT_DIR/scripts/test-whisper-runtime-helper-v2.sh" \

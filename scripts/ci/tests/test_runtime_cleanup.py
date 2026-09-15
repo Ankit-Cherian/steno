@@ -386,6 +386,7 @@ class GateDiagnosticTests(unittest.TestCase):
         (self.scripts / "ci").mkdir(parents=True)
         shutil.copyfile(CI / "runtime-checks.sh", self.scripts / "ci/runtime-checks.sh")
         (self.scripts / "ci/prepare-runtime.sh").write_text("exit 0\n")
+        (self.scripts / "ci/prepare-patched-runtime.py").write_text("print('staged-source')\n")
         for name in ("build-whisper-runtime-helper", "test-whisper-prompt-verification",
                      "test-whisper-vad-integrity"):
             (self.scripts / f"{name}.sh").write_text("exit 0\n")
@@ -397,15 +398,27 @@ class GateDiagnosticTests(unittest.TestCase):
         uname = commands / "uname"
         uname.write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo arm64;; esac\n')
         uname.chmod(0o755)
+        git = commands / "git"
+        git.write_text('#!/bin/sh\necho 764482c3175d9c3bc6089c1ec84df7d1b9537d83\n')
+        git.chmod(0o755)
         self.environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
 
-    def run_gate(self, protocol_status, diagnostic_status):
+    def run_gate(self, protocol_status, diagnostic_status, allocation_status=0):
+        (self.scripts / "ci/test-vendor-allocation-failures.py").write_text(
+            f"print('allocation-check-called')\nraise SystemExit({allocation_status})\n")
         (self.scripts / "test-whisper-runtime-helper-v2.sh").write_text(f"exit {protocol_status}\n")
         (self.scripts / "ci/diagnose-runtime-inference.py").write_text(
             f"print('diagnostic-called')\nraise SystemExit({diagnostic_status})\n")
         return subprocess.run(["bash", str(self.scripts / "ci/runtime-checks.sh"), "--root",
                                str(self.runtime), "--output", str(self.root / "output")],
                               env=self.environment, capture_output=True, text=True)
+
+    def test_allocation_failure_stops_runtime_gate(self):
+        result = self.run_gate(17, 0, allocation_status=29)
+        self.assertEqual(result.returncode, 29, result.stdout + result.stderr)
+        self.assertIn("allocation-check-called", result.stdout)
+        self.assertNotIn("==> helper-protocol", result.stdout)
+        self.assertNotIn("diagnostic-called", result.stdout)
 
     def test_successful_diagnostic_preserves_original_failure(self):
         result = self.run_gate(17, 0)
