@@ -156,7 +156,7 @@ Record each result and the tested build in [the 1.0 checklist](docs/release/1.0-
 
 - `whisper-cli` or `steno-whisper-runtime` missing after build
 
-  Re-run `scripts/build-whisper-runtime-helper.sh` from the Steno repository root. The script verifies the audited whisper.cpp revision and produces the Apple-silicon runtime targeting macOS 13 under `vendor/whisper.cpp/build-steno`.
+  Re-run `scripts/build-whisper-runtime-helper.sh` from the Steno repository root. The script verifies the audited whisper.cpp revision and produces the Apple-silicon runtime targeting macOS 13 under `vendor/whisper.cpp/build-steno`. It applies the [reviewed native corrections](scripts/ci/patches/README.md) to an isolated source copy. If an older CMake cache points to different sources, choose a fresh directory with `STENO_WHISPER_BUILD_DIR="$PWD/build/runtime-1.0" scripts/build-whisper-runtime-helper.sh`; the builder preserves the previous output.
 
 - Hotkeys not responding
 
