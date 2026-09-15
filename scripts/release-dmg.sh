@@ -515,7 +515,10 @@ scan_distribution_hygiene() {
 
   local repo_leaf
   repo_leaf="$(basename "$REPO_ROOT")"
-  if [[ "$repo_leaf" != "$APP_NAME" ]]; then
+  # Product identifiers are expected in the bundle, regardless of checkout casing.
+  # Absolute checkout paths remain forbidden by the patterns above.
+  if [[ "$(printf '%s' "$repo_leaf" | LC_ALL=C tr '[:upper:]' '[:lower:]')" != \
+        "$(printf '%s' "$APP_NAME" | LC_ALL=C tr '[:upper:]' '[:lower:]')" ]]; then
     patterns+=("$repo_leaf")
   fi
   patterns+=("Desktop/LocalProjects")

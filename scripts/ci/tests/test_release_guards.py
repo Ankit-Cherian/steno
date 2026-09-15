@@ -125,6 +125,66 @@ class ReleaseOutputTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
 
+class DistributionHygieneTests(unittest.TestCase):
+    def scan(self, files, repo_root="/Users/runner/work/steno/steno", extra_env=None):
+        source = (ROOT / "scripts/release-dmg.sh").read_text()
+        function = source[source.index("scan_distribution_hygiene() {"):source.index("\ncreate_dmg() {")]
+        with tempfile.TemporaryDirectory() as temp:
+            app = Path(temp) / "Steno.app"
+            for relative, content in files.items():
+                output = app / "Contents" / relative
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(content.encode())
+            env = dict(guard.os.environ, REPO_ROOT=repo_root, APP_NAME="Steno")
+            for key in ("STENO_BUNDLED_WHISPER_ROOT", "STENO_BUNDLED_MODEL_PATH",
+                        "STENO_BUNDLED_VAD_MODEL_PATH", "STENO_BUNDLED_WHISPER_BUILD_DIR"):
+                env.pop(key, None)
+            env.update(extra_env or {})
+            script = "set -euo pipefail\ndie() { echo \"$*\" >&2; exit 1; }\n" + function
+            return subprocess.run(["bash", "-c", script + '\nscan_distribution_hygiene "$1"',
+                                   "hygiene-test", str(app)], env=env, capture_output=True, text=True)
+
+    def test_product_metadata_is_safe_in_lowercase_hosted_checkout(self):
+        result = self.scan({
+            "_CodeSignature/CodeResources": "<key>Helpers/steno-whisper-runtime</key>",
+            "MacOS/Steno": "Steno\0io.stenoapp.steno\0steno-whisper-runtime\0",
+            "Resources/StenoKit_StenoKit.bundle/Contents/Info.plist": "<string>io.stenoapp.StenoKit</string>",
+            "Info.plist": "<string>io.stenoapp.steno</string>",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_product_checkout_names_have_consistent_case_handling(self):
+        for name in ("Steno", "steno", "STENO"):
+            with self.subTest(name=name):
+                result = self.scan({"Info.plist": "Steno steno STENO io.stenoapp.steno"},
+                                   repo_root="/Users/runner/work/project/" + name)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_absolute_checkout_and_home_paths_still_fail(self):
+        for private_path in ("/Users/runner/work/steno/steno/Steno/App.swift",
+                             str(Path.home()) + "/private-checkout/App.swift"):
+            with self.subTest(private_path=private_path):
+                result = self.scan({"MacOS/Steno": private_path})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("local build path leaked", result.stderr)
+
+    def test_runtime_and_model_paths_still_fail(self):
+        for key in ("STENO_BUNDLED_WHISPER_ROOT", "STENO_BUNDLED_MODEL_PATH",
+                    "STENO_BUNDLED_VAD_MODEL_PATH", "STENO_BUNDLED_WHISPER_BUILD_DIR"):
+            with self.subTest(key=key):
+                private_path = "/private/build-inputs/" + key.lower()
+                result = self.scan({"MacOS/Steno": private_path}, extra_env={key: private_path})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("local build path leaked", result.stderr)
+
+    def test_distinctive_checkout_names_and_local_project_paths_still_fail(self):
+        for text in ("private-steno-experiment", "Desktop/LocalProjects/Steno"):
+            with self.subTest(text=text):
+                result = self.scan({"Info.plist": text}, repo_root="/private/work/private-steno-experiment")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("local build path leaked", result.stderr)
+
+
 class ReleaseAssetTests(unittest.TestCase):
     def write_assets(self, root):
         filename = 'Steno-1.0.0.dmg'

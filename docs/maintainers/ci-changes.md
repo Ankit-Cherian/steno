@@ -143,6 +143,14 @@ The observer correction passes all 141 CI contract tests, including the reproduc
 
 Prompt-scoring logs also identify fixture synthesis, compilation and inference separately, and the existing fixture output is line-buffered so progress reaches the CI log promptly. This makes a delay visible without changing fixture text, scoring parameters or assertions. The local CPU scorer passes with all stage labels and seven fixture results present. The earlier PR run also completed its native checks and public benchmark; its long quiet interval was not a confirmed hang.
 
+## Match product checkout names consistently
+
+The [PR runtime job on `8c99926`](https://github.com/Ankit-Cherian/steno/actions/runs/34965780817/job/104369888614) passed native checks, the public benchmark, the app build and bundled-runtime smoke tests, then failed the distribution hygiene scan. Its diagnostic named four bundle files but did not identify the matched pattern.
+
+The scan compared the checkout basename with `Steno` case-sensitively. GitHub's lowercase `steno` checkout therefore added the bare product name to the forbidden strings, matching legitimate bundle identifiers and helper names. Public metadata fixtures reproduce all four reported file failures under the original scan. This establishes a false-positive mechanism; the original message was not proof that an absolute private path had leaked.
+
+The comparison now treats capitalization consistently. Full home, checkout, runtime, model and build paths remain forbidden, as do distinctive private checkout names. Regression tests verify both the legitimate product metadata and rejection of those private paths. The original scan fails three assertions; the corrected release-guard suite passes all 27 tests, and the full CI contract suite passes 146. Workflow policy and shell syntax checks also pass. A complete scan of the final packaged app remains required.
+
 ## Verification and remaining gates
 
 The cancellation and completed-final observation follow-up passed **130 CI contract tests**, **720 package tests**, **70 hosted macOS tests**, the unsigned app build, and all **26 protocol cases on CPU and Metal**. Each protocol suite verified 25 backend-attested processes and observed no network descriptors across all 28 owned processes. The final staged library also passed nine CPU cancellation regressions, ten Metal controls, seven allocation checks, prompt scoring and decision checks, VAD integrity, and five retained-helper silence repetitions. The three-fixture benchmark passed its report and zero cleanup-regression gates. These results cover local fixtures; fresh hosted CI and Security results remain required before merge.
