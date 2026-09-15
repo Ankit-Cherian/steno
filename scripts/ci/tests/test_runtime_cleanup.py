@@ -30,6 +30,24 @@ harness = load_module("runtime_cleanup_test_harness", CI.parent / "test-whisper-
 diagnostic = load_module("runtime_inference_diagnostic_test", CI / "diagnose-runtime-inference.py")
 
 
+class InferenceBudgetTests(unittest.TestCase):
+    def test_only_explicit_cpu_mode_uses_the_hosted_inference_budget(self):
+        for device_mode, expected in (("0", 180.0), ("1", 30.0), ("", 30.0)):
+            with self.subTest(device_mode=device_mode), patch.dict(
+                os.environ, {"GGML_METAL_DEVICES": device_mode}
+            ):
+                self.assertEqual(harness.inference_timeout(), expected)
+
+    def test_cpu_receipt_preserves_non_inference_deadlines(self):
+        with patch.dict(os.environ, {"GGML_METAL_DEVICES": "0"}):
+            deadlines = harness.declared_configuration()["harnessTimeoutsSeconds"]
+        self.assertEqual(deadlines["inference"], 180.0)
+        self.assertEqual(deadlines["defaultFrameRead"], 5.0)
+        self.assertEqual(deadlines["loadReady"], 15.0)
+        self.assertEqual(deadlines["backendAttestation"], 2.0)
+        self.assertEqual(deadlines["networkMonitorStartup"], 3.0)
+
+
 class CleanupTests(unittest.TestCase):
     def setUp(self):
         self.events = []
