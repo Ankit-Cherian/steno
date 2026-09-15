@@ -41,14 +41,12 @@ public enum ProcessRunner {
 
         if let pipe = outputPipe {
             pipe.fileHandleForReading.readabilityHandler = { handle in
-                let chunk = handle.availableData
-                if !chunk.isEmpty { outputBuffer.append(chunk) }
+                outputBuffer.appendReading { handle.availableData }
             }
         }
         if let pipe = errorPipe {
             pipe.fileHandleForReading.readabilityHandler = { handle in
-                let chunk = handle.availableData
-                if !chunk.isEmpty { errorBuffer.append(chunk) }
+                errorBuffer.appendReading { handle.availableData }
             }
         }
 
@@ -61,19 +59,17 @@ public enum ProcessRunner {
                     outputPipe?.fileHandleForReading.readabilityHandler = nil
                     errorPipe?.fileHandleForReading.readabilityHandler = nil
 
-                    if let pipe = outputPipe {
-                        let remaining = pipe.fileHandleForReading.readDataToEndOfFile()
-                        if !remaining.isEmpty { outputBuffer.append(remaining) }
+                    let output = outputBuffer.consumeReading {
+                        outputPipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
                     }
-                    if let pipe = errorPipe {
-                        let remaining = pipe.fileHandleForReading.readDataToEndOfFile()
-                        if !remaining.isEmpty { errorBuffer.append(remaining) }
+                    let error = errorBuffer.consumeReading {
+                        errorPipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
                     }
 
                     state.finish(
                         terminationStatus: process.terminationStatus,
-                        standardOutput: outputBuffer.consume(),
-                        standardError: errorBuffer.consume()
+                        standardOutput: output,
+                        standardError: error
                     )
                 }
 
@@ -100,22 +96,23 @@ public enum ProcessRunner {
     }
 }
 
-/// Thread-safe accumulator for pipe data arriving via readabilityHandler.
-private final class PipeAccumulator: @unchecked Sendable {
+/// Serializes each pipe read with its append so final drainage cannot overtake
+/// a readability handler that has already removed bytes from the pipe.
+final class PipeAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
 
-    func append(_ chunk: Data) {
+    func appendReading(_ read: () -> Data) {
         lock.lock()
-        data.append(chunk)
-        lock.unlock()
+        defer { lock.unlock() }
+        data.append(read())
     }
 
-    func consume() -> Data {
+    func consumeReading(_ read: () -> Data) -> Data {
         lock.lock()
-        let result = data
-        lock.unlock()
-        return result
+        defer { lock.unlock() }
+        data.append(read())
+        return data
     }
 }
 
