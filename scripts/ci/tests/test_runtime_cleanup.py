@@ -684,7 +684,12 @@ class GateDiagnosticTests(unittest.TestCase):
         git.chmod(0o755)
         self.environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
 
-    def run_gate(self, protocol_status, diagnostic_status, allocation_status=0, vad_status=0, cancellation_status=0):
+    def run_gate(self, protocol_status, diagnostic_status, allocation_status=0, vad_status=0,
+                 cancellation_status=0, backend_status=0):
+        (self.scripts / "ci/test-backend-discovery.py").write_text(
+            "import json, sys\nprint('backend-check-called')\n"
+            "print('backend-check-args: ' + json.dumps(sys.argv[1:]))\n"
+            f"raise SystemExit({backend_status})\n")
         (self.scripts / "ci/test-vendor-allocation-failures.py").write_text(
             f"print('allocation-check-called')\nraise SystemExit({allocation_status})\n")
         (self.scripts / "ci/test-native-cancellation.py").write_text(
@@ -698,6 +703,22 @@ class GateDiagnosticTests(unittest.TestCase):
         return subprocess.run(["bash", str(self.scripts / "ci/runtime-checks.sh"), "--root",
                                str(self.runtime), "--output", str(self.root / "output")],
                               env=self.environment, capture_output=True, text=True)
+
+    def test_backend_discovery_failure_stops_runtime_gate(self):
+        result = self.run_gate(17, 0, backend_status=37)
+        self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.count("backend-check-called"), 1)
+        arguments = next(line.removeprefix("backend-check-args: ")
+                         for line in result.stdout.splitlines()
+                         if line.startswith("backend-check-args: "))
+        self.assertEqual(json.loads(arguments), [
+            "--whisper-root", "staged-source", "--build-dir", str(self.root / "output/build-steno"),
+        ])
+        self.assertNotIn("allocation-check-called", result.stdout)
+        self.assertNotIn("cancellation-check-called", result.stdout)
+        self.assertNotIn("==> helper-protocol", result.stdout)
+        self.assertNotIn("diagnostic-called", result.stdout)
+        self.assertNotIn("unexpected-later-check", result.stdout)
 
     def test_allocation_failure_stops_runtime_gate(self):
         result = self.run_gate(17, 0, allocation_status=29)

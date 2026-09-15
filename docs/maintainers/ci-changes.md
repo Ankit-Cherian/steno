@@ -14,6 +14,12 @@ The native library-loading finding exposed automatic backend discovery in the bu
 
 The regression loads a harmless constructor-marker plugin through each automatic entry point on the original build and rejects all four loads on the repaired build. An explicit-load control still executes the fixture. The repaired build also registers CPU and Metal and transcribes the public JFK sample on both backends, including model and audio paths with spaces. Package tests pass all 726 cases, the unsigned app builds, all 70 hosted macOS tests pass, and the three-fixture benchmark passes its report and zero-regression gates. Both CPU and Metal protocol suites pass all 26 cases, with all 25 eligible processes attested on each backend. Fresh hosted security results remain required; these local checks do not complete signed-release acceptance.
 
+## Include backend discovery in the runtime test fixtures
+
+The [first PR #20 contract job](https://github.com/Ankit-Cherian/steno/actions/runs/34988763003/job/104447616481) failed six tests. Each test copied the runtime gate into a temporary repository, but its fixture omitted the newly added backend-discovery script. The gate therefore stopped before reaching the allocation, cancellation or protocol behavior the test intended to exercise. The earlier local 153-test result preceded that integration and did not validate the committed script.
+
+The fixtures now include a configurable backend check. A new regression verifies its arguments and confirms that a backend-check failure preserves its exit status and prevents every later stage from running. Removing the real invocation from a disposable test copy makes that regression fail. All 154 CI contract tests pass locally. The production runtime gate is unchanged; fresh hosted checks remain required.
+
 ## Explicit ARM build targets
 
 [`22c4ae9` — Specify ARM targets for native security builds](https://github.com/Ankit-Cherian/steno/commit/22c4ae98b2cc05fa1a13ddd82e9253b279d14720) makes the architecture explicit in both native build paths:
