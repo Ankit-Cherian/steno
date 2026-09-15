@@ -54,13 +54,15 @@ private enum CaptureStopProbeError: Error {
 private actor CaptureStopProbe: AudioCaptureService {
     let url: URL
     let failEnd: Bool
+    let endGate: CoordinatorAsyncGate?
     private(set) var beginCalls = 0
     private(set) var endCalls = 0
     private(set) var cancelCalls = 0
 
-    init(url: URL, failEnd: Bool = false) {
+    init(url: URL, failEnd: Bool = false, endGate: CoordinatorAsyncGate? = nil) {
         self.url = url
         self.failEnd = failEnd
+        self.endGate = endGate
     }
 
     func beginCapture(sessionID: SessionID) async throws {
@@ -76,6 +78,7 @@ private actor CaptureStopProbe: AudioCaptureService {
     func endCapture(sessionID: SessionID) async throws -> URL {
         _ = sessionID
         endCalls += 1
+        await endGate?.block()
         if failEnd {
             throw CaptureStopProbeError.endFailed
         }
@@ -88,6 +91,16 @@ private actor CaptureStopProbe: AudioCaptureService {
         try? FileManager.default.removeItem(at: url)
     }
 }
+
+#if DEBUG
+private actor CoordinatorSetupTaskProbe {
+    private(set) var task: Task<Void, Never>?
+
+    func record(_ task: Task<Void, Never>) {
+        self.task = task
+    }
+}
+#endif
 
 private final class CaptureStopCapabilityRecorder: @unchecked Sendable {
     private let lock = NSLock()
@@ -2432,6 +2445,14 @@ private func coordinatorCancelDuringInitialEditorSetupPreventsContextReadScenari
         }
     )
 
+    #if DEBUG
+    let setupProbe = CoordinatorSetupTaskProbe()
+    let startGate = CoordinatorAsyncGate()
+    await coordinator.setEditorSetupTaskObserver { task in
+        await setupProbe.record(task)
+        await startGate.block()
+    }
+    #endif
     defer { ax.releaseCapture() }
     let start = blockingAXTask {
         try await coordinator.startPressToTalkWithCaptureStopCapability(
@@ -2441,27 +2462,189 @@ private func coordinatorCancelDuringInitialEditorSetupPreventsContextReadScenari
         )
     }
     #expect(ax.waitUntilCaptureBlocked())
+    #if DEBUG
+    #expect(await waitUntil { await setupProbe.task != nil })
+    #endif
     guard let capability = recorder.value else {
         Issue.record("Capture stop capability was not published")
         ax.releaseCapture()
+        #if DEBUG
+        await startGate.release()
+        #endif
         _ = try? await start.value
         return
     }
     let sessionID = capability.sessionID
     await coordinator.cancel(sessionID: sessionID)
     ax.releaseCapture()
+    #if DEBUG
+    await startGate.release()
+    #endif
     #expect(try await start.value == sessionID)
 
     #expect(await waitUntil { ax.counts().capture >= 2 })
+    #if DEBUG
+    await setupProbe.task?.value
+    #else
     try? await Task.sleep(for: .milliseconds(20))
+    #endif
     #expect(ax.counts().reads == 0)
     await #expect(throws: SessionCoordinatorError.sessionNotFound) {
         try await coordinator.endPressToTalkCapture(sessionID: sessionID)
     }
 }
 
+#if DEBUG
+private func coordinatorGlobalCancelReachesSetupBeforeLiveCleanupScenario(shutdown: Bool) async throws {
+    let url = try makeCoordinatorWAV()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let trace = CoordinatorTrace()
+    let engine = LiveCoordinatorEngine(mode: .blockedCancel, trace: trace)
+    let app = AppContext(bundleIdentifier: "com.apple.Notes", appName: "Notes")
+    let ax = CoordinatorAXClient(document: "private nearby text", cursor: 19, bundleIdentifier: app.bundleIdentifier)
+    let setupProbe = CoordinatorSetupTaskProbe()
+    let insertion = CoordinatorInsertion()
+    let history = CoordinatorHistory()
+    let coordinator = SessionCoordinator(
+        captureService: LiveCoordinatorCapture(url: url, trace: trace),
+        transcriptionEngine: engine,
+        cleanupEngine: CoordinatorCleanup(),
+        insertionService: insertion,
+        historyStore: history,
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService(),
+        editorTargetCapture: {
+            let result = EditorTargetHandle.capture(target: $0, client: ax)
+            ax.blockNextCapture()
+            return result
+        }
+    )
+    let capturedSession = try await coordinator.startPressToTalk(
+        appContext: .unknown,
+        options: SessionStartOptions(livePreviewEnabled: true)
+    )
+    #expect(await waitUntil { await engine.appendCalls > 0 })
+    try await coordinator.endPressToTalkCapture(sessionID: capturedSession)
+    await coordinator.setEditorSetupTaskObserver { task in await setupProbe.record(task) }
+    defer { ax.releaseCapture() }
+    _ = try await coordinator.startPressToTalk(
+        appContext: app,
+        options: SessionStartOptions(nearbyContextEnabled: true)
+    )
+    #expect(ax.waitUntilCaptureBlocked())
+    let setupTask = await setupProbe.task
+    #expect(setupTask != nil)
+    let cancelling = blockingAXTask {
+        if shutdown {
+            await coordinator.shutdown()
+        } else {
+            await coordinator.unloadTranscriptionRuntime()
+        }
+    }
+    #expect(await waitUntil { await engine.cancelCalls == 1 })
+    // The captured session's helper is blocked; the active editor is already cancelled.
+    #expect(setupTask?.isCancelled == true)
+    ax.releaseCapture()
+    await setupTask?.value
+    #expect(ax.counts().reads == 0)
+    await engine.releaseBlockedCancel()
+    try await cancelling.value
+    #expect(await insertion.texts.isEmpty)
+    #expect(await history.entries.isEmpty)
+}
+
+private func coordinatorEditorSetupDuringCaptureCloseScenario(action: String) async throws {
+    let url = try makeCoordinatorWAV()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let endGate = CoordinatorAsyncGate()
+    let capture = CaptureStopProbe(url: url, failEnd: action == "failure", endGate: endGate)
+    let trace = CoordinatorTrace()
+    let app = AppContext(bundleIdentifier: "com.apple.Notes", appName: "Notes")
+    let ax = CoordinatorAXClient(document: "private nearby text", cursor: 19, bundleIdentifier: app.bundleIdentifier)
+    let setupProbe = CoordinatorSetupTaskProbe()
+    let insertion = CoordinatorInsertion()
+    let history = CoordinatorHistory()
+    let coordinator = SessionCoordinator(
+        captureService: capture,
+        transcriptionEngine: LiveCoordinatorEngine(trace: trace),
+        cleanupEngine: CoordinatorCleanup(),
+        insertionService: insertion,
+        historyStore: history,
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService(),
+        editorTargetCapture: {
+            let result = EditorTargetHandle.capture(target: $0, client: ax)
+            ax.blockNextCapture()
+            return result
+        }
+    )
+    await coordinator.setEditorSetupTaskObserver { task in
+        await setupProbe.record(task)
+    }
+    defer { ax.releaseCapture() }
+    let sessionID = try await coordinator.startPressToTalk(
+        appContext: app,
+        options: SessionStartOptions(nearbyContextEnabled: true)
+    )
+    #expect(ax.waitUntilCaptureBlocked())
+    let setupTask = await setupProbe.task
+    #expect(setupTask != nil)
+    let ending = blockingAXTask {
+        try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+    }
+    #expect(await waitUntil { await capture.endCalls == 1 })
+
+    switch action {
+    case "cancel": await coordinator.cancel(sessionID: sessionID)
+    case "unload": await coordinator.unloadTranscriptionRuntime()
+    case "shutdown": await coordinator.shutdown()
+    default: break
+    }
+    if action != "normal", action != "failure" {
+        // Cancellation must reach the setup task while capture is still closing.
+        #expect(setupTask?.isCancelled == true)
+    }
+    await endGate.release()
+    if action == "normal" {
+        try await ending.value
+        #expect(setupTask?.isCancelled == false)
+        ax.releaseCapture()
+        await setupTask?.value
+        #expect(ax.counts().reads > 0)
+        _ = try await coordinator.completePressToTalk(sessionID: sessionID)
+        #expect(await insertion.texts.count == 1)
+        #expect(await history.entries.count == 1)
+    } else {
+        await #expect(throws: (any Error).self) { try await ending.value }
+        #expect(setupTask?.isCancelled == true)
+        ax.releaseCapture()
+        await setupTask?.value
+        #expect(ax.counts().reads == 0)
+        #expect(await insertion.texts.isEmpty)
+        #expect(await history.entries.isEmpty)
+    }
+}
+#endif
+
 @Suite(.serialized)
 struct BlockingAXCoordinatorTests {
+    #if DEBUG
+    @Test("Global cancellation reaches editor setup before waiting for another session", arguments: [false, true])
+    func globalCancelReachesSetupBeforeLiveCleanup(shutdown: Bool) async throws {
+        try await runBlockingAXScenario {
+            try await coordinatorGlobalCancelReachesSetupBeforeLiveCleanupScenario(shutdown: shutdown)
+        }
+    }
+
+    @Test("Deferred editor setup retains ownership while capture closes",
+          arguments: ["cancel", "unload", "shutdown", "failure", "normal"])
+    func editorSetupDuringCaptureClose(action: String) async throws {
+        try await runBlockingAXScenario {
+            try await coordinatorEditorSetupDuringCaptureCloseScenario(action: action)
+        }
+    }
+    #endif
+
     @Test("Capability closes capture during exact target binding without live setup or focus drift")
     func capabilityStopsBlockedExactTargetCaptureExactlyOnce() async throws {
         try await runBlockingAXScenario {
