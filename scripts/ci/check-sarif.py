@@ -29,6 +29,25 @@ def array_value(value, label):
     return value
 
 
+def finding_context(result, run):
+    """Keep the generated result location visible even if upload filters it."""
+    locations = []
+    for location in result.get('locations', []):
+        physical = location.get('physicalLocation', {})
+        artifact = physical.get('artifactLocation', {})
+        uri = artifact.get('uri')
+        index = artifact.get('index')
+        artifacts = run.get('artifacts', [])
+        if uri is None and type(index) is int and 0 <= index < len(artifacts):
+            uri = artifacts[index].get('location', {}).get('uri')
+        region = physical.get('region', {})
+        locations.append({'uri': uri, 'uriBaseId': artifact.get('uriBaseId'),
+                          'line': region.get('startLine'), 'column': region.get('startColumn')})
+    # Encode newlines/control characters so scanner text remains one log line.
+    return json.dumps({'locations': locations, 'message': result.get('message', {})},
+                      ensure_ascii=True, sort_keys=True)
+
+
 def inspect_sarif(document, category):
     document = object_value(document, 'SARIF document')
     if document.get('version') != '2.1.0':
@@ -115,14 +134,14 @@ def inspect_sarif(document, category):
                 if isinstance(security, bool) or not math.isfinite(severity) or not 0 <= severity <= 10:
                     raise ScanError(f'invalid severity for {identifier}')
                 if severity >= 7:
-                    findings.append(f'{identifier}: security severity {severity:g}')
+                    findings.append(f'{identifier}: security severity {severity:g} {finding_context(result, run)}')
             else:
                 default = object_value(rule.get('defaultConfiguration', {}), 'defaultConfiguration')
                 level = result.get('level', default.get('level', 'warning'))
                 if level not in ('none', 'note', 'warning', 'error'):
                     raise ScanError(f'invalid result level for {identifier}')
                 if level == 'error':
-                    findings.append(f'{identifier}: error-level finding')
+                    findings.append(f'{identifier}: error-level finding {finding_context(result, run)}')
     if not matched:
         raise ScanError(f'missing expected analysis category {category}')
     return findings
