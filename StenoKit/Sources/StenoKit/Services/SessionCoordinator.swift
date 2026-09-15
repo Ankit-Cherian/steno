@@ -423,6 +423,7 @@ public actor SessionCoordinator {
     private var pendingEditorCaptures: [SessionID: PreparedEditorCapture] = [:]
     #endif
     private var endingSessionIDs: Set<SessionID> = []
+    private var endingSetupTasks: [SessionID: [Task<Void, Never>]] = [:]
     private var cancelledEndingSessionIDs: Set<SessionID> = []
     private var completingSessionIDs: Set<SessionID> = []
     private var cancelledCompletingSessionIDs: Set<SessionID> = []
@@ -569,7 +570,6 @@ public actor SessionCoordinator {
 
         // Audio is already running. Bind the exact focused field synchronously
         // before start returns; only bounded context reads are deferred.
-        var setupTasks: [Task<Void, Never>] = []
         if options.nearbyContextEnabled {
             let result = editorTargetCapture(appContext)
             if case .success(let handle) = result {
@@ -585,7 +585,7 @@ public actor SessionCoordinator {
                 appContext: appContext,
                 languageHints: options.languageHints
             )
-            setupTasks.append(Task.detached { [weak self] in
+            let setupTask = Task.detached { [weak self] in
                 let prepared = await Self.prepareEditorCapture(
                     result,
                     allowsContext: allowsContext
@@ -594,7 +594,14 @@ public actor SessionCoordinator {
                     prepared,
                     sessionID: sessionID
                 )
-            })
+            }
+            // Publish cancellation ownership before the next actor suspension.
+            activeSessions[sessionID]?.setupTasks.append(setupTask)
+            #if DEBUG
+            if let editorSetupTaskObserver {
+                await editorSetupTaskObserver(setupTask)
+            }
+            #endif
         }
         guard !Task.isCancelled,
               !captureStopGate.hasSynchronousStopRequest,
@@ -603,7 +610,7 @@ public actor SessionCoordinator {
             return sessionID
         }
         if options.livePreviewEnabled {
-            setupTasks.append(Task.detached { [weak self] in
+            activeSessions[sessionID]?.setupTasks.append(Task.detached { [weak self] in
                 await self?.prepareLivePipeline(
                     sessionID: sessionID,
                     appContext: appContext,
@@ -611,11 +618,16 @@ public actor SessionCoordinator {
                 )
             })
         }
-        activeSessions[sessionID]?.setupTasks = setupTasks
         return sessionID
     }
 
     #if DEBUG
+    private var editorSetupTaskObserver: (@Sendable (Task<Void, Never>) async -> Void)?
+
+    func setEditorSetupTaskObserver(_ observer: (@Sendable (Task<Void, Never>) async -> Void)?) {
+        editorSetupTaskObserver = observer
+    }
+
     private var liveAppendWaitObserver: (@Sendable () async -> Void)?
 
     func setLiveAppendWaitObserver(_ observer: (@Sendable () async -> Void)?) {
@@ -653,7 +665,13 @@ public actor SessionCoordinator {
         // turning an ordinary stop into runtime-failure fallback.
 
         endingSessionIDs.insert(sessionID)
+        endingSetupTasks[sessionID] = active.setupTasks
+        var transferredCapture = false
         defer {
+            endingSetupTasks.removeValue(forKey: sessionID)
+            if !transferredCapture {
+                for task in active.setupTasks { task.cancel() }
+            }
             endingSessionIDs.remove(sessionID)
             cancelledEndingSessionIDs.remove(sessionID)
             #if os(macOS)
@@ -685,6 +703,7 @@ public actor SessionCoordinator {
             audioURL: audioURL,
             captureDurationMS: captureDurationMS
         )
+        transferredCapture = true
     }
 
     /// Transcribes and inserts audio whose capture has already ended.
@@ -1643,6 +1662,7 @@ public actor SessionCoordinator {
         }
         if endingSessionIDs.contains(sessionID) {
             cancelledEndingSessionIDs.insert(sessionID)
+            for task in endingSetupTasks[sessionID] ?? [] { task.cancel() }
         }
         #if os(macOS)
         pendingEditorCaptures.removeValue(forKey: sessionID)
@@ -1735,9 +1755,17 @@ public actor SessionCoordinator {
         #endif
         cancelledEndingSessionIDs.formUnion(endingSessionIDs)
         cancelledCompletingSessionIDs.formUnion(completingSessionIDs)
+        let endingTasks = endingSetupTasks.values.flatMap { $0 }
+        endingSetupTasks.removeAll()
+        for task in endingTasks { task.cancel() }
+        for (_, session) in captured {
+            for task in session.active.setupTasks { task.cancel() }
+        }
+        for (_, session) in active {
+            for task in session.setupTasks { task.cancel() }
+        }
 
         for (sessionID, captured) in captured {
-            for task in captured.active.setupTasks { task.cancel() }
             captured.active.livePipeline?.pumpTask?.cancel()
             captured.active.livePipeline?.hypothesisTask?.cancel()
             if let live = captured.active.livePipeline,
@@ -1749,7 +1777,6 @@ public actor SessionCoordinator {
         }
 
         for (sessionID, session) in active {
-            for task in session.setupTasks { task.cancel() }
             session.livePipeline?.pumpTask?.cancel()
             session.livePipeline?.hypothesisTask?.cancel()
             if let live = session.livePipeline,
