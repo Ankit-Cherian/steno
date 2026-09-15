@@ -4,6 +4,16 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Finish observation before orderly helper shutdown
+
+The [PR #20 runtime job](https://github.com/Ankit-Cherian/steno/actions/runs/34993531190/job/104463996293) passed 25 of 26 protocol cases. Its v1 case failed because the network observer could not inspect the owned helper. The receipt checked 27 of 28 processes and correctly reported incomplete observation. A later diagnostic passed, but did not clear that failure.
+
+A local reproduction uses a real child process and process inspection to demonstrate a reachable shutdown race. Python can report no exit status while another thread has reaped the child but has not yet published its return code. The old harness waited for the helper to exit while observation was still running. The hosted receipt does not retain the failed query response or lifecycle stage, so it cannot establish that exact interleaving as the hosted cause.
+
+The two orderly shutdown paths now stop and join observation before sending a valid shutdown request. Observation still covers normal responses and malformed shutdown requests. Its coverage ends before the valid terminal request; it does not establish absence of network activity during the shutdown acknowledgement or native teardown. Existing inspection failures remain failures, and the two complete startup scans, protocol correlation checks, exit checks and deadlines are unchanged. Timed EOF and crash paths retain their existing behavior.
+
+The new regressions fail against the original ordering and pass with the correction. All 157 CI contract tests pass locally. The corrected harness also passes all 26 protocol cases on CPU and all 26 on Metal. Each receipt verifies 25 eligible backend-attested processes and 28 observed processes, with at least two complete scans per process and no network descriptors during the stated observation interval. Fresh hosted results remain required; this test-harness change does not alter app or native runtime behavior.
+
 ## Allow packaging to finish after native validation
 
 The [PR #19 push runtime job](https://github.com/Ankit-Cherian/steno/actions/runs/34984483369/job/104432993535) exhausted its 60-minute allowance while creating the DMG. Native validation passed in 54 minutes 59 seconds; the public benchmark, Release app build, bundled transcription smoke test and distribution hygiene scan also passed before cancellation. GitHub reported that the job exceeded its one-hour execution limit.
