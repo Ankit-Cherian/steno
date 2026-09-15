@@ -45,7 +45,135 @@ class InferenceBudgetTests(unittest.TestCase):
         self.assertEqual(deadlines["defaultFrameRead"], 5.0)
         self.assertEqual(deadlines["loadReady"], 15.0)
         self.assertEqual(deadlines["backendAttestation"], 2.0)
-        self.assertEqual(deadlines["networkMonitorStartup"], 3.0)
+        self.assertEqual(deadlines["networkMonitorStartup"], 25.0)
+        self.assertEqual(deadlines["networkMonitorQuery"], 5.0)
+        self.assertEqual(deadlines["networkMonitorStop"], 6.0)
+
+
+class NetworkMonitorTests(unittest.TestCase):
+    def setUp(self):
+        self.process = Mock(pid=123, poll=Mock(return_value=None))
+        for name, value in (("lsof_timeout_seconds", 0.05),
+                            ("startup_timeout_seconds", 0.3),
+                            ("stop_timeout_seconds", 0.1),
+                            ("poll_interval_seconds", 0.001)):
+            setting = patch.object(harness.RuntimeNetworkMonitor, name, value)
+            setting.start()
+            self.addCleanup(setting.stop)
+
+    def test_slow_queries_complete_both_launch_scans(self):
+        calls = []
+
+        def slow_query(command, **kwargs):
+            calls.append((command, kwargs))
+            time.sleep(0.025)
+            if "-i" in command:
+                return Mock(returncode=1, stdout="", stderr="")
+            return Mock(returncode=0, stdout="COMMAND PID FD\nhelper 123 txt\n", stderr="")
+
+        started = time.monotonic()
+        with patch.object(harness.subprocess, "run", side_effect=slow_query):
+            monitor = harness.RuntimeNetworkMonitor(self.process)
+            monitor.stop()
+        self.assertGreaterEqual(time.monotonic() - started, 0.1)
+        self.assertGreaterEqual(monitor.scans, 2)
+        self.assertEqual(monitor.network_fd_count, 0)
+        self.assertFalse(monitor.thread.is_alive())
+        self.assertGreaterEqual(sum("-i" in command for command, _ in calls), 2)
+        self.assertTrue(all(options["timeout"] == 0.05 for _, options in calls))
+        self.assertTrue(all("-X" not in command for command, _ in calls))
+
+    def test_query_timeout_fails_closed_and_reaps_the_query_process(self):
+        real_run, real_popen = subprocess.run, subprocess.Popen
+        queries = []
+
+        def launch(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            queries.append(process)
+            return process
+
+        def timeout_query(_command, **kwargs):
+            return real_run([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
+
+        monitor = harness.RuntimeNetworkMonitor.__new__(harness.RuntimeNetworkMonitor)
+        with patch.object(harness.subprocess, "run", side_effect=timeout_query), \
+                patch.object(harness.subprocess, "Popen", side_effect=launch), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(harness.TestFailure, "lsof query timed out"):
+                monitor.__init__(self.process)
+        self.assertEqual(monitor.scans, 0)
+        self.assertTrue(monitor.stop_requested.is_set())
+        self.assertFalse(monitor.thread.is_alive())
+        self.assertEqual(len(queries), 1)
+        self.assertIsNotNone(queries[0].poll())
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(queries[0].pid, os.WNOHANG)
+
+    def test_startup_timeout_stops_between_queries_and_preserves_primary_failure(self):
+        def slow_query(*_args, **_kwargs):
+            time.sleep(0.03)
+            return Mock(returncode=0, stdout="COMMAND PID FD\n", stderr="")
+
+        monitor = harness.RuntimeNetworkMonitor.__new__(harness.RuntimeNetworkMonitor)
+        with patch.object(harness.RuntimeNetworkMonitor, "startup_timeout_seconds", 0.005), \
+                patch.object(harness.subprocess, "run", side_effect=slow_query) as query, \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(harness.TestFailure, "did not complete two launch scans"):
+                monitor.__init__(self.process)
+        self.assertEqual(query.call_count, 1)
+        self.assertEqual(monitor.scans, 0)
+        self.assertFalse(monitor.thread.is_alive())
+        self.assertTrue(monitor.stopped)
+
+    def test_constructor_scan_failure_leaves_no_monitor_thread(self):
+        monitor = harness.RuntimeNetworkMonitor.__new__(harness.RuntimeNetworkMonitor)
+        with patch.object(harness.subprocess, "run", return_value=Mock(
+                returncode=1, stdout="", stderr="permission denied")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(harness.TestFailure, "could not inspect"):
+                monitor.__init__(self.process)
+        self.assertFalse(monitor.thread.is_alive())
+        self.assertEqual(monitor.scans, 0)
+
+    def test_network_descriptor_still_blocks_startup(self):
+        def query(command, **_kwargs):
+            return Mock(returncode=0, stdout="COMMAND PID FD\nhelper 123 socket\n", stderr="")
+
+        monitor = harness.RuntimeNetworkMonitor.__new__(harness.RuntimeNetworkMonitor)
+        with patch.object(harness.subprocess, "run", side_effect=query), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(harness.TestFailure, "opened a network file descriptor"):
+                monitor.__init__(self.process)
+        self.assertEqual(monitor.network_fd_count, 1)
+        self.assertFalse(monitor.thread.is_alive())
+
+    def test_each_raw_process_case_reaps_helper_when_monitor_construction_fails(self):
+        cases = (
+            lambda: harness.test_global_oversized_header(Path("fixture"), None, None, None),
+            lambda: harness.run_before_ready_case(Path("fixture"), Path("model"), eof=True),
+            lambda: harness.run_before_ready_case(Path("fixture"), Path("model"), eof=False),
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                owned = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"],
+                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         start_new_session=True)
+                primary = harness.TestFailure("launch scans failed")
+                try:
+                    with patch.object(harness.subprocess, "Popen", return_value=owned), \
+                            patch.object(harness, "RuntimeNetworkMonitor", side_effect=primary):
+                        with self.assertRaises(harness.TestFailure) as raised:
+                            case()
+                    self.assertIs(raised.exception, primary)
+                    self.assertEqual(owned.returncode, -9)
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(owned.pid, os.WNOHANG)
+                finally:
+                    if owned.poll() is None:
+                        owned.kill()
+                        owned.wait(timeout=5)
+                    owned.stdin.close()
+                    owned.stdout.close()
 
 
 class CleanupTests(unittest.TestCase):
@@ -182,6 +310,71 @@ class OwnedProcessCleanupTests(unittest.TestCase):
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
+
+
+class ForcedCrashTimingTests(unittest.TestCase):
+    def make_helper(self, source):
+        process = subprocess.Popen([sys.executable, "-c", source], stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, start_new_session=True)
+        helper = harness.Helper.__new__(harness.Helper)
+        helper.process, helper.input, helper.output = process, process.stdin, process.stdout
+        helper.monitor = Mock()
+
+        def cleanup():
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            process.stdin.close()
+            process.stdout.close()
+
+        self.addCleanup(cleanup)
+        return helper
+
+    def test_monitor_join_cannot_allow_an_inflight_response_before_forced_crash(self):
+        helper = self.make_helper(
+            "import sys; sys.stdin.buffer.read(1); "
+            "sys.stdout.buffer.write(b'response'); sys.stdout.buffer.flush(); "
+            "sys.stdin.buffer.read()")
+        monitor = helper.monitor
+        events = []
+        monitor.request_stop.side_effect = lambda: events.append("request-stop")
+
+        def join_monitor():
+            events.append("join")
+            # Model the scheduler opportunity during a slow query join: if the
+            # helper is still alive it completes its pending response first.
+            if helper.process.poll() is None:
+                helper.input.write(b"x")
+                helper.input.flush()
+                ready, _, _ = harness.select.select([helper.output.fileno()], [], [], 2)
+                self.assertTrue(ready, "fixture did not complete its pending response")
+            else:
+                events.append("already-reaped")
+
+        monitor.stop.side_effect = join_monitor
+        helper.force_crash_and_expect_eof()
+        self.assertEqual(events, ["request-stop", "join", "already-reaped"])
+        self.assertEqual(helper.process.returncode, -9)
+        monitor.stop.assert_called_once()
+
+    def test_buffered_response_still_fails_the_empty_output_assertion(self):
+        helper = self.make_helper(
+            "import sys; sys.stdout.buffer.write(b'response'); "
+            "sys.stdout.buffer.flush(); sys.stdin.buffer.read()")
+        ready, _, _ = harness.select.select([helper.output.fileno()], [], [], 2)
+        self.assertTrue(ready)
+        with self.assertRaisesRegex(harness.TestFailure, "late response after forced crash"):
+            helper.force_crash_and_expect_eof()
+        self.assertEqual(helper.process.returncode, -9)
+
+    def test_monitor_join_failure_does_not_delay_or_prevent_forced_crash(self):
+        helper = self.make_helper("import sys; sys.stdin.buffer.read()")
+        helper.monitor.stop.side_effect = harness.TestFailure("observation failed")
+        with self.assertRaisesRegex(harness.TestFailure, "observation failed"):
+            helper.force_crash_and_expect_eof()
+        self.assertEqual(helper.process.returncode, -9)
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(helper.process.pid, os.WNOHANG)
 
 
 class GateDiagnosticTests(unittest.TestCase):
