@@ -1189,6 +1189,7 @@ def test_preview_speech_evidence(executable: Path, model: Path, _: Path, pcm: by
 
 def test_cancel_during_finish_preserves_restart(executable: Path, model: Path, audio: Path, pcm: bytes) -> None:
     helper = Helper(executable, model, VERSION_2)
+    stage = "initial stream setup"
     try:
         stream_id = uuid.uuid4().bytes
         generation = 78
@@ -1196,6 +1197,7 @@ def test_cancel_during_finish_preserves_restart(executable: Path, model: Path, a
         append_all(helper, stream_id, generation, pcm)
         helper.send(Frame(STREAM_FINISH, stream_id, generation, finish_payload(helper, audio, pcm)))
         helper.send(Frame(STREAM_CANCEL, stream_id, generation))
+        stage = "original cancellation acknowledgement"
         response = helper.read(timeout=5.0)
         require(
             response.operation == CANCELLED
@@ -1203,13 +1205,19 @@ def test_cancel_during_finish_preserves_restart(executable: Path, model: Path, a
             and response.generation == generation,
             "cancel during finish did not promptly acknowledge cancellation",
         )
+        stage = "no response after cancellation"
         helper.expect_no_frame(0.5)
 
         replacement_id = uuid.uuid4().bytes
+        stage = "replacement stream acknowledgement"
         start_stream(helper, replacement_id, generation + 1)
         helper.send(Frame(STREAM_CANCEL, replacement_id, generation + 1))
+        stage = "replacement cancellation acknowledgement"
         helper.expect(CANCELLED, replacement_id, generation + 1)
+        stage = "shutdown after cancellation"
         helper.shutdown()
+    except TestFailure as error:
+        raise TestFailure(f"{stage}: {error}") from error
     finally:
         helper.terminate()
 
@@ -1250,6 +1258,8 @@ def test_crash_after_final(executable: Path, model: Path, audio: Path, pcm: byte
         decoded = json.loads(response.payload)
         require(isinstance(decoded.get("transcription"), list), "pre-crash final result schema was malformed")
         helper.expect_no_frame()
+        # Final decoding is complete; finish observation while the helper is alive.
+        helper._stop_monitor()
         helper.force_crash_and_expect_eof()
     finally:
         helper.terminate()

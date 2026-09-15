@@ -377,6 +377,87 @@ class ForcedCrashTimingTests(unittest.TestCase):
             os.waitpid(helper.process.pid, os.WNOHANG)
 
 
+class CompletedFinalCrashOrderingTests(unittest.TestCase):
+    def run_completed_final(self, events, observation_error=None):
+        helper = harness.Helper.__new__(harness.Helper)
+        process = Mock(pid=123, returncode=None)
+        process.poll.side_effect = lambda: process.returncode
+
+        def reap(timeout):
+            if process.returncode is None:
+                events.append("reap")
+                process.returncode = -harness.signal.SIGKILL
+            return process.returncode
+
+        process.wait.side_effect = reap
+        helper.process = process
+        helper.output = Mock()
+        helper.output.read.side_effect = lambda: events.append("EOF") or b""
+        helper.monitor = Mock()
+
+        def stop_monitor():
+            events.append("monitor stop/join")
+            self.assertIsNone(process.poll(), "completed-final monitor joined after helper exit")
+            if observation_error is not None:
+                raise observation_error
+
+        helper.monitor.stop.side_effect = stop_monitor
+        helper.send = Mock()
+
+        def accept_final(kind, *_args, **_kwargs):
+            self.assertEqual(kind, harness.FINAL_RESULT)
+            events.append("final")
+            return Mock(payload=b'{"transcription": []}')
+
+        helper.expect = Mock(side_effect=accept_final)
+        helper.expect_no_frame = Mock(side_effect=lambda: events.append("no extra frame"))
+        force_crash = helper.force_crash_and_expect_eof
+        terminate = helper.terminate
+
+        def crash():
+            events.append("intentional crash")
+            force_crash()
+
+        def cleanup():
+            events.append("cleanup")
+            terminate()
+
+        helper.force_crash_and_expect_eof = crash
+        helper.terminate = cleanup
+
+        def kill(pid, signal):
+            self.assertEqual((pid, signal), (process.pid, harness.signal.SIGKILL))
+            events.append("kill")
+
+        with contextlib.ExitStack() as stack:
+            # Keep the real Helper class and crash/cleanup methods; replace only
+            # construction and protocol I/O with a completed-final fixture.
+            stack.enter_context(patch.object(harness.Helper, "__new__", return_value=helper))
+            stack.enter_context(patch.object(harness.Helper, "__init__", return_value=None))
+            for name in ("start_stream", "append_all", "finish_payload"):
+                stack.enter_context(patch.object(harness, name, return_value=b""))
+            stack.enter_context(patch.object(harness.os, "killpg", side_effect=kill))
+            stack.enter_context(patch.object(harness.select, "select", return_value=([1], [], [])))
+            stack.enter_context(patch.object(harness.Helper, "canary_scanned_surface_count", 0))
+            harness.test_crash_after_final(Path("helper"), Path("model"), Path("audio"), b"")
+        self.assertEqual(process.returncode, -harness.signal.SIGKILL)
+
+    def test_completed_final_joins_observation_before_kill_and_checks_eof(self):
+        events = []
+        self.run_completed_final(events)
+        self.assertEqual(events, ["final", "no extra frame", "monitor stop/join",
+                                  "intentional crash", "kill", "reap", "EOF", "cleanup"])
+
+    def test_observation_failure_remains_primary_and_finally_reaps_helper(self):
+        events = []
+        failure = harness.TestFailure("runtime network monitor could not inspect the owned helper")
+        with self.assertRaises(harness.TestFailure) as raised:
+            self.run_completed_final(events, observation_error=failure)
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(events, ["final", "no extra frame", "monitor stop/join",
+                                  "cleanup", "kill", "reap"])
+
+
 class GateDiagnosticTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="steno-gate-diagnostic-test-")
@@ -403,9 +484,11 @@ class GateDiagnosticTests(unittest.TestCase):
         git.chmod(0o755)
         self.environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
 
-    def run_gate(self, protocol_status, diagnostic_status, allocation_status=0, vad_status=0):
+    def run_gate(self, protocol_status, diagnostic_status, allocation_status=0, vad_status=0, cancellation_status=0):
         (self.scripts / "ci/test-vendor-allocation-failures.py").write_text(
             f"print('allocation-check-called')\nraise SystemExit({allocation_status})\n")
+        (self.scripts / "ci/test-native-cancellation.py").write_text(
+            f"print('cancellation-check-called')\nraise SystemExit({cancellation_status})\n")
         (self.scripts / "test-whisper-runtime-helper-v2.sh").write_text(f"exit {protocol_status}\n")
         (self.scripts / "ci/diagnose-runtime-inference.py").write_text(
             "import sys\nprint('stream-called' if '--vad-model' in sys.argv else 'diagnostic-called')\n"
@@ -420,6 +503,13 @@ class GateDiagnosticTests(unittest.TestCase):
         result = self.run_gate(17, 0, allocation_status=29)
         self.assertEqual(result.returncode, 29, result.stdout + result.stderr)
         self.assertIn("allocation-check-called", result.stdout)
+        self.assertNotIn("==> helper-protocol", result.stdout)
+        self.assertNotIn("diagnostic-called", result.stdout)
+
+    def test_cancellation_failure_stops_runtime_gate(self):
+        result = self.run_gate(17, 0, cancellation_status=31)
+        self.assertEqual(result.returncode, 31, result.stdout + result.stderr)
+        self.assertIn("cancellation-check-called", result.stdout)
         self.assertNotIn("==> helper-protocol", result.stdout)
         self.assertNotIn("diagnostic-called", result.stdout)
 
