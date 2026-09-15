@@ -403,12 +403,15 @@ class GateDiagnosticTests(unittest.TestCase):
         git.chmod(0o755)
         self.environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
 
-    def run_gate(self, protocol_status, diagnostic_status, allocation_status=0):
+    def run_gate(self, protocol_status, diagnostic_status, allocation_status=0, vad_status=0):
         (self.scripts / "ci/test-vendor-allocation-failures.py").write_text(
             f"print('allocation-check-called')\nraise SystemExit({allocation_status})\n")
         (self.scripts / "test-whisper-runtime-helper-v2.sh").write_text(f"exit {protocol_status}\n")
         (self.scripts / "ci/diagnose-runtime-inference.py").write_text(
-            f"print('diagnostic-called')\nraise SystemExit({diagnostic_status})\n")
+            "import sys\nprint('stream-called' if '--vad-model' in sys.argv else 'diagnostic-called')\n"
+            f"raise SystemExit({diagnostic_status})\n")
+        (self.scripts / "ci/diagnose-vad-runtime.py").write_text(
+            f"print('vad-called')\nraise SystemExit({vad_status})\n")
         return subprocess.run(["bash", str(self.scripts / "ci/runtime-checks.sh"), "--root",
                                str(self.runtime), "--output", str(self.root / "output")],
                               env=self.environment, capture_output=True, text=True)
@@ -426,6 +429,12 @@ class GateDiagnosticTests(unittest.TestCase):
         self.assertEqual(result.stdout.count("diagnostic-called"), 1)
         self.assertNotIn("unexpected-later-check", result.stdout)
 
+    def test_failed_vad_comparison_preserves_original_protocol_failure(self):
+        result = self.run_gate(17, 0, vad_status=29)
+        self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.count("vad-called"), 1)
+        self.assertEqual(result.stdout.count("stream-called"), 1)
+
     def test_failed_diagnostic_preserves_original_failure(self):
         result = self.run_gate(17, 23)
         self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
@@ -434,6 +443,8 @@ class GateDiagnosticTests(unittest.TestCase):
     def test_passing_protocol_does_not_run_diagnostic(self):
         result = self.run_gate(0, 0)
         self.assertNotIn("diagnostic-called", result.stdout)
+        self.assertNotIn("vad-called", result.stdout)
+        self.assertNotIn("stream-called", result.stdout)
         self.assertIn("invalid runtime receipt", result.stderr)
 
 
