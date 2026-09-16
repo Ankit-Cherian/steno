@@ -140,6 +140,27 @@ class RecoveryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 publisher.validate_assets(root, r.VERSION, r.SOURCE)
 
+    def test_checkout_name_respects_existing_distribution_hygiene(self):
+        # The unchanged packager forbids non-product checkout leaf names anywhere
+        # in bundle strings. A generic "source" checkout would reject valid text.
+        import subprocess
+        import tempfile
+        policy = r.module('check-policy')
+        workflow = policy.parse_workflow((r.CONTROL / '.github/workflows/recover-release.yml').read_text())
+        packaging = (r.CONTROL / 'scripts/release-dmg.sh').read_text()
+        scan = packaging[packaging.index('scan_distribution_hygiene() {'):packaging.index('\ncreate_dmg() {')]
+        for job in workflow['jobs'].values():
+            checkout = next(step for step in job['steps'] if step.get('with', {}).get('ref') == r.SOURCE)
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                app = root / 'app/Contents'
+                app.mkdir(parents=True)
+                (app / 'fixture.txt').write_text('Open-source speech recognition')
+                result = subprocess.run(['bash', '-c', scan + '\nscan_distribution_hygiene "$1"',
+                                         'test', str(app.parent)], capture_output=True, text=True,
+                    env=dict(r.os.environ, REPO_ROOT='/workflow/' + checkout['with']['path'], APP_NAME='Steno'))
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_notes_are_complete_and_include_acceptance_limits(self):
         notes = r.release_notes()
         self.assertIn('manual acceptance matrix', notes)
