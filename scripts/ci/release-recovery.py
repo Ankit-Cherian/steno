@@ -155,8 +155,8 @@ def verify_source():
     workflow_sha = validate_dispatch(os.environ)
     workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve()
     source = Path(os.environ['STENO_RELEASE_SOURCE_ROOT'])
-    require(source.is_absolute() and source.resolve() == workspace / 'source',
-            'Release source must be the separate workspace/source checkout')
+    require(source.is_absolute() and source.resolve() == workspace / 'Steno',
+            'Release source must be the separate workspace/Steno checkout')
     require(CONTROL == workspace / 'control', 'Recovery control checkout is misplaced')
     for directory, sha in [(CONTROL, workflow_sha), (source, SOURCE)]:
         require(command('git', '-C', str(directory), 'rev-parse', 'HEAD') == sha,
