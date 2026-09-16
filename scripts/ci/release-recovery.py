@@ -124,13 +124,20 @@ def validate_prior_signing(run, jobs, logs, artifacts):
     return receipt
 
 
+def capture_signing_logs():
+    # Preserve the reviewed bytes for hashing, without rendering log content.
+    help_text = command('gh', 'api', '--help')
+    flags = ['--allow-escape-sequences'] if '--allow-escape-sequences' in help_text else []
+    return {number: subprocess.check_output([
+        'gh', 'api', *flags, f'repos/{REPOSITORY}/actions/jobs/{number}/logs'])
+        for number in FAILED_SIGN_LOGS}
+
+
 def validation_receipt():
     run = api(f'actions/runs/{RUN}')
     jobs = pages(f'actions/runs/{RUN}/attempts/1/jobs?per_page=100', 'jobs')
     artifacts = pages(f'actions/runs/{RUN}/artifacts?per_page=100', 'artifacts')
-    logs = {number: subprocess.check_output([
-        'gh', 'api', f'repos/{REPOSITORY}/actions/jobs/{number}/logs'])
-        for number in FAILED_SIGN_LOGS}
+    logs = capture_signing_logs()
     return validate_prior_signing(run, jobs, logs, artifacts)
 
 
