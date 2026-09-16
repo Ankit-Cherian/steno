@@ -36,6 +36,26 @@ class RecoveryTests(unittest.TestCase):
                     'GITHUB_RUN_ATTEMPT': '1', 'RELEASE_SHA': r.SOURCE,
                     'RELEASE_VERSION': r.VERSION, 'RECOVERY_AUTHORIZED': 'true'}
 
+    def test_capture_preserves_raw_logs_with_old_and_new_cli(self):
+        raw = b'\x1b[36mreviewed log\x1b[0m\n'
+        for help_text, flags in [('', []), ('--allow-escape-sequences', ['--allow-escape-sequences'])]:
+            with self.subTest(help_text=help_text), patch.object(r, 'command', return_value=help_text), \
+                    patch.object(r.subprocess, 'check_output', return_value=raw) as capture:
+                logs = r.capture_signing_logs()
+                self.assertEqual(logs, {number: raw for number in r.FAILED_SIGN_LOGS})
+                self.assertEqual(capture.call_count, 2)
+                for call, number in zip(capture.call_args_list, r.FAILED_SIGN_LOGS):
+                    self.assertEqual(call.args, (['gh', 'api', *flags,
+                        f'repos/{r.REPOSITORY}/actions/jobs/{number}/logs'],))
+                    self.assertEqual(call.kwargs, {})
+
+    def test_log_download_failure_is_not_suppressed(self):
+        import subprocess
+        with patch.object(r, 'command', return_value='--allow-escape-sequences'), \
+                patch.object(r.subprocess, 'check_output', side_effect=subprocess.CalledProcessError(1, 'gh')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                r.capture_signing_logs()
+
     def test_accept_exact_successful_checks_despite_later_signing_failure(self):
         with patch.object(r, 'FAILED_SIGN_LOGS', self.hashes):
             result = r.validate_prior_signing(self.run, self.jobs, self.logs, [])
