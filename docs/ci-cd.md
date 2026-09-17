@@ -115,6 +115,12 @@ For the production GPU path, use a new output directory and `--backend metal`. T
 
 Complete the source checks, measured evaluation, and native-app acceptance in the [1.0 checklist](release/1.0-checklist.md), integrate the intended source into main, and create the approved version tag before dispatching a release. Distribution and publication receipts are completed later against the resulting signed artifact. Before approving the release tag, finalize the README candidate status and move the approved changelog entries from `[Unreleased]` to the selected version with its actual release date in that source. Keeping candidate wording and `[Unreleased]` during PR preparation is intentional; the tagged release must describe the released version. The `/releases/latest` download link needs no version-specific edit. Tag creation is deliberately not automatic. The selected source must be the dispatch's main commit, with matching `project.yml` version and existing `vX.Y.Z` tag. No metadata is bumped automatically.
 
+**Steno 1.0 recovery exception:** the existing `v1.0.0` tag remains at `d25fcdf9d625eea6ee31bd0b03c5994302e8065e`, including its historical preparation wording. Final publication dates and receipts are recorded in the main-branch changelog and checklist after publication; the tag is not moved to include those documentation changes. The [reviewed signing recovery](release/signing-recovery.md) builds that exact app source using separately reviewed workflow code, reuses verified successful source checks, and retains signing, notarization, draft, and publication protections. Its authorization records the disclosed manual-coverage limits without asserting that untested cases passed.
+
+The 1.0 draft was ultimately verified and published manually by its existing release ID after the workflow’s draft lookup returned 404. The [publication record](release/signing-recovery.md#publication-record) documents that outcome and the temporary, restored CI exception used for PR #24. Neither is a standing exception for future releases.
+
+The steps below describe the standard **Release** workflow. For the 1.0 recovery, use its linked instructions; the original **Publish release** workflow cannot promote a recovery draft unchanged because it assumes one source SHA for both the app and workflow. Recovery also verifies its checked-in release notes before publication, so do not replace those notes during the protected approval step.
+
 From **Actions → Release → Run workflow**, select main, enter the stable version and full 40-character commit SHA, and confirm manual acceptance only after completing the source and native-app checks for that exact source. Leave `publish_release` false to stop at a draft. Enable it only when public publication is intended.
 
 The workflow then:
@@ -140,12 +146,25 @@ For a completed draft-only run, inspect its verified assets and finish the relea
 - **Draft creation/publication timeout:** read the release by its exact ID and compare tag, target and asset digests. Do not blindly rerun a publishing step; the first operation may already have succeeded.
 - **Bad public release:** do not rewrite the tag or replace its bytes. Prepare a new patch version through the pipeline and communicate the affected version through the normal maintainer process.
 
-Users can verify provenance with:
+For an installer produced by the standard Release workflow, verify provenance with:
 
 ```bash
 gh attestation verify Steno-X.Y.Z.dmg --repo Ankit-Cherian/steno \
   --signer-workflow Ankit-Cherian/steno/.github/workflows/release.yml
 ```
+
+For Steno 1.0, verify **both** the DMG and manifest against the recovery workflow commit recorded in the [release checklist](release/1.0-checklist.md):
+
+```bash
+for artifact in Steno-1.0.0.dmg release-manifest.json; do
+  gh attestation verify "$artifact" --repo Ankit-Cherian/steno \
+    --signer-workflow Ankit-Cherian/steno/.github/workflows/recover-release.yml \
+    --signer-digest bf95cec49731c347de14bea4a5eb987569cd5b5a \
+    --source-ref refs/heads/main --source-digest bf95cec49731c347de14bea4a5eb987569cd5b5a
+done
+```
+
+The attestation identifies the workflow source. After verification, check that the manifest identifies app source `d25fcdf9d625eea6ee31bd0b03c5994302e8065e`, tag `v1.0.0`, and the downloaded DMG's SHA-256. Its workflow source, producing run, and reused validation receipt must match the release record. Do not substitute the app SHA for the workflow SHA in the attestation command.
 
 ## Maintenance and design references
 

@@ -5,9 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] — Release preparation
+## [1.0.0] - 2026-09-17
 
-_Signing is configured. The signed installer, notarization, and final distribution checks are pending; 1.0.0 has not been published._
+[Download Steno 1.0.0](https://github.com/Ankit-Cherian/steno/releases/tag/v1.0.0). The Developer ID signed installer is notarized and includes the local speech model.
 
 ### Added
 - Added GitHub Actions checks for package and app tests, native runtime behavior, security analysis, and downloadable preview installers. The release workflow signs and notarizes an approved build, records its source and installer checksum, and updates the default download after publication.
@@ -62,7 +62,7 @@ _Signing is configured. The signed installer, notarization, and final distributi
 - Removed the temporary three-design selection from the app; Manuscript is the single interface.
 
 ### Compatibility
-- Steno 1.0 targets Apple silicon Macs running macOS 13 or later. Minimum-version runtime and distribution acceptance remain pending; Intel Macs are not supported.
+- Steno 1.0 targets Apple silicon Macs running macOS 13 or later. The minimum-OS installation and full manual acceptance matrix have not been completed; Intel Macs are not supported.
 
 ### Known issues
 - Voice-activity detection can omit words in quiet speech after a long silent lead-in. A separate experimental correction is deferred and is not included in 1.0; the retained limitation remains documented for the release decision.
