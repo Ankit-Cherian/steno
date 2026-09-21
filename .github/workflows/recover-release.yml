@@ -109,7 +109,7 @@ jobs:
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
       - name: Preserve sanitized notarization recovery receipt
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: notary-recovery-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/steno-release-distribution/release-notary-receipt.json
@@ -126,7 +126,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 control/scripts/ci/release-recovery.py verify-assets
       - name: Preserve only the verified public release assets
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: recovered-release-${{ github.run_id }}-${{ github.sha }}
           path: ${{ runner.temp }}/steno-release-assets/
