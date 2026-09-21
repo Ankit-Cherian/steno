@@ -18,6 +18,16 @@ Automatic recovery reruns are rejected. Any previous recovery run that reached s
 
 Live capture, transcription, and teardown were observed with the bundled helper. The full manual matrix, including live media interruption, independently verified insertion with that helper, VoiceOver, and macOS 13 installation, remains incomplete. The maintainer directed publication with those limits disclosed. This recovery does not mark those cases as passed; see the [acceptance checklist](1.0-checklist.md).
 
+## Publication record
+
+Steno 1.0.0 was published on September 17, 2026 UTC from release ID `390356142`. The [recovery run](https://github.com/Ankit-Cherian/steno/actions/runs/35165329912) successfully signed, notarized, stapled, and attested the installer. It then created the draft and uploaded all three assets, but its lookup through the public release-by-tag endpoint returned HTTP 404 while the release was still a draft. The draft job therefore failed and the workflow's publication job was skipped.
+
+The existing draft was retrieved by its release ID. Its downloaded files, source identities, reviewed notes, checksums, both attestations, signatures, notarization ticket, and Gatekeeper results were verified independently. The same draft was then published once through the existing publication guard, and GitHub's latest-release response and public download were verified. No installer was rebuilt or resubmitted to Apple. This was a maintainer-authorized manual publication; the complete workflow did not pass.
+
+[PR #24](https://github.com/Ankit-Cherian/steno/pull/24) was merged using a maintainer-approved temporary exception to the aggregate CI requirement. Security and both macOS test jobs had passed; the runtime job was still running. The security requirement stayed active, and the original full ruleset was restored and verified immediately after the merge. No unfinished check was reported as passing.
+
+Do not rerun this completed recovery. Its draft lookup limitation remains in the historical workflow. Future release work must account for drafts by their exact release IDs before depending on that lookup.
+
 ## Reviewed release notes
 
 The text between these markers is the exact draft body. Publication stops if the draft body differs.

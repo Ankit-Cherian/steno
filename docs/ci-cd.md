@@ -11,14 +11,22 @@ The runtime and distribution job has a 75-minute overall limit. It includes nati
 | Stage | When | What it proves |
 | --- | --- | --- |
 | Workflow and release contracts | PRs, main, merge queue, manual dispatch, release | Workflow syntax/security policy; automation regression tests; generated-project hygiene |
-| Package and hosted tests | Same events, macOS 15 and 26 | Swift package assertions, app compilation, hosted controller/state tests, production-view render assertions and coverage artifacts |
-| Native runtime | Same events, Apple silicon | Pinned native build with reviewed source corrections, allocation-failure regressions, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-process silence contract |
+| Package and hosted tests | Non-documentation changes and every release or manual validation, macOS 15 and 26 | Swift package assertions, app compilation, hosted controller/state tests, production-view render assertions and coverage artifacts |
+| Native runtime | Same full-validation events, Apple silicon | Pinned native build with reviewed source corrections, allocation-failure regressions, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-process silence contract |
 | Public audio benchmark | Same native lane | Actual inference on the pinned public JFK sample and zero WER/CER regression introduced by the cleanup pipeline |
 | Distribution preview | Same native lane | Self-contained ad-hoc app/DMG, bundled libraries and models, architecture, deployment target, code signature structure, relocatable dependencies, bundled inference |
-| Security | PRs, main, merge queue, weekly, release | CodeQL Actions/Swift/C++ analysis; high/critical SARIF gate; high/critical dependency review on PRs |
+| Security | PRs, main, merge queue, weekly, release | Actions analysis and PR dependency review always run; Swift/C++ analysis skips only verified documentation-only diffs. Weekly scans and releases analyze all languages. |
 | Release | Maintainer dispatch from main | Exact-source validation, protected signing/notarization, final-DMG provenance, verified draft, optional separately approved publication |
 
-`CI Gate` requires every validation job to succeed. `Security Gate` requires every applicable scan and its severity gate to succeed. Failed, cancelled or unexpectedly skipped jobs cannot satisfy those aggregate checks. There are no path filters that can leave required checks permanently pending on a documentation PR. A feature-branch push updates its PR checks without launching a duplicate branch run. Before opening a PR, use the manual CI dispatch if a hosted preview is needed. Main retains its post-merge checks. A local commit runs no remote checks until it is pushed.
+`CI Gate` requires the policy job to succeed and checks the remaining jobs against the selected scope. `Security Gate` requires every applicable scan and its severity gate to succeed. Failed, cancelled or unexpectedly skipped jobs cannot satisfy those aggregate checks. Both workflows start for documentation PRs, so required checks are still reported. A feature-branch push updates its PR checks without launching a duplicate branch run. Before opening a PR, use the manual CI dispatch if a hosted preview is needed. Main retains its post-merge checks. A local commit runs no remote checks until it is pushed.
+
+### Documentation-only changes
+
+A complete Git diff selects the shorter path only when every changed file is a recognized root documentation file, Markdown under `docs/`, or a supported documentation image. It checks both sides of renames and excludes symbolic links. Missing comparison commits, unknown paths, empty diffs, workflow changes, scripts, and app changes require full validation. No GitHub file-list limit can silently omit a changed source file.
+
+Documentation-only PRs, main pushes, and merge groups run local Markdown link-target checks, workflow policy and automation tests, artifact upload/download compatibility, CodeQL Actions, and dependency review where applicable. They skip package/hosted tests, runtime inference and packaging, and native CodeQL. The gates accept those skips only after successful classification as documentation-only; failures and cancellations remain failures. The local link check covers inline Markdown file targets, not remote URLs, anchors, or the correctness of prose and command examples; reviewers still verify those.
+
+Release calls, manual dispatches, and weekly security scans always use full validation. This change avoids native jobs for documentation; it does not shorten the runtime suite for code changes or reuse results from a different source commit. Use GitHub check notifications instead of continuously polling a running job. Diagnose a failure before deciding whether a rerun is appropriate.
 
 ### Runtime and accuracy boundaries
 
@@ -115,7 +123,15 @@ For the production GPU path, use a new output directory and `--backend metal`. T
 
 Complete the source checks, measured evaluation, and native-app acceptance in the [1.0 checklist](release/1.0-checklist.md), integrate the intended source into main, and create the approved version tag before dispatching a release. Distribution and publication receipts are completed later against the resulting signed artifact. Before approving the release tag, finalize the README candidate status and move the approved changelog entries from `[Unreleased]` to the selected version with its actual release date in that source. Keeping candidate wording and `[Unreleased]` during PR preparation is intentional; the tagged release must describe the released version. The `/releases/latest` download link needs no version-specific edit. Tag creation is deliberately not automatic. The selected source must be the dispatch's main commit, with matching `project.yml` version and existing `vX.Y.Z` tag. No metadata is bumped automatically.
 
+**Steno 1.0 recovery exception:** the existing `v1.0.0` tag remains at `d25fcdf9d625eea6ee31bd0b03c5994302e8065e`, including its historical preparation wording. Final publication dates and receipts are recorded in the main-branch changelog and checklist after publication; the tag is not moved to include those documentation changes. The [reviewed signing recovery](release/signing-recovery.md) builds that exact app source using separately reviewed workflow code, reuses verified successful source checks, and retains signing, notarization, draft, and publication protections. Its authorization records the disclosed manual-coverage limits without asserting that untested cases passed.
+
+The 1.0 draft was ultimately verified and published manually by its existing release ID after the workflow’s draft lookup returned 404. The [publication record](release/signing-recovery.md#publication-record) documents that outcome and the temporary, restored CI exception used for PR #24. Neither is a standing exception for future releases.
+
+The steps below describe the standard **Release** workflow. For the 1.0 recovery, use its linked instructions; the original **Publish release** workflow cannot promote a recovery draft unchanged because it assumes one source SHA for both the app and workflow. Recovery also verifies its checked-in release notes before publication, so do not replace those notes during the protected approval step.
+
 From **Actions → Release → Run workflow**, select main, enter the stable version and full 40-character commit SHA, and confirm manual acceptance only after completing the source and native-app checks for that exact source. Leave `publish_release` false to stop at a draft. Enable it only when public publication is intended.
+
+Draft creation resolves the unpublished release through authenticated, paginated release listings, requires one exact match, and verifies it again by numeric ID. A missing or ambiguous result stops without retrying creation. Later publication uses that retained ID; it does not look up an unpublished draft through the public tag endpoint.
 
 The workflow then:
 
@@ -140,12 +156,25 @@ For a completed draft-only run, inspect its verified assets and finish the relea
 - **Draft creation/publication timeout:** read the release by its exact ID and compare tag, target and asset digests. Do not blindly rerun a publishing step; the first operation may already have succeeded.
 - **Bad public release:** do not rewrite the tag or replace its bytes. Prepare a new patch version through the pipeline and communicate the affected version through the normal maintainer process.
 
-Users can verify provenance with:
+For an installer produced by the standard Release workflow, verify provenance with:
 
 ```bash
 gh attestation verify Steno-X.Y.Z.dmg --repo Ankit-Cherian/steno \
   --signer-workflow Ankit-Cherian/steno/.github/workflows/release.yml
 ```
+
+For Steno 1.0, verify **both** the DMG and manifest against the recovery workflow commit recorded in the [release checklist](release/1.0-checklist.md):
+
+```bash
+for artifact in Steno-1.0.0.dmg release-manifest.json; do
+  gh attestation verify "$artifact" --repo Ankit-Cherian/steno \
+    --signer-workflow Ankit-Cherian/steno/.github/workflows/recover-release.yml \
+    --signer-digest bf95cec49731c347de14bea4a5eb987569cd5b5a \
+    --source-ref refs/heads/main --source-digest bf95cec49731c347de14bea4a5eb987569cd5b5a
+done
+```
+
+The attestation identifies the workflow source. After verification, check that the manifest identifies app source `d25fcdf9d625eea6ee31bd0b03c5994302e8065e`, tag `v1.0.0`, and the downloaded DMG's SHA-256. Its workflow source, producing run, and reused validation receipt must match the release record. Do not substitute the app SHA for the workflow SHA in the attestation command.
 
 ## Maintenance and design references
 

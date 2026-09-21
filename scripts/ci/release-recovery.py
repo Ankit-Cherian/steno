@@ -262,9 +262,8 @@ def draft():
     subprocess.run(['gh', 'release', 'create', 'v' + VERSION, '--repo', REPOSITORY,
                     '--verify-tag', '--target', SOURCE, '--draft', '--title', 'Steno ' + VERSION,
                     '--notes-file', str(notes_path), *assets], check=True)
-    result = api('releases/tags/v' + VERSION)
+    result = publisher.created_draft_receipt(REPOSITORY, VERSION, SOURCE, assets)
     release_id = str(result['id'])
-    publisher.verify_remote_assets(result, assets, SOURCE, release_id)
     require(result['tag_name'] == 'v' + VERSION and result['body'].strip() == notes,
             'Draft identity or reviewed notes changed')
     with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:

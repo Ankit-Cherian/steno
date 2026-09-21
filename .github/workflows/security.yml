@@ -22,6 +22,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Classify security scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      scope: ${{ steps.changes.outputs.scope }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Classify changed files
+        id: changes
+        run: python3 scripts/ci/select-checks.py
+
   dependency-review:
     name: Dependency Review
     if: github.event_name == 'pull_request'
@@ -47,12 +62,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+      - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
           languages: actions
           build-mode: none
           queries: security-extended
-      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
           category: /language:actions
           output: build/codeql-results
@@ -60,6 +75,8 @@ jobs:
         run: python3 scripts/ci/check-sarif.py --directory build/codeql-results --category /language:actions
 
   native:
+    needs: changes
+    if: needs.changes.outputs.scope == 'full'
     name: CodeQL (${{ matrix.language }})
     runs-on: macos-15
     timeout-minutes: 60
@@ -95,7 +112,7 @@ jobs:
         run: |
           bash scripts/ci/tools.sh xcodegen
           build/ci-tools/xcodegen/xcodegen/bin/xcodegen generate
-      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+      - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: manual
@@ -112,7 +129,7 @@ jobs:
       - name: Build C++ runtime for analysis
         if: matrix.language == 'c-cpp'
         run: bash scripts/build-whisper-runtime-helper.sh
-      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
           category: /language:${{ matrix.language }}
           output: build/codeql-results
@@ -129,19 +146,27 @@ jobs:
   gate:
     name: Security Gate
     if: always()
-    needs: [dependency-review, actions, native]
+    needs: [changes, dependency-review, actions, native]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require all applicable security checks
         env:
+          SCOPE_RESULT: ${{ needs.changes.result }}
+          SCOPE: ${{ needs.changes.outputs.scope }}
           DEPENDENCY_RESULT: ${{ needs.dependency-review.result }}
           ACTIONS_RESULT: ${{ needs.actions.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           test "$ACTIONS_RESULT" = success
-          test "$NATIVE_RESULT" = success
+          test "$SCOPE_RESULT" = success
+          case "$SCOPE" in
+            docs) expected=skipped ;;
+            full) expected=success ;;
+            *) exit 1 ;;
+          esac
+          test "$NATIVE_RESULT" = "$expected"
           if [ "$EVENT_NAME" = pull_request ]; then
             test "$DEPENDENCY_RESULT" = success
           else
