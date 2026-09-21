@@ -131,6 +131,8 @@ The steps below describe the standard **Release** workflow. For the 1.0 recovery
 
 From **Actions → Release → Run workflow**, select main, enter the stable version and full 40-character commit SHA, and confirm manual acceptance only after completing the source and native-app checks for that exact source. Leave `publish_release` false to stop at a draft. Enable it only when public publication is intended.
 
+Draft creation resolves the unpublished release through authenticated, paginated release listings, requires one exact match, and verifies it again by numeric ID. A missing or ambiguous result stops without retrying creation. Later publication uses that retained ID; it does not look up an unpublished draft through the public tag endpoint.
+
 The workflow then:
 
 1. Checks source, tag, metadata and remote main ancestry. Runs the same complete CI and security workflows against that source.

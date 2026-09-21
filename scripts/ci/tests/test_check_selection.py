@@ -75,11 +75,13 @@ class SelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             event = root / 'event.json'
-            event.write_text('{}')
             output = root / 'output'
-            with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': 'push', 'GITHUB_WORKFLOW': 'CI', 'GITHUB_OUTPUT': str(output)}):
-                SELECT.main()
-            self.assertEqual(output.read_text(), 'scope=full\n')
+            for payload in ('{}', 'null', '[]', '{"before": null, "after": null}'):
+                event.write_text(payload)
+                output.write_text('')
+                with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': 'push', 'GITHUB_WORKFLOW': 'CI', 'GITHUB_OUTPUT': str(output)}):
+                    SELECT.main()
+                self.assertEqual(output.read_text(), 'scope=full\n')
 
     def test_actual_ci_gate_rejects_missing_failed_cancelled_and_wrong_skips(self):
         workflow = POLICY.parse_workflow((ROOT / '.github/workflows/validate.yml').read_text())

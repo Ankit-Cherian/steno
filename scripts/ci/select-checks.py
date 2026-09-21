@@ -47,7 +47,7 @@ def select(event_name, event, workflow):
 def main():
     try:
         scope = select(os.environ['GITHUB_EVENT_NAME'], json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text()), os.environ['GITHUB_WORKFLOW'])
-    except (KeyError, ValueError, OSError, subprocess.CalledProcessError):
+    except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError):
         scope = 'full'
         print('Change classification unavailable; requiring full validation.')
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
