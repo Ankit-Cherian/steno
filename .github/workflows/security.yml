@@ -22,6 +22,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Classify security scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      scope: ${{ steps.changes.outputs.scope }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Classify changed files
+        id: changes
+        run: python3 scripts/ci/select-checks.py
+
   dependency-review:
     name: Dependency Review
     if: github.event_name == 'pull_request'
@@ -60,6 +75,8 @@ jobs:
         run: python3 scripts/ci/check-sarif.py --directory build/codeql-results --category /language:actions
 
   native:
+    needs: changes
+    if: needs.changes.outputs.scope == 'full'
     name: CodeQL (${{ matrix.language }})
     runs-on: macos-15
     timeout-minutes: 60
@@ -129,19 +146,27 @@ jobs:
   gate:
     name: Security Gate
     if: always()
-    needs: [dependency-review, actions, native]
+    needs: [changes, dependency-review, actions, native]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require all applicable security checks
         env:
+          SCOPE_RESULT: ${{ needs.changes.result }}
+          SCOPE: ${{ needs.changes.outputs.scope }}
           DEPENDENCY_RESULT: ${{ needs.dependency-review.result }}
           ACTIONS_RESULT: ${{ needs.actions.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           test "$ACTIONS_RESULT" = success
-          test "$NATIVE_RESULT" = success
+          test "$SCOPE_RESULT" = success
+          case "$SCOPE" in
+            docs) expected=skipped ;;
+            full) expected=success ;;
+            *) exit 1 ;;
+          esac
+          test "$NATIVE_RESULT" = "$expected"
           if [ "$EVENT_NAME" = pull_request ]; then
             test "$DEPENDENCY_RESULT" = success
           else

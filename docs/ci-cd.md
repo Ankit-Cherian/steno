@@ -11,14 +11,22 @@ The runtime and distribution job has a 75-minute overall limit. It includes nati
 | Stage | When | What it proves |
 | --- | --- | --- |
 | Workflow and release contracts | PRs, main, merge queue, manual dispatch, release | Workflow syntax/security policy; automation regression tests; generated-project hygiene |
-| Package and hosted tests | Same events, macOS 15 and 26 | Swift package assertions, app compilation, hosted controller/state tests, production-view render assertions and coverage artifacts |
-| Native runtime | Same events, Apple silicon | Pinned native build with reviewed source corrections, allocation-failure regressions, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-process silence contract |
+| Package and hosted tests | Non-documentation changes and every release or manual validation, macOS 15 and 26 | Swift package assertions, app compilation, hosted controller/state tests, production-view render assertions and coverage artifacts |
+| Native runtime | Same full-validation events, Apple silicon | Pinned native build with reviewed source corrections, allocation-failure regressions, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-process silence contract |
 | Public audio benchmark | Same native lane | Actual inference on the pinned public JFK sample and zero WER/CER regression introduced by the cleanup pipeline |
 | Distribution preview | Same native lane | Self-contained ad-hoc app/DMG, bundled libraries and models, architecture, deployment target, code signature structure, relocatable dependencies, bundled inference |
-| Security | PRs, main, merge queue, weekly, release | CodeQL Actions/Swift/C++ analysis; high/critical SARIF gate; high/critical dependency review on PRs |
+| Security | PRs, main, merge queue, weekly, release | Actions analysis and PR dependency review always run; Swift/C++ analysis skips only verified documentation-only diffs. Weekly scans and releases analyze all languages. |
 | Release | Maintainer dispatch from main | Exact-source validation, protected signing/notarization, final-DMG provenance, verified draft, optional separately approved publication |
 
-`CI Gate` requires every validation job to succeed. `Security Gate` requires every applicable scan and its severity gate to succeed. Failed, cancelled or unexpectedly skipped jobs cannot satisfy those aggregate checks. There are no path filters that can leave required checks permanently pending on a documentation PR. A feature-branch push updates its PR checks without launching a duplicate branch run. Before opening a PR, use the manual CI dispatch if a hosted preview is needed. Main retains its post-merge checks. A local commit runs no remote checks until it is pushed.
+`CI Gate` requires the policy job to succeed and checks the remaining jobs against the selected scope. `Security Gate` requires every applicable scan and its severity gate to succeed. Failed, cancelled or unexpectedly skipped jobs cannot satisfy those aggregate checks. Both workflows start for documentation PRs, so required checks are still reported. A feature-branch push updates its PR checks without launching a duplicate branch run. Before opening a PR, use the manual CI dispatch if a hosted preview is needed. Main retains its post-merge checks. A local commit runs no remote checks until it is pushed.
+
+### Documentation-only changes
+
+A complete Git diff selects the shorter path only when every changed file is a recognized root documentation file, Markdown under `docs/`, or a supported documentation image. It checks both sides of renames and excludes symbolic links. Missing comparison commits, unknown paths, empty diffs, workflow changes, scripts, and app changes require full validation. No GitHub file-list limit can silently omit a changed source file.
+
+Documentation-only PRs, main pushes, and merge groups run local Markdown link-target checks, workflow policy and automation tests, artifact upload/download compatibility, CodeQL Actions, and dependency review where applicable. They skip package/hosted tests, runtime inference and packaging, and native CodeQL. The gates accept those skips only after successful classification as documentation-only; failures and cancellations remain failures. The local link check covers inline Markdown file targets, not remote URLs, anchors, or the correctness of prose and command examples; reviewers still verify those.
+
+Release calls, manual dispatches, and weekly security scans always use full validation. This change avoids native jobs for documentation; it does not shorten the runtime suite for code changes or reuse results from a different source commit. Use GitHub check notifications instead of continuously polling a running job. Diagnose a failure before deciding whether a rerun is appropriate.
 
 ### Runtime and accuracy boundaries
 

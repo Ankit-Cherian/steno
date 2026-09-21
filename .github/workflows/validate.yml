@@ -15,13 +15,20 @@ jobs:
     name: Workflow and release contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      scope: ${{ steps.changes.outputs.scope }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Classify changed files
+        id: changes
+        run: python3 scripts/ci/select-checks.py
       - name: Validate automation policy and regression tests
         run: |
           test -z "$(git ls-files 'Steno.xcodeproj/*')" || { echo 'Xcode project must remain generated and untracked.' >&2; exit 1; }
+          python3 scripts/ci/check-doc-links.py
           python3 scripts/ci/check-policy.py
           python3 -m unittest discover -s scripts/ci/tests -p 'test_*.py' -v
           for script in scripts/ci/*.sh scripts/release-dmg.sh; do bash -n "$script"; done
@@ -53,6 +60,8 @@ jobs:
           test "$(find . -type f | wc -l)" -eq 2
 
   macos:
+    needs: policy
+    if: needs.policy.outputs.scope == 'full'
     name: Package and hosted tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -110,6 +119,8 @@ jobs:
             build/ci/renders/
 
   runtime:
+    needs: policy
+    if: needs.policy.outputs.scope == 'full'
     name: Runtime and distribution preview
     runs-on: macos-15
     timeout-minutes: 75
@@ -170,10 +181,16 @@ jobs:
     steps:
       - name: Require every validation job to succeed
         env:
+          SCOPE: ${{ needs.policy.outputs.scope }}
           POLICY_RESULT: ${{ needs.policy.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
           RUNTIME_RESULT: ${{ needs.runtime.result }}
         run: |
           test "$POLICY_RESULT" = success
-          test "$MACOS_RESULT" = success
-          test "$RUNTIME_RESULT" = success
+          case "$SCOPE" in
+            docs) expected=skipped ;;
+            full) expected=success ;;
+            *) exit 1 ;;
+          esac
+          test "$MACOS_RESULT" = "$expected"
+          test "$RUNTIME_RESULT" = "$expected"
