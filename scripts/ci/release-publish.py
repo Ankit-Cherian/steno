@@ -45,6 +45,29 @@ def release_receipt(repository, release_id):
         f'repos/{repository}/releases/{release_id}'], text=True))
 
 
+def created_draft_receipt(repository, version, sha, assets):
+    # The tag endpoint only returns published releases. Authenticated release
+    # listings include drafts; resolve exactly one, then retain its numeric ID.
+    validate_release_request(repository, version, sha)
+    pages = json.loads(subprocess.check_output(['gh', 'api', '--paginate', '--slurp',
+        f'repos/{repository}/releases?per_page=100'], text=True))
+    matches = [release for page in pages for release in page
+               if release['tag_name'] == 'v' + version]
+    if len(matches) != 1:
+        raise ValueError('Draft creation outcome is missing or ambiguous; inspect existing releases before any retry')
+    candidate = matches[0]
+    if type(candidate['id']) is not int or candidate['id'] <= 0:
+        raise ValueError('Draft release ID must be a positive integer')
+    release_id = str(candidate['id'])
+    validate_release_request(repository, version, sha, release_id)
+    verify_remote_assets(candidate, assets, sha, release_id)
+    receipt = release_receipt(repository, release_id)
+    if receipt['tag_name'] != 'v' + version:
+        raise ValueError('Draft version tag changed after discovery')
+    verify_remote_assets(receipt, assets, sha, release_id)
+    return receipt
+
+
 def download_existing(repository, version, sha, release_id, root):
     validate_release_request(repository, version, sha, release_id)
     receipt = release_receipt(repository, release_id)
@@ -169,11 +192,7 @@ def main():
                     '--verify-tag', '--target', sha, '--draft', '--title', 'Steno ' + version,
                     '--notes', 'Signed and notarized Apple silicon build. Release notes and final publication require maintainer review.',
                     *assets], check=True)
-    receipt = json.loads(subprocess.check_output(['gh', 'api',
-        f'repos/{repository}/releases/tags/v{version}'], text=True))
-    if not receipt['draft'] or {a['name'] for a in receipt['assets']} != {Path(p).name for p in assets}:
-        raise ValueError('Draft creation outcome is unexpected; inspect the existing release before any retry')
-    verify_remote_assets(receipt, assets, sha, str(receipt['id']))
+    receipt = created_draft_receipt(repository, version, sha, assets)
     if output := os.environ.get('GITHUB_OUTPUT'):
         with open(output, 'a') as stream:
             stream.write(f"release_id={receipt['id']}\n")
