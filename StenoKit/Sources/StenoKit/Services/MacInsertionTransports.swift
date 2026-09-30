@@ -141,7 +141,8 @@ public enum MacInsertionTransportFactory {
     static func makeTransports(
         orderedMethods: [InsertionMethod],
         clipboard: any ClipboardService,
-        system: MacInsertionSystem
+        system: MacInsertionSystem,
+        clipboardRestoreDelay: Duration = ClipboardInsertionTransport.defaultRestoreDelay
     ) -> [any InsertionTransport] {
         var transports: [any InsertionTransport] = []
         for method in orderedMethods {
@@ -151,40 +152,42 @@ public enum MacInsertionTransportFactory {
             case .accessibility:
                 transports.append(AccessibilityInsertionTransport(client: system.accessibility))
             case .clipboardPaste:
-                transports.append(makeClipboardTransport(clipboard: clipboard, system: system))
+                transports.append(makeClipboardTransport(
+                    clipboard: clipboard,
+                    system: system,
+                    restoreDelay: clipboardRestoreDelay
+                ))
             case .none:
                 continue
             }
         }
         if !transports.contains(where: { $0.method == .clipboardPaste }) {
-            transports.append(makeClipboardTransport(clipboard: clipboard, system: system))
+            transports.append(makeClipboardTransport(
+                clipboard: clipboard,
+                system: system,
+                restoreDelay: clipboardRestoreDelay
+            ))
         }
         return transports
     }
 
     private static func makeClipboardTransport(
         clipboard: any ClipboardService,
-        system: MacInsertionSystem
+        system: MacInsertionSystem,
+        restoreDelay: Duration
     ) -> ClipboardInsertionTransport {
         ClipboardInsertionTransport(
             clipboard: clipboard,
-            autoPaste: { target, permit in
-                await MacPasteHelper.activateAndPaste(
-                    target: target,
-                    editorTarget: nil,
-                    commitPermit: permit,
-                    system: system
-                )
-            },
-            exactTargetAutoPaste: { target, editorTarget, permit in
-                await MacPasteHelper.activateAndPaste(
-                    target: target,
-                    editorTarget: editorTarget,
-                    commitPermit: permit,
-                    system: system
-                )
-            }
-        )
+            restoreDelay: restoreDelay
+        ) { request in
+            await MacPasteHelper.activateAndPaste(
+                target: request.target,
+                editorTarget: request.editorTarget,
+                commitPermit: request.commitPermit,
+                system: system,
+                clipboardStillHoldsText: request.clipboardStillHoldsText
+            )
+        }
     }
 }
 
@@ -634,7 +637,8 @@ public enum MacPasteHelper {
         target: AppContext,
         editorTarget: EditorTargetHandle?,
         commitPermit: InsertionCommitPermit?,
-        system: MacInsertionSystem
+        system: MacInsertionSystem,
+        clipboardStillHoldsText: @Sendable () -> Bool = { true }
     ) async -> AutoPasteOutcome {
         guard !Task.isCancelled else {
             return .skipped(reason: "Auto-paste canceled.")
@@ -664,6 +668,11 @@ public enum MacPasteHelper {
             }
             if let editorTarget, case .failure(let reason) = await editorTarget.revalidate() {
                 return .skipped(reason: "Exact editor target is unavailable: \(reason.rawValue).")
+            }
+            // Another app may have written to the clipboard since Steno's
+            // write. Pasting now would insert its content instead.
+            guard clipboardStillHoldsText() else {
+                return .skipped(reason: ClipboardInsertionTransport.clipboardChangedReason)
             }
             if simulateCommandV(
                 keyCode: pasteKeyCode,

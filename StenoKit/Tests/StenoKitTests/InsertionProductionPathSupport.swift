@@ -238,3 +238,122 @@ func makeProductionInsertionService(
     ))
 }
 #endif
+
+#if os(macOS)
+/// An in-memory pasteboard with a change count, transient marking, and item
+/// snapshots, standing in for NSPasteboard.general.
+final class FakePasteboard: RestorableClipboardService, @unchecked Sendable {
+    struct Item: Equatable {
+        var representations: [String: Data]
+    }
+
+    private let lock = NSLock()
+    private var itemsStorage: [Item]
+    private var changeCountStorage = 0
+    private var transientWritesStorage: [String] = []
+    private var plainWritesStorage: [String] = []
+    private var restoreCountStorage = 0
+    private var externalWriteOnTransientWrite: Item?
+
+    init(items: [Item] = []) {
+        itemsStorage = items
+    }
+
+    func setString(_ text: String) async throws {
+        try Task.checkCancellation()
+        lock.withLock {
+            plainWritesStorage.append(text)
+            itemsStorage = [Item(representations: ["public.utf8-plain-text": Data(text.utf8)])]
+            changeCountStorage += 1
+        }
+    }
+
+    func makeRestorePoint() async -> ClipboardRestorePoint {
+        lock.withLock {
+            ClipboardRestorePoint(items: itemsStorage.map { item in
+                ClipboardRestorePoint.Item(representations: item.representations
+                    .sorted { $0.key < $1.key }
+                    .map { ClipboardRestorePoint.Representation(type: $0.key, data: $0.value) })
+            })
+        }
+    }
+
+    func setTransientString(_ text: String) async throws -> Int {
+        try Task.checkCancellation()
+        return lock.withLock {
+            transientWritesStorage.append(text)
+            itemsStorage = [Item(representations: [
+                "public.utf8-plain-text": Data(text.utf8),
+                "org.nspasteboard.TransientType": Data()
+            ])]
+            changeCountStorage += 1
+            let written = changeCountStorage
+            if let external = externalWriteOnTransientWrite {
+                itemsStorage = [external]
+                changeCountStorage += 1
+            }
+            return written
+        }
+    }
+
+    func currentChangeCount() -> Int {
+        lock.withLock { changeCountStorage }
+    }
+
+    func restore(_ point: ClipboardRestorePoint, ifChangeCountIs changeCount: Int) async -> Bool {
+        lock.withLock {
+            guard changeCountStorage == changeCount else { return false }
+            itemsStorage = point.items.map { item in
+                Item(representations: Dictionary(
+                    uniqueKeysWithValues: item.representations.map { ($0.type, $0.data) }
+                ))
+            }
+            changeCountStorage += 1
+            restoreCountStorage += 1
+            return true
+        }
+    }
+
+    /// Another app writes to the clipboard right after Steno's write.
+    func simulateExternalWriteAfterNextTransientWrite(_ item: Item) {
+        lock.withLock { externalWriteOnTransientWrite = item }
+    }
+
+    /// The user copies something new.
+    func userCopies(_ item: Item) {
+        lock.withLock {
+            itemsStorage = [item]
+            changeCountStorage += 1
+        }
+    }
+
+    var items: [Item] { lock.withLock { itemsStorage } }
+    var transientWrites: [String] { lock.withLock { transientWritesStorage } }
+    var plainWrites: [String] { lock.withLock { plainWritesStorage } }
+    var restoreCount: Int { lock.withLock { restoreCountStorage } }
+
+    var plainText: String? {
+        lock.withLock {
+            itemsStorage.first?.representations["public.utf8-plain-text"]
+                .map { String(decoding: $0, as: UTF8.self) }
+        }
+    }
+}
+
+let copiedImageItem = FakePasteboard.Item(representations: [
+    "public.png": Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A]),
+    "public.tiff": Data([0x4D, 0x4D, 0x00, 0x2A])
+])
+
+func pollUntil(
+    timeout: Duration = .seconds(3),
+    _ condition: @Sendable () async -> Bool
+) async -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return await condition()
+}
+#endif
