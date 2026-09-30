@@ -39,8 +39,53 @@ func historyFailureAfterInsertionIsNotATranscriptionFailure() async throws {
     #expect(await waitForStorageRecoveryCondition { controller.recordingLifecycleState == .idle })
 }
 
+@MainActor
+@Test("A pasted transcript whose History save fails is described as pasted")
+func historyFailureAfterPasteSaysPasted() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StenoStorageRecoveryTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let coordinator = HistoryFailureCoordinator(result: InsertResult(
+        status: .copiedOnly,
+        method: .clipboardPaste,
+        insertedText: "Meeting notes are ready",
+        pasteAttempted: true
+    ))
+    let controller = makeTestDictationController(
+        hotkey: StorageRecoveryTestHotkeyService(),
+        coordinator: coordinator,
+        historyStore: HistoryStore(
+            storageURL: directory.appendingPathComponent("history.json"),
+            clipboardService: MemoryClipboardService()
+        )
+    )
+    defer { controller.teardown() }
+
+    controller.pressToTalkStart()
+    #expect(await waitForStorageRecoveryCondition { controller.isRecording })
+    controller.pressToTalkStop()
+    #expect(await waitForStorageRecoveryCondition { controller.storageNotice != nil })
+
+    #expect(controller.status.hasPrefix("Transcript pasted."))
+    #expect(controller.storageNotice?.message == "This transcript was pasted but couldn't be saved to History.")
+    #expect(controller.storageNotice?.recoverableText == "Meeting notes are ready")
+    #expect(await coordinator.completionCount == 1)
+    #expect(await waitForStorageRecoveryCondition { controller.recordingLifecycleState == .idle })
+}
+
 private actor HistoryFailureCoordinator: DictationSessionCoordinating {
     private(set) var completionCount = 0
+    private let result: InsertResult
+
+    init(result: InsertResult = InsertResult(
+        status: .inserted,
+        method: .direct,
+        insertedText: "Meeting notes are ready"
+    )) {
+        self.result = result
+    }
 
     func startPressToTalk(appContext: AppContext) async throws -> SessionID {
         SessionID()
@@ -52,7 +97,7 @@ private actor HistoryFailureCoordinator: DictationSessionCoordinating {
     /// write failed.
     func completePressToTalk(sessionID: SessionID, languageHints: [String]) async throws -> InsertResult {
         completionCount += 1
-        var result = InsertResult(status: .inserted, method: .direct, insertedText: "Meeting notes are ready")
+        var result = result
         result.historyWarning = HistoryStoreError.persistenceFailed.localizedDescription
         return result
     }

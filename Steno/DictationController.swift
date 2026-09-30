@@ -1069,6 +1069,8 @@ final class DictationController: ObservableObject {
         switch result.status {
         case .inserted:
             message = "This transcript was inserted but couldn't be saved to History."
+        case .copiedOnly where result.pasteAttempted == true:
+            message = "This transcript was pasted but couldn't be saved to History."
         case .copiedOnly:
             message = "This transcript was copied but couldn't be saved to History."
         case .failed, .noSpeech:
