@@ -6349,4 +6349,115 @@ func mediaRemoteProbeRunnerIgnoresLateCallbacks() async {
     resumedCallbackQueue = true
     try? await Task.sleep(nanoseconds: 50_000_000)
 }
+
+@MainActor
+@Test("A zero-error Pause callback that arrives after the probe window is still acceptance")
+func latePauseAcknowledgementWithinPauseBoundIsAcceptance() async {
+    // Production probe window: 250 ms. A Pause the application honours can be
+    // acknowledged later than that; treating it as rejected would leave the
+    // application paused with no resume ownership.
+    let bridge = makeCommandBridge { _, _, acknowledge in
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400)) {
+            acknowledge(0)
+        }
+        return true
+    }
+
+    #expect(
+        await bridge.send(
+            .pause,
+            toApplicationBundleIdentifier: "com.example.player"
+        )
+    )
+}
+
+@MainActor
+@Test("A Pause callback that never arrives still fails closed within a bounded wait")
+func absentPauseAcknowledgementFailsClosedWithinPauseBound() async {
+    let bridge = makeCommandBridge { _, _, _ in true }
+
+    let started = ContinuousClock.now
+    let accepted = await bridge.send(
+        .pause,
+        toApplicationBundleIdentifier: "com.example.player"
+    )
+    let elapsed = ContinuousClock.now - started
+
+    #expect(!accepted)
+    #expect(elapsed >= .milliseconds(900))
+    #expect(elapsed < .milliseconds(2_000))
+}
+
+@MainActor
+@Test("Play acknowledgement keeps the probe window")
+func latePlayAcknowledgementKeepsProbeWindow() async {
+    let bridge = makeCommandBridge { command, _, acknowledge in
+        #expect(command == .play)
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400)) {
+            acknowledge(0)
+        }
+        return true
+    }
+
+    #expect(
+        !(await bridge.send(
+            .play,
+            toApplicationBundleIdentifier: "com.example.player"
+        ))
+    )
+}
+
+@MainActor
+@Test("Unsupported macOS never probes media state or sends a media command")
+func unsupportedSystemNeverProbesOrSendsMediaCommands() async {
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: confirmedPlayingSnapshot, count: 8)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        resumeVerificationDelays: [0, 0],
+        systemSupportsMediaPausing: false
+    )
+
+    let token = await service.beginInterruption()
+    await service.endInterruption(token: token ?? MediaInterruptionToken())
+
+    #expect(token == nil)
+    #expect(driver.snapshotCallCount == 0)
+    #expect(driver.sendCallCount == 0)
+    #expect(driver.commands.isEmpty)
+}
+
+@MainActor
+@Test("Supported macOS still pauses a verified-active application")
+func supportedSystemStillPausesVerifiedActiveApplication() async {
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [confirmedPlayingSnapshot, confirmedPausedSnapshot, confirmedPausedSnapshot]
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0],
+        resumeVerificationDelays: [],
+        systemSupportsMediaPausing: true
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(driver.commands == [.pause])
+    if let token {
+        await service.endInterruption(token: token)
+    }
+    #expect(driver.commands == [.pause, .play])
+}
+
+@Test("Media pausing support follows the Core Audio process monitor availability")
+func mediaPausingSupportMatchesCoreAudioAvailability() {
+    if #available(macOS 15.0, *) {
+        #expect(MacMediaInterruptionService.isSupportedOnCurrentSystem)
+    } else {
+        #expect(!MacMediaInterruptionService.isSupportedOnCurrentSystem)
+    }
+}
 #endif

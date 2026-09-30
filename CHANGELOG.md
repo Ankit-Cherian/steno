@@ -31,6 +31,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A recording recognized as punctuation only, such as a lone period, or one that cleanup empties entirely, such as fillers under Aggressive cleanup, is now reported as no speech. Nothing is inserted or saved, and the clipboard is left alone.
 - Remote-desktop and virtual-machine apps now receive dictation by clipboard paste first, like terminals, because they may not pass typed characters through correctly.
 - The Insertion order setting now explains when Steno changes the order, and an app that is too slow to answer Accessibility is reported as a timeout instead of "Target changed".
+- On macOS 13 and 14, the media pausing settings are now shown as unavailable with the reason, instead of appearing on while doing nothing. Media pausing requires macOS 15 or later; the saved choice is kept for after an update.
+- When media pausing is on, transcription no longer waits for the paused app to resume, so text appears one to three seconds sooner. A new recording started right after Cancel no longer waits for the previous resume either.
+- A media player that was slow to confirm a pause is now resumed after dictation instead of being left paused.
+- The media settings caption now says that media you paused yourself a few seconds before dictating may be resumed, instead of promising it always stays paused.
 
 ## [1.0.0] - 2026-09-17
 
