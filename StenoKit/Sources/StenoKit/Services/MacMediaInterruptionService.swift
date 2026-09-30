@@ -2318,6 +2318,7 @@ final class MediaRemoteBridge: MediaRemoteBridging {
     private nonisolated(unsafe) let handle: UnsafeMutableRawPointer?
     private let callbackQueue: DispatchQueue
     private let probeRunner: MediaRemoteAsyncProbeRunner
+    private let pauseAcknowledgementRunner: MediaRemoteAsyncProbeRunner
 
     private let setWantsNowPlayingNotifications: SetWantsNowPlayingNotificationsFn?
     private let registerForNowPlayingNotifications: RegisterForNowPlayingNotificationsFn?
@@ -2350,14 +2351,25 @@ final class MediaRemoteBridge: MediaRemoteBridging {
     /// refused synchronously.
     private static let unacknowledgedDispatchErrorCode: UInt32 = .max
 
+    /// Pause runs after capture has already started, so waiting longer for its
+    /// acknowledgement never delays recording. A late acknowledgement treated
+    /// as a rejection would leave an application paused with nothing tracking
+    /// it, so Pause gets a longer bound than state probes and Play.
+    static let defaultPauseAcknowledgementTimeout: DispatchTimeInterval = .seconds(1)
+
     init(
         frameworkPath: String = "/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote",
         callbackQueue: DispatchQueue = DispatchQueue(label: "Steno.MediaRemote.Callback", qos: .userInitiated),
         probeRunner: MediaRemoteAsyncProbeRunner = MediaRemoteAsyncProbeRunner(),
+        pauseAcknowledgementTimeout: DispatchTimeInterval = MediaRemoteBridge.defaultPauseAcknowledgementTimeout,
         sendCommandOverride: TargetedCommandDispatch? = nil
     ) {
         self.callbackQueue = callbackQueue
         self.probeRunner = probeRunner
+        self.pauseAcknowledgementRunner = MediaRemoteAsyncProbeRunner(
+            timeout: pauseAcknowledgementTimeout,
+            timeoutQueue: probeRunner.timeoutQueue
+        )
         self.sendCommandOverride = sendCommandOverride
 
         let handle = dlopen(frameworkPath, RTLD_LAZY)
@@ -2587,7 +2599,7 @@ final class MediaRemoteBridge: MediaRemoteBridging {
     }
 
     /// Acceptance is the asynchronous callback reporting error 0 within a bounded
-    /// wait. The synchronous return reports only that the command was handed off:
+    /// wait (longer for Pause than for Play). The synchronous return reports only that the command was handed off:
     /// it is `true` even for a bundle identifier that is not running, so on its
     /// own it carries no acceptance information. A callback that never arrives
     /// fails closed.
@@ -2597,7 +2609,10 @@ final class MediaRemoteBridge: MediaRemoteBridging {
     ) async -> Bool {
         guard !applicationBundleIdentifier.isEmpty else { return false }
 
-        let callbackError: UInt32? = await probeRunner.run { acknowledge in
+        let acknowledgementRunner = command == .pause
+            ? pauseAcknowledgementRunner
+            : probeRunner
+        let callbackError: UInt32? = await acknowledgementRunner.run { acknowledge in
             let dispatched = self.dispatch(
                 command,
                 toApplicationBundleIdentifier: applicationBundleIdentifier,

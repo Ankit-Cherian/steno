@@ -6349,4 +6349,61 @@ func mediaRemoteProbeRunnerIgnoresLateCallbacks() async {
     resumedCallbackQueue = true
     try? await Task.sleep(nanoseconds: 50_000_000)
 }
+
+@MainActor
+@Test("A zero-error Pause callback that arrives after the probe window is still acceptance")
+func latePauseAcknowledgementWithinPauseBoundIsAcceptance() async {
+    // Production probe window: 250 ms. A Pause the application honours can be
+    // acknowledged later than that; treating it as rejected would leave the
+    // application paused with no resume ownership.
+    let bridge = makeCommandBridge { _, _, acknowledge in
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400)) {
+            acknowledge(0)
+        }
+        return true
+    }
+
+    #expect(
+        await bridge.send(
+            .pause,
+            toApplicationBundleIdentifier: "com.example.player"
+        )
+    )
+}
+
+@MainActor
+@Test("A Pause callback that never arrives still fails closed within a bounded wait")
+func absentPauseAcknowledgementFailsClosedWithinPauseBound() async {
+    let bridge = makeCommandBridge { _, _, _ in true }
+
+    let started = ContinuousClock.now
+    let accepted = await bridge.send(
+        .pause,
+        toApplicationBundleIdentifier: "com.example.player"
+    )
+    let elapsed = ContinuousClock.now - started
+
+    #expect(!accepted)
+    #expect(elapsed >= .milliseconds(900))
+    #expect(elapsed < .milliseconds(2_000))
+}
+
+@MainActor
+@Test("Play acknowledgement keeps the probe window")
+func latePlayAcknowledgementKeepsProbeWindow() async {
+    let bridge = makeCommandBridge { command, _, acknowledge in
+        #expect(command == .play)
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400)) {
+            acknowledge(0)
+        }
+        return true
+    }
+
+    #expect(
+        !(await bridge.send(
+            .play,
+            toApplicationBundleIdentifier: "com.example.player"
+        ))
+    )
+}
 #endif
