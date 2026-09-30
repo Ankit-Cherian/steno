@@ -20,11 +20,12 @@ struct WhisperModelOption: Identifiable, Equatable {
     var summary: String { WhisperModelCatalog.summary(for: modelID) }
 }
 
-enum WhisperModelDownloadError: LocalizedError {
+enum WhisperModelDownloadError: LocalizedError, Equatable {
     case invalidResponse
     case unexpectedStatusCode(Int)
     case missingDownloadedFile
     case applicationSupportUnavailable
+    case verificationFailed(WhisperModelID)
 
     var errorDescription: String? {
         switch self {
@@ -36,8 +37,21 @@ enum WhisperModelDownloadError: LocalizedError {
             return "The downloaded model file could not be saved."
         case .applicationSupportUnavailable:
             return "Application Support is unavailable on this Mac."
+        case .verificationFailed(let modelID):
+            return "The downloaded \(WhisperModelCatalog.title(for: modelID)) model didn't match the published file, so it wasn't installed. A network filter or proxy may have changed the download."
         }
     }
+}
+
+/// Where downloaded and bundled models live. Tests supply their own folders.
+struct WhisperModelLocations: Sendable {
+    var modelsDirectory: @Sendable () throws -> URL
+    var bundledModelPath: @Sendable (WhisperModelID) -> String?
+
+    static let system = WhisperModelLocations(
+        modelsDirectory: { try WhisperModelLibrary.modelsDirectory() },
+        bundledModelPath: { BundledWhisperRuntime.modelPath(for: $0) }
+    )
 }
 
 struct WhisperModelInstallResult: Sendable, Equatable {
@@ -60,6 +74,7 @@ enum WhisperModelLibrary {
     static func installedOptions(
         preferences: AppPreferences,
         compatibilityService: WhisperCompatibilityService? = try? WhisperCompatibilityService.bundled(),
+        locations: WhisperModelLocations = .system,
         fileManager: FileManager = .default
     ) -> [WhisperModelOption] {
         let activeModelID = WhisperCompatibilityService.canonicalModelID(forModelPath: preferences.dictation.modelPath)
@@ -67,7 +82,12 @@ enum WhisperModelLibrary {
         let recommendedModelID = hardwareProfile.flatMap { compatibilityService?.recommendation(for: $0)?.modelID }
 
         return managedModelIDs.map { modelID in
-            let installed = installedModelLocation(for: modelID, preferences: preferences, fileManager: fileManager)
+            let installed = installedModelLocation(
+                for: modelID,
+                preferences: preferences,
+                locations: locations,
+                fileManager: fileManager
+            )
             return WhisperModelOption(
                 modelID: modelID,
                 source: installed?.source,
@@ -82,14 +102,15 @@ enum WhisperModelLibrary {
     static func installedModelLocation(
         for modelID: WhisperModelID,
         preferences: AppPreferences,
+        locations: WhisperModelLocations = .system,
         fileManager: FileManager = .default
     ) -> (source: WhisperModelOption.Source, path: String)? {
-        if let downloadedPath = downloadedModelPath(for: modelID, fileManager: fileManager),
+        if let downloadedPath = downloadedModelPath(for: modelID, locations: locations),
            fileManager.fileExists(atPath: downloadedPath) {
             return (.downloaded, downloadedPath)
         }
 
-        if let bundledPath = bundledModelPath(for: modelID, fileManager: fileManager),
+        if let bundledPath = locations.bundledModelPath(modelID),
            fileManager.fileExists(atPath: bundledPath) {
             return (.bundled, bundledPath)
         }
@@ -104,33 +125,47 @@ enum WhisperModelLibrary {
 
     static func downloadedModelPath(
         for modelID: WhisperModelID,
-        fileManager: FileManager = .default
+        locations: WhisperModelLocations = .system
     ) -> String? {
-        guard let modelsDirectory = try? modelsDirectory(fileManager: fileManager) else {
+        guard let modelsDirectory = try? locations.modelsDirectory() else {
             return nil
         }
         return modelsDirectory.appendingPathComponent(WhisperModelCatalog.fileName(for: modelID)).path
     }
-
-    static func bundledModelPath(
-        for modelID: WhisperModelID,
-        fileManager: FileManager = .default
-    ) -> String? {
-        BundledWhisperRuntime.modelPath(for: modelID, fileManager: fileManager)
-    }
 }
 
 actor WhisperModelDownloadService {
+    typealias Fetch = @Sendable (URL) async throws -> (URL, URLResponse)
+
+    nonisolated let locations: WhisperModelLocations
+    private let fetch: Fetch
+    private let expectedFile: @Sendable (WhisperModelID) -> WhisperModelFileExpectation
+
+    init(
+        locations: WhisperModelLocations = .system,
+        fetch: @escaping Fetch = { try await URLSession.shared.download(from: $0) },
+        expectedFile: @escaping @Sendable (WhisperModelID) -> WhisperModelFileExpectation = {
+            WhisperModelCatalog.expectedFile(for: $0)
+        }
+    ) {
+        self.locations = locations
+        self.fetch = fetch
+        self.expectedFile = expectedFile
+    }
+
+    /// Downloads, verifies, then moves the model into place. A download that
+    /// fails verification is deleted and never replaces an existing file.
     func install(
         modelID: WhisperModelID,
-        vadSourcePath: String?,
-        fileManager: FileManager = .default
+        vadSourcePath: String?
     ) async throws -> WhisperModelInstallResult {
-        let modelsDirectory = try WhisperModelLibrary.modelsDirectory(fileManager: fileManager)
+        let fileManager = FileManager.default
+        let modelsDirectory = try locations.modelsDirectory()
         try fileManager.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
 
         let destinationURL = modelsDirectory.appendingPathComponent(WhisperModelCatalog.fileName(for: modelID))
-        let (temporaryURL, response) = try await URLSession.shared.download(from: WhisperModelCatalog.downloadURL(for: modelID))
+        let (temporaryURL, response) = try await fetch(WhisperModelCatalog.downloadURL(for: modelID))
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw WhisperModelDownloadError.invalidResponse
@@ -139,10 +174,18 @@ actor WhisperModelDownloadService {
             throw WhisperModelDownloadError.unexpectedStatusCode(httpResponse.statusCode)
         }
 
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try fileManager.removeItem(at: destinationURL)
+        let expected = expectedFile(modelID)
+        do {
+            try await Self.verifyOffExecutor(fileAt: temporaryURL, expected: expected)
+        } catch {
+            throw WhisperModelDownloadError.verificationFailed(modelID)
         }
-        try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+        }
 
         guard fileManager.fileExists(atPath: destinationURL.path) else {
             throw WhisperModelDownloadError.missingDownloadedFile
@@ -155,5 +198,27 @@ actor WhisperModelDownloadService {
 
         let savedVADPath = fileManager.fileExists(atPath: vadDestinationURL.path) ? vadDestinationURL.path : nil
         return WhisperModelInstallResult(modelPath: destinationURL.path, vadModelPath: savedVADPath)
+    }
+
+    /// Deletes a downloaded model. Bundled models are never touched.
+    func removeDownloadedModel(_ modelID: WhisperModelID) throws {
+        guard let path = WhisperModelLibrary.downloadedModelPath(for: modelID, locations: locations),
+              FileManager.default.fileExists(atPath: path)
+        else { return }
+        try FileManager.default.removeItem(atPath: path)
+    }
+
+    /// Hashing a multi-gigabyte file takes seconds; keep it off the shared executor.
+    private static func verifyOffExecutor(fileAt url: URL, expected: WhisperModelFileExpectation) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    try WhisperModelFileVerifier.verify(fileAt: url, expected: expected)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 }

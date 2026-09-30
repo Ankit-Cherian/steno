@@ -43,6 +43,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Vocabulary corrections no longer chain into each other, an app-specific correction always takes precedence over an all-apps correction for the same word, and corrections that only change capitalization, such as "github" to "GitHub", now apply.
 - A correction no longer rewrites text that already has its preferred spelling, so "Visual Studio" does not become "Visual Studio Studio". Terms such as C++, C# and .NET can now be corrected.
 - Moving Steno after its first launch, for example from Downloads to Applications, no longer switches a downloaded speech model back to the included Small model. Only the path that stopped working is repaired, and a custom voice-detection model is kept.
+- Model downloads are now checked against the published file before they are installed. A download that doesn't match, such as a page returned by a network filter, is deleted, the current model stays in use, and Steno says what happened.
+- A failed model download now shows the reason next to the Download button, in Settings and during setup.
 
 ## [1.0.0] - 2026-09-17
 

@@ -254,6 +254,8 @@ final class DictationController: ObservableObject {
     @Published var hasBootstrapped = false
     @Published var activeModelDownloadID: WhisperModelID?
     @Published var modelDownloadMessage: String = ""
+    /// The model message reports a failure and uses the error color role.
+    @Published var modelDownloadMessageIsError = false
     @Published var usageAnalyticsSnapshot: UsageAnalyticsSnapshot = .empty
     @Published var usageAnalyticsError: String = ""
     @Published var usageAnalyticsWriteWarning: String = ""
@@ -276,7 +278,7 @@ final class DictationController: ObservableObject {
     private let runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)?
     private let overlayDismissDelay: @Sendable () async -> Void
     private let overlayDismissAction: @MainActor @Sendable () -> Void
-    private let modelDownloadService = WhisperModelDownloadService()
+    private let modelDownloadService: WhisperModelDownloadService
     private let compatibilityService = try? WhisperCompatibilityService.bundled()
 
     private var lexiconService: PersonalLexiconService
@@ -338,6 +340,7 @@ final class DictationController: ObservableObject {
         mediaInterruption: MediaInterruptionService = MacMediaInterruptionService(),
         preferencesStore: AppPreferencesStore = AppPreferencesStore(),
         launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService(),
+        modelDownloadService: WhisperModelDownloadService = WhisperModelDownloadService(),
         coordinator: (any DictationSessionCoordinating)? = nil,
         runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)? = nil,
         overlayDismissDelay: @escaping @Sendable () async -> Void = {
@@ -365,6 +368,7 @@ final class DictationController: ObservableObject {
         self.mediaInterruption = mediaInterruption
         self.preferencesStore = preferencesStore
         self.launchAtLoginService = launchAtLoginService
+        self.modelDownloadService = modelDownloadService
         self.coordinator = coordinator
         self.runtimeRebuildOverride = runtimeRebuildOverride
         self.overlayDismissDelay = overlayDismissDelay
@@ -605,7 +609,8 @@ final class DictationController: ObservableObject {
         }
         return WhisperModelLibrary.installedOptions(
             preferences: preferences,
-            compatibilityService: compatibilityService
+            compatibilityService: compatibilityService,
+            locations: modelDownloadService.locations
         )
     }
 
@@ -765,7 +770,7 @@ final class DictationController: ObservableObject {
         Task {
             await preferencesStore.save(snapshot)
             await MainActor.run {
-                modelDownloadMessage = "Using \(WhisperModelCatalog.title(for: modelID))."
+                showModelMessage("Using \(WhisperModelCatalog.title(for: modelID)).")
                 status = "Using \(WhisperModelCatalog.title(for: modelID))."
             }
             await rebuildRuntimeOrDefer()
@@ -777,7 +782,7 @@ final class DictationController: ObservableObject {
         guard activeModelDownloadID == nil else { return }
 
         activeModelDownloadID = modelID
-        modelDownloadMessage = "Downloading \(WhisperModelCatalog.title(for: modelID))..."
+        showModelMessage("Downloading \(WhisperModelCatalog.title(for: modelID))...")
 
         let bundledVADPath = BundledWhisperRuntime.resolvedPaths()?.vadModelPath
         let currentVADPath = FileManager.default.fileExists(atPath: preferences.dictation.vadModelPath)
@@ -804,21 +809,30 @@ final class DictationController: ObservableObject {
                 await MainActor.run {
                     preferences = snapshot
                     activeModelDownloadID = nil
-                    modelDownloadMessage = "Downloaded \(WhisperModelCatalog.title(for: modelID)) and switched to it."
+                    showModelMessage("Downloaded \(WhisperModelCatalog.title(for: modelID)) and switched to it.")
                     status = "Downloaded \(WhisperModelCatalog.title(for: modelID)) and switched to it."
                     lastError = ""
                 }
 
                 await rebuildRuntimeOrDefer()
             } catch {
-                await MainActor.run {
-                    activeModelDownloadID = nil
-                    modelDownloadMessage = ""
-                    status = "Model download failed."
-                    lastError = error.localizedDescription
-                }
+                let failure = Self.modelDownloadFailureMessage(for: modelID, error: error)
+                activeModelDownloadID = nil
+                showModelMessage(failure, isError: true)
+                status = "Model download failed."
+                lastError = failure
             }
         }
+    }
+
+    /// Shown next to the control that started the download, in Settings and onboarding.
+    static func modelDownloadFailureMessage(for modelID: WhisperModelID, error: Error) -> String {
+        "Couldn't download \(WhisperModelCatalog.title(for: modelID)). \(error.localizedDescription) Your current model is still in use."
+    }
+
+    private func showModelMessage(_ message: String, isError: Bool = false) {
+        modelDownloadMessage = message
+        modelDownloadMessageIsError = isError
     }
 
     func requestMicrophonePermission() {

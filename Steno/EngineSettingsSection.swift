@@ -175,9 +175,10 @@ struct EngineSettingsSection: View {
             }
 
             if !controller.modelDownloadMessage.isEmpty {
-                Text(controller.modelDownloadMessage)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.textSecondary)
+                ModelActionMessage(
+                    message: controller.modelDownloadMessage,
+                    isError: controller.modelDownloadMessageIsError
+                )
             }
         }
     }
