@@ -407,6 +407,9 @@ final class DictationController: ObservableObject {
         hotkey.onRegistrationStatusChanged = { [weak self] status in
             self?.handleHotkeyRegistrationStatus(status)
         }
+        // The hands-free key registers once saved preferences load, so a
+        // saved Disabled never registers the built-in default at launch.
+        hotkey.globalToggleKeyCode = nil
         if systemIntegrationsEnabled && !isIsolatedPreview {
             hotkey.start()
             menuBar.setup(controller: self)

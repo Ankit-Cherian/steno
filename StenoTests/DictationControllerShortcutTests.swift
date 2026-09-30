@@ -30,6 +30,55 @@ func disabledHandsFreeKeyShowsNoError() async {
 }
 
 @MainActor
+@Test("A saved Disabled hands-free key shows no error at launch")
+func savedDisabledHandsFreeKeyShowsNoErrorAtLaunch() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StenoDisabledKeyLaunch-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storageURL = directory.appendingPathComponent("preferences.json")
+    var saved = AppPreferences.default
+    saved.hotkeys.handsFreeGlobalKeyCode = nil
+    #expect((try? await AppPreferencesStore(storageURL: storageURL).save(saved).get()) != nil)
+    let object = try #require(
+        JSONSerialization.jsonObject(with: Data(contentsOf: storageURL)) as? [String: Any]
+    )
+    let hotkeys = try #require(object["hotkeys"] as? [String: Any])
+    #expect(hotkeys["handsFreeGlobalKeyCode"] is NSNull)
+
+    let presenter = makeShortcutTestPresenter()
+    let hotkey = MacHotkeyMonitor()
+    let controller = makeTestDictationController(
+        hotkey: hotkey,
+        overlay: presenter,
+        preferencesStore: AppPreferencesStore(storageURL: storageURL)
+    )
+    defer { controller.teardown() }
+
+    var reportedStatuses: [HotkeyRegistrationStatus] = []
+    let controllerHandler = hotkey.onRegistrationStatusChanged
+    hotkey.onRegistrationStatusChanged = { status in
+        reportedStatuses.append(status)
+        controllerHandler?(status)
+    }
+
+    // The app's initializer starts the monitor before saved preferences load;
+    // the isolated fixture skips that, so it is replayed here.
+    hotkey.start()
+    await controller.bootstrap()
+    #expect(await waitForShortcutCondition { controller.status == "Running local transcription + local cleanup." })
+
+    // A key the user turned off is never registered, so a Mac where the
+    // listener can't be installed has nothing to report either.
+    #expect(reportedStatuses == [.disabled])
+
+    #expect(controller.preferences.hotkeys.handsFreeGlobalKeyCode == nil)
+    #expect(controller.hotkeyRegistrationMessage.isEmpty)
+    #expect(controller.lastError.isEmpty)
+    #expect(controller.storageNotice == nil)
+    #expect(!presenter.hostedEvidenceShownStates().contains { $0.isFailure })
+}
+
+@MainActor
 @Test("A hotkey registration failure during recording keeps Stop and Cancel")
 func registrationFailureDuringRecordingKeepsControls() async {
     let events = ShortcutEventLog()
