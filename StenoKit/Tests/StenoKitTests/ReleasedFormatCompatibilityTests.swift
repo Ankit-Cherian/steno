@@ -97,6 +97,33 @@ struct ReleasedFormatCompatibilityTests {
         #expect(released.first(where: { $0.id == fixture.damagedEntryID })?.insertionStatus == .copiedOnly)
     }
 
+    @Test("History with the paste flag reloads through the store and decodes with the 1.0.0 types")
+    func pasteFlagSurvivesStoreAndReleasedVersion() async throws {
+        let fixture = try HistoryFixture(entryCount: 0)
+        defer { fixture.cleanUp() }
+        var pasted = HistoryFixture.entry("Pasted into a terminal")
+        pasted.insertionStatus = .copiedOnly
+        pasted.pasteAttempted = true
+        let typed = HistoryFixture.entry("Typed into an editor")
+
+        let writer = fixture.store()
+        try await writer.append(entry: pasted)
+        try await writer.append(entry: typed)
+
+        let reader = fixture.store()
+        let reloaded = await reader.recent(limit: 10)
+        #expect(await reader.takeRecoveryNotices().isEmpty)
+        #expect(reloaded.first(where: { $0.id == pasted.id })?.wasPasted == true)
+        #expect(reloaded.first(where: { $0.id == typed.id })?.pasteAttempted == nil)
+
+        let released = try Released100.decoder().decode(
+            [Released100.TranscriptEntry].self,
+            from: Data(contentsOf: fixture.storageURL)
+        )
+        #expect(Set(released.map(\.id)) == [pasted.id, typed.id])
+        #expect(released.first(where: { $0.id == pasted.id })?.insertionStatus == .copiedOnly)
+    }
+
     @Test("History moved aside and restarted decodes with the 1.0.0 types")
     func historyAfterMoveAsideDecodesInReleasedVersion() async throws {
         let fixture = try HistoryFixture(entryCount: 10)
