@@ -45,4 +45,51 @@ func productionPathTypesIntoFrontmostTarget() async {
     #expect(keys.typedText == ["hello there"])
     #expect(await clipboard.latestValue == "")
 }
+
+@Test("Default settings copy instead of typing when the target app can't be brought to the front")
+func productionPathCopiesWhenTargetAppIsNotFrontmost() async {
+    let keys = FakeKeyPoster()
+    let clipboard = MemoryClipboardService()
+    let activator = FakeApplicationActivator()
+    let accessibility = FakeAccessibilityClient()
+    // The user switched to Notes during transcription, and macOS declines to
+    // bring the original app back.
+    activator.switchToOtherApp("com.apple.Notes", targetRefusesActivation: true)
+    accessibility.focusOtherApp("com.apple.Notes")
+    let service = makeProductionInsertionService(
+        clipboard: clipboard,
+        keys: keys,
+        activator: activator,
+        accessibility: accessibility
+    )
+
+    let result = await service.insert(text: "meant for the editor", target: productionPathContext)
+
+    #expect(result.status == .copiedOnly)
+    #expect(result.method == .clipboardPaste)
+    #expect(keys.events.isEmpty)
+    #expect(accessibility.writes.isEmpty)
+    #expect(await clipboard.latestValue == "meant for the editor")
+}
+
+@Test("Default settings copy instead of typing when the target app has quit")
+func productionPathCopiesWhenTargetAppQuit() async {
+    let keys = FakeKeyPoster()
+    let clipboard = MemoryClipboardService()
+    let activator = FakeApplicationActivator(frontmost: "com.apple.Notes", running: ["com.apple.Notes"])
+    let accessibility = FakeAccessibilityClient(focusedBundle: "com.apple.Notes")
+    let service = makeProductionInsertionService(
+        clipboard: clipboard,
+        keys: keys,
+        activator: activator,
+        accessibility: accessibility
+    )
+
+    let result = await service.insert(text: "meant for the editor", target: productionPathContext)
+
+    #expect(result.status == .copiedOnly)
+    #expect(keys.events.isEmpty)
+    #expect(accessibility.writes.isEmpty)
+    #expect(await clipboard.latestValue == "meant for the editor")
+}
 #endif

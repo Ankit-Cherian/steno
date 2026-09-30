@@ -264,22 +264,27 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
         )
     }
 
+    /// Typing posts events to whichever app is frontmost, so this refuses
+    /// before any event when the target can't be brought back. The service
+    /// then falls through to transports that verify the target themselves.
     private func activateTargetApp(_ target: AppContext) async throws {
         guard target.bundleIdentifier != "unknown" else { return }
 
         for attempt in 0..<3 {
             try Task.checkCancellation()
-            let activationTriggered = await activateApplication(target.bundleIdentifier)
+            guard await activateApplication(target.bundleIdentifier) else {
+                throw MacInsertionError.exactTargetUnavailable(.applicationUnavailable)
+            }
 
             let delay = UInt64(150_000_000 + (50_000_000 * attempt))
             try await Task.sleep(nanoseconds: delay)
             try Task.checkCancellation()
 
-            let isFrontmost = await frontmostApplicationBundleIdentifier() == target.bundleIdentifier
-            if isFrontmost || !activationTriggered {
+            if await frontmostApplicationBundleIdentifier() == target.bundleIdentifier {
                 return
             }
         }
+        throw MacInsertionError.exactTargetUnavailable(.applicationNotFrontmost)
     }
 
     private func typeUnicode(
