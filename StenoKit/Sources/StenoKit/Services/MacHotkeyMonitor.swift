@@ -8,9 +8,20 @@ private final class TapContext: @unchecked Sendable {
     var filter = HandsFreeKeyFilter(keyCode: nil)
     var onToggle: (() -> Void)?
     var machPort: CFMachPort?
-    /// Monotonic timestamp of the last tap re-enable, used to debounce rapid
+    /// Timestamp of the last tap re-enable, used to debounce rapid
     /// disable/re-enable cycles that can occur when the system times out the tap.
     var lastReenableTime: CFAbsoluteTime = 0
+}
+
+/// macOS disables an event tap after a callback timeout or during secure
+/// input. A disabled tap receives nothing further, including another disable
+/// notice, so a re-enable inside the debounce interval is deferred, not dropped.
+enum EventTapReenablePolicy {
+    static let minimumInterval: TimeInterval = 0.1
+
+    static func delay(now: TimeInterval, lastReenable: TimeInterval) -> TimeInterval {
+        max(0, minimumInterval - (now - lastReenable))
+    }
 }
 
 @MainActor
@@ -133,7 +144,14 @@ public final class MacHotkeyMonitor: HotkeyService {
     // MARK: - CGEventTap (Hands-Free Toggle)
 
     private func installEventTap() {
-        guard eventTap == nil else { return }
+        if let eventTap {
+            // Settings saves and runtime rebuilds recover a tap macOS left disabled.
+            if !CGEvent.tapIsEnabled(tap: eventTap) {
+                tapContext.lastReenableTime = CFAbsoluteTimeGetCurrent()
+                CGEvent.tapEnable(tap: eventTap, enable: true)
+            }
+            return
+        }
 
         let refcon = Unmanaged.passUnretained(tapContext).toOpaque()
         let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
@@ -198,21 +216,13 @@ public final class MacHotkeyMonitor: HotkeyService {
     /// C-compatible callback for the CGEventTap. Runs on the main thread
     /// (tap is installed on the main run loop). Accesses TapContext via userInfo
     /// to avoid @MainActor isolation issues.
-    /// Minimum interval between tap re-enables to prevent rapid disable/enable cycling.
-    private static let reenableDebounceInterval: CFAbsoluteTime = 0.1
-
     private static let eventTapCallback: CGEventTapCallBack = { _, type, event, userInfo in
         // Re-enable tap if macOS disabled it due to timeout or user input,
         // with a debounce to avoid rapid re-enable cycling.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let userInfo {
                 let ctx = Unmanaged<TapContext>.fromOpaque(userInfo).takeUnretainedValue()
-                let now = CFAbsoluteTimeGetCurrent()
-                if let machPort = ctx.machPort,
-                   now - ctx.lastReenableTime >= reenableDebounceInterval {
-                    ctx.lastReenableTime = now
-                    CGEvent.tapEnable(tap: machPort, enable: true)
-                }
+                reenableTap(ctx)
             }
             return Unmanaged.passUnretained(event)
         }
@@ -243,6 +253,22 @@ public final class MacHotkeyMonitor: HotkeyService {
         }
         // For .defaultTap, nil suppresses delivery to downstream apps.
         return decision.swallow ? nil : Unmanaged.passUnretained(event)
+    }
+
+    private static func reenableTap(_ ctx: TapContext) {
+        guard let machPort = ctx.machPort else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        let delay = EventTapReenablePolicy.delay(now: now, lastReenable: ctx.lastReenableTime)
+        guard delay > 0 else {
+            ctx.lastReenableTime = now
+            CGEvent.tapEnable(tap: machPort, enable: true)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard let machPort = ctx.machPort, !CGEvent.tapIsEnabled(tap: machPort) else { return }
+            ctx.lastReenableTime = CFAbsoluteTimeGetCurrent()
+            CGEvent.tapEnable(tap: machPort, enable: true)
+        }
     }
 
     deinit {
