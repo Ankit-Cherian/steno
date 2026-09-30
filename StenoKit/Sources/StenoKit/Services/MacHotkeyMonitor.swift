@@ -5,7 +5,7 @@ import AppKit
 /// All access occurs on the main thread (tap is on the main run loop),
 /// but the class must be nonisolated because the C callback is nonisolated.
 private final class TapContext: @unchecked Sendable {
-    var keyCode: UInt16?
+    var filter = HandsFreeKeyFilter(keyCode: nil)
     var onToggle: (() -> Void)?
     var machPort: CFMachPort?
     /// Monotonic timestamp of the last tap re-enable, used to debounce rapid
@@ -25,7 +25,7 @@ public final class MacHotkeyMonitor: HotkeyService {
     public var isOptionPressToTalkEnabled: Bool = true
     public var globalToggleKeyCode: UInt16? = 79 {
         didSet {
-            tapContext.keyCode = globalToggleKeyCode
+            tapContext.filter.keyCode = globalToggleKeyCode
             guard hasStarted else { return }
             updateHandsFreeStatus()
         }
@@ -49,7 +49,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         optionFlag: NSEvent.ModifierFlags = .option
     ) {
         self.optionFlag = optionFlag
-        tapContext.keyCode = globalToggleKeyCode
+        tapContext.filter.keyCode = globalToggleKeyCode
     }
 
     public func start() {
@@ -136,7 +136,8 @@ public final class MacHotkeyMonitor: HotkeyService {
         guard eventTap == nil else { return }
 
         let refcon = Unmanaged.passUnretained(tapContext).toOpaque()
-        let eventMask: CGEventMask = 1 << CGEventType.keyDown.rawValue
+        let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyUp.rawValue)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -216,27 +217,32 @@ public final class MacHotkeyMonitor: HotkeyService {
             return Unmanaged.passUnretained(event)
         }
 
-        guard type == .keyDown, let userInfo else {
+        guard type == .keyDown || type == .keyUp, let userInfo else {
             return Unmanaged.passUnretained(event)
         }
 
         let ctx = Unmanaged<TapContext>.fromOpaque(userInfo).takeUnretainedValue()
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let flags = event.flags
         let userMods: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
+        let filterEvent: HandsFreeKeyFilter.Event = type == .keyDown
+            ? .keyDown(
+                keyCode: keyCode,
+                isRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0,
+                hasModifiers: !event.flags.intersection(userMods).isEmpty
+            )
+            : .keyUp(keyCode: keyCode)
+        let decision = ctx.filter.handle(
+            filterEvent,
+            at: TimeInterval(event.timestamp) / 1_000_000_000
+        )
 
-        guard let targetKey = ctx.keyCode,
-              keyCode == targetKey,
-              flags.intersection(userMods).isEmpty,
-              event.getIntegerValueField(.keyboardEventAutorepeat) == 0
-        else {
-            return Unmanaged.passUnretained(event)
+        if decision.toggle {
+            // Callback already runs on the main run loop; dispatch async to avoid
+            // re-entrancy while the tap callback is still unwinding.
+            DispatchQueue.main.async { ctx.onToggle?() }
         }
-
-        // Callback already runs on the main run loop; dispatch async to avoid
-        // re-entrancy while the tap callback is still unwinding.
-        DispatchQueue.main.async { ctx.onToggle?() }
-        return nil // For .defaultTap, nil suppresses delivery to downstream apps.
+        // For .defaultTap, nil suppresses delivery to downstream apps.
+        return decision.swallow ? nil : Unmanaged.passUnretained(event)
     }
 
     deinit {
@@ -246,7 +252,7 @@ public final class MacHotkeyMonitor: HotkeyService {
             // Clear callback state defensively after uninstall.
             tapContext.machPort = nil
             tapContext.onToggle = nil
-            tapContext.keyCode = nil
+            tapContext.filter.keyCode = nil
         }
     }
 

@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 - Turning off the hands-free key no longer shows an error at launch, after saving settings, or after changing models, and a resolved shortcut problem no longer leaves a warning on the Dictate tab. A shortcut problem reported during a recording no longer hides the overlay's Stop and Cancel controls.
+- Holding the hands-free key no longer sends repeated key presses to the app in front, and its key release is no longer passed through. A quick double press of the key no longer starts and immediately stops a recording.
 
 ## [1.0.0] - 2026-09-17
 
