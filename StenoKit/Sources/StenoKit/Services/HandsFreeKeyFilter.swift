@@ -63,6 +63,6 @@ public struct HandsFreeKeyFilter: Sendable, Equatable {
 
     private func matches(_ code: UInt16) -> Bool {
         guard let keyCode else { return false }
-        return code == keyCode
+        return HandsFreeKey.matchingKeyCodes(for: keyCode).contains(code)
     }
 }

@@ -321,8 +321,7 @@ struct RecordTab: View {
     }
 
     private func keyLabel(for keyCode: UInt16) -> String? {
-        let codes: [UInt16] = [122, 120, 160, 131, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90]
-        return codes.firstIndex(of: keyCode).map { "F\($0 + 1)" }
+        HandsFreeKey.displayName(for: keyCode)
     }
 }
 
