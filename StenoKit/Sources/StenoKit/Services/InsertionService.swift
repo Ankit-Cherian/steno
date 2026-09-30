@@ -342,7 +342,11 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         for target: AppContext,
         prefersExactSelection: Bool
     ) -> [any InsertionTransport] {
-        guard Self.terminalClipboardFirstBundleIDs.contains(target.bundleIdentifier.lowercased()) else {
+        // Terminals mishandle synthetic typing, and remote-desktop clients may
+        // forward only the key code of a Unicode typing event, so both paste.
+        let pastesFirst = target.isRemoteDesktop
+            || Self.terminalClipboardFirstBundleIDs.contains(target.bundleIdentifier.lowercased())
+        guard pastesFirst else {
             guard prefersExactSelection else { return transports }
             return transports.sorted { lhs, rhs in
                 Self.exactTargetPriority(lhs.method) < Self.exactTargetPriority(rhs.method)

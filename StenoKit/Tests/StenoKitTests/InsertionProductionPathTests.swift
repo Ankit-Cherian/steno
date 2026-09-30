@@ -93,3 +93,31 @@ func productionPathCopiesWhenTargetAppQuit() async {
     #expect(await clipboard.latestValue == "meant for the editor")
 }
 #endif
+
+#if os(macOS)
+@Test("Remote-desktop targets paste through the clipboard before typing")
+func remoteDesktopTargetsPasteFirst() async {
+    let remote = AppContext(
+        bundleIdentifier: "com.microsoft.rdc.macos",
+        appName: "Microsoft Remote Desktop",
+        isRemoteDesktop: true
+    )
+    let keys = FakeKeyPoster()
+    let service = makeProductionInsertionService(
+        clipboard: MemoryClipboardService(),
+        keys: keys,
+        activator: FakeApplicationActivator(
+            frontmost: remote.bundleIdentifier,
+            running: [remote.bundleIdentifier]
+        ),
+        accessibility: FakeAccessibilityClient(focusedBundle: remote.bundleIdentifier)
+    )
+
+    let result = await service.insert(text: "remote text", target: remote)
+
+    #expect(result.method == .clipboardPaste)
+    #expect(result.pasteAttempted == true)
+    #expect(keys.typedText.isEmpty)
+    #expect(keys.commandShortcuts.count == 1)
+}
+#endif
