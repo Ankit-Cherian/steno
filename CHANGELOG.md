@@ -43,6 +43,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Vocabulary corrections no longer chain into each other, an app-specific correction always takes precedence over an all-apps correction for the same word, and corrections that only change capitalization, such as "github" to "GitHub", now apply.
 - A correction no longer rewrites text that already has its preferred spelling, so "Visual Studio" does not become "Visual Studio Studio". Terms such as C++, C# and .NET can now be corrected.
 - In time zones where daylight saving skips midnight, such as Cairo, Havana and Santiago, the Insights calendar no longer shows empty days or drops today, and the current streak and active days are counted correctly.
+- Insights and History now use the system's number and plural formatting, so counts read "1 session" instead of "1 sessions", large totals read "1M" instead of "1000K", and long totals show thousands separators. Insights labels its word count as words spoken, counted before cleanup, and History labels its count as words in the final text.
 
 ## [1.0.0] - 2026-09-17
 

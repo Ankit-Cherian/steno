@@ -116,7 +116,7 @@ struct HistoryTab: View {
                 ForEach(HistoryFilter.allCases) { filter in Text(filter.rawValue).tag(filter) }
             }
             .padding(.horizontal, 16)
-            Text("\(filteredEntries.count) \(filteredEntries.count == 1 ? "transcript" : "transcripts") · newest first")
+            Text("\(InsightsFormatting.count(filteredEntries.count, "transcript")) · newest first")
                 .font(.system(size: 12)).foregroundStyle(theme.textDim)
                 .padding(.horizontal, 16)
 
@@ -263,7 +263,7 @@ struct HistoryTab: View {
     }
 
     private func detailMetadata(_ entry: TranscriptEntry, theme: StenoTheme) -> some View {
-        Text("\(entry.createdAt.formatted(date: .long, time: .shortened)) · \(transcriptText(entry).split(whereSeparator: \.isWhitespace).count) words · \(durationText(entry.durationMS))")
+        Text("\(entry.createdAt.formatted(date: .long, time: .shortened)) · \(InsightsFormatting.count(transcriptText(entry).split(whereSeparator: \.isWhitespace).count, "word")) in final text · \(durationText(entry.durationMS))")
             .font(.system(size: 11))
             .foregroundStyle(theme.textDim)
             .fixedSize(horizontal: false, vertical: true)

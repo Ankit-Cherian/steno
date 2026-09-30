@@ -170,7 +170,7 @@ struct UsageCalendarView: View {
     private func selectedDayMetrics(_ day: UsageCalendarDay) -> some View {
         HStack(spacing: 18) {
             dailyDetailMetric(label: selectedDayTimeLabel(day), value: selectedDayDuration(day))
-            dailyDetailMetric(label: "Words", value: day.isTracked ? day.wordCount.formatted() : "—")
+            dailyDetailMetric(label: "Words spoken", value: day.isTracked ? day.wordCount.formatted() : "—")
             dailyDetailMetric(label: "Sessions", value: day.isTracked ? day.sessionCount.formatted() : "—")
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -408,8 +408,7 @@ struct UsageCalendarView: View {
             details.append("time estimated")
         }
         if day.unavailableDurationSessionCount > 0 {
-            let sessionLabel = day.unavailableDurationSessionCount == 1 ? "session" : "sessions"
-            details.append("\(day.unavailableDurationSessionCount) \(sessionLabel) lack time")
+            details.append("\(InsightsFormatting.count(day.unavailableDurationSessionCount, "session")) without a saved time")
         }
         return details.isEmpty ? "Measured local usage." : details.joined(separator: " · ")
     }
@@ -692,10 +691,8 @@ private struct UsageCalendarCellView: View {
             return "\(dateText). No dictation."
         }
 
-        let sessionLabel = usage.sessionCount == 1 ? "session" : "sessions"
-        let wordLabel = usage.wordCount == 1 ? "word" : "words"
         let streakLabel = usage.isInCurrentStreak ? " Current streak." : ""
-        return "\(dateText). \(durationDescription), \(usage.wordCount) \(wordLabel), \(usage.sessionCount) \(sessionLabel).\(streakLabel)"
+        return "\(dateText). \(durationDescription), \(InsightsFormatting.count(usage.wordCount, "word")) spoken, \(InsightsFormatting.count(usage.sessionCount, "session")).\(streakLabel)"
     }
 
     private var durationDescription: String {
@@ -706,8 +703,7 @@ private struct UsageCalendarCellView: View {
 
         let prefix = usage.estimatedDurationSessionCount > 0 ? "about " : ""
         if usage.unavailableDurationSessionCount > 0 {
-            let label = usage.unavailableDurationSessionCount == 1 ? "session" : "sessions"
-            return "\(prefix)\(durationText) known time; \(usage.unavailableDurationSessionCount) \(label) lack duration"
+            return "\(prefix)\(durationText) known time; \(InsightsFormatting.count(usage.unavailableDurationSessionCount, "session")) without a saved time"
         }
         return "\(prefix)\(durationText)"
     }
