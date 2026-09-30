@@ -20,11 +20,18 @@ struct AppPreferences: Codable, Sendable, Equatable {
             self.atmosphereIntensity = atmosphereIntensity
         }
 
+        /// Files written before appearance settings existed keep the original accent.
+        static let legacy = Appearance(mode: .dark, accent: .dodger, recordHeroStyle: .pill, atmosphereIntensity: 100)
+
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            mode = try container.decodeIfPresent(StenoAppearanceMode.self, forKey: .mode) ?? .dark
-            accent = try container.decodeIfPresent(StenoAccentStyle.self, forKey: .accent) ?? .dodger
-            recordHeroStyle = try container.decodeIfPresent(StenoRecordHeroStyle.self, forKey: .recordHeroStyle) ?? .pill
+            mode = try container.decodeLenientlyIfPresent(StenoAppearanceMode.self, forKey: .mode, fallback: .dark) ?? .dark
+            accent = try container.decodeLenientlyIfPresent(StenoAccentStyle.self, forKey: .accent, fallback: .citron) ?? .dodger
+            recordHeroStyle = try container.decodeLenientlyIfPresent(
+                StenoRecordHeroStyle.self,
+                forKey: .recordHeroStyle,
+                fallback: .pill
+            ) ?? .pill
             atmosphereIntensity = try container.decodeIfPresent(Int.self, forKey: .atmosphereIntensity) ?? 100
         }
 
@@ -97,8 +104,17 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            whisperCLIPath = try container.decode(String.self, forKey: .whisperCLIPath)
-            modelPath = try container.decode(String.self, forKey: .modelPath)
+            let savedCLIPath = try container.decodeIfPresent(String.self, forKey: .whisperCLIPath)
+            let savedModelPath = try container.decodeIfPresent(String.self, forKey: .modelPath)
+            if let savedCLIPath, let savedModelPath {
+                whisperCLIPath = savedCLIPath
+                modelPath = savedModelPath
+            } else {
+                // A missing path is repaired to the bundled runtime on normalize.
+                let defaults = AppPreferences.default.dictation
+                whisperCLIPath = savedCLIPath ?? defaults.whisperCLIPath
+                modelPath = savedModelPath ?? defaults.modelPath
+            }
             threadCount = try container.decodeIfPresent(Int.self, forKey: .threadCount) ?? 6
             vadEnabled = try container.decodeIfPresent(Bool.self, forKey: .vadEnabled) ?? true
             let savedVAD = try container.decodeIfPresent(String.self, forKey: .vadModelPath)
@@ -204,7 +220,15 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            orderedMethods = try container.decodeIfPresent([InsertionMethod].self, forKey: .orderedMethods) ?? [.direct, .accessibility, .clipboardPaste]
+            guard let saved = try container.decodeIfPresent([String].self, forKey: .orderedMethods) else {
+                orderedMethods = [.direct, .accessibility, .clipboardPaste]
+                return
+            }
+            // Methods this build doesn't know are dropped; normalize() keeps clipboard paste.
+            orderedMethods = saved.compactMap(InsertionMethod.init(rawValue:))
+            if orderedMethods.count != saved.count {
+                decoder.recordReplacedValue()
+            }
         }
     }
 
@@ -299,5 +323,42 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         insertion.orderedMethods = normalized
         dictation.threadCount = max(1, min(16, dictation.threadCount))
+    }
+}
+
+extension AppPreferences {
+    /// Decodes each section on its own. A missing section uses its default; a
+    /// section, word correction, text shortcut or app profile that can't be read
+    /// falls back or is skipped without affecting the rest of the file.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = AppPreferences.default
+        appearance = Self.section(.appearance, in: container) ?? .legacy
+        general = Self.section(.general, in: container) ?? defaults.general
+        hotkeys = Self.section(.hotkeys, in: container) ?? defaults.hotkeys
+        dictation = Self.section(.dictation, in: container) ?? defaults.dictation
+        insertion = Self.section(.insertion, in: container) ?? defaults.insertion
+        media = Self.section(.media, in: container) ?? defaults.media
+        lexiconEntries = Self.section(.lexiconEntries, in: container, as: LossyArray<LexiconEntry>.self)?
+            .elements ?? defaults.lexiconEntries
+        globalStyleProfile = Self.section(.globalStyleProfile, in: container) ?? defaults.globalStyleProfile
+        appStyleProfiles = Self.section(.appStyleProfiles, in: container, as: LossyDictionary<StyleProfile>.self)?
+            .values ?? defaults.appStyleProfiles
+        snippets = Self.section(.snippets, in: container, as: LossyArray<Snippet>.self)?
+            .elements ?? defaults.snippets
+    }
+
+    private static func section<T: Decodable>(
+        _ key: CodingKeys,
+        in container: KeyedDecodingContainer<CodingKeys>,
+        as type: T.Type = T.self
+    ) -> T? {
+        guard container.contains(key) else { return nil }
+        do {
+            return try container.decode(T.self, forKey: key)
+        } catch {
+            try? container.superDecoder(forKey: key).recordReplacedValue()
+            return nil
+        }
     }
 }

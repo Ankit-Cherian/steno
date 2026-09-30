@@ -78,6 +78,33 @@ extension RawRepresentable where RawValue == String {
     }
 }
 
+extension KeyedDecodingContainer {
+    /// Decodes an optional string-backed enum, using `fallback` for a value
+    /// this build doesn't know. Returns nil when the key is absent or null.
+    public func decodeLenientlyIfPresent<T: RawRepresentable>(
+        _ type: T.Type,
+        forKey key: Key,
+        fallback: T
+    ) throws -> T? where T.RawValue == String {
+        guard let raw = try decodeIfPresent(String.self, forKey: key) else { return nil }
+        if let value = T(rawValue: raw) {
+            return value
+        }
+        try superDecoder(forKey: key).recordReplacedValue()
+        return fallback
+    }
+
+    /// Decodes an array, skipping elements that can't be decoded. Returns nil
+    /// when the key is absent or null.
+    public func decodeLossyArrayIfPresent<Element: Decodable>(
+        of type: Element.Type,
+        forKey key: Key
+    ) throws -> [Element]? {
+        guard contains(key), try !decodeNil(forKey: key) else { return nil }
+        return try decode(LossyArray<Element>.self, forKey: key).elements
+    }
+}
+
 /// An array that skips elements it can't decode instead of failing as a whole.
 public struct LossyArray<Element: Decodable>: Decodable {
     public var elements: [Element]

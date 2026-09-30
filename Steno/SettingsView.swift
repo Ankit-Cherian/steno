@@ -84,6 +84,13 @@ struct SettingsDraftState {
         }
     }
 
+    /// Restores edits whose save failed, against the preferences still saved.
+    mutating func restoreUnsaved(_ unsavedPreferences: AppPreferences, saved: AppPreferences) {
+        preferences = unsavedPreferences
+        savedPreferences = saved
+        hasConflictingUpdate = false
+    }
+
     mutating func reload(_ updatedPreferences: AppPreferences) {
         preferences = updatedPreferences
         savedPreferences = updatedPreferences
@@ -277,7 +284,7 @@ struct SettingsView: View {
     }
 
     private func footerStatus(theme: StenoTheme) -> some View {
-        Text(hasConflictingUpdate ? "Settings changed elsewhere. Discard to reload before saving." : preferencesDraft == controller.preferences ? "No pending changes" : "You have unsaved changes")
+        Text(hasConflictingUpdate ? "Settings changed elsewhere. Discard to reload before saving." : preferencesDraft == controller.preferences ? "No pending changes" : controller.settingsSaveError.isEmpty ? "You have unsaved changes" : "Save failed. \(controller.settingsSaveError)")
             .font(.system(size: preferencesDraft == controller.preferences && !hasConflictingUpdate ? 11 : 12))
             .foregroundStyle(theme.textDim)
             .fixedSize(horizontal: false, vertical: true)
@@ -290,9 +297,14 @@ struct SettingsView: View {
                 .disabled(preferencesDraft == controller.preferences)
                 .accessibilityIdentifier("settings.discard")
             Button("Save changes") {
-                controller.applySettingsDraft(preferences: preferencesDraft)
+                let submitted = preferencesDraft
+                let save = controller.applySettingsDraft(preferences: submitted)
                 // Accept synchronously normalized paths and options as the new draft baseline.
                 draftState.reload(controller.preferences)
+                Task {
+                    guard await !save.value else { return }
+                    draftState.restoreUnsaved(submitted, saved: controller.preferences)
+                }
             }
             .buttonStyle(SettingsFooterButtonStyle(theme: theme, tone: .primary))
             .disabled(hasConflictingUpdate || preferencesDraft == controller.preferences)

@@ -260,6 +260,8 @@ final class DictationController: ObservableObject {
     @Published var isLoadingUsageAnalytics = false
     /// A data file couldn't be read in full, or a transcript couldn't be saved.
     @Published var storageNotice: StorageRecoveryNotice?
+    /// Why the last Settings save failed; empty after a successful save.
+    @Published var settingsSaveError: String = ""
 
     private let captureService = MacAudioCaptureService()
     private let clipboardService: any ClipboardService
@@ -624,6 +626,9 @@ final class DictationController: ObservableObject {
         await historyStore.setRecoveryNoticeHandler { [weak self] notice in
             Task { @MainActor [weak self] in self?.presentStorageNotice(notice) }
         }
+        await preferencesStore.setRecoveryNoticeHandler { [weak self] notice in
+            Task { @MainActor [weak self] in self?.presentStorageNotice(notice) }
+        }
         var loaded = await preferencesStore.load()
         loaded.normalize()
 
@@ -646,34 +651,54 @@ final class DictationController: ObservableObject {
         applyPreferencesLocally(snapshot)
 
         Task {
-            await preferencesStore.save(snapshot)
-            await MainActor.run {
-                applyLaunchAtLoginPreference(
-                    requestedPreference: snapshot.general.launchAtLoginEnabled,
-                    userInitiated: true
-                )
-                status = "Settings saved."
-            }
+            guard await persistSettings(snapshot) else { return }
             await rebuildRuntimeOrDefer()
         }
     }
 
-    func applySettingsDraft(preferences draft: AppPreferences) {
-        guard !isIsolatedPreview else { preferences = draft; status = "Preview settings updated."; return }
+    /// Applies a Settings draft and saves it. The returned task reports whether
+    /// the save succeeded; on failure the previous settings are restored so the
+    /// draft stays unsaved and can be saved again or discarded.
+    @discardableResult
+    func applySettingsDraft(preferences draft: AppPreferences) -> Task<Bool, Never> {
+        guard !isIsolatedPreview else {
+            preferences = draft
+            status = "Preview settings updated."
+            return Task { true }
+        }
+        let previous = preferences
         var snapshot = draft
         snapshot.normalize()
         applyPreferencesLocally(snapshot)
 
-        Task {
-            await preferencesStore.save(snapshot)
-            await MainActor.run {
-                applyLaunchAtLoginPreference(
-                    requestedPreference: snapshot.general.launchAtLoginEnabled,
-                    userInitiated: true
-                )
-                status = "Settings saved."
+        return Task {
+            guard await persistSettings(snapshot) else {
+                if preferences == snapshot {
+                    applyPreferencesLocally(previous)
+                }
+                return false
             }
             await rebuildRuntimeOrDefer()
+            return true
+        }
+    }
+
+    /// Writes settings and reports the real outcome; never claims a save that failed.
+    private func persistSettings(_ snapshot: AppPreferences) async -> Bool {
+        switch await preferencesStore.save(snapshot) {
+        case .success:
+            settingsSaveError = ""
+            applyLaunchAtLoginPreference(
+                requestedPreference: snapshot.general.launchAtLoginEnabled,
+                userInitiated: true
+            )
+            status = "Settings saved."
+            return true
+        case .failure(let error):
+            settingsSaveError = error.localizedDescription
+            status = "Settings couldn't be saved."
+            lastError = error.localizedDescription
+            return false
         }
     }
 
