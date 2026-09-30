@@ -15,6 +15,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Settings, word corrections, text shortcuts and app style profiles are no longer reset when the settings file contains something Steno can't read. Each setting that can't be read falls back on its own, the rest load, and Steno keeps a copy of the original file. Settings files from Steno 0.1 now load with their vocabulary and shortcuts intact.
 - Settings no longer report "Settings saved" when the file couldn't be written. The changes stay unsaved in Settings, with Save changes and Discard still available.
 - Choosing Disabled for the hands-free key is now saved; it no longer comes back as F18 after a relaunch.
+- Insights no longer resets lifetime totals when its data contains a value written by a newer version of Steno.
 
 ## [1.0.0] - 2026-09-17
 

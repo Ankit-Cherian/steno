@@ -25,6 +25,52 @@ enum Released100 {
         var insertionStatus: InsertionStatus
     }
 
+    enum UsageDurationQuality: String, Codable {
+        case captureExact
+        case transcriptEstimate
+        case unavailable
+    }
+
+    enum UsageMetricQuality: String, Codable {
+        case exact
+        case estimated
+    }
+
+    struct UsageCleanupBreakdown: Codable {
+        var fillerRemovals: Int
+        var lexiconCorrections: Int
+        var repairResolutions: Int
+        var structureRewrites: Int
+        var punctuationChanges: Int
+        var commandTransforms: Int
+        var estimatedWordChanges: Int
+    }
+
+    struct UsageEvent: Codable {
+        var id: UUID
+        var createdAt: Date
+        var appBundleID: String
+        var rawWordCount: Int
+        var finalWordCount: Int
+        var durationMS: Int
+        var durationQuality: UsageDurationQuality
+        var cleanupChanges: UsageCleanupBreakdown
+        var cleanupQuality: UsageMetricQuality
+        var insertionStatus: InsertionStatus
+    }
+
+    struct UsageCoverageInterval: Codable {
+        var start: Date
+        var end: Date?
+    }
+
+    struct UsageArchive: Codable {
+        var version: Int
+        var events: [UsageEvent]
+        var coverage: [UsageCoverageInterval]
+        var appliedSegmentSequence: Int
+    }
+
     static func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
