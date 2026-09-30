@@ -160,7 +160,11 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         removedFillers = fillerResult.removed
         edits.append(contentsOf: fillerResult.edits)
 
-        let structureResult = applyStructure(text: text, mode: profile.structureMode)
+        let structureResult = applyStructure(
+            text: text,
+            mode: profile.structureMode,
+            preservedSpellings: lexicon.entries.map(\.preferred)
+        )
         text = structureResult.text
         edits.append(contentsOf: structureResult.edits)
 
@@ -374,7 +378,15 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
     // MARK: - Structure
 
-    private func applyStructure(text: String, mode: StructureMode) -> (text: String, edits: [TranscriptEdit]) {
+    private func applyStructure(
+        text: String,
+        mode: StructureMode,
+        preservedSpellings: [String]
+    ) -> (text: String, edits: [TranscriptEdit]) {
+        let capitalizedSentence = { (sentence: String) in
+            self.capitalizedSentence(sentence, preservedSpellings: preservedSpellings)
+        }
+
         switch mode {
         case .natural, .command:
             return (text, [])
@@ -382,7 +394,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return (capitalizedSentence(trimmed), [TranscriptEdit(kind: .structureRewrite, from: "raw", to: "paragraph")])
         case .bullets:
-            let clauses = splitIntoClauses(text)
+            let clauses = splitIntoClauses(text, capitalizedSentence: capitalizedSentence)
             let bulletText = clauses.map { "- \($0)" }.joined(separator: "\n")
             return (bulletText, [TranscriptEdit(kind: .structureRewrite, from: "raw", to: "bullets")])
         case .email:
@@ -392,7 +404,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         }
     }
 
-    private func splitIntoClauses(_ text: String) -> [String] {
+    private func splitIntoClauses(_ text: String, capitalizedSentence: (String) -> String) -> [String] {
         let separators = CharacterSet(charactersIn: ",.;")
         let pieces = text.components(separatedBy: separators)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -405,8 +417,23 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         return pieces.map(capitalizedSentence)
     }
 
-    private func capitalizedSentence(_ text: String) -> String {
+    /// Uppercases the first character unless the leading word is spelled deliberately: it has an
+    /// interior capital (iPhone, eBay, macOS) or it is a saved preferred spelling (npm).
+    private func capitalizedSentence(_ text: String, preservedSpellings: [String]) -> String {
         guard let first = text.first else { return text }
+        let leadingWord = text.prefix { $0.isWhitespace == false }
+        if leadingWord.dropFirst().contains(where: \.isUppercase) {
+            return text
+        }
+        let startsWithPreservedSpelling = preservedSpellings.contains { spelling in
+            let spelling = spelling.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard spelling.first?.isLowercase == true, text.hasPrefix(spelling) else { return false }
+            guard let next = text.dropFirst(spelling.count).first else { return true }
+            return next.isLetter == false && next.isNumber == false
+        }
+        if startsWithPreservedSpelling {
+            return text
+        }
         return String(first).uppercased() + text.dropFirst()
     }
 }
