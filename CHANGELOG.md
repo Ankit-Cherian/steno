@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- History is no longer erased when its file can't be read in full. Entries that can't be read are skipped and kept in a copy of the original file, a file that can't be read at all is moved aside instead of overwritten, and the previous version of the file is kept after each save.
+- Two copies of Steno running at the same time, such as a development build next to the installed app, no longer remove each other's History entries.
+
 ## [1.0.0] - 2026-09-17
 
 [Download Steno 1.0.0](https://github.com/Ankit-Cherian/steno/releases/tag/v1.0.0). The Developer ID signed installer is notarized and includes the local speech model.

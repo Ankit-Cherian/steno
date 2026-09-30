@@ -103,6 +103,12 @@ public enum InsertionStatus: String, Sendable, Codable, Equatable {
     case copiedOnly
     case failed
     case noSpeech
+
+    /// A status written by a newer version reads as `copiedOnly`: the text was
+    /// produced, and nothing claims it reached the target app.
+    public init(from decoder: Decoder) throws {
+        self = try .decodeLeniently(from: decoder, fallback: .copiedOnly)
+    }
 }
 
 public enum CleanupSource: String, Sendable, Codable, Equatable {
