@@ -404,17 +404,53 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         }
     }
 
+    private static let clauseSeparators: Set<Character> = [",", ".", ";"]
+    private static let abbreviationsWithFullStop: Set<String> = [
+        "dr", "jr", "mr", "mrs", "ms", "prof", "sr", "st", "vs",
+    ]
+
+    /// Splits at a comma, full stop or semicolon only where it ends a clause: it must be followed by
+    /// whitespace or the end of the text. Numbers (1.25, 1,250), email addresses and URLs have no
+    /// space after their punctuation, so they stay whole. A full stop that ends an abbreviation
+    /// (Dr., e.g., U.S.) does not split either.
     private func splitIntoClauses(_ text: String, capitalizedSentence: (String) -> String) -> [String] {
-        let separators = CharacterSet(charactersIn: ",.;")
-        let pieces = text.components(separatedBy: separators)
+        let characters = Array(text)
+        var pieces: [String] = []
+        var pieceStart = 0
+
+        for index in characters.indices where Self.clauseSeparators.contains(characters[index]) {
+            let next = index + 1
+            guard next == characters.count || characters[next].isWhitespace else { continue }
+            if characters[index] == ".", endsWithAbbreviation(characters, before: index) { continue }
+            pieces.append(String(characters[pieceStart..<index]))
+            pieceStart = next
+        }
+        pieces.append(String(characters[pieceStart...]))
+
+        let clauses = pieces
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        if pieces.isEmpty {
+        if clauses.isEmpty {
             return [capitalizedSentence(text)]
         }
 
-        return pieces.map(capitalizedSentence)
+        return clauses.map(capitalizedSentence)
+    }
+
+    /// Whether the word that ends at `index` (a full stop) is an abbreviation: a known title or
+    /// short form, or a dotted form such as "e.g" or "U.S".
+    private func endsWithAbbreviation(_ characters: [Character], before index: Int) -> Bool {
+        var start = index
+        while start > 0, characters[start - 1].isWhitespace == false {
+            start -= 1
+        }
+        let word = String(characters[start..<index])
+        guard word.isEmpty == false else { return false }
+        if word.contains("."), word.allSatisfy({ $0.isLetter || $0 == "." }) {
+            return true
+        }
+        return Self.abbreviationsWithFullStop.contains(word.lowercased())
     }
 
     /// Uppercases the first character unless the leading word is spelled deliberately: it has an
