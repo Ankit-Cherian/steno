@@ -127,7 +127,14 @@ public struct LexiconMatcher: Sendable {
     /// repeats one already claimed by a higher-precedence entry is dropped too, so an app-scoped
     /// entry replaces a global entry for the same term. Recognition hints use the same order.
     public static func resolvedEntries(_ entries: [LexiconEntry]) -> [LexiconEntry] {
-        let ordered = entries.enumerated()
+        var claimedTerms: Set<String> = []
+        return precedenceOrder(entries).filter { claimedTerms.insert(normalizedSpokenForm($0.term)).inserted }
+    }
+
+    /// Usable entries sorted by precedence: app scope first, then the longest spoken form, then
+    /// saved order.
+    static func precedenceOrder(_ entries: [LexiconEntry]) -> [LexiconEntry] {
+        entries.enumerated()
             .filter { isUsable($0.element) }
             .sorted { lhs, rhs in
                 let lhsScope = scopeRank(lhs.element.scope)
@@ -139,9 +146,6 @@ public struct LexiconMatcher: Sendable {
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
-
-        var claimedTerms: Set<String> = []
-        return ordered.filter { claimedTerms.insert(normalizedSpokenForm($0.term)).inserted }
     }
 
     static func isUsable(_ entry: LexiconEntry) -> Bool {
