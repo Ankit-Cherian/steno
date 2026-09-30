@@ -206,13 +206,15 @@ final class FakeAccessibilityClient: MacAccessibilityClient, @unchecked Sendable
 func makeFakeInsertionSystem(
     keys: FakeKeyPoster,
     activator: FakeApplicationActivator,
-    accessibility: FakeAccessibilityClient
+    accessibility: FakeAccessibilityClient,
+    pasteKeyCode: CGKeyCode = 9
 ) -> MacInsertionSystem {
     MacInsertionSystem(
         accessibility: accessibility,
         activateApplication: { activator.activate($0) },
         frontmostApplicationBundleIdentifier: { activator.frontmostBundleIdentifier() },
-        postKeyEvents: { keys.post($0, $1) }
+        postKeyEvents: { keys.post($0, $1) },
+        pasteKeyCode: { pasteKeyCode }
     )
 }
 
@@ -221,7 +223,8 @@ func makeProductionInsertionService(
     clipboard: any ClipboardService,
     keys: FakeKeyPoster,
     activator: FakeApplicationActivator,
-    accessibility: FakeAccessibilityClient
+    accessibility: FakeAccessibilityClient,
+    pasteKeyCode: CGKeyCode = 9
 ) -> InsertionService {
     InsertionService(transports: MacInsertionTransportFactory.makeTransports(
         orderedMethods: order,
@@ -229,7 +232,8 @@ func makeProductionInsertionService(
         system: makeFakeInsertionSystem(
             keys: keys,
             activator: activator,
-            accessibility: accessibility
+            accessibility: accessibility,
+            pasteKeyCode: pasteKeyCode
         )
     ))
 }

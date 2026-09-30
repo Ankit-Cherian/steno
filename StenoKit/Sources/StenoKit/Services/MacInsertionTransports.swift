@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import ApplicationServices
+import Carbon
 import Foundation
 
 /// Preferred tap location for synthetic event posting.
@@ -22,6 +23,7 @@ struct MacInsertionSystem: Sendable {
     var activateApplication: @Sendable (_ bundleIdentifier: String) async -> Bool
     var frontmostApplicationBundleIdentifier: @Sendable () async -> String?
     var postKeyEvents: @Sendable (_ keyDown: CGEvent, _ keyUp: CGEvent) -> Void
+    var pasteKeyCode: @Sendable () async -> CGKeyCode
 
     static let live = MacInsertionSystem(
         accessibility: SystemMacAccessibilityClient(),
@@ -44,8 +46,82 @@ struct MacInsertionSystem: Sendable {
         postKeyEvents: { keyDown, keyUp in
             keyDown.post(tap: stenoSyntheticEventTapLocation)
             keyUp.post(tap: stenoSyntheticEventTapLocation)
+        },
+        pasteKeyCode: {
+            // Text Input Sources must be queried on the main thread.
+            await MainActor.run { MacPasteKeyCode.currentLayoutKeyCode() }
         }
     )
+}
+
+/// Finds the key that produces "v" while Command is held under the current
+/// keyboard layout. Key code 9 is "v" only on QWERTY-positioned layouts; on
+/// Dvorak it is "k", and Command+K clears a terminal.
+enum MacPasteKeyCode {
+    static let fallback: CGKeyCode = 9
+
+    static func resolve(characterWithCommand: (CGKeyCode) -> String?) -> CGKeyCode {
+        if characterWithCommand(fallback)?.lowercased() == "v" {
+            return fallback
+        }
+        for keyCode in CGKeyCode(0)..<CGKeyCode(128)
+        where characterWithCommand(keyCode)?.lowercased() == "v" {
+            return keyCode
+        }
+        return fallback
+    }
+
+    @MainActor
+    static func currentLayoutKeyCode() -> CGKeyCode {
+        guard let layout = CurrentKeyboardLayout() else { return fallback }
+        return resolve { layout.characterWithCommand(for: $0) }
+    }
+
+    @MainActor
+    static func currentLayoutCharacterWithCommand(for keyCode: CGKeyCode) -> String? {
+        CurrentKeyboardLayout()?.characterWithCommand(for: keyCode)
+    }
+
+    private struct CurrentKeyboardLayout {
+        private let layoutData: Data
+
+        @MainActor
+        init?() {
+            guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+                  let property = TISGetInputSourceProperty(
+                      source,
+                      kTISPropertyUnicodeKeyLayoutData
+                  ) else {
+                return nil
+            }
+            layoutData = Unmanaged<CFData>.fromOpaque(property).takeUnretainedValue() as Data
+        }
+
+        func characterWithCommand(for keyCode: CGKeyCode) -> String? {
+            layoutData.withUnsafeBytes { rawBuffer -> String? in
+                guard let layout = rawBuffer.bindMemory(to: UCKeyboardLayout.self).baseAddress else {
+                    return nil
+                }
+                var deadKeyState: UInt32 = 0
+                var length = 0
+                var characters = [UniChar](repeating: 0, count: 4)
+                let status = UCKeyTranslate(
+                    layout,
+                    keyCode,
+                    UInt16(kUCKeyActionDown),
+                    UInt32((cmdKey >> 8) & 0xFF),
+                    UInt32(LMGetKbdType()),
+                    OptionBits(kUCKeyTranslateNoDeadKeysBit),
+                    &deadKeyState,
+                    characters.count,
+                    &length,
+                    &characters
+                )
+                guard status == noErr, length > 0 else { return nil }
+                return String(utf16CodeUnits: characters, count: length)
+            }
+        }
+    }
 }
 
 /// Builds the insertion transports in the user's configured order, with the
@@ -581,6 +657,7 @@ public enum MacPasteHelper {
             return .skipped(reason: "Exact editor target is unavailable: \(reason.rawValue).")
         }
 
+        let pasteKeyCode = await system.pasteKeyCode()
         for attempt in 0..<2 {
             guard !Task.isCancelled else {
                 return .skipped(reason: "Auto-paste canceled.")
@@ -588,7 +665,11 @@ public enum MacPasteHelper {
             if let editorTarget, case .failure(let reason) = await editorTarget.revalidate() {
                 return .skipped(reason: "Exact editor target is unavailable: \(reason.rawValue).")
             }
-            if simulateCommandV(commitPermit: commitPermit, postKeyEvents: system.postKeyEvents) {
+            if simulateCommandV(
+                keyCode: pasteKeyCode,
+                commitPermit: commitPermit,
+                postKeyEvents: system.postKeyEvents
+            ) {
                 return .attempted
             }
             if commitPermit?.cancellationRequested == true {
@@ -637,18 +718,24 @@ public enum MacPasteHelper {
         return .focusNotAcquired
     }
 
+    @MainActor
     public static func simulateCommandV() -> Bool {
-        simulateCommandV(commitPermit: nil, postKeyEvents: MacInsertionSystem.live.postKeyEvents)
+        simulateCommandV(
+            keyCode: MacPasteKeyCode.currentLayoutKeyCode(),
+            commitPermit: nil,
+            postKeyEvents: MacInsertionSystem.live.postKeyEvents
+        )
     }
 
     private static func simulateCommandV(
+        keyCode: CGKeyCode,
         commitPermit: InsertionCommitPermit?,
         postKeyEvents: @Sendable (_ keyDown: CGEvent, _ keyUp: CGEvent) -> Void
     ) -> Bool {
         guard !Task.isCancelled else { return false }
         guard let source = CGEventSource(stateID: .privateState),
-              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
         else { return false }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
