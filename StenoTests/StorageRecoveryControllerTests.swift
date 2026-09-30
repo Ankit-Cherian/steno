@@ -134,6 +134,7 @@ func failedSettingsSaveKeepsDraftUnsaved() async throws {
     let retry = controller.applySettingsDraft(preferences: draftState.preferences)
     #expect(await retry.value)
     #expect(controller.settingsSaveError.isEmpty)
+    #expect(controller.lastError.isEmpty)
     #expect(await AppPreferencesStore(storageURL: storageURL).load().snippets.map(\.trigger) == ["sig"])
 }
 

@@ -687,6 +687,9 @@ final class DictationController: ObservableObject {
     private func persistSettings(_ snapshot: AppPreferences) async -> Bool {
         switch await preferencesStore.save(snapshot) {
         case .success:
+            if !settingsSaveError.isEmpty, lastError == settingsSaveError {
+                lastError = ""
+            }
             settingsSaveError = ""
             applyLaunchAtLoginPreference(
                 requestedPreference: snapshot.general.launchAtLoginEnabled,
@@ -972,6 +975,14 @@ final class DictationController: ObservableObject {
                 lastError = error.localizedDescription
             }
         }
+    }
+
+    /// Discarding a draft that failed to save leaves nothing unsaved to explain.
+    func clearSettingsSaveError() {
+        if !settingsSaveError.isEmpty, lastError == settingsSaveError {
+            lastError = ""
+        }
+        settingsSaveError = ""
     }
 
     /// The insertion outcome stands; only the History copy is missing, so the

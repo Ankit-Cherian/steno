@@ -292,7 +292,10 @@ struct SettingsView: View {
 
     private func footerActions(theme: StenoTheme) -> some View {
         HStack(spacing: 10) {
-            Button("Discard") { draftState.reload(controller.preferences) }
+            Button("Discard") {
+                draftState.reload(controller.preferences)
+                controller.clearSettingsSaveError()
+            }
                 .buttonStyle(SettingsFooterButtonStyle(theme: theme, tone: .ghost))
                 .disabled(preferencesDraft == controller.preferences)
                 .accessibilityIdentifier("settings.discard")

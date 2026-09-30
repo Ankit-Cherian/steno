@@ -77,7 +77,6 @@ actor AppPreferencesStore {
         normalized.normalize()
 
         do {
-            try ensureStorageDirectoryExists()
             if loadFailed, FileManager.default.fileExists(atPath: storageURL.path) {
                 let movedURL = try StorageFilePreservation.moveAside(storageURL, label: "unreadable")
                 report(StorageRecoveryNotice(
@@ -95,6 +94,7 @@ actor AppPreferencesStore {
         }
 
         do {
+            try ensureStorageDirectoryExists()
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(normalized)
