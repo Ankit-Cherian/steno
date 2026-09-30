@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import StenoKit
 
 struct UsageCalendarDay: Identifiable, Sendable {
     let date: Date
@@ -458,7 +459,7 @@ struct UsageCalendarView: View {
         return Array(symbols[firstIndex...]) + Array(symbols[..<firstIndex])
     }
 
-    private var weeks: [UsageCalendarWeek] {
+    var weeks: [UsageCalendarWeek] {
         guard
             let firstDay = days.map(\.date).min(),
             let lastDay = days.map(\.date).max(),
@@ -478,8 +479,11 @@ struct UsageCalendarView: View {
 
         while weekStart <= lastWeek {
             let cells = (0..<7).compactMap { dayOffset -> UsageCalendarCell in
-                let date = calendar.date(byAdding: .day, value: dayOffset, to: weekStart) ?? weekStart
-                let normalizedDate = calendar.startOfDay(for: date)
+                let normalizedDate = UsageAnalyticsCalculator.dayStart(
+                    offsetBy: dayOffset,
+                    from: weekStart,
+                    calendar: calendar
+                ) ?? weekStart
                 return UsageCalendarCell(
                     date: normalizedDate,
                     usage: normalizedDays[normalizedDate],
@@ -488,7 +492,11 @@ struct UsageCalendarView: View {
             }
 
             result.append(UsageCalendarWeek(id: weekStart, cells: cells))
-            guard let nextWeek = calendar.date(byAdding: .day, value: 7, to: weekStart) else { break }
+            guard let nextWeek = UsageAnalyticsCalculator.dayStart(
+                offsetBy: 7,
+                from: weekStart,
+                calendar: calendar
+            ), nextWeek > weekStart else { break }
             weekStart = nextWeek
         }
 
@@ -510,12 +518,12 @@ struct UsageCalendarView: View {
     }
 }
 
-private struct UsageCalendarWeek: Identifiable {
+struct UsageCalendarWeek: Identifiable {
     let id: Date
     let cells: [UsageCalendarCell]
 }
 
-private struct UsageCalendarCell: Identifiable {
+struct UsageCalendarCell: Identifiable {
     let date: Date
     let usage: UsageCalendarDay?
     let isInRange: Bool

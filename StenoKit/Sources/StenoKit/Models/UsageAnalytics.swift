@@ -446,12 +446,12 @@ public enum UsageAnalyticsCalculator {
         let requestedMonths = max(1, months)
         let today = calendar.startOfDay(for: now)
         let currentMonth = calendar.dateInterval(of: .month, for: today)?.start ?? today
-        let windowStart = calendar.date(
+        let windowStart = calendar.startOfDay(for: calendar.date(
             byAdding: .month,
             value: -(requestedMonths - 1),
             to: currentMonth
-        ) ?? currentMonth
-        let windowEnd = calendar.date(byAdding: .day, value: 1, to: today) ?? now
+        ) ?? currentMonth)
+        let windowEnd = dayStart(offsetBy: 1, from: today, calendar: calendar) ?? now
         let allEvents = events.filter { $0.createdAt < windowEnd }
         let windowEvents = allEvents.filter {
             $0.createdAt >= windowStart && $0.createdAt < windowEnd
@@ -471,7 +471,7 @@ public enum UsageAnalyticsCalculator {
         var cursor = windowStart
         while cursor <= today {
             let eventsForDay = groupedByDay[cursor] ?? []
-            let dayEnd = calendar.date(byAdding: .day, value: 1, to: cursor) ?? cursor
+            let dayEnd = dayStart(offsetBy: 1, from: cursor, calendar: calendar) ?? cursor
             let isCovered = coverage.contains { interval in
                 let intervalEnd = interval.end ?? .distantFuture
                 return interval.start < dayEnd && intervalEnd >= cursor
@@ -494,7 +494,7 @@ public enum UsageAnalyticsCalculator {
                     isInCurrentStreak: currentStreakDays.contains(cursor)
                 )
             )
-            guard let next = calendar.date(byAdding: .day, value: 1, to: cursor), next > cursor else {
+            guard let next = dayStart(offsetBy: 1, from: cursor, calendar: calendar), next > cursor else {
                 break
             }
             cursor = next
@@ -564,7 +564,7 @@ public enum UsageAnalyticsCalculator {
     ) -> Set<Date> {
         var cursor = today
         if !activeDays.contains(cursor),
-           let yesterday = calendar.date(byAdding: .day, value: -1, to: cursor),
+           let yesterday = dayStart(offsetBy: -1, from: cursor, calendar: calendar),
            activeDays.contains(yesterday) {
             cursor = yesterday
         }
@@ -572,12 +572,19 @@ public enum UsageAnalyticsCalculator {
         var result: Set<Date> = []
         while activeDays.contains(cursor) {
             result.insert(cursor)
-            guard let previous = calendar.date(byAdding: .day, value: -1, to: cursor) else {
+            guard let previous = dayStart(offsetBy: -1, from: cursor, calendar: calendar) else {
                 break
             }
             cursor = previous
         }
         return result
+    }
+
+    /// The start of the day `days` away from `day`. Adding days keeps the wall
+    /// clock time, and where daylight saving skips or repeats midnight that time
+    /// isn't the start of the target day, so the result is normalized.
+    public static func dayStart(offsetBy days: Int, from day: Date, calendar: Calendar) -> Date? {
+        calendar.date(byAdding: .day, value: days, to: day).map(calendar.startOfDay(for:))
     }
 
     private static func longestStreak(activeDays: Set<Date>, calendar: Calendar) -> Int {
