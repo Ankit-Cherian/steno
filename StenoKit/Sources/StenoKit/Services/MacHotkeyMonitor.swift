@@ -37,6 +37,7 @@ public final class MacHotkeyMonitor: HotkeyService {
     private var callbackGeneration: UInt64 = 0
 
     private var hasStarted = false
+    private var lastReportedStatus: HotkeyRegistrationStatus?
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -145,9 +146,7 @@ public final class MacHotkeyMonitor: HotkeyService {
             callback: Self.eventTapCallback,
             userInfo: refcon
         ) else {
-            onRegistrationStatusChanged?(
-                .unavailable(reason: "Accessibility permission required for global hotkey.")
-            )
+            reportStatus(.unavailable(reason: "Accessibility permission required for global hotkey."))
             return
         }
 
@@ -160,7 +159,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
 
-        onRegistrationStatusChanged?(.registered)
+        reportStatus(.registered)
     }
 
     private func uninstallEventTap() {
@@ -179,12 +178,18 @@ public final class MacHotkeyMonitor: HotkeyService {
     private func updateHandsFreeStatus() {
         guard globalToggleKeyCode != nil else {
             uninstallEventTap()
-            onRegistrationStatusChanged?(
-                .unavailable(reason: "Global hands-free key disabled in settings.")
-            )
+            reportStatus(.disabled)
             return
         }
         installEventTap()
+    }
+
+    /// Settings saves, runtime rebuilds, and permission refreshes reassign the
+    /// same key repeatedly. Only a real change is reported.
+    private func reportStatus(_ status: HotkeyRegistrationStatus) {
+        guard status != lastReportedStatus else { return }
+        lastReportedStatus = status
+        onRegistrationStatusChanged?(status)
     }
 
     // MARK: - CGEventTap Callback

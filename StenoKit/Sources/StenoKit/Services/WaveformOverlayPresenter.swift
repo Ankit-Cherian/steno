@@ -65,6 +65,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     private var hostedEvidenceHandler: ((WaveformOverlayHostedEvidenceEvent) -> Void)?
     private var hostedAccessibilityPreferencesOverride: OverlayAccessibilityPreferences?
     private var rendersOffscreen = false
+    private var hostedEvidencePresentedStates: [OverlayState] = []
     #endif
 
     // MARK: - Constants
@@ -277,6 +278,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     public func show(state: OverlayState) {
         #if DEBUG
         let hostedCallStart = ProcessInfo.processInfo.systemUptime
+        hostedEvidencePresentedStates.append(state)
         #endif
         ensureWindow()
 
@@ -896,6 +898,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     func hostedEvidenceControlsAreNonactivating() -> Bool {
         window?.styleMask.contains(.nonactivatingPanel) == true && window?.isKeyWindow == false
     }
+
+    /// Every state passed to `show(state:)`, in order.
+    func hostedEvidenceShownStates() -> [OverlayState] { hostedEvidencePresentedStates }
 
     func hostedEvidenceStopIsAvailable() -> Bool {
         stopButton?.isHidden == false && stopButton?.isEnabled == true

@@ -386,14 +386,7 @@ final class DictationController: ObservableObject {
             self?.toggleHandsFree()
         }
         hotkey.onRegistrationStatusChanged = { [weak self] status in
-            switch status {
-            case .registered:
-                self?.hotkeyRegistrationMessage = ""
-            case .unavailable(let reason):
-                self?.hotkeyRegistrationMessage = reason
-                self?.overlay.show(state: .failure(message: reason))
-                self?.dismissOverlaySoon()
-            }
+            self?.handleHotkeyRegistrationStatus(status)
         }
         if systemIntegrationsEnabled && !isIsolatedPreview {
             hotkey.start()
@@ -834,6 +827,20 @@ final class DictationController: ObservableObject {
         }
     }
 
+    private func handleHotkeyRegistrationStatus(_ status: HotkeyRegistrationStatus) {
+        switch status {
+        case .registered, .disabled:
+            hotkeyRegistrationMessage = ""
+        case .unavailable(let reason):
+            hotkeyRegistrationMessage = reason
+            // A registration problem never replaces an active session's overlay
+            // and its Stop and Cancel controls.
+            guard recordingStateMachine.state == .idle else { return }
+            overlay.show(state: .failure(message: reason))
+            dismissOverlaySoon()
+        }
+    }
+
     func pressToTalkStart() {
         guard !isIsolatedPreview else { return }
         guard !isTearingDown else { return }
@@ -942,11 +949,6 @@ final class DictationController: ObservableObject {
                 lastError = error.localizedDescription
             }
         }
-    }
-
-    func clearErrors() {
-        lastError = ""
-        hotkeyRegistrationMessage = ""
     }
 
     func pasteEntry(_ entry: TranscriptEntry) {

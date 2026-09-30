@@ -3,6 +3,8 @@ import Foundation
 /// Result of attempting to register a global hotkey.
 public enum HotkeyRegistrationStatus: Sendable, Equatable {
     case registered
+    /// The user turned the hands-free key off. This is a normal state, not a failure.
+    case disabled
     case unavailable(reason: String)
 }
 

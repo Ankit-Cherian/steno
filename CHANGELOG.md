@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Turning off the hands-free key no longer shows an error at launch, after saving settings, or after changing models, and a resolved shortcut problem no longer leaves a warning on the Dictate tab. A shortcut problem reported during a recording no longer hides the overlay's Stop and Cancel controls.
+
 ## [1.0.0] - 2026-09-17
 
 [Download Steno 1.0.0](https://github.com/Ankit-Cherian/steno/releases/tag/v1.0.0). The Developer ID signed installer is notarized and includes the local speech model.
