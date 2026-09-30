@@ -26,14 +26,26 @@ enum EventTapReenablePolicy {
 
 @MainActor
 public final class MacHotkeyMonitor: HotkeyService {
+    public let confirmsPressToTalk = true
     public var onPressToTalkStart: (() -> Void)?
+    public var onPressToTalkConfirmed: (() -> Void)?
     public var onPressToTalkStop: (() -> Void)?
+    public var onPressToTalkDiscarded: (() -> Void)?
     public var onToggleHandsFree: (() -> Void)? {
         didSet { tapContext.onToggle = onToggleHandsFree }
     }
     public var onRegistrationStatusChanged: ((HotkeyRegistrationStatus) -> Void)?
 
-    public var isOptionPressToTalkEnabled: Bool = true
+    public var isOptionPressToTalkEnabled: Bool = true {
+        didSet {
+            guard hasStarted, isOptionPressToTalkEnabled != oldValue else { return }
+            if isOptionPressToTalkEnabled {
+                installOptionMonitors()
+            } else {
+                uninstallOptionMonitors()
+            }
+        }
+    }
     public var globalToggleKeyCode: UInt16? = 79 {
         didSet {
             tapContext.filter.keyCode = globalToggleKeyCode
@@ -42,9 +54,9 @@ public final class MacHotkeyMonitor: HotkeyService {
         }
     }
 
-    private var globalFlagsMonitor: Any?
-    private var localFlagsMonitor: Any?
-    private var isOptionHeld = false
+    private var optionMonitors: [Any] = []
+    private var pressFilter = PressToTalkKeyFilter()
+    private var confirmationWorkItem: DispatchWorkItem?
     private var callbackGeneration: UInt64 = 0
 
     private var hasStarted = false
@@ -67,7 +79,9 @@ public final class MacHotkeyMonitor: HotkeyService {
         guard !hasStarted else { return }
         callbackGeneration &+= 1
         hasStarted = true
-        installOptionMonitors()
+        if isOptionPressToTalkEnabled {
+            installOptionMonitors()
+        }
         updateHandsFreeStatus()
     }
 
@@ -76,67 +90,113 @@ public final class MacHotkeyMonitor: HotkeyService {
         hasStarted = false
         uninstallEventTap()
         uninstallOptionMonitors()
-        isOptionHeld = false
     }
 
     // MARK: - Option (Press-to-Talk) Monitors
 
     private func installOptionMonitors() {
-        guard globalFlagsMonitor == nil, localFlagsMonitor == nil else { return }
+        guard optionMonitors.isEmpty else { return }
+        let pointerDown: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
 
-        globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.handleFlagsChanged(event)
-        }
-
-        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.handleFlagsChanged(event)
-            return event
-        }
+        // Key and click events only tell a held Option apart from a shortcut.
+        // Which key was pressed is never read.
+        optionMonitors = [
+            NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                self?.receiveModifiers(event)
+            },
+            NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                self?.receiveModifiers(event)
+                return event
+            },
+            NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.receive(.keyDown, at: event.timestamp)
+            },
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.receive(.keyDown, at: event.timestamp)
+                return event
+            },
+            NSEvent.addGlobalMonitorForEvents(matching: pointerDown) { [weak self] event in
+                self?.receive(.pointerDown, at: event.timestamp)
+            },
+            NSEvent.addLocalMonitorForEvents(matching: pointerDown) { [weak self] event in
+                self?.receive(.pointerDown, at: event.timestamp)
+                return event
+            },
+        ].compactMap { $0 }
     }
 
     private func uninstallOptionMonitors() {
-        if let globalFlagsMonitor {
-            NSEvent.removeMonitor(globalFlagsMonitor)
-            self.globalFlagsMonitor = nil
+        for monitor in optionMonitors {
+            NSEvent.removeMonitor(monitor)
         }
-        if let localFlagsMonitor {
-            NSEvent.removeMonitor(localFlagsMonitor)
-            self.localFlagsMonitor = nil
-        }
+        optionMonitors.removeAll()
+        pressFilter.reset()
+        cancelConfirmationDeadline()
     }
 
-    private func handleFlagsChanged(_ event: NSEvent) {
-        guard isOptionPressToTalkEnabled else { return }
+    private func receiveModifiers(_ event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let others = flags.subtracting(optionFlag)
+        var modifiers: PressToTalkKeyFilter.Modifiers = []
+        if flags.contains(optionFlag) { modifiers.insert(.option) }
+        if others.contains(.command) { modifiers.insert(.command) }
+        if others.contains(.control) { modifiers.insert(.control) }
+        if others.contains(.shift) { modifiers.insert(.shift) }
+        receive(.modifiersChanged(modifiers), at: event.timestamp)
+    }
 
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let optionIsNowHeld = modifiers.contains(optionFlag)
-
-        if optionIsNowHeld == isOptionHeld {
-            return
-        }
-
-        isOptionHeld = optionIsNowHeld
-        let generation = callbackGeneration
-
-        // Dispatch callbacks async to avoid re-entrancy while the
-        // NSEvent monitor callback is still unwinding.
-        if optionIsNowHeld {
-            Task { @MainActor [weak self] in
-                guard let self,
-                      self.hasStarted,
-                      self.callbackGeneration == generation else {
-                    return
-                }
-                self.onPressToTalkStart?()
-            }
+    /// - Parameter timestamp: seconds since system startup, the clock of `NSEvent.timestamp`.
+    private func receive(_ input: PressToTalkKeyFilter.Input, at timestamp: TimeInterval) {
+        guard hasStarted, isOptionPressToTalkEnabled else { return }
+        let actions = pressFilter.handle(input, at: timestamp)
+        if pressFilter.confirmationDeadline == nil {
+            cancelConfirmationDeadline()
         } else {
-            Task { @MainActor [weak self] in
+            scheduleConfirmationDeadline()
+        }
+        dispatch(actions)
+    }
+
+    private func scheduleConfirmationDeadline() {
+        guard confirmationWorkItem == nil,
+              let deadline = pressFilter.confirmationDeadline
+        else { return }
+        let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+        let workItem = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.confirmationWorkItem = nil
+                self.receive(.confirmationDeadline, at: ProcessInfo.processInfo.systemUptime)
+            }
+        }
+        confirmationWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func cancelConfirmationDeadline() {
+        confirmationWorkItem?.cancel()
+        confirmationWorkItem = nil
+    }
+
+    private func dispatch(_ actions: [PressToTalkKeyFilter.Action]) {
+        guard !actions.isEmpty else { return }
+        let generation = callbackGeneration
+        // Dispatch async to avoid re-entrancy while the NSEvent monitor
+        // callback is still unwinding. The main queue keeps actions in order.
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
                 guard let self,
                       self.hasStarted,
-                      self.callbackGeneration == generation else {
-                    return
+                      self.callbackGeneration == generation
+                else { return }
+                for action in actions {
+                    switch action {
+                    case .start: self.onPressToTalkStart?()
+                    case .confirm: self.onPressToTalkConfirmed?()
+                    case .stop: self.onPressToTalkStop?()
+                    case .discard: self.onPressToTalkDiscarded?()
+                    }
                 }
-                self.onPressToTalkStop?()
             }
         }
     }

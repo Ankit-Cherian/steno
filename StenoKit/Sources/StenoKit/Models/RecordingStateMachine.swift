@@ -55,6 +55,23 @@ public struct RecordingStateMachine: Sendable, Equatable {
         }
     }
 
+    /// An Option press turned out to be part of a keyboard shortcut. Only an
+    /// Option recording is canceled; hands-free recording and a transcription
+    /// already in progress are left alone.
+    public mutating func handleOptionShortcut() -> RecordingTransition {
+        switch state {
+        case .recordingPressToTalk:
+            state = .idle
+            return .cancel(mode: .pressToTalk)
+        case .idle:
+            return .ignore(reason: "No active Option recording.")
+        case .recordingHandsFree:
+            return .ignore(reason: "Hands-free recording is active.")
+        case .transcribing:
+            return .ignore(reason: "Still transcribing the previous session.")
+        }
+    }
+
     public mutating func handleHandsFreeToggle() -> RecordingTransition {
         switch state {
         case .idle:

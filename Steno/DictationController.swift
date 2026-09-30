@@ -281,6 +281,9 @@ final class DictationController: ObservableObject {
     private var coordinator: (any DictationSessionCoordinating)?
 
     private var recordingStateMachine = RecordingStateMachine()
+    /// The overlay and media pause for the current Option press wait until the
+    /// hotkey service confirms the press is a dictation, not a keyboard shortcut.
+    private var pressToTalkConfirmation: PressToTalkConfirmation?
     private var currentSessionID: SessionID?
     private var currentCaptureStopCapability: PressToTalkCaptureStopCapability?
     private var activeCaptureStartHandoff: CaptureStartHandoff?
@@ -384,6 +387,12 @@ final class DictationController: ObservableObject {
         }
         hotkey.onToggleHandsFree = { [weak self] in
             self?.toggleHandsFree()
+        }
+        hotkey.onPressToTalkConfirmed = { [weak self] in
+            self?.pressToTalkConfirmed()
+        }
+        hotkey.onPressToTalkDiscarded = { [weak self] in
+            self?.pressToTalkDiscarded()
         }
         hotkey.onRegistrationStatusChanged = { [weak self] status in
             self?.handleHotkeyRegistrationStatus(status)
@@ -845,6 +854,8 @@ final class DictationController: ObservableObject {
         guard !isIsolatedPreview else { return }
         guard !isTearingDown else { return }
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
+        pressToTalkConfirmation?.release()
+        pressToTalkConfirmation = hotkey.confirmsPressToTalk ? PressToTalkConfirmation() : nil
         if sessionCleanupStartGate.deferPressToTalkStart() {
             status = "Finishing the previous recording. Hold Option to start when ready."
             return
@@ -861,6 +872,34 @@ final class DictationController: ObservableObject {
             return
         }
         apply(transition: recordingStateMachine.handleOptionKeyUp())
+    }
+
+    /// Option has been held alone long enough to be a dictation.
+    func pressToTalkConfirmed() {
+        guard !isIsolatedPreview, !isTearingDown else { return }
+        pressToTalkConfirmation?.confirm()
+    }
+
+    /// The Option press was part of a keyboard shortcut. The recording is
+    /// thrown away through the cancel path: nothing is inserted or saved, and
+    /// media is left as it was.
+    func pressToTalkDiscarded() {
+        guard !isIsolatedPreview, !isTearingDown else { return }
+        let confirmation = pressToTalkConfirmation
+        pressToTalkConfirmation = nil
+        defer { confirmation?.release() }
+        if sessionCleanupStartGate.cancelDeferredPressToTalkStart() { return }
+        let transition = recordingStateMachine.handleOptionShortcut()
+        guard case .cancel = transition else { return }
+        let wasPresented = confirmation?.isConfirmed == true
+        let previousStatus = status
+        let previousError = lastError
+        apply(transition: transition)
+        if !wasPresented {
+            // The press never showed as a recording, so it leaves no trace.
+            status = previousStatus
+            lastError = previousError
+        }
     }
 
     func stopRecording() {
@@ -1091,6 +1130,14 @@ final class DictationController: ObservableObject {
 
     private func apply(transition: RecordingTransition) {
         switch transition {
+        case .stop(.pressToTalk), .cancel(.pressToTalk):
+            // Nothing may keep waiting on a press that has ended.
+            pressToTalkConfirmation?.release()
+            pressToTalkConfirmation = nil
+        default:
+            break
+        }
+        switch transition {
         case .start(let mode):
             startSession(mode: mode)
         case .stop(let mode):
@@ -1135,6 +1182,7 @@ final class DictationController: ObservableObject {
 
         let shouldPauseMedia = (mode == .handsFree && preferences.media.pauseDuringHandsFree)
                             || (mode == .pressToTalk && preferences.media.pauseDuringPressToTalk)
+        let pressConfirmation = mode == .pressToTalk ? pressToTalkConfirmation : nil
 
         activeStartTask = Task {
             var ownedMediaToken: MediaInterruptionToken?
@@ -1160,6 +1208,7 @@ final class DictationController: ObservableObject {
                             case .cancel:
                                 await capability.cancelCapture()
                             case nil:
+                                await pressConfirmation?.wait()
                                 self?.acknowledgeCaptureStarted(
                                     capability: capability,
                                     handoff: captureHandoff,
@@ -1185,7 +1234,8 @@ final class DictationController: ObservableObject {
 
                 // Capture always owns the opening words. Optional media detection
                 // and pausing runs only after the microphone is already recording.
-                if shouldPauseMedia {
+                // A press that turns out to be a keyboard shortcut never touches media.
+                if shouldPauseMedia, await pressConfirmation?.wait() ?? true {
                     ownedMediaToken = await mediaInterruption.beginInterruption()
                 }
 
@@ -2140,6 +2190,51 @@ private extension CGRect {
     var area: CGFloat {
         guard !isNull, !isEmpty else { return 0 }
         return width * height
+    }
+}
+
+/// Settles once per Option press: confirmed as a dictation, or released
+/// because the press ended or was discarded first.
+@MainActor
+private final class PressToTalkConfirmation {
+    private(set) var isConfirmed = false
+    private var isSettled = false
+    private var waiters: [CheckedContinuation<Bool, Never>] = []
+
+    func confirm() {
+        settle(confirmed: true)
+    }
+
+    func release() {
+        settle(confirmed: false)
+    }
+
+    /// Returns whether the press was confirmed.
+    @discardableResult
+    func wait() async -> Bool {
+        if isSettled { return isConfirmed }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if isSettled {
+                    continuation.resume(returning: isConfirmed)
+                } else {
+                    waiters.append(continuation)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in self.release() }
+        }
+    }
+
+    private func settle(confirmed: Bool) {
+        guard !isSettled else { return }
+        isSettled = true
+        isConfirmed = confirmed
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: confirmed)
+        }
     }
 }
 

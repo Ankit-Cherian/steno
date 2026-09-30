@@ -46,6 +46,29 @@ public protocol HotkeyService: AnyObject {
 
     /// Stops all hotkey monitoring.
     func stop()
+
+    /// Whether this service reports, after each press-to-talk start, if the
+    /// press is a dictation or part of a keyboard shortcut. When it does,
+    /// `onPressToTalkConfirmed` always comes before `onPressToTalkStop`, and
+    /// `onPressToTalkDiscarded` replaces the stop and can follow a confirmation.
+    /// A service that does not treats every start as confirmed.
+    var confirmsPressToTalk: Bool { get }
+    var onPressToTalkConfirmed: (() -> Void)? { get set }
+    var onPressToTalkDiscarded: (() -> Void)? { get set }
+}
+
+extension HotkeyService {
+    public var confirmsPressToTalk: Bool { false }
+
+    public var onPressToTalkConfirmed: (() -> Void)? {
+        get { nil }
+        set {}
+    }
+
+    public var onPressToTalkDiscarded: (() -> Void)? {
+        get { nil }
+        set {}
+    }
 }
 
 /// Displays and hides a floating status overlay during dictation.
