@@ -65,6 +65,22 @@ public actor HistoryStore: HistoryStoreProtocol {
         }
     }
 
+    /// Removes every transcript. The previous-generation copy kept beside the
+    /// file is removed too, so the deleted text doesn't stay on disk.
+    public func deleteAll() async throws {
+        try commit { working in
+            working.removeAll()
+            return true
+        }
+        let previousURL = StorageFilePreservation.previousCopyURL(for: storageURL)
+        guard FileManager.default.fileExists(atPath: previousURL.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: previousURL)
+        } catch {
+            throw HistoryStoreError.persistenceFailed
+        }
+    }
+
     /// Returns recovery notices not yet delivered to a handler, once each.
     public func takeRecoveryNotices() -> [StorageRecoveryNotice] {
         defer { pendingNotices = [] }

@@ -44,6 +44,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A correction no longer rewrites text that already has its preferred spelling, so "Visual Studio" does not become "Visual Studio Studio". Terms such as C++, C# and .NET can now be corrected.
 - In time zones where daylight saving skips midnight, such as Cairo, Havana and Santiago, the Insights calendar no longer shows empty days or drops today, and the current streak and active days are counted correctly.
 - Insights and History now use the system's number and plural formatting, so counts read "1 session" instead of "1 sessions", large totals read "1M" instead of "1000K", and long totals show thousands separators. Insights labels its word count as words spoken, counted before cleanup, and History labels its count as words in the final text.
+- History now shows and searches every transcript it keeps, up to 1,000, instead of only the last 30 days, so older transcripts can be found and deleted. A new Delete all history action removes every saved transcript after confirming how many will be deleted; Insights totals are kept.
 
 ## [1.0.0] - 2026-09-17
 

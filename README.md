@@ -24,7 +24,7 @@ Most settings wait for **Save changes**; **Discard** restores the saved values. 
 
 ![Steno History with fictional sample notes](assets/1.0/history-dark.png)
 
-History keeps your most recent 1,000 dictations on your Mac. Search them, check whether the text was inserted or copied, copy it again, or delete an entry. Insights shows daily activity, streaks, words dictated, time spent, and usage by app. It stores session dates, app identifiers, and usage counts without a second copy of your transcripts or audio. Deleting a History entry leaves those usage totals intact.
+History keeps your most recent 1,000 dictations on your Mac and shows all of them. Search them, check whether the text was inserted or copied, copy it again, delete an entry, or delete all history. Insights shows daily activity, streaks, words spoken, time spent, and usage by app. It stores session dates, app identifiers, and usage counts without a second copy of your transcripts or audio. Deleting History entries leaves those usage totals intact.
 
 Optional nearby-text continuation reads a small amount of text around the editor selection to adjust spacing and capitalization. It currently works with English text in supported fields in Apple Mail, Notes, and TextEdit. That text is temporary: it isn't saved in History or Insights or sent to the speech model. Steno skips automatic continuation in secure or unsupported fields and when it cannot confirm the original editor target.
 
