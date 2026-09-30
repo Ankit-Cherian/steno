@@ -285,6 +285,14 @@ final class DictationController: ObservableObject {
     private var coordinator: (any DictationSessionCoordinating)?
 
     private var recordingStateMachine = RecordingStateMachine()
+    /// The overlay and media pause for the current Option press wait until the
+    /// hotkey service confirms the press is a dictation, not a keyboard shortcut.
+    private var pressToTalkConfirmation: PressToTalkConfirmation?
+    /// An Option press refused because the previous dictation is still
+    /// finishing is only worth a cue once it proves to be a dictation.
+    private var showsFinishingNoticeOnConfirmation = false
+    var recordingDurationLimit = RecordingDurationLimit.standard
+    private var hasWarnedAboutRecordingLimit = false
     private var currentSessionID: SessionID?
     private var currentCaptureStopCapability: PressToTalkCaptureStopCapability?
     private var activeCaptureStartHandoff: CaptureStartHandoff?
@@ -389,15 +397,14 @@ final class DictationController: ObservableObject {
         hotkey.onToggleHandsFree = { [weak self] in
             self?.toggleHandsFree()
         }
+        hotkey.onPressToTalkConfirmed = { [weak self] in
+            self?.pressToTalkConfirmed()
+        }
+        hotkey.onPressToTalkDiscarded = { [weak self] in
+            self?.pressToTalkDiscarded()
+        }
         hotkey.onRegistrationStatusChanged = { [weak self] status in
-            switch status {
-            case .registered:
-                self?.hotkeyRegistrationMessage = ""
-            case .unavailable(let reason):
-                self?.hotkeyRegistrationMessage = reason
-                self?.overlay.show(state: .failure(message: reason))
-                self?.dismissOverlaySoon()
-            }
+            self?.handleHotkeyRegistrationStatus(status)
         }
         if systemIntegrationsEnabled && !isIsolatedPreview {
             hotkey.start()
@@ -867,15 +874,40 @@ final class DictationController: ObservableObject {
         }
     }
 
+    private func handleHotkeyRegistrationStatus(_ status: HotkeyRegistrationStatus) {
+        switch status {
+        case .registered, .disabled:
+            hotkeyRegistrationMessage = ""
+        case .unavailable(let reason):
+            hotkeyRegistrationMessage = reason
+            // A registration problem never replaces an active session's overlay
+            // and its Stop and Cancel controls.
+            guard recordingStateMachine.state == .idle else { return }
+            overlay.show(state: .failure(message: reason))
+            dismissOverlaySoon()
+        }
+    }
+
     func pressToTalkStart() {
         guard !isIsolatedPreview else { return }
         guard !isTearingDown else { return }
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
+        pressToTalkConfirmation?.release()
+        pressToTalkConfirmation = hotkey.confirmsPressToTalk ? PressToTalkConfirmation() : nil
+        showsFinishingNoticeOnConfirmation = false
         if sessionCleanupStartGate.deferPressToTalkStart() {
             status = "Finishing the previous recording. Hold Option to start when ready."
             return
         }
+        let isFinishingPreviousSession = recordingStateMachine.state == .transcribing
         apply(transition: recordingStateMachine.handleOptionKeyDown())
+        if isFinishingPreviousSession {
+            if pressToTalkConfirmation == nil {
+                showFinishingPreviousSessionNotice()
+            } else {
+                showsFinishingNoticeOnConfirmation = true
+            }
+        }
     }
 
     func pressToTalkStop() {
@@ -887,6 +919,39 @@ final class DictationController: ObservableObject {
             return
         }
         apply(transition: recordingStateMachine.handleOptionKeyUp())
+    }
+
+    /// Option has been held alone long enough to be a dictation.
+    func pressToTalkConfirmed() {
+        guard !isIsolatedPreview, !isTearingDown else { return }
+        pressToTalkConfirmation?.confirm()
+        if showsFinishingNoticeOnConfirmation {
+            showsFinishingNoticeOnConfirmation = false
+            showFinishingPreviousSessionNotice()
+        }
+    }
+
+    /// The Option press was part of a keyboard shortcut. The recording is
+    /// thrown away through the cancel path: nothing is inserted or saved, and
+    /// media is left as it was.
+    func pressToTalkDiscarded() {
+        guard !isIsolatedPreview, !isTearingDown else { return }
+        showsFinishingNoticeOnConfirmation = false
+        let confirmation = pressToTalkConfirmation
+        pressToTalkConfirmation = nil
+        defer { confirmation?.release() }
+        if sessionCleanupStartGate.cancelDeferredPressToTalkStart() { return }
+        let transition = recordingStateMachine.handleOptionShortcut()
+        guard case .cancel = transition else { return }
+        let wasPresented = confirmation?.isConfirmed == true
+        let previousStatus = status
+        let previousError = lastError
+        apply(transition: transition)
+        if !wasPresented {
+            // The press never showed as a recording, so it leaves no trace.
+            status = previousStatus
+            lastError = previousError
+        }
     }
 
     func stopRecording() {
@@ -910,7 +975,18 @@ final class DictationController: ObservableObject {
                 : "Deferred hands-free start canceled."
             return
         }
+        let isFinishingPreviousSession = recordingStateMachine.state == .transcribing
         apply(transition: recordingStateMachine.handleHandsFreeToggle())
+        if isFinishingPreviousSession {
+            showFinishingPreviousSessionNotice()
+        }
+    }
+
+    /// A press while the previous dictation is still finishing starts nothing.
+    /// Say so where the user is looking, not only in the main window.
+    private func showFinishingPreviousSessionNotice() {
+        status = "Still finishing the previous dictation. Try again when it is done."
+        overlay.showNotice("Still finishing. Try again.")
     }
 
     func cancelActiveRecording() {
@@ -1033,11 +1109,6 @@ final class DictationController: ObservableObject {
                 lastError = error.localizedDescription
             }
         }
-    }
-
-    func clearErrors() {
-        lastError = ""
-        hotkeyRegistrationMessage = ""
     }
 
     func pasteEntry(_ entry: TranscriptEntry) {
@@ -1180,6 +1251,14 @@ final class DictationController: ObservableObject {
 
     private func apply(transition: RecordingTransition) {
         switch transition {
+        case .stop(.pressToTalk), .cancel(.pressToTalk):
+            // Nothing may keep waiting on a press that has ended.
+            pressToTalkConfirmation?.release()
+            pressToTalkConfirmation = nil
+        default:
+            break
+        }
+        switch transition {
         case .start(let mode):
             startSession(mode: mode)
         case .stop(let mode):
@@ -1224,6 +1303,7 @@ final class DictationController: ObservableObject {
 
         let shouldPauseMedia = (mode == .handsFree && preferences.media.pauseDuringHandsFree)
                             || (mode == .pressToTalk && preferences.media.pauseDuringPressToTalk)
+        let pressConfirmation = mode == .pressToTalk ? pressToTalkConfirmation : nil
 
         activeStartTask = Task {
             var ownedMediaToken: MediaInterruptionToken?
@@ -1249,6 +1329,7 @@ final class DictationController: ObservableObject {
                             case .cancel:
                                 await capability.cancelCapture()
                             case nil:
+                                await pressConfirmation?.wait()
                                 self?.acknowledgeCaptureStarted(
                                     capability: capability,
                                     handoff: captureHandoff,
@@ -1274,7 +1355,8 @@ final class DictationController: ObservableObject {
 
                 // Capture always owns the opening words. Optional media detection
                 // and pausing runs only after the microphone is already recording.
-                if shouldPauseMedia {
+                // A press that turns out to be a keyboard shortcut never touches media.
+                if shouldPauseMedia, await pressConfirmation?.wait() ?? true {
                     ownedMediaToken = await mediaInterruption.beginInterruption()
                 }
 
@@ -1374,6 +1456,7 @@ final class DictationController: ObservableObject {
         activeRecordingMode = mode
         recordingElapsed = 0
         recordingStartedAt = Date()
+        hasWarnedAboutRecordingLimit = false
         recordingTimer?.invalidate()
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -1381,11 +1464,29 @@ final class DictationController: ObservableObject {
                       self.isRecording,
                       self.activeSessionGeneration == generation else { return }
                 self.recordingElapsed += 1
+                self.enforceRecordingDurationLimit()
             }
         }
         overlay.setLiveTranscriptEnabled(preferences.dictation.showLiveTranscriptWhileRecording)
         overlay.pinNextSessionToDisplay(containing: captureStartTargetDisplayPoint())
         overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
+    }
+
+    /// A recording that reaches the length limit stops normally, so its audio
+    /// is transcribed rather than lost.
+    private func enforceRecordingDurationLimit() {
+        guard let recordingStartedAt else { return }
+        switch recordingDurationLimit.action(forElapsed: Date().timeIntervalSince(recordingStartedAt)) {
+        case .none:
+            return
+        case .warn:
+            guard !hasWarnedAboutRecordingLimit else { return }
+            hasWarnedAboutRecordingLimit = true
+            status = "Recording stops automatically in one minute."
+            overlay.showRecordingLimitWarning(limitSeconds: recordingDurationLimit.maximumSeconds)
+        case .stop:
+            stopRecording()
+        }
     }
 
     private func cancelSession(mode: RecordingMode) {
@@ -2233,6 +2334,51 @@ private extension CGRect {
     var area: CGFloat {
         guard !isNull, !isEmpty else { return 0 }
         return width * height
+    }
+}
+
+/// Settles once per Option press: confirmed as a dictation, or released
+/// because the press ended or was discarded first.
+@MainActor
+private final class PressToTalkConfirmation {
+    private(set) var isConfirmed = false
+    private var isSettled = false
+    private var waiters: [CheckedContinuation<Bool, Never>] = []
+
+    func confirm() {
+        settle(confirmed: true)
+    }
+
+    func release() {
+        settle(confirmed: false)
+    }
+
+    /// Returns whether the press was confirmed.
+    @discardableResult
+    func wait() async -> Bool {
+        if isSettled { return isConfirmed }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if isSettled {
+                    continuation.resume(returning: isConfirmed)
+                } else {
+                    waiters.append(continuation)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in self.release() }
+        }
+    }
+
+    private func settle(confirmed: Bool) {
+        guard !isSettled else { return }
+        isSettled = true
+        isConfirmed = confirmed
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: confirmed)
+        }
     }
 }
 

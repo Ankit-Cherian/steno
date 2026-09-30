@@ -40,6 +40,11 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     private var timer: Timer?
     private var listeningStartDate: Date?
     private var listeningHandsFree = false
+    /// Set once the session nears its length limit; the elapsed time then
+    /// gives way to a countdown.
+    private var recordingLimitSeconds: Int?
+    /// Advances on every state change, so a notice never overwrites a newer state.
+    private var presentationGeneration: UInt64 = 0
     private var wasHidden = true
     private var barsVisible = true
     private var configuredLiveTranscriptEnabled = true
@@ -65,6 +70,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     private var hostedEvidenceHandler: ((WaveformOverlayHostedEvidenceEvent) -> Void)?
     private var hostedAccessibilityPreferencesOverride: OverlayAccessibilityPreferences?
     private var rendersOffscreen = false
+    private var hostedEvidencePresentedStates: [OverlayState] = []
     #endif
 
     // MARK: - Constants
@@ -277,7 +283,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     public func show(state: OverlayState) {
         #if DEBUG
         let hostedCallStart = ProcessInfo.processInfo.systemUptime
+        hostedEvidencePresentedStates.append(state)
         #endif
+        presentationGeneration &+= 1
         ensureWindow()
 
         wasHidden = false
@@ -307,6 +315,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             transcriptContinuityEpoch = 0
             resizePanelForCurrentSession()
             listeningHandsFree = handsFree
+            recordingLimitSeconds = nil
             if case .listening(_, let elapsedSeconds) = state {
                 listeningStartDate = Date().addingTimeInterval(-TimeInterval(max(0, elapsedSeconds)))
             }
@@ -383,8 +392,81 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         #endif
     }
 
+    /// Warns that the listening session stops automatically once it has run
+    /// for `limitSeconds`, replacing the elapsed time with a countdown.
+    @MainActor
+    public func showRecordingLimitWarning(limitSeconds: Int) {
+        guard listeningSessionIsActive, recordingLimitSeconds == nil else { return }
+        recordingLimitSeconds = limitSeconds
+        setBarColor(Self.warningColor)
+        updateListeningText()
+        #if DEBUG
+        guard !rendersOffscreen else { return }
+        #endif
+        NSAccessibility.post(
+            element: NSApplication.shared,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: "Steno will stop recording in one minute",
+                .priority: NSAccessibilityPriorityLevel.high.rawValue
+            ]
+        )
+    }
+
+    /// Briefly shows a message without changing the current state. The previous
+    /// text returns afterwards, and an overlay that was hidden hides again.
+    @MainActor
+    public func showNotice(_ message: String, duration: Duration = .seconds(1.6)) {
+        ensureWindow()
+        presentationGeneration &+= 1
+        let generation = presentationGeneration
+        let wasHiddenBefore = wasHidden
+        let previousText = textField?.stringValue
+        if wasHiddenBefore {
+            wasHidden = false
+            failureMessage = nil
+            resizePanelForCurrentSession()
+            hideBarsShowIcon("hourglass", color: .systemGray)
+            hideLiveTranscriptFields()
+            hideCancelControl()
+        }
+        updateText(message)
+        if wasHiddenBefore {
+            centerWindowNearTop()
+            presentWindow()
+        }
+        #if DEBUG
+        if !rendersOffscreen { postNoticeAnnouncement(message) }
+        #else
+        postNoticeAnnouncement(message)
+        #endif
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: duration)
+            guard let self, self.presentationGeneration == generation else { return }
+            if wasHiddenBefore {
+                self.hide()
+            } else if let previousText {
+                self.updateText(previousText)
+            }
+        }
+    }
+
+    @MainActor
+    private func postNoticeAnnouncement(_ message: String) {
+        NSAccessibility.post(
+            element: NSApplication.shared,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: "Steno: \(message)",
+                .priority: NSAccessibilityPriorityLevel.medium.rawValue
+            ]
+        )
+    }
+
     @MainActor
     public func hide() {
+        presentationGeneration &+= 1
         if listeningSessionIsActive {
             announceOnce(.cancelled, message: "Steno dictation cancelled")
         }
@@ -790,6 +872,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     @MainActor
     private func endListeningPresentation() {
         listeningSessionIsActive = false
+        recordingLimitSeconds = nil
         liveUpdateGate.endListening()
         liveTranscriptSession = nil
         liveRenderBuffer.clear()
@@ -896,6 +979,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     func hostedEvidenceControlsAreNonactivating() -> Bool {
         window?.styleMask.contains(.nonactivatingPanel) == true && window?.isKeyWindow == false
     }
+
+    /// Every state passed to `show(state:)`, in order.
+    func hostedEvidenceShownStates() -> [OverlayState] { hostedEvidencePresentedStates }
 
     func hostedEvidenceStopIsAvailable() -> Bool {
         stopButton?.isHidden == false && stopButton?.isEnabled == true
@@ -1161,6 +1247,11 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             return
         }
         let elapsed = Int(Date().timeIntervalSince(start))
+        if let recordingLimitSeconds {
+            let remaining = max(0, recordingLimitSeconds - elapsed)
+            textField?.stringValue = "Stops in \(remaining / 60):\(String(format: "%02d", remaining % 60))"
+            return
+        }
         let minutes = elapsed / 60
         let seconds = elapsed % 60
         let mode = listeningHandsFree ? "Hands-free" : "Listening"

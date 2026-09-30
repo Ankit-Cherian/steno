@@ -16,6 +16,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Settings no longer report "Settings saved" when the file couldn't be written. The changes stay unsaved in Settings, with Save changes and Discard still available.
 - Choosing Disabled for the hands-free key is now saved; it no longer comes back as F18 after a relaunch.
 - Insights no longer resets lifetime totals when its data contains a value written by a newer version of Steno.
+- Keyboard shortcuts that use Option, such as Option+Arrow, Option+Delete, or Cmd+Option+I, and quick taps of Option no longer start a dictation. The overlay no longer flashes, media keeps playing, and nothing is inserted or added to History. Recording still starts the instant Option goes down, so opening words are not clipped.
+- Turning off the hands-free key no longer shows an error at launch, after saving settings, or after changing models, and a resolved shortcut problem no longer leaves a warning on the Dictate tab. A shortcut problem reported during a recording no longer hides the overlay's Stop and Cancel controls.
+- Holding the hands-free key no longer sends repeated key presses to the app in front, and its key release is no longer passed through. A quick double press of the key no longer starts and immediately stops a recording.
+- F3 and F4 now work as the hands-free key in standard function-key mode. Keys chosen in earlier versions keep working.
+- If macOS pauses the hands-free key's listener, Steno now always turns it back on, and saving settings also recovers it.
+- If the release of Option is missed, for example around a password field or a screen lock, the recording now ends within about a second and is transcribed. Recordings stop automatically after one hour, with a countdown in the overlay during the last minute, and the audio is transcribed rather than lost.
+- Pressing a dictation shortcut while the previous dictation is still finishing now shows a brief notice in the overlay instead of silently doing nothing.
 
 ## [1.0.0] - 2026-09-17
 

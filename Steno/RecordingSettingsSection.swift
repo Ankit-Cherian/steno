@@ -25,8 +25,8 @@ struct RecordingSettingsSection: View {
                         Section("F1–F12 (built-in keyboard)") {
                             Text("F1").tag(122 as UInt16?)
                             Text("F2").tag(120 as UInt16?)
-                            Text("F3").tag(160 as UInt16?)
-                            Text("F4").tag(131 as UInt16?)
+                            Text("F3").tag(99 as UInt16?)
+                            Text("F4").tag(118 as UInt16?)
                             Text("F5").tag(96 as UInt16?)
                             Text("F6").tag(97 as UInt16?)
                             Text("F7").tag(98 as UInt16?)
@@ -86,7 +86,7 @@ struct RecordingSettingsSection: View {
 
     private var handsFreeKeyBinding: Binding<UInt16?> {
         Binding(
-            get: { preferences.hotkeys.handsFreeGlobalKeyCode },
+            get: { HandsFreeKey.pickerKeyCode(for: preferences.hotkeys.handsFreeGlobalKeyCode) },
             set: { preferences.hotkeys.handsFreeGlobalKeyCode = $0 }
         )
     }
