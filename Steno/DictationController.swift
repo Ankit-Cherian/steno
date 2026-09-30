@@ -2020,8 +2020,10 @@ final class DictationController: ObservableObject {
             return "Transcript copied to clipboard. Paste with Cmd+V."
         }
 
-        // Refusals before any side effect already say why the text was copied.
-        if reason.contains("secure text field") || reason.contains("focused field changed") {
+        // These reasons already say why the text was copied.
+        if reason.contains("secure text field")
+            || reason.contains("focused field changed")
+            || reason.contains("respond in time") {
             return result.errorMessage ?? "Transcript copied to clipboard. Paste with Cmd+V."
         }
 

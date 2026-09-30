@@ -6,7 +6,7 @@ struct InsertionSettingsSection: View {
 
     var body: some View {
         settingsCard("Insertion order") {
-            Text("Steno tries these methods in order. Clipboard paste stays available as a backup.")
+            Text("Steno tries these methods in order. Terminal and remote-desktop apps start with Clipboard paste, and nearby text puts Accessibility first so Steno can check the exact field. Clipboard paste stays available as a backup.")
                 .font(StenoDesign.caption())
                 .foregroundStyle(StenoDesign.textSecondary)
 

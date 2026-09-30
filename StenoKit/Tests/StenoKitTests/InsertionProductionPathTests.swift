@@ -121,3 +121,37 @@ func remoteDesktopTargetsPasteFirst() async {
     #expect(keys.commandShortcuts.count == 1)
 }
 #endif
+
+#if os(macOS)
+@Test("A slow app's Accessibility timeout is reported as a timeout, not a target change")
+func exactTargetTimeoutIsReportedAsTimeout() async throws {
+    let keys = FakeKeyPoster()
+    let accessibility = FakeAccessibilityClient()
+    let pasteboard = FakePasteboard()
+    let service = makeProductionInsertionService(
+        clipboard: pasteboard,
+        keys: keys,
+        activator: FakeApplicationActivator(),
+        accessibility: accessibility
+    )
+    let handle = try EditorTargetHandle.capture(
+        target: productionPathContext,
+        client: accessibility
+    ).get()
+    accessibility.failCaptures(with: .timedOut)
+
+    let result = await service.insert(
+        text: "slow app",
+        target: productionPathContext,
+        editorTarget: handle,
+        clipboardRecoveryText: "slow app",
+        commitAuthorization: InsertionCommitAuthorization()
+    )
+
+    #expect(result.status == .copiedOnly)
+    #expect(keys.events.isEmpty)
+    #expect(result.errorMessage?.localizedCaseInsensitiveContains("respond in time") == true)
+    #expect(result.errorMessage?.localizedCaseInsensitiveContains("target changed") == false)
+    #expect(pasteboard.plainText == "slow app")
+}
+#endif

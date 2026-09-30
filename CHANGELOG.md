@@ -15,6 +15,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Steno now copies the transcript instead of inserting it when the cursor is in a password or other secure field, or when focus moved to a different field while it was transcribing. This works with default settings; nearby-text continuation is not required. Apps that answer Accessibility slowly keep inserting as before.
 - A recording recognized as punctuation only, such as a lone period, or one that cleanup empties entirely, such as fillers under Aggressive cleanup, is now reported as no speech. Nothing is inserted or saved, and the clipboard is left alone.
 - Remote-desktop and virtual-machine apps now receive dictation by clipboard paste first, like terminals, because they may not pass typed characters through correctly.
+- The Insertion order setting now explains when Steno changes the order, and an app that is too slow to answer Accessibility is reported as a timeout instead of "Target changed".
 
 ## [1.0.0] - 2026-09-17
 

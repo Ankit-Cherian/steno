@@ -678,7 +678,7 @@ public enum MacPasteHelper {
                 return .skipped(reason: InsertionTargetGuard.refusalMessage(for: reason))
             }
         } else if let editorTarget, case .failure(let reason) = await editorTarget.revalidate() {
-            return .skipped(reason: "Exact editor target is unavailable: \(reason.rawValue).")
+            return .skipped(reason: exactTargetSkipReason(reason))
         }
 
         let pasteKeyCode = await system.pasteKeyCode()
@@ -687,7 +687,7 @@ public enum MacPasteHelper {
                 return .skipped(reason: "Auto-paste canceled.")
             }
             if let editorTarget, case .failure(let reason) = await editorTarget.revalidate() {
-                return .skipped(reason: "Exact editor target is unavailable: \(reason.rawValue).")
+                return .skipped(reason: exactTargetSkipReason(reason))
             }
             // Another app may have written to the clipboard since Steno's
             // write. Pasting now would insert its content instead.
@@ -714,6 +714,12 @@ public enum MacPasteHelper {
         }
 
         return .skipped(reason: "Unable to synthesize Cmd+V for auto-paste.")
+    }
+
+    private static func exactTargetSkipReason(_ reason: EditorTargetUnavailableReason) -> String {
+        reason == .timedOut
+            ? ClipboardInsertionTransport.exactTargetSkipReason(reason)
+            : "Exact editor target is unavailable: \(reason.rawValue)."
     }
 
     private static func activateTargetApp(

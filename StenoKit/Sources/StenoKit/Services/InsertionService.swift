@@ -569,13 +569,13 @@ public struct ClipboardInsertionTransport: InsertionTransport {
 
         let supportsExactPaste = pasteAction != nil || exactTargetAutoPaste != nil
         if let editorTarget, supportsExactPaste {
-            guard case .success = await editorTarget.revalidate() else {
+            if case .failure(let reason) = await editorTarget.revalidate() {
                 _ = try await commitClipboard(
                     text,
                     authorization: commitAuthorization,
                     lease: commitLease
                 )
-                return .skipped(reason: "Target changed—final text copied.")
+                return .skipped(reason: Self.exactTargetSkipReason(reason))
             }
 
             let pasteWrite = try await commitClipboardForAutoPaste(
@@ -693,6 +693,12 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             scheduleRestore(after: pasteWrite)
         }
         return outcome
+    }
+
+    static func exactTargetSkipReason(_ reason: EditorTargetUnavailableReason) -> String {
+        reason == .timedOut
+            ? "The app didn't respond in time—final text copied."
+            : "Target changed—final text copied."
     }
 
     /// Copies the final text without pasting, for an insertion that was
