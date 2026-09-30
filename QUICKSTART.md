@@ -99,7 +99,7 @@ The sidebar contains Dictate, History, Insights, and Settings. The Dictate butto
 
 Insights shows an activity calendar, streaks, words, known dictated time, sessions, average speed, cleanup coverage, and top apps. Its local usage records contain no transcript text or audio. Deleting a transcript from History does not remove its usage record.
 
-Cleanup runs locally and preserves ambiguous phrases such as `like`, `you know`, `question mark`, `open paren`, and `slash command`. Only Aggressive cleanup removes its supported filler phrases. Optional media interruption sends Pause and Play to the specific app and process Steno verified; uncertain ownership leaves playback alone.
+Cleanup runs locally and preserves ambiguous phrases such as `like`, `you know`, `question mark`, `open paren`, and `slash command`. Only Aggressive cleanup removes its supported filler phrases. Optional media interruption (macOS 15 or later) sends Pause and Play to the specific app and process Steno verified; uncertain ownership leaves playback alone.
 
 Recording settings include an optional live transcript and nearby-text continuation. The live transcript stays in the local overlay; the completed recording determines the final text. Automatic continuation is limited to English in supported fields in Apple Mail, Notes, and TextEdit. Nearby text is read from a limited range around the selection and discarded after the dictation. It is never added to recognition prompts, History, or Insights. Steno skips continuation in secure or unsupported fields and when it cannot confirm the same editor is still the target.
 

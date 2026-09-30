@@ -8,6 +8,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Fixed
+- On macOS 13 and 14, the media pausing settings are now shown as unavailable with the reason, instead of appearing on while doing nothing. Media pausing requires macOS 15 or later; the saved choice is kept for after an update.
 - A media player that was slow to confirm a pause is now resumed after dictation instead of being left paused.
 
 ## [1.0.0] - 2026-09-17

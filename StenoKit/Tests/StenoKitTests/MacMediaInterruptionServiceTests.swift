@@ -6406,4 +6406,58 @@ func latePlayAcknowledgementKeepsProbeWindow() async {
         ))
     )
 }
+
+@MainActor
+@Test("Unsupported macOS never probes media state or sends a media command")
+func unsupportedSystemNeverProbesOrSendsMediaCommands() async {
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: confirmedPlayingSnapshot, count: 8)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        resumeVerificationDelays: [0, 0],
+        systemSupportsMediaPausing: false
+    )
+
+    let token = await service.beginInterruption()
+    await service.endInterruption(token: token ?? MediaInterruptionToken())
+
+    #expect(token == nil)
+    #expect(driver.snapshotCallCount == 0)
+    #expect(driver.sendCallCount == 0)
+    #expect(driver.commands.isEmpty)
+}
+
+@MainActor
+@Test("Supported macOS still pauses a verified-active application")
+func supportedSystemStillPausesVerifiedActiveApplication() async {
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [confirmedPlayingSnapshot, confirmedPausedSnapshot, confirmedPausedSnapshot]
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0],
+        resumeVerificationDelays: [],
+        systemSupportsMediaPausing: true
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(driver.commands == [.pause])
+    if let token {
+        await service.endInterruption(token: token)
+    }
+    #expect(driver.commands == [.pause, .play])
+}
+
+@Test("Media pausing support follows the Core Audio process monitor availability")
+func mediaPausingSupportMatchesCoreAudioAvailability() {
+    if #available(macOS 15.0, *) {
+        #expect(MacMediaInterruptionService.isSupportedOnCurrentSystem)
+    } else {
+        #expect(!MacMediaInterruptionService.isSupportedOnCurrentSystem)
+    }
+}
 #endif

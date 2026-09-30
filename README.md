@@ -17,7 +17,7 @@ Settings also lets you adjust how Steno handles your words:
 - Add recurring misheard words and preferred spellings to your word list, with optional aliases and rules for individual apps.
 - Expand a short phrase into saved text, such as an address or a reply you use often. Shortcuts can apply everywhere or in one app.
 - Choose cleanup preferences. Default cleanup keeps ambiguous phrases such as “like” and “you know”; Aggressive cleanup can remove its supported fillers.
-- Enable media interruption to pause an app that is playing audio and resume it after recording. Steno leaves playback alone when it cannot confirm which app it would control.
+- Enable media interruption to pause an app that is playing audio and resume it after recording. Steno leaves playback alone when it cannot confirm which app it would control. Media interruption requires macOS 15 or later; on earlier versions the settings are unavailable.
 - Choose a light or dark appearance, follow the system setting, and pick an accent color.
 
 Most settings wait for **Save changes**; **Discard** restores the saved values. Appearance changes save immediately.

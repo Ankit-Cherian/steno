@@ -24,7 +24,19 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     ]
     private static let defaultResumeLineageGraceDuration: TimeInterval = 3
 
+    /// Pausing needs Core Audio's per-process output state to confirm which
+    /// application is producing audio. That API exists from macOS 15; on
+    /// earlier systems no application can be confirmed, so the feature is
+    /// unavailable rather than guessing.
+    public nonisolated static var isSupportedOnCurrentSystem: Bool {
+        if #available(macOS 15.0, *) {
+            return true
+        }
+        return false
+    }
+
     private let driver: any MediaInterruptionDriving
+    private let systemSupportsMediaPausing: Bool
     private let verificationDelays: [UInt64]
     private let resumeVerificationDelays: [UInt64]
     private let resumeLineageGraceDuration: TimeInterval
@@ -48,6 +60,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
             audioOutputMonitor: CoreAudioOutputMonitor()
         )
+        self.systemSupportsMediaPausing = Self.isSupportedOnCurrentSystem
         self.verificationDelays = Self.defaultVerificationDelays
         self.resumeVerificationDelays = Self.defaultResumeVerificationDelays
         self.resumeLineageGraceDuration = Self.defaultResumeLineageGraceDuration
@@ -73,9 +86,11 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         afterPauseTransitionCancellation: @escaping @MainActor @Sendable () async -> Void = {},
         afterPauseTransitionFinalization: @escaping @MainActor @Sendable () async -> Void = {},
         beforeInitialResumeDispatch: @escaping @MainActor @Sendable () async -> Void = {},
-        beforeOwnerResumeFinalization: @escaping @MainActor @Sendable () async -> Void = {}
+        beforeOwnerResumeFinalization: @escaping @MainActor @Sendable () async -> Void = {},
+        systemSupportsMediaPausing: Bool = true
     ) {
         self.driver = driver
+        self.systemSupportsMediaPausing = systemSupportsMediaPausing
         self.verificationDelays = verificationDelays
         self.resumeVerificationDelays = resumeVerificationDelays
         self.resumeLineageGraceDuration = resumeLineageGraceDuration
@@ -89,6 +104,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     }
 
     public func beginInterruption() async -> MediaInterruptionToken? {
+        guard systemSupportsMediaPausing else { return nil }
         let token = MediaInterruptionToken()
         let result: MediaInterruptionToken? = await withTaskCancellationHandler {
             guard !Task.isCancelled else { return nil }
