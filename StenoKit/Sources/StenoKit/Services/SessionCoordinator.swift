@@ -761,7 +761,10 @@ public actor SessionCoordinator {
         )
         try checkCompletionOwnership(sessionID: sessionID)
 
-        if rawTranscript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Recognized text with no letter or digit, such as a lone "." from a
+        // cough, is not speech. Spoken commands like "period" or "new line"
+        // arrive as words and become symbols only in cleanup.
+        if !Self.containsLetterOrDigit(rawTranscript.text) {
             return noSpeechResult()
         }
 
@@ -769,7 +772,7 @@ public actor SessionCoordinator {
             rawTranscript,
             request: request
         ) {
-            if sanitizedPromptContamination.isEmpty {
+            if !Self.containsLetterOrDigit(sanitizedPromptContamination) {
                 return noSpeechResult()
             }
             rawTranscript.text = sanitizedPromptContamination
@@ -809,6 +812,11 @@ public actor SessionCoordinator {
             directivePlan,
             toCleanedText: cleanedTranscript.text
         )
+        // Cleanup can remove everything, for example fillers under the
+        // aggressive policy. Nothing is left to insert or record.
+        if cleanedTranscript.text.trimmingCharacters(in: .whitespaces).isEmpty {
+            return noSpeechResult()
+        }
         if directivePlan.kind != .none {
             cleanedTranscript.edits.append(TranscriptEdit(
                 kind: .commandTransform,
@@ -893,6 +901,10 @@ public actor SessionCoordinator {
 
     private func noSpeechResult() -> InsertResult {
         InsertResult(status: .noSpeech, method: .none, insertedText: "")
+    }
+
+    private static func containsLetterOrDigit(_ text: String) -> Bool {
+        text.contains { $0.isLetter || $0.isNumber }
     }
 
     private func prepareLivePipeline(
