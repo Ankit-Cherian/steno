@@ -642,6 +642,14 @@ public actor SessionCoordinator {
     func setLiveAppendWaitObserver(_ observer: (@Sendable () async -> Void)?) {
         liveAppendWaitObserver = observer
     }
+
+    private var completionCheckpointObserver: (@Sendable (SessionID) -> Void)?
+
+    /// Runs synchronously on the completion task at every ownership check, so
+    /// tests can cancel a completion at each of its suspension points.
+    func setCompletionCheckpointObserver(_ observer: (@Sendable (SessionID) -> Void)?) {
+        completionCheckpointObserver = observer
+    }
     #endif
 
     func liveHypothesisSchedulingEvaluationWatermark(
@@ -690,12 +698,27 @@ public actor SessionCoordinator {
             #endif
         }
 
-        let captureStopReceipt = try await active.captureStopGate.stop()
-        let audioURL = captureStopReceipt.audioURL
-        if cancelledEndingSessionIDs.contains(sessionID) {
-            await active.captureStopGate.cancel()
-            throw CancellationError()
+        let captureStopReceipt: CaptureStopReceipt
+        do {
+            captureStopReceipt = try await active.captureStopGate.stop()
+            if cancelledEndingSessionIDs.contains(sessionID) {
+                await active.captureStopGate.cancel()
+                throw CancellationError()
+            }
+        } catch {
+            // No registry owns this session now, so release its live stream
+            // here or the engine refuses every later session.
+            if let live = active.livePipeline {
+                live.pumpTask?.cancel()
+                live.hypothesisTask?.cancel()
+                if let engine = transcriptionEngine as? any LiveTranscriptionEngine {
+                    _ = await live.streamer.cancel(sessionID: sessionID)
+                    await engine.cancelLiveTranscription(session: live.identity)
+                }
+            }
+            throw error
         }
+        let audioURL = captureStopReceipt.audioURL
         let captureDurationMS = Self.durationMilliseconds(
             from: active.monotonicStartedAt,
             to: captureStopReceipt.monotonicEndedAt
@@ -742,23 +765,39 @@ public actor SessionCoordinator {
             cancelledCompletingSessionIDs.remove(sessionID)
             commitAuthorizations.removeValue(forKey: sessionID)
         }
-        try checkCompletionOwnership(sessionID: sessionID)
+        // The session is no longer registered, so cancel(sessionID:) cannot
+        // reach its live stream. Until the engine owns finalization, any throw
+        // must release that stream here, or the engine refuses every later
+        // session.
+        var liveFinishInvoked = false
         let request: TranscriptionRequest
-        if let frozenLiveRequest = active.livePipeline?.request {
-            request = frozenLiveRequest
-        } else {
-            request = TranscriptionRequest(
-                languageHints: languageHints,
-                appContext: active.appContext,
-                hotTerms: await lexiconService.hotTerms(for: active.appContext, limit: 8)
+        var rawTranscript: RawTranscript
+        do {
+            try checkCompletionOwnership(sessionID: sessionID)
+            if let frozenLiveRequest = active.livePipeline?.request {
+                request = frozenLiveRequest
+            } else {
+                request = TranscriptionRequest(
+                    languageHints: languageHints,
+                    appContext: active.appContext,
+                    hotTerms: await lexiconService.hotTerms(for: active.appContext, limit: 8)
+                )
+            }
+            try checkCompletionOwnership(sessionID: sessionID)
+            rawTranscript = try await authoritativeTranscript(
+                captured: captured,
+                request: request,
+                sessionID: sessionID,
+                liveFinishInvoked: &liveFinishInvoked
             )
+        } catch {
+            if !liveFinishInvoked,
+               let live = active.livePipeline,
+               let liveEngine = transcriptionEngine as? any LiveTranscriptionEngine {
+                await liveEngine.cancelLiveTranscription(session: live.identity)
+            }
+            throw error
         }
-        try checkCompletionOwnership(sessionID: sessionID)
-        var rawTranscript = try await authoritativeTranscript(
-            captured: captured,
-            request: request,
-            sessionID: sessionID
-        )
         try checkCompletionOwnership(sessionID: sessionID)
 
         // Recognized text with no letter or digit, such as a lone "." from a
@@ -1258,7 +1297,8 @@ public actor SessionCoordinator {
     private func authoritativeTranscript(
         captured: CapturedSession,
         request: TranscriptionRequest,
-        sessionID: SessionID
+        sessionID: SessionID,
+        liveFinishInvoked: inout Bool
     ) async throws -> RawTranscript {
         guard let live = captured.active.livePipeline,
               let liveEngine = transcriptionEngine as? any LiveTranscriptionEngine else {
@@ -1331,6 +1371,7 @@ public actor SessionCoordinator {
         // From this ownership transfer onward, no coordinator fallback is
         // legal: the live engine either returns its authoritative result or its
         // single internal canonical fallback error propagates to the caller.
+        liveFinishInvoked = true
         return try await liveEngine.finishLiveTranscription(
             session: live.identity,
             canonicalAudioURL: captured.audioURL,
@@ -1722,6 +1763,9 @@ public actor SessionCoordinator {
     }
 
     private func checkCompletionOwnership(sessionID: SessionID) throws {
+        #if DEBUG
+        completionCheckpointObserver?(sessionID)
+        #endif
         try Task.checkCancellation()
         guard completingSessionIDs.contains(sessionID),
               !cancelledCompletingSessionIDs.contains(sessionID)
