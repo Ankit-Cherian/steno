@@ -40,6 +40,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     private var timer: Timer?
     private var listeningStartDate: Date?
     private var listeningHandsFree = false
+    /// Set once the session nears its length limit; the elapsed time then
+    /// gives way to a countdown.
+    private var recordingLimitSeconds: Int?
     private var wasHidden = true
     private var barsVisible = true
     private var configuredLiveTranscriptEnabled = true
@@ -309,6 +312,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             transcriptContinuityEpoch = 0
             resizePanelForCurrentSession()
             listeningHandsFree = handsFree
+            recordingLimitSeconds = nil
             if case .listening(_, let elapsedSeconds) = state {
                 listeningStartDate = Date().addingTimeInterval(-TimeInterval(max(0, elapsedSeconds)))
             }
@@ -383,6 +387,27 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             ))
         }
         #endif
+    }
+
+    /// Warns that the listening session stops automatically once it has run
+    /// for `limitSeconds`, replacing the elapsed time with a countdown.
+    @MainActor
+    public func showRecordingLimitWarning(limitSeconds: Int) {
+        guard listeningSessionIsActive, recordingLimitSeconds == nil else { return }
+        recordingLimitSeconds = limitSeconds
+        setBarColor(Self.warningColor)
+        updateListeningText()
+        #if DEBUG
+        guard !rendersOffscreen else { return }
+        #endif
+        NSAccessibility.post(
+            element: NSApplication.shared,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: "Steno will stop recording in one minute",
+                .priority: NSAccessibilityPriorityLevel.high.rawValue
+            ]
+        )
     }
 
     @MainActor
@@ -792,6 +817,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     @MainActor
     private func endListeningPresentation() {
         listeningSessionIsActive = false
+        recordingLimitSeconds = nil
         liveUpdateGate.endListening()
         liveTranscriptSession = nil
         liveRenderBuffer.clear()
@@ -1166,6 +1192,11 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             return
         }
         let elapsed = Int(Date().timeIntervalSince(start))
+        if let recordingLimitSeconds {
+            let remaining = max(0, recordingLimitSeconds - elapsed)
+            textField?.stringValue = "Stops in \(remaining / 60):\(String(format: "%02d", remaining % 60))"
+            return
+        }
         let minutes = elapsed / 60
         let seconds = elapsed % 60
         let mode = listeningHandsFree ? "Hands-free" : "Listening"

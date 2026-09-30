@@ -104,6 +104,35 @@ struct PressToTalkKeyFilterTests {
         #expect(filter.handle(.confirmationDeadline, at: 10 + window) == [.confirm])
     }
 
+    @Test("A sampled release ends a dictation whose key-up was missed")
+    func sampledReleaseStops() {
+        var filter = Filter()
+        _ = filter.handle(.modifiersChanged([.option]), at: 10)
+        _ = filter.handle(.confirmationDeadline, at: 10 + window)
+        #expect(filter.handle(.modifiersSampled([.option]), at: 11) == [])
+        #expect(filter.handle(.modifiersSampled([.option, .shift]), at: 12) == [])
+        #expect(filter.handle(.modifiersSampled([]), at: 13) == [.stop])
+        #expect(filter.phase == .idle)
+    }
+
+    @Test("Samples never start, discard, or confirm a press")
+    func samplesOnlyEndPresses() {
+        var idle = Filter()
+        #expect(idle.handle(.modifiersSampled([.option]), at: 10) == [])
+        #expect(idle.phase == .idle)
+
+        var pending = Filter()
+        _ = pending.handle(.modifiersChanged([.option]), at: 10)
+        #expect(pending.handle(.modifiersSampled([.option, .command]), at: 10.05) == [])
+        #expect(pending.handle(.modifiersSampled([]), at: 10.4) == [.confirm, .stop])
+
+        var suppressed = Filter()
+        _ = suppressed.handle(.modifiersChanged([.option]), at: 10)
+        _ = suppressed.handle(.keyDown, at: 10.05)
+        #expect(suppressed.handle(.modifiersSampled([]), at: 11) == [])
+        #expect(suppressed.phase == .idle)
+    }
+
     @Test("Keys and clicks without Option do nothing")
     func eventsWithoutOptionAreIgnored() {
         var filter = Filter()

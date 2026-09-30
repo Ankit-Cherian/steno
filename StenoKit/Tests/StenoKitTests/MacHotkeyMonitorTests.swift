@@ -46,3 +46,62 @@ struct EventTapReenablePolicyTests {
     }
 }
 #endif
+
+#if os(macOS)
+@MainActor
+@Suite("MacHotkeyMonitor press-to-talk")
+struct MacHotkeyMonitorPressToTalkTests {
+    @Test("A missed Option key-up ends the recording within about a second")
+    func missedKeyUpEndsRecording() async {
+        // The live modifier state says nothing is held; the release event was lost.
+        let monitor = MacHotkeyMonitor(currentModifierFlags: { [] })
+        monitor.globalToggleKeyCode = nil
+        var actions: [String] = []
+        var stoppedAt: TimeInterval?
+        monitor.onPressToTalkStart = { actions.append("start") }
+        monitor.onPressToTalkConfirmed = { actions.append("confirm") }
+        monitor.onPressToTalkStop = {
+            actions.append("stop")
+            stoppedAt = ProcessInfo.processInfo.systemUptime
+        }
+        monitor.onPressToTalkDiscarded = { actions.append("discard") }
+        monitor.start()
+        defer { monitor.stop() }
+
+        let pressedAt = ProcessInfo.processInfo.systemUptime
+        monitor.receive(.modifiersChanged([.option]), at: pressedAt)
+        for _ in 0..<60 where stoppedAt == nil {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
+        #expect(actions == ["start", "confirm", "stop"])
+        let elapsed = (stoppedAt ?? .infinity) - pressedAt
+        #expect(elapsed < 1.5, "stopped after \(elapsed) s")
+    }
+
+    @Test("The monitor confirms a held Option only after the confirmation window")
+    func confirmationWaitsForWindow() async {
+        let monitor = MacHotkeyMonitor(currentModifierFlags: { [.option] })
+        monitor.globalToggleKeyCode = nil
+        var actions: [String] = []
+        var confirmedAt: TimeInterval?
+        monitor.onPressToTalkStart = { actions.append("start") }
+        monitor.onPressToTalkConfirmed = {
+            actions.append("confirm")
+            confirmedAt = ProcessInfo.processInfo.systemUptime
+        }
+        monitor.start()
+        defer { monitor.stop() }
+
+        let pressedAt = ProcessInfo.processInfo.systemUptime
+        monitor.receive(.modifiersChanged([.option]), at: pressedAt)
+        for _ in 0..<40 where confirmedAt == nil {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(actions == ["start", "confirm"])
+        let elapsed = (confirmedAt ?? 0) - pressedAt
+        #expect(elapsed >= PressToTalkKeyFilter.defaultConfirmationDelay)
+    }
+}
+#endif

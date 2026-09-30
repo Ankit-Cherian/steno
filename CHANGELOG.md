@@ -13,6 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Holding the hands-free key no longer sends repeated key presses to the app in front, and its key release is no longer passed through. A quick double press of the key no longer starts and immediately stops a recording.
 - F3 and F4 now work as the hands-free key in standard function-key mode. Keys chosen in earlier versions keep working.
 - If macOS pauses the hands-free key's listener, Steno now always turns it back on, and saving settings also recovers it.
+- If the release of Option is missed, for example around a password field or a screen lock, the recording now ends within about a second and is transcribed. Recordings stop automatically after one hour, with a countdown in the overlay during the last minute, and the audio is transcribed rather than lost.
 
 ## [1.0.0] - 2026-09-17
 

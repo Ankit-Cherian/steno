@@ -284,6 +284,8 @@ final class DictationController: ObservableObject {
     /// The overlay and media pause for the current Option press wait until the
     /// hotkey service confirms the press is a dictation, not a keyboard shortcut.
     private var pressToTalkConfirmation: PressToTalkConfirmation?
+    var recordingDurationLimit = RecordingDurationLimit.standard
+    private var hasWarnedAboutRecordingLimit = false
     private var currentSessionID: SessionID?
     private var currentCaptureStopCapability: PressToTalkCaptureStopCapability?
     private var activeCaptureStartHandoff: CaptureStartHandoff?
@@ -1335,6 +1337,7 @@ final class DictationController: ObservableObject {
         activeRecordingMode = mode
         recordingElapsed = 0
         recordingStartedAt = Date()
+        hasWarnedAboutRecordingLimit = false
         recordingTimer?.invalidate()
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -1342,11 +1345,29 @@ final class DictationController: ObservableObject {
                       self.isRecording,
                       self.activeSessionGeneration == generation else { return }
                 self.recordingElapsed += 1
+                self.enforceRecordingDurationLimit()
             }
         }
         overlay.setLiveTranscriptEnabled(preferences.dictation.showLiveTranscriptWhileRecording)
         overlay.pinNextSessionToDisplay(containing: captureStartTargetDisplayPoint())
         overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
+    }
+
+    /// A recording that reaches the length limit stops normally, so its audio
+    /// is transcribed rather than lost.
+    private func enforceRecordingDurationLimit() {
+        guard let recordingStartedAt else { return }
+        switch recordingDurationLimit.action(forElapsed: Date().timeIntervalSince(recordingStartedAt)) {
+        case .none:
+            return
+        case .warn:
+            guard !hasWarnedAboutRecordingLimit else { return }
+            hasWarnedAboutRecordingLimit = true
+            status = "Recording stops automatically in one minute."
+            overlay.showRecordingLimitWarning(limitSeconds: recordingDurationLimit.maximumSeconds)
+        case .stop:
+            stopRecording()
+        }
     }
 
     private func cancelSession(mode: RecordingMode) {

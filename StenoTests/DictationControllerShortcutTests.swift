@@ -216,6 +216,47 @@ func optionShortcutLeavesHandsFreeRunning() async {
     #expect(await events.count(of: "capture.cancel") == 0)
 }
 
+// MARK: - Recording length
+
+@MainActor
+@Test("A recording that reaches the length limit warns first, then stops and is transcribed", arguments: [false, true])
+func recordingLimitStopsAndTranscribes(handsFree: Bool) async {
+    let events = ShortcutEventLog()
+    let presenter = makeShortcutTestPresenter()
+    let hotkey = FilteringHotkeyService()
+    let controller = makeTestDictationController(
+        hotkey: hotkey,
+        overlay: presenter,
+        coordinator: ShortcutTestCoordinator(events: events)
+    )
+    defer { controller.teardown() }
+    controller.recordingDurationLimit = RecordingDurationLimit(maximumSeconds: 3, warningLeadSeconds: 2)
+
+    if handsFree {
+        controller.toggleHandsFree()
+    } else {
+        // Option stays held: the limit, not a key-up, ends this recording.
+        hotkey.press([.option])
+        hotkey.holdPastConfirmationWindow()
+    }
+    #expect(await waitForShortcutCondition { controller.isRecording })
+
+    #expect(await waitForShortcutCondition(attempts: 1_000) {
+        presenter.hostedEvidenceUserFacingStrings().first?.hasPrefix("Stops in") == true
+    })
+    #expect(controller.status == "Recording stops automatically in one minute.")
+    #expect(await waitForShortcutEvent("transcription.start", in: events, attempts: 1_000))
+    #expect(await waitForShortcutCondition { controller.lastTranscript == "Nearby words" })
+    #expect(await events.count(of: "capture.cancel") == 0)
+
+    if !handsFree {
+        // The late key-up belongs to a press that has already finished.
+        hotkey.press([])
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await events.count(of: "transcription.start") == 1)
+    }
+}
+
 enum OptionShortcut: String, CaseIterable, CustomTestStringConvertible, Sendable {
     case optionArrow
     case optionDelete

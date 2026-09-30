@@ -57,6 +57,7 @@ public final class MacHotkeyMonitor: HotkeyService {
     private var optionMonitors: [Any] = []
     private var pressFilter = PressToTalkKeyFilter()
     private var confirmationWorkItem: DispatchWorkItem?
+    private var modifierResyncTimer: Timer?
     private var callbackGeneration: UInt64 = 0
 
     private var hasStarted = false
@@ -67,11 +68,21 @@ public final class MacHotkeyMonitor: HotkeyService {
     private let tapContext = TapContext()
 
     private let optionFlag: NSEvent.ModifierFlags
+    private let modifierResyncInterval: TimeInterval
+    private let currentModifierFlags: @MainActor () -> NSEvent.ModifierFlags
 
+    /// - Parameters:
+    ///   - modifierResyncInterval: how often held modifiers are re-read while
+    ///     Option is down, so a missed key-up still ends the press.
+    ///   - currentModifierFlags: the live modifier state.
     public init(
-        optionFlag: NSEvent.ModifierFlags = .option
+        optionFlag: NSEvent.ModifierFlags = .option,
+        modifierResyncInterval: TimeInterval = 1,
+        currentModifierFlags: @escaping @MainActor () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
     ) {
         self.optionFlag = optionFlag
+        self.modifierResyncInterval = modifierResyncInterval
+        self.currentModifierFlags = currentModifierFlags
         tapContext.filter.keyCode = globalToggleKeyCode
     }
 
@@ -132,21 +143,29 @@ public final class MacHotkeyMonitor: HotkeyService {
         optionMonitors.removeAll()
         pressFilter.reset()
         cancelConfirmationDeadline()
+        stopModifierResync()
     }
 
     private func receiveModifiers(_ event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        receive(.modifiersChanged(pressModifiers(from: event.modifierFlags)), at: event.timestamp)
+    }
+
+    private func pressModifiers(from flags: NSEvent.ModifierFlags) -> PressToTalkKeyFilter.Modifiers {
+        let flags = flags.intersection(.deviceIndependentFlagsMask)
         let others = flags.subtracting(optionFlag)
         var modifiers: PressToTalkKeyFilter.Modifiers = []
         if flags.contains(optionFlag) { modifiers.insert(.option) }
         if others.contains(.command) { modifiers.insert(.command) }
         if others.contains(.control) { modifiers.insert(.control) }
         if others.contains(.shift) { modifiers.insert(.shift) }
-        receive(.modifiersChanged(modifiers), at: event.timestamp)
+        return modifiers
     }
 
+    /// Feeds one input to the press filter. Internal so tests can drive the
+    /// monitor without posting keyboard events.
+    ///
     /// - Parameter timestamp: seconds since system startup, the clock of `NSEvent.timestamp`.
-    private func receive(_ input: PressToTalkKeyFilter.Input, at timestamp: TimeInterval) {
+    func receive(_ input: PressToTalkKeyFilter.Input, at timestamp: TimeInterval) {
         guard hasStarted, isOptionPressToTalkEnabled else { return }
         let actions = pressFilter.handle(input, at: timestamp)
         if pressFilter.confirmationDeadline == nil {
@@ -154,7 +173,35 @@ public final class MacHotkeyMonitor: HotkeyService {
         } else {
             scheduleConfirmationDeadline()
         }
+        if pressFilter.phase == .idle {
+            stopModifierResync()
+        } else {
+            startModifierResync()
+        }
         dispatch(actions)
+    }
+
+    /// A modifier key-up can be lost, for example around secure input or a
+    /// screen lock. While Option is down, the live modifier state is re-read
+    /// so a missed release still ends the recording.
+    private func startModifierResync() {
+        guard modifierResyncTimer == nil else { return }
+        let timer = Timer(timeInterval: modifierResyncInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.receive(
+                    .modifiersSampled(self.pressModifiers(from: self.currentModifierFlags())),
+                    at: ProcessInfo.processInfo.systemUptime
+                )
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        modifierResyncTimer = timer
+    }
+
+    private func stopModifierResync() {
+        modifierResyncTimer?.invalidate()
+        modifierResyncTimer = nil
     }
 
     private func scheduleConfirmationDeadline() {

@@ -111,3 +111,33 @@ public struct RecordingStateMachine: Sendable, Equatable {
         state = .idle
     }
 }
+
+/// The longest a single recording may run. Reaching it stops the recording
+/// normally, so the audio is still transcribed; it is never discarded.
+public struct RecordingDurationLimit: Sendable, Equatable {
+    public enum Action: Sendable, Equatable {
+        case none
+        case warn(remainingSeconds: Int)
+        case stop
+    }
+
+    public var maximumSeconds: Int
+    public var warningLeadSeconds: Int
+
+    /// One hour stays well within what final transcription can process.
+    public static let standard = RecordingDurationLimit(maximumSeconds: 60 * 60, warningLeadSeconds: 60)
+
+    public init(maximumSeconds: Int, warningLeadSeconds: Int) {
+        self.maximumSeconds = maximumSeconds
+        self.warningLeadSeconds = warningLeadSeconds
+    }
+
+    public func action(forElapsed elapsed: TimeInterval) -> Action {
+        let remaining = TimeInterval(maximumSeconds) - elapsed
+        if remaining <= 0 { return .stop }
+        if remaining <= TimeInterval(warningLeadSeconds) {
+            return .warn(remainingSeconds: Int(remaining.rounded(.up)))
+        }
+        return .none
+    }
+}

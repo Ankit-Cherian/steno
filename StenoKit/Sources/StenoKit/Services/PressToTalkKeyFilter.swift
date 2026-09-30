@@ -27,6 +27,9 @@ public struct PressToTalkKeyFilter: Sendable, Equatable {
     public enum Input: Sendable, Equatable {
         /// The modifier keys now held, from a modifier change event.
         case modifiersChanged(Modifiers)
+        /// The modifier keys now held, read periodically so a missed key-up
+        /// still ends the press. A sample only ever ends a press.
+        case modifiersSampled(Modifiers)
         /// A non-modifier key went down.
         case keyDown
         /// A mouse button went down.
@@ -71,6 +74,11 @@ public struct PressToTalkKeyFilter: Sendable, Equatable {
 
     /// - Parameter now: a monotonic timestamp in seconds.
     public mutating func handle(_ input: Input, at now: TimeInterval) -> [Action] {
+        var input = input
+        if case .modifiersSampled(let modifiers) = input {
+            guard phase != .idle, !modifiers.contains(.option) else { return [] }
+            input = .modifiersChanged(modifiers)
+        }
         switch phase {
         case .idle:
             guard case .modifiersChanged(let modifiers) = input,
@@ -102,6 +110,8 @@ public struct PressToTalkKeyFilter: Sendable, Equatable {
                 guard now >= pressedAt + confirmationDelay else { return [] }
                 phase = .confirmed
                 return [.confirm]
+            case .modifiersSampled:
+                return []
             }
 
         case .confirmed:
@@ -114,7 +124,7 @@ public struct PressToTalkKeyFilter: Sendable, Equatable {
                 // Typing while Option is held is a shortcut, even after a pause.
                 phase = .suppressed
                 return [.discard]
-            case .pointerDown, .confirmationDeadline:
+            case .pointerDown, .confirmationDeadline, .modifiersSampled:
                 return []
             }
 
