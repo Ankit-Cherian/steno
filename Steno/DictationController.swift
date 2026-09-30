@@ -638,6 +638,13 @@ final class DictationController: ObservableObject {
 
     func bootstrap() async {
         guard !isIsolatedPreview else { hasBootstrapped = true; return }
+        if systemIntegrationsEnabled {
+            // A crash or force quit leaves the recording in progress behind.
+            // It holds the user's speech, and no session can own it at launch.
+            Task.detached(priority: .utility) {
+                MacAudioCaptureService.removeStaleRecordings()
+            }
+        }
         await historyStore.setRecoveryNoticeHandler { [weak self] notice in
             Task { @MainActor [weak self] in self?.presentStorageNotice(notice) }
         }

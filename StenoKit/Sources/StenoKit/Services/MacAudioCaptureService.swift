@@ -126,10 +126,53 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
         try? FileManager.default.removeItem(at: fileURL)
     }
 
+    private nonisolated static let tempAudioPrefix = "steno-audio-"
+
     private static func tempAudioURL(for sessionID: SessionID) -> URL {
         FileManager.default.temporaryDirectory
-            .appendingPathComponent("steno-audio-\(sessionID.uuidString)")
+            .appendingPathComponent("\(tempAudioPrefix)\(sessionID.uuidString)")
             .appendingPathExtension("wav")
+    }
+
+    /// Deletes recordings left behind when Steno quit without finishing a
+    /// session, for example after a crash or a force quit. Every normal path
+    /// deletes its own recording, and no session exists at launch, so only
+    /// files named exactly as this service names them, and older than
+    /// `minimumAge`, are removed. Returns the removed files.
+    @discardableResult
+    public nonisolated static func removeStaleRecordings(
+        in directory: URL = FileManager.default.temporaryDirectory,
+        olderThan minimumAge: TimeInterval = 5 * 60,
+        now: Date = Date()
+    ) -> [URL] {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey]
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: keys,
+            options: [.skipsSubdirectoryDescendants]
+        ) else {
+            return []
+        }
+
+        var removed: [URL] = []
+        for url in contents {
+            let name = url.lastPathComponent
+            guard name.hasPrefix(tempAudioPrefix),
+                  url.pathExtension == "wav",
+                  UUID(uuidString: String(url.deletingPathExtension().lastPathComponent.dropFirst(tempAudioPrefix.count))) != nil,
+                  let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  let modified = values.contentModificationDate,
+                  now.timeIntervalSince(modified) > minimumAge
+            else {
+                continue
+            }
+            if (try? FileManager.default.removeItem(at: url)) != nil {
+                removed.append(url)
+            }
+        }
+        return removed
     }
 
     public func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: (any Error)?) {
