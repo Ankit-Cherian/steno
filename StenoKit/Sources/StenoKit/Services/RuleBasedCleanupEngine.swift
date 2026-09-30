@@ -1,6 +1,9 @@
 import Foundation
 
-enum FillerLiteralContext {
+/// Decides whether a filler match is a literal use of the word that must be kept. It reads only a
+/// few words on either side of the match within its line, and quote state is computed once per
+/// text, so checking every match in a long dictation stays linear.
+struct FillerLiteralContext {
     static let clauseLeadTokens: Set<String> = [
         "i", "you", "we", "he", "she", "they", "it", "this", "that", "these", "those",
         "the", "a", "an", "there", "here", "please", "can", "could", "would", "should",
@@ -21,45 +24,89 @@ enum FillerLiteralContext {
         "exactly", "intentionally", "literal", "literally", "unchanged", "verbatim",
     ]
 
-    private static let adjacentQuoteCharacters: Set<Character> = ["\"", "`", "“", "”", "‘", "’"]
+    /// " ` “ ” ‘ ’
+    private static let adjacentQuoteUnits: Set<unichar> = [0x22, 0x60, 0x201C, 0x201D, 0x2018, 0x2019]
+    private static let newlineUnits: Set<unichar> = [0x0A, 0x0B, 0x0C, 0x0D, 0x85, 0x2028, 0x2029]
 
-    static func isProtected(prefix: String, suffix: String, matchedText: String) -> Bool {
-        let linePrefix = currentLinePrefix(in: prefix)
-        let lineSuffix = currentLineSuffix(in: suffix)
-        let prefixWords = words(in: linePrefix)
-        if prefixWords.suffix(8).contains(where: { literalCueWords.contains($0.lowercased()) }) {
+    private let units: [unichar]
+    /// `insideQuoteBefore[i]`: the text before UTF-16 offset `i` leaves a quoted span open.
+    private let insideQuoteBefore: [Bool]
+
+    init(text: String) {
+        let units = Array(text.utf16)
+        var insideQuoteBefore = [Bool](repeating: false, count: units.count + 1)
+        var openStraightDouble = false
+        var openBacktick = false
+        var lastOpenCurlyDouble = -1
+        var lastCloseCurlyDouble = -1
+        var lastOpenCurlySingle = -1
+        var lastCloseCurlySingle = -1
+
+        for (index, unit) in units.enumerated() {
+            switch unit {
+            case 0x22: openStraightDouble.toggle()
+            case 0x60: openBacktick.toggle()
+            case 0x201C: lastOpenCurlyDouble = index
+            case 0x201D: lastCloseCurlyDouble = index
+            case 0x2018: lastOpenCurlySingle = index
+            case 0x2019: lastCloseCurlySingle = index
+            default: break
+            }
+
+            let inside: Bool
+            if openStraightDouble || openBacktick {
+                inside = true
+            } else if lastOpenCurlyDouble >= 0 {
+                inside = lastCloseCurlyDouble < lastOpenCurlyDouble
+            } else if lastOpenCurlySingle >= 0 {
+                inside = lastCloseCurlySingle < lastOpenCurlySingle
+            } else {
+                inside = false
+            }
+            insideQuoteBefore[index + 1] = inside
+        }
+
+        self.units = units
+        self.insideQuoteBefore = insideQuoteBefore
+    }
+
+    func isProtected(_ range: NSRange, matchedText: String) -> Bool {
+        let start = range.location
+        let end = NSMaxRange(range)
+
+        if wordsBefore(start, limit: 8).contains(where: { Self.literalCueWords.contains($0.lowercased()) }) {
             return true
         }
 
-        let suffixWords = words(in: lineSuffix)
-        let suffixLead = suffixWords.prefix(6).map { $0.lowercased() }
-        if suffixLead.contains(where: literalSuffixWords.contains)
+        let suffixWords = wordsAfter(end, limit: 6)
+        let suffixLead = suffixWords.map { $0.lowercased() }
+        if suffixLead.contains(where: Self.literalSuffixWords.contains)
             || suffixLead.prefix(2).joined(separator: " ") == "as written"
             || suffixLead.prefix(2).joined(separator: " ") == "as text" {
             return true
         }
 
-        if isInsideQuotedSpan(prefix: prefix) {
+        if insideQuoteBefore[start] {
             return true
         }
 
-        if let last = prefix.last(where: { $0.isWhitespace == false }), adjacentQuoteCharacters.contains(last) {
+        if let last = lastNonWhitespaceUnit(before: start), Self.adjacentQuoteUnits.contains(last) {
             return true
         }
-        if let first = suffix.first(where: { $0.isWhitespace == false }), adjacentQuoteCharacters.contains(first) {
-            return true
-        }
-
-        if linePrefix.trimmingCharacters(in: .whitespaces).isEmpty == false,
-           matchedText.first?.isUppercase == true {
+        if let first = firstNonWhitespaceUnit(from: end), Self.adjacentQuoteUnits.contains(first) {
             return true
         }
 
-        if linePrefix.trimmingCharacters(in: .whitespaces).isEmpty {
+        let lineStartsHere = isLinePrefixBlank(before: start)
+        if lineStartsHere == false, matchedText.first?.isUppercase == true {
+            return true
+        }
+
+        if lineStartsHere {
             if let first = suffixWords.first,
                let firstCharacter = first.first,
                firstCharacter.isUppercase,
-               clauseLeadTokens.contains(first.lowercased()) == false {
+               Self.clauseLeadTokens.contains(first.lowercased()) == false {
                 return true
             }
             if suffixWords.prefix(2).count == 2,
@@ -71,34 +118,80 @@ enum FillerLiteralContext {
         return false
     }
 
-    private static func words(in text: String) -> [String] {
-        text.matches(of: /[A-Za-z0-9']+/).map { String($0.output) }
+    /// ASCII letters, digits and apostrophes, the word characters of the literal-cue check.
+    private static func isWordUnit(_ unit: unichar) -> Bool {
+        (unit >= 0x41 && unit <= 0x5A) || (unit >= 0x61 && unit <= 0x7A)
+            || (unit >= 0x30 && unit <= 0x39) || unit == 0x27
     }
 
-    private static func currentLinePrefix(in text: String) -> String {
-        guard let boundary = text.lastIndex(where: \.isNewline) else { return text }
-        return String(text[text.index(after: boundary)...])
+    private static func isWhitespaceUnit(_ unit: unichar) -> Bool {
+        Unicode.Scalar(unit)?.properties.isWhitespace == true
     }
 
-    private static func currentLineSuffix(in text: String) -> String {
-        guard let boundary = text.firstIndex(where: \.isNewline) else { return text }
-        return String(text[..<boundary])
+    /// Up to `limit` words that end before `offset` on the same line, in text order.
+    private func wordsBefore(_ offset: Int, limit: Int) -> [String] {
+        var words: [String] = []
+        var index = offset - 1
+        while index >= 0, words.count < limit, Self.newlineUnits.contains(units[index]) == false {
+            guard Self.isWordUnit(units[index]) else {
+                index -= 1
+                continue
+            }
+            let wordEnd = index + 1
+            while index >= 0, Self.isWordUnit(units[index]) {
+                index -= 1
+            }
+            words.append(String(decoding: units[(index + 1)..<wordEnd], as: UTF16.self))
+        }
+        return words.reversed()
     }
 
-    private static func isInsideQuotedSpan(prefix: String) -> Bool {
-        let straightDoubleQuotes = prefix.filter { $0 == "\"" }.count
-        let backticks = prefix.filter { $0 == "`" }.count
-        if straightDoubleQuotes.isMultiple(of: 2) == false || backticks.isMultiple(of: 2) == false {
-            return true
+    /// Up to `limit` words that start at or after `offset` on the same line.
+    private func wordsAfter(_ offset: Int, limit: Int) -> [String] {
+        var words: [String] = []
+        var index = offset
+        while index < units.count, words.count < limit, Self.newlineUnits.contains(units[index]) == false {
+            guard Self.isWordUnit(units[index]) else {
+                index += 1
+                continue
+            }
+            let wordStart = index
+            while index < units.count, Self.isWordUnit(units[index]) {
+                index += 1
+            }
+            words.append(String(decoding: units[wordStart..<index], as: UTF16.self))
         }
+        return words
+    }
 
-        if let opening = prefix.lastIndex(of: "“") {
-            return prefix.lastIndex(of: "”").map { $0 < opening } ?? true
+    private func lastNonWhitespaceUnit(before offset: Int) -> unichar? {
+        var index = offset - 1
+        while index >= 0, Self.isWhitespaceUnit(units[index]) {
+            index -= 1
         }
-        if let opening = prefix.lastIndex(of: "‘") {
-            return prefix.lastIndex(of: "’").map { $0 < opening } ?? true
+        return index >= 0 ? units[index] : nil
+    }
+
+    private func firstNonWhitespaceUnit(from offset: Int) -> unichar? {
+        var index = offset
+        while index < units.count, Self.isWhitespaceUnit(units[index]) {
+            index += 1
         }
-        return false
+        return index < units.count ? units[index] : nil
+    }
+
+    /// Whether only spaces or tabs separate `offset` from the start of its line.
+    private func isLinePrefixBlank(before offset: Int) -> Bool {
+        var index = offset - 1
+        while index >= 0 {
+            let unit = units[index]
+            if Self.newlineUnits.contains(unit) { return true }
+            guard let scalar = Unicode.Scalar(unit), CharacterSet.whitespaces.contains(scalar) else {
+                return false
+            }
+            index -= 1
+        }
+        return true
     }
 }
 
@@ -256,22 +349,12 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     ) {
         let source = text as NSString
         let range = NSRange(location: 0, length: source.length)
+        let context = FillerLiteralContext(text: text)
         let acceptedFillerRanges = regex.matches(in: text, range: range).compactMap { match -> NSRange? in
             guard match.numberOfRanges > 1 else { return nil }
             let fillerRange = match.range(at: 1)
             guard fillerRange.location != NSNotFound else { return nil }
-
-            let prefix = source.substring(with: NSRange(location: 0, length: fillerRange.location))
-            let suffixStart = NSMaxRange(fillerRange)
-            let suffix = source.substring(
-                with: NSRange(location: suffixStart, length: source.length - suffixStart)
-            )
-            let matchedText = source.substring(with: fillerRange)
-            guard FillerLiteralContext.isProtected(
-                prefix: prefix,
-                suffix: suffix,
-                matchedText: matchedText
-            ) == false else {
+            guard context.isProtected(fillerRange, matchedText: source.substring(with: fillerRange)) == false else {
                 return nil
             }
             return fillerRange
@@ -281,11 +364,16 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         }
         guard acceptedEdits.isEmpty == false else { return }
 
-        let mutable = NSMutableString(string: text)
-        for (acceptedRange, replacement) in acceptedEdits.reversed() {
-            mutable.replaceCharacters(in: acceptedRange, with: replacement)
+        // Build the result front to back so the cost stays linear in the length of the text.
+        let rebuilt = NSMutableString(capacity: source.length)
+        var copiedUpTo = 0
+        for (acceptedRange, replacement) in acceptedEdits where acceptedRange.location >= copiedUpTo {
+            rebuilt.append(source.substring(with: NSRange(location: copiedUpTo, length: acceptedRange.location - copiedUpTo)))
+            rebuilt.append(replacement)
+            copiedUpTo = NSMaxRange(acceptedRange)
         }
-        text = String(mutable)
+        rebuilt.append(source.substring(from: copiedUpTo))
+        text = String(rebuilt)
         removed.append(contentsOf: Array(repeating: filler, count: acceptedFillerRanges.count))
         edits.append(TranscriptEdit(kind: .fillerRemoval, from: filler, to: ""))
     }

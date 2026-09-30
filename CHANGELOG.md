@@ -43,6 +43,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Vocabulary corrections no longer chain into each other, an app-specific correction always takes precedence over an all-apps correction for the same word, and corrections that only change capitalization, such as "github" to "GitHub", now apply.
 - A correction no longer rewrites text that already has its preferred spelling, so "Visual Studio" does not become "Visual Studio Studio". Terms such as C++, C# and .NET can now be corrected.
 - Bullet formatting no longer splits decimals, thousands separators, email addresses, web addresses or abbreviations such as "Dr." and "e.g." into separate bullets.
+- Aggressive filler removal no longer slows down on long dictations. A 10,000-character dictation took about a second to clean and now takes well under a tenth of a second.
 
 ## [1.0.0] - 2026-09-17
 
