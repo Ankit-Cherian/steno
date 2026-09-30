@@ -43,6 +43,8 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     /// Set once the session nears its length limit; the elapsed time then
     /// gives way to a countdown.
     private var recordingLimitSeconds: Int?
+    /// Advances on every state change, so a notice never overwrites a newer state.
+    private var presentationGeneration: UInt64 = 0
     private var wasHidden = true
     private var barsVisible = true
     private var configuredLiveTranscriptEnabled = true
@@ -283,6 +285,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         let hostedCallStart = ProcessInfo.processInfo.systemUptime
         hostedEvidencePresentedStates.append(state)
         #endif
+        presentationGeneration &+= 1
         ensureWindow()
 
         wasHidden = false
@@ -410,8 +413,60 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         )
     }
 
+    /// Briefly shows a message without changing the current state. The previous
+    /// text returns afterwards, and an overlay that was hidden hides again.
+    @MainActor
+    public func showNotice(_ message: String, duration: Duration = .seconds(1.6)) {
+        ensureWindow()
+        presentationGeneration &+= 1
+        let generation = presentationGeneration
+        let wasHiddenBefore = wasHidden
+        let previousText = textField?.stringValue
+        if wasHiddenBefore {
+            wasHidden = false
+            failureMessage = nil
+            resizePanelForCurrentSession()
+            hideBarsShowIcon("hourglass", color: .systemGray)
+            hideLiveTranscriptFields()
+            hideCancelControl()
+        }
+        updateText(message)
+        if wasHiddenBefore {
+            centerWindowNearTop()
+            presentWindow()
+        }
+        #if DEBUG
+        if !rendersOffscreen { postNoticeAnnouncement(message) }
+        #else
+        postNoticeAnnouncement(message)
+        #endif
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: duration)
+            guard let self, self.presentationGeneration == generation else { return }
+            if wasHiddenBefore {
+                self.hide()
+            } else if let previousText {
+                self.updateText(previousText)
+            }
+        }
+    }
+
+    @MainActor
+    private func postNoticeAnnouncement(_ message: String) {
+        NSAccessibility.post(
+            element: NSApplication.shared,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: "Steno: \(message)",
+                .priority: NSAccessibilityPriorityLevel.medium.rawValue
+            ]
+        )
+    }
+
     @MainActor
     public func hide() {
+        presentationGeneration &+= 1
         if listeningSessionIsActive {
             announceOnce(.cancelled, message: "Steno dictation cancelled")
         }

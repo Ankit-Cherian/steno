@@ -14,6 +14,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - F3 and F4 now work as the hands-free key in standard function-key mode. Keys chosen in earlier versions keep working.
 - If macOS pauses the hands-free key's listener, Steno now always turns it back on, and saving settings also recovers it.
 - If the release of Option is missed, for example around a password field or a screen lock, the recording now ends within about a second and is transcribed. Recordings stop automatically after one hour, with a countdown in the overlay during the last minute, and the audio is transcribed rather than lost.
+- Pressing a dictation shortcut while the previous dictation is still finishing now shows a brief notice in the overlay instead of silently doing nothing.
 
 ## [1.0.0] - 2026-09-17
 

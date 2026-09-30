@@ -284,6 +284,9 @@ final class DictationController: ObservableObject {
     /// The overlay and media pause for the current Option press wait until the
     /// hotkey service confirms the press is a dictation, not a keyboard shortcut.
     private var pressToTalkConfirmation: PressToTalkConfirmation?
+    /// An Option press refused because the previous dictation is still
+    /// finishing is only worth a cue once it proves to be a dictation.
+    private var showsFinishingNoticeOnConfirmation = false
     var recordingDurationLimit = RecordingDurationLimit.standard
     private var hasWarnedAboutRecordingLimit = false
     private var currentSessionID: SessionID?
@@ -858,11 +861,20 @@ final class DictationController: ObservableObject {
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
         pressToTalkConfirmation?.release()
         pressToTalkConfirmation = hotkey.confirmsPressToTalk ? PressToTalkConfirmation() : nil
+        showsFinishingNoticeOnConfirmation = false
         if sessionCleanupStartGate.deferPressToTalkStart() {
             status = "Finishing the previous recording. Hold Option to start when ready."
             return
         }
+        let isFinishingPreviousSession = recordingStateMachine.state == .transcribing
         apply(transition: recordingStateMachine.handleOptionKeyDown())
+        if isFinishingPreviousSession {
+            if pressToTalkConfirmation == nil {
+                showFinishingPreviousSessionNotice()
+            } else {
+                showsFinishingNoticeOnConfirmation = true
+            }
+        }
     }
 
     func pressToTalkStop() {
@@ -880,6 +892,10 @@ final class DictationController: ObservableObject {
     func pressToTalkConfirmed() {
         guard !isIsolatedPreview, !isTearingDown else { return }
         pressToTalkConfirmation?.confirm()
+        if showsFinishingNoticeOnConfirmation {
+            showsFinishingNoticeOnConfirmation = false
+            showFinishingPreviousSessionNotice()
+        }
     }
 
     /// The Option press was part of a keyboard shortcut. The recording is
@@ -887,6 +903,7 @@ final class DictationController: ObservableObject {
     /// media is left as it was.
     func pressToTalkDiscarded() {
         guard !isIsolatedPreview, !isTearingDown else { return }
+        showsFinishingNoticeOnConfirmation = false
         let confirmation = pressToTalkConfirmation
         pressToTalkConfirmation = nil
         defer { confirmation?.release() }
@@ -925,7 +942,18 @@ final class DictationController: ObservableObject {
                 : "Deferred hands-free start canceled."
             return
         }
+        let isFinishingPreviousSession = recordingStateMachine.state == .transcribing
         apply(transition: recordingStateMachine.handleHandsFreeToggle())
+        if isFinishingPreviousSession {
+            showFinishingPreviousSessionNotice()
+        }
+    }
+
+    /// A press while the previous dictation is still finishing starts nothing.
+    /// Say so where the user is looking, not only in the main window.
+    private func showFinishingPreviousSessionNotice() {
+        status = "Still finishing the previous dictation. Try again when it is done."
+        overlay.showNotice("Still finishing. Try again.")
     }
 
     func cancelActiveRecording() {

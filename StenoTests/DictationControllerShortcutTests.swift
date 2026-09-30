@@ -216,6 +216,53 @@ func optionShortcutLeavesHandsFreeRunning() async {
     #expect(await events.count(of: "capture.cancel") == 0)
 }
 
+// MARK: - Presses while the previous dictation finishes
+
+@MainActor
+@Test("A press while the previous dictation is finishing shows a cue, but an Option shortcut stays silent")
+func pressWhileFinishingShowsCue() async {
+    let events = ShortcutEventLog()
+    let gate = ShortcutGate()
+    let presenter = makeShortcutTestPresenter()
+    let hotkey = FilteringHotkeyService()
+    let controller = makeTestDictationController(
+        hotkey: hotkey,
+        overlay: presenter,
+        coordinator: ShortcutTestCoordinator(events: events, completionGate: gate)
+    )
+    defer { controller.teardown() }
+    let notice = "Still finishing. Try again."
+    func overlayText() -> String? { presenter.hostedEvidenceUserFacingStrings().first }
+
+    hotkey.press([.option])
+    hotkey.holdPastConfirmationWindow()
+    #expect(await waitForShortcutCondition { controller.isRecording })
+    hotkey.press([])
+    #expect(await waitForShortcutEvent("transcription.start", in: events))
+    #expect(controller.recordingLifecycleState == .transcribing)
+    #expect(overlayText() == "Transcribing...")
+
+    OptionShortcut.optionArrow.perform(on: hotkey)
+    try? await Task.sleep(for: .milliseconds(50))
+    #expect(overlayText() == "Transcribing...")
+
+    hotkey.press([.option])
+    #expect(overlayText() == "Transcribing...")
+    hotkey.holdPastConfirmationWindow()
+    #expect(overlayText() == notice)
+    #expect(controller.status.hasPrefix("Still finishing the previous dictation."))
+    hotkey.press([])
+    #expect(await waitForShortcutCondition(attempts: 1_000) { overlayText() == "Transcribing..." })
+
+    controller.toggleHandsFree()
+    #expect(overlayText() == notice)
+
+    await gate.open()
+    #expect(await waitForShortcutCondition { controller.recordingLifecycleState == .idle })
+    #expect(await events.count(of: "transcription.start") == 1)
+    #expect(await events.count(of: "capture.start") == 1)
+}
+
 // MARK: - Recording length
 
 @MainActor
@@ -392,13 +439,36 @@ actor ShortcutEventLog {
     }
 }
 
+actor ShortcutGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+}
+
 actor ShortcutTestCoordinator: DictationSessionCoordinating {
     private let events: ShortcutEventLog
     private let transcript: String
+    private let completionGate: ShortcutGate?
 
-    init(events: ShortcutEventLog, transcript: String = "Nearby words") {
+    init(
+        events: ShortcutEventLog,
+        transcript: String = "Nearby words",
+        completionGate: ShortcutGate? = nil
+    ) {
         self.events = events
         self.transcript = transcript
+        self.completionGate = completionGate
     }
 
     func startPressToTalk(appContext: AppContext) async throws -> SessionID {
@@ -416,6 +486,7 @@ actor ShortcutTestCoordinator: DictationSessionCoordinating {
     ) async throws -> InsertResult {
         // Insertion, History, and usage records are all written inside completion.
         await events.append("transcription.start")
+        await completionGate?.wait()
         return InsertResult(status: .inserted, method: .accessibility, insertedText: transcript)
     }
 
