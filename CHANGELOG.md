@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- History is no longer erased when its file can't be read in full. Entries that can't be read are skipped and kept in a copy of the original file, a file that can't be read at all is moved aside instead of overwritten, and the previous version of the file is kept after each save.
+- Two copies of Steno running at the same time, such as a development build next to the installed app, no longer remove each other's History entries.
+- A transcript that was inserted but couldn't be saved to History is no longer reported as a failed transcription. Steno says the text was inserted, offers it for copying, and never inserts it again.
+- When History can't be read in full, Steno now says so once and can show the kept file in Finder.
+- Settings, word corrections, text shortcuts and app style profiles are no longer reset when the settings file contains something Steno can't read. Each setting that can't be read falls back on its own, the rest load, and Steno keeps a copy of the original file. Settings files from Steno 0.1 now load with their vocabulary and shortcuts intact.
+- Settings no longer report "Settings saved" when the file couldn't be written. The changes stay unsaved in Settings, with Save changes and Discard still available.
+- Choosing Disabled for the hands-free key is now saved; it no longer comes back as F18 after a relaunch.
+- Insights no longer resets lifetime totals when its data contains a value written by a newer version of Steno.
+
 ## [1.0.0] - 2026-09-17
 
 [Download Steno 1.0.0](https://github.com/Ankit-Cherian/steno/releases/tag/v1.0.0). The Developer ID signed installer is notarized and includes the local speech model.

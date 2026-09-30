@@ -857,7 +857,15 @@ public actor SessionCoordinator {
             audioURL: nil,
             insertionStatus: insertResult.status
         )
-        try await historyStore.append(entry: entry)
+        do {
+            try await historyStore.append(entry: entry)
+        } catch {
+            // Delivery already happened (or was attempted) exactly once. A
+            // History write failure is reported alongside that outcome and
+            // never turns it into a failed transcription.
+            StenoKitDiagnostics.logger.error("Transcript history write failed after insertion.")
+            insertResult.historyWarning = error.localizedDescription
+        }
         if !insertionCommitted {
             try checkCompletionOwnership(sessionID: sessionID)
         }

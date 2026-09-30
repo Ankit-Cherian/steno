@@ -258,6 +258,10 @@ final class DictationController: ObservableObject {
     @Published var usageAnalyticsError: String = ""
     @Published var usageAnalyticsWriteWarning: String = ""
     @Published var isLoadingUsageAnalytics = false
+    /// A data file couldn't be read in full, or a transcript couldn't be saved.
+    @Published var storageNotice: StorageRecoveryNotice?
+    /// Why the last Settings save failed; empty after a successful save.
+    @Published var settingsSaveError: String = ""
 
     private let captureService = MacAudioCaptureService()
     private let clipboardService: any ClipboardService
@@ -619,6 +623,12 @@ final class DictationController: ObservableObject {
 
     func bootstrap() async {
         guard !isIsolatedPreview else { hasBootstrapped = true; return }
+        await historyStore.setRecoveryNoticeHandler { [weak self] notice in
+            Task { @MainActor [weak self] in self?.presentStorageNotice(notice) }
+        }
+        await preferencesStore.setRecoveryNoticeHandler { [weak self] notice in
+            Task { @MainActor [weak self] in self?.presentStorageNotice(notice) }
+        }
         var loaded = await preferencesStore.load()
         loaded.normalize()
 
@@ -641,34 +651,57 @@ final class DictationController: ObservableObject {
         applyPreferencesLocally(snapshot)
 
         Task {
-            await preferencesStore.save(snapshot)
-            await MainActor.run {
-                applyLaunchAtLoginPreference(
-                    requestedPreference: snapshot.general.launchAtLoginEnabled,
-                    userInitiated: true
-                )
-                status = "Settings saved."
-            }
+            guard await persistSettings(snapshot) else { return }
             await rebuildRuntimeOrDefer()
         }
     }
 
-    func applySettingsDraft(preferences draft: AppPreferences) {
-        guard !isIsolatedPreview else { preferences = draft; status = "Preview settings updated."; return }
+    /// Applies a Settings draft and saves it. The returned task reports whether
+    /// the save succeeded; on failure the previous settings are restored so the
+    /// draft stays unsaved and can be saved again or discarded.
+    @discardableResult
+    func applySettingsDraft(preferences draft: AppPreferences) -> Task<Bool, Never> {
+        guard !isIsolatedPreview else {
+            preferences = draft
+            status = "Preview settings updated."
+            return Task { true }
+        }
+        let previous = preferences
         var snapshot = draft
         snapshot.normalize()
         applyPreferencesLocally(snapshot)
 
-        Task {
-            await preferencesStore.save(snapshot)
-            await MainActor.run {
-                applyLaunchAtLoginPreference(
-                    requestedPreference: snapshot.general.launchAtLoginEnabled,
-                    userInitiated: true
-                )
-                status = "Settings saved."
+        return Task {
+            guard await persistSettings(snapshot) else {
+                if preferences == snapshot {
+                    applyPreferencesLocally(previous)
+                }
+                return false
             }
             await rebuildRuntimeOrDefer()
+            return true
+        }
+    }
+
+    /// Writes settings and reports the real outcome; never claims a save that failed.
+    private func persistSettings(_ snapshot: AppPreferences) async -> Bool {
+        switch await preferencesStore.save(snapshot) {
+        case .success:
+            if !settingsSaveError.isEmpty, lastError == settingsSaveError {
+                lastError = ""
+            }
+            settingsSaveError = ""
+            applyLaunchAtLoginPreference(
+                requestedPreference: snapshot.general.launchAtLoginEnabled,
+                userInitiated: true
+            )
+            status = "Settings saved."
+            return true
+        case .failure(let error):
+            settingsSaveError = error.localizedDescription
+            status = "Settings couldn't be saved."
+            lastError = error.localizedDescription
+            return false
         }
     }
 
@@ -939,6 +972,64 @@ final class DictationController: ObservableObject {
                 lastError = ""
             } catch {
                 status = "Cleanup re-run failed"
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Discarding a draft that failed to save leaves nothing unsaved to explain.
+    func clearSettingsSaveError() {
+        if !settingsSaveError.isEmpty, lastError == settingsSaveError {
+            lastError = ""
+        }
+        settingsSaveError = ""
+    }
+
+    /// The insertion outcome stands; only the History copy is missing, so the
+    /// text is offered for copying instead of being inserted again.
+    private func presentHistorySaveFailure(for result: InsertResult) {
+        status = "\(status) It couldn't be saved to History."
+        let message: String
+        switch result.status {
+        case .inserted:
+            message = "This transcript was inserted but couldn't be saved to History."
+        case .copiedOnly:
+            message = "This transcript was copied but couldn't be saved to History."
+        case .failed, .noSpeech:
+            message = "This transcript couldn't be inserted or saved to History."
+        }
+        storageNotice = StorageRecoveryNotice(
+            message: message,
+            fileURL: nil,
+            recoverableText: result.insertedText.isEmpty ? nil : result.insertedText
+        )
+    }
+
+    private func presentStorageNotice(_ notice: StorageRecoveryNotice) {
+        storageNotice = notice
+    }
+
+    func dismissStorageNotice() {
+        storageNotice = nil
+    }
+
+    func revealStorageNoticeFile() {
+        guard let fileURL = storageNotice?.fileURL else { return }
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+        } else {
+            NSWorkspace.shared.open(fileURL.deletingLastPathComponent())
+        }
+    }
+
+    func copyStorageNoticeText() {
+        guard !isIsolatedPreview, let text = storageNotice?.recoverableText else { return }
+        Task {
+            do {
+                try await clipboardService.setString(text)
+                status = "Transcript copied to clipboard. Paste with Cmd+V."
+            } catch {
+                status = "Copy failed"
                 lastError = error.localizedDescription
             }
         }
@@ -1562,6 +1653,10 @@ final class DictationController: ObservableObject {
 
                 if let analyticsWarning = result.usageAnalyticsWarning {
                     usageAnalyticsWriteWarning = analyticsWarning
+                }
+
+                if result.historyWarning != nil {
+                    presentHistorySaveFailure(for: result)
                 }
 
                 dismissOverlaySoon()

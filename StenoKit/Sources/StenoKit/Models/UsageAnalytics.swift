@@ -120,6 +120,38 @@ public struct UsageEvent: Codable, Sendable, Equatable, Identifiable {
         self.insertionStatus = insertionStatus
     }
 
+    /// Quality values written by a newer version fall back to the choice that
+    /// matches the event's own duration and cleanup counts, so one unknown value
+    /// never invalidates the ledger. An unknown insertion status reads as
+    /// copied-only.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        appBundleID = try container.decode(String.self, forKey: .appBundleID)
+        rawWordCount = try container.decode(Int.self, forKey: .rawWordCount)
+        finalWordCount = try container.decode(Int.self, forKey: .finalWordCount)
+        durationMS = try container.decode(Int.self, forKey: .durationMS)
+        cleanupChanges = try container.decode(UsageCleanupBreakdown.self, forKey: .cleanupChanges)
+        insertionStatus = try container.decode(InsertionStatus.self, forKey: .insertionStatus)
+
+        let storedDurationQuality = try container.decode(String.self, forKey: .durationQuality)
+        if let known = UsageDurationQuality(rawValue: storedDurationQuality) {
+            durationQuality = known
+        } else {
+            decoder.recordReplacedValue()
+            durationQuality = durationMS > 0 ? .transcriptEstimate : .unavailable
+        }
+
+        let storedCleanupQuality = try container.decode(String.self, forKey: .cleanupQuality)
+        if let known = UsageMetricQuality(rawValue: storedCleanupQuality) {
+            cleanupQuality = known
+        } else {
+            decoder.recordReplacedValue()
+            cleanupQuality = cleanupChanges.estimatedWordChanges == 0 ? .exact : .estimated
+        }
+    }
+
     public static func live(
         from entry: TranscriptEntry,
         captureDurationMS: Int,

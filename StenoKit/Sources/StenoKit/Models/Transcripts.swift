@@ -103,6 +103,12 @@ public enum InsertionStatus: String, Sendable, Codable, Equatable {
     case copiedOnly
     case failed
     case noSpeech
+
+    /// A status written by a newer version reads as `copiedOnly`: the text was
+    /// produced, and nothing claims it reached the target app.
+    public init(from decoder: Decoder) throws {
+        self = try .decodeLeniently(from: decoder, fallback: .copiedOnly)
+    }
 }
 
 public enum CleanupSource: String, Sendable, Codable, Equatable {
@@ -131,6 +137,9 @@ public struct InsertResult: Sendable, Codable, Equatable {
     public var errorMessage: String?
     public var cleanupOutcome: CleanupOutcome?
     public var usageAnalyticsWarning: String?
+    /// Set when the transcript couldn't be saved to History. The insertion
+    /// outcome in `status` is unaffected.
+    public var historyWarning: String? = nil
 
     public init(
         status: InsertionStatus,

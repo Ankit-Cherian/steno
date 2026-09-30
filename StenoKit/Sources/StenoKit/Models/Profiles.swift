@@ -47,6 +47,29 @@ public struct StyleProfile: Sendable, Codable, Equatable {
         self.fillerPolicy = fillerPolicy
         self.commandPolicy = commandPolicy
     }
+
+    /// A style value written by a newer version falls back to the least
+    /// transforming choice instead of discarding the profile.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        tone = try container.decodeLenientlyIfPresent(StyleTone.self, forKey: .tone, fallback: .natural) ?? .natural
+        structureMode = try container.decodeLenientlyIfPresent(
+            StructureMode.self,
+            forKey: .structureMode,
+            fallback: .natural
+        ) ?? .natural
+        fillerPolicy = try container.decodeLenientlyIfPresent(
+            FillerPolicy.self,
+            forKey: .fillerPolicy,
+            fallback: .balanced
+        ) ?? .balanced
+        commandPolicy = try container.decodeLenientlyIfPresent(
+            CommandPolicy.self,
+            forKey: .commandPolicy,
+            fallback: .transform
+        ) ?? .transform
+    }
 }
 
 public enum Scope: Sendable, Codable, Equatable {
@@ -104,7 +127,11 @@ public struct LexiconEntry: Sendable, Codable, Equatable {
         preferred = try container.decode(String.self, forKey: .preferred)
         scope = try container.decode(Scope.self, forKey: .scope)
         aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
-        phoneticRecovery = try container.decodeIfPresent(PhoneticRecoveryPolicy.self, forKey: .phoneticRecovery) ?? .off
+        phoneticRecovery = try container.decodeLenientlyIfPresent(
+            PhoneticRecoveryPolicy.self,
+            forKey: .phoneticRecovery,
+            fallback: .off
+        ) ?? .off
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -148,5 +175,13 @@ public struct Snippet: Sendable, Codable, Equatable, Identifiable {
         self.trigger = trigger
         self.expansion = expansion
         self.scope = scope
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        trigger = try container.decode(String.self, forKey: .trigger)
+        expansion = try container.decode(String.self, forKey: .expansion)
+        scope = try container.decodeIfPresent(Scope.self, forKey: .scope) ?? .global
     }
 }
