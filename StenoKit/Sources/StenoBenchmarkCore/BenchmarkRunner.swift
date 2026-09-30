@@ -102,7 +102,9 @@ public enum BenchmarkRunner {
                         elapsedMS: elapsedMS,
                         audioDurationMS: sample.audioDurationMS,
                         rtf: computeRTF(elapsedMS: elapsedMS, audioDurationMS: sample.audioDurationMS),
-                        metrics: metrics
+                        metrics: metrics,
+                        segments: raw.segments,
+                        avgConfidence: raw.avgConfidence
                     )
                 )
             } catch {
@@ -215,7 +217,12 @@ public enum BenchmarkRunner {
 
             do {
                 let cleaned = try await cleanup.cleanup(
-                    raw: RawTranscript(text: rawText, durationMS: sample.audioDurationMS ?? 0),
+                    raw: RawTranscript(
+                        text: rawText,
+                        segments: rawSample.segments ?? [],
+                        avgConfidence: rawSample.avgConfidence,
+                        durationMS: sample.audioDurationMS ?? 0
+                    ),
                     profile: configuration.profile,
                     lexicon: configuration.lexicon
                 )
