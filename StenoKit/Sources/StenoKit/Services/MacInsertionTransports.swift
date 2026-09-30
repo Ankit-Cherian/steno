@@ -185,6 +185,7 @@ public enum MacInsertionTransportFactory {
                 editorTarget: request.editorTarget,
                 commitPermit: request.commitPermit,
                 system: system,
+                insertionGuard: request.insertionGuard,
                 clipboardStillHoldsText: request.clipboardStillHoldsText
             )
         }
@@ -199,6 +200,9 @@ public enum MacInsertionError: Error, LocalizedError {
     case attributeUpdateFailed
     case exactTargetUnavailable(EditorTargetUnavailableReason)
     case attributeUpdateIndeterminate
+    /// The target check refused before any side effect. The service copies
+    /// the final text and does not try another transport.
+    case insertionRefused(EditorTargetUnavailableReason)
 
     public var errorDescription: String? {
         switch self {
@@ -216,6 +220,8 @@ public enum MacInsertionError: Error, LocalizedError {
             return "Exact editor target is unavailable: \(reason.rawValue)"
         case .attributeUpdateIndeterminate:
             return "The editor did not confirm whether the insertion completed"
+        case .insertionRefused(let reason):
+            return InsertionTargetGuard.refusalMessage(for: reason)
         }
     }
 }
@@ -277,6 +283,7 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
         try await insert(
             text: text,
             target: target,
+            insertionGuard: nil,
             commitAuthorization: nil,
             commitLease: nil
         )
@@ -285,6 +292,7 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
     func insert(
         text: String,
         target: AppContext,
+        insertionGuard: InsertionTargetGuard?,
         commitAuthorization: InsertionCommitAuthorization?,
         commitLease: InsertionCommitLease?
     ) async throws {
@@ -296,6 +304,9 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
 
         try await activateTargetApp(target)
         try Task.checkCancellation()
+        if let insertionGuard, case .refuse(let reason) = insertionGuard.evaluate(for: target) {
+            throw MacInsertionError.insertionRefused(reason)
+        }
 
         try await typeUnicode(
             text,
@@ -528,6 +539,7 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
         try await insert(
             text: text,
             target: target,
+            insertionGuard: nil,
             commitAuthorization: nil,
             commitLease: nil
         )
@@ -536,12 +548,16 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
     func insert(
         text: String,
         target: AppContext,
+        insertionGuard: InsertionTargetGuard?,
         commitAuthorization: InsertionCommitAuthorization?,
         commitLease: InsertionCommitLease?
     ) async throws {
         try Task.checkCancellation()
         guard client.isProcessTrusted() else {
             throw MacInsertionError.accessibilityPermissionMissing
+        }
+        if let insertionGuard, case .refuse(let reason) = insertionGuard.evaluate(for: target) {
+            throw MacInsertionError.insertionRefused(reason)
         }
         switch EditorTargetHandle.capture(target: target, client: client) {
         case .success(let editorTarget):
@@ -638,6 +654,7 @@ public enum MacPasteHelper {
         editorTarget: EditorTargetHandle?,
         commitPermit: InsertionCommitPermit?,
         system: MacInsertionSystem,
+        insertionGuard: InsertionTargetGuard? = nil,
         clipboardStillHoldsText: @Sendable () -> Bool = { true }
     ) async -> AutoPasteOutcome {
         guard !Task.isCancelled else {
@@ -656,6 +673,9 @@ public enum MacPasteHelper {
                 return .skipped(reason: "Target app was not found for auto-paste reactivation.")
             case .focusNotAcquired:
                 return .skipped(reason: "Could not focus target app before auto-paste.")
+            }
+            if let insertionGuard, case .refuse(let reason) = insertionGuard.evaluate(for: target) {
+                return .skipped(reason: InsertionTargetGuard.refusalMessage(for: reason))
             }
         } else if let editorTarget, case .failure(let reason) = await editorTarget.revalidate() {
             return .skipped(reason: "Exact editor target is unavailable: \(reason.rawValue).")

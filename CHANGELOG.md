@@ -12,6 +12,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Auto-paste now sends the Command-V shortcut for the current keyboard layout. On Dvorak it previously sent Command-K, which clears the terminal.
 - Auto-paste now puts your previous clipboard contents back shortly after pasting, and marks the transcript it places on the clipboard as transient so clipboard managers skip it. If another app changes the clipboard before the paste, Steno no longer pastes. When Steno only copies the transcript, it stays on the clipboard.
 - After pasting into Terminal, iTerm2 or Warp, Steno now says the transcript was pasted instead of asking you to press Command-V, which pasted it twice. History shows these entries as Pasted.
+- Steno now copies the transcript instead of inserting it when the cursor is in a password or other secure field, or when focus moved to a different field while it was transcribing. This works with default settings; nearby-text continuation is not required. Apps that answer Accessibility slowly keep inserting as before.
 
 ## [1.0.0] - 2026-09-17
 

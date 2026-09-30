@@ -2020,6 +2020,11 @@ final class DictationController: ObservableObject {
             return "Transcript copied to clipboard. Paste with Cmd+V."
         }
 
+        // Refusals before any side effect already say why the text was copied.
+        if reason.contains("secure text field") || reason.contains("focused field changed") {
+            return result.errorMessage ?? "Transcript copied to clipboard. Paste with Cmd+V."
+        }
+
         if reason.contains("accessibility permission") {
             return "Transcript copied. Auto-paste unavailable until Accessibility is re-granted for this Steno build."
         }

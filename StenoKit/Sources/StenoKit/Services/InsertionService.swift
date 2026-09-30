@@ -28,6 +28,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             text: text,
             target: target,
             editorTarget: nil,
+            insertionGuard: nil,
             clipboardRecoveryText: text,
             commitAuthorization: nil
         )
@@ -43,6 +44,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             text: text,
             target: target,
             editorTarget: editorTarget,
+            insertionGuard: nil,
             clipboardRecoveryText: text,
             commitAuthorization: nil
         )
@@ -58,6 +60,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             text: text,
             target: target,
             editorTarget: editorTarget,
+            insertionGuard: nil,
             clipboardRecoveryText: clipboardRecoveryText,
             commitAuthorization: nil
         )
@@ -74,6 +77,28 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             text: text,
             target: target,
             editorTarget: editorTarget,
+            insertionGuard: nil,
+            clipboardRecoveryText: clipboardRecoveryText,
+            commitAuthorization: commitAuthorization
+        )
+    }
+
+    /// Without an exact editor target, `insertionGuard` may refuse the
+    /// insertion before any side effect; a refusal copies the recovery text.
+    /// It never changes the transport order.
+    public func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?,
+        insertionGuard: InsertionTargetGuard?,
+        clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization
+    ) async -> InsertResult {
+        await insertUsingAvailableTarget(
+            text: text,
+            target: target,
+            editorTarget: editorTarget,
+            insertionGuard: editorTarget == nil ? insertionGuard : nil,
             clipboardRecoveryText: clipboardRecoveryText,
             commitAuthorization: commitAuthorization
         )
@@ -84,6 +109,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         text: String,
         target: AppContext,
         editorTarget: EditorTargetHandle?,
+        insertionGuard: InsertionTargetGuard?,
         clipboardRecoveryText: String,
         commitAuthorization: InsertionCommitAuthorization?
     ) async -> InsertResult {
@@ -112,6 +138,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                         text: clipboardRecoveryText,
                         target: target,
                         editorTarget: editorTarget,
+                        insertionGuard: insertionGuard,
                         exactTargetText: text,
                         commitAuthorization: commitAuthorization,
                         commitLease: commitLease
@@ -169,6 +196,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                     try await accessibility.insert(
                         text: text,
                         target: target,
+                        insertionGuard: insertionGuard,
                         commitAuthorization: commitAuthorization,
                         commitLease: commitLease
                     )
@@ -176,10 +204,15 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                     try await direct.insert(
                         text: text,
                         target: target,
+                        insertionGuard: insertionGuard,
                         commitAuthorization: commitAuthorization,
                         commitLease: commitLease
                     )
                 } else {
+                    if let insertionGuard,
+                       case .refuse(let reason) = insertionGuard.evaluate(for: target) {
+                        throw MacInsertionError.insertionRefused(reason)
+                    }
                     try await transport.insert(text: text, target: target)
                 }
                 #else
@@ -193,6 +226,17 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                 guard !Task.isCancelled else {
                     return Self.cancelledResult(text: text)
                 }
+                #if os(macOS)
+                if let macError = error as? MacInsertionError,
+                   case .insertionRefused(let reason) = macError {
+                    return await refusedResult(
+                        reason: reason,
+                        text: text,
+                        clipboardRecoveryText: clipboardRecoveryText,
+                        commitAuthorization: commitAuthorization
+                    )
+                }
+                #endif
                 #if os(macOS)
                 if let macError = error as? MacInsertionError,
                    case .attributeUpdateIndeterminate = macError {
@@ -228,6 +272,50 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             errorMessage: failures.joined(separator: " | ")
         )
     }
+
+    #if os(macOS)
+    /// A refusal happens before any side effect, so no other transport may
+    /// try. The final text goes to the clipboard, where the user recovers it.
+    private func refusedResult(
+        reason: EditorTargetUnavailableReason,
+        text: String,
+        clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization?
+    ) async -> InsertResult {
+        let message = InsertionTargetGuard.refusalMessage(for: reason)
+        guard let clipboardTransport = transports.lazy
+            .compactMap({ $0 as? ClipboardInsertionTransport }).first else {
+            return InsertResult(
+                status: .failed,
+                method: .none,
+                insertedText: text,
+                errorMessage: message
+            )
+        }
+        do {
+            try await clipboardTransport.copyForRecovery(
+                clipboardRecoveryText,
+                commitAuthorization: commitAuthorization,
+                commitLease: commitAuthorization.map { _ in InsertionCommitLease() }
+            )
+        } catch is CancellationError {
+            return Self.cancelledResult(text: text)
+        } catch {
+            return InsertResult(
+                status: .failed,
+                method: .clipboardPaste,
+                insertedText: text,
+                errorMessage: "\(message) \(error.localizedDescription)"
+            )
+        }
+        return InsertResult(
+            status: .copiedOnly,
+            method: .clipboardPaste,
+            insertedText: clipboardRecoveryText,
+            errorMessage: message
+        )
+    }
+    #endif
 
     private static func cancelledResult(text: String) -> InsertResult {
         InsertResult(
@@ -342,6 +430,9 @@ struct AutoPasteRequest: Sendable {
     let target: AppContext
     #if os(macOS)
     let editorTarget: EditorTargetHandle?
+    /// Checked after activation, before the keystroke, when there is no
+    /// exact editor target.
+    let insertionGuard: InsertionTargetGuard?
     #endif
     let commitPermit: InsertionCommitPermit?
     /// Checked immediately before the paste keystroke. False means another
@@ -432,6 +523,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             text: text,
             target: target,
             editorTarget: editorTarget,
+            insertionGuard: nil,
             exactTargetText: text,
             commitAuthorization: nil,
             commitLease: nil
@@ -450,6 +542,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             text: text,
             target: target,
             editorTarget: editorTarget,
+            insertionGuard: nil,
             exactTargetText: exactTargetText,
             commitAuthorization: nil,
             commitLease: nil
@@ -460,6 +553,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         text: String,
         target: AppContext,
         editorTarget: EditorTargetHandle?,
+        insertionGuard: InsertionTargetGuard?,
         exactTargetText: String,
         commitAuthorization: InsertionCommitAuthorization?,
         commitLease: InsertionCommitLease?
@@ -507,6 +601,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
                 outcome = await pasteAction(AutoPasteRequest(
                     target: target,
                     editorTarget: editorTarget,
+                    insertionGuard: nil,
                     commitPermit: permit,
                     clipboardStillHoldsText: pasteWrite.stillHoldsText
                 ))
@@ -574,10 +669,15 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             outcome = await pasteAction(AutoPasteRequest(
                 target: target,
                 editorTarget: nil,
+                insertionGuard: insertionGuard,
                 commitPermit: permit,
                 clipboardStillHoldsText: pasteWrite.stillHoldsText
             ))
         } else if let autoPaste {
+            // A callback can't check after activating, so check before it.
+            if let insertionGuard, case .refuse(let reason) = insertionGuard.evaluate(for: target) {
+                return .skipped(reason: InsertionTargetGuard.refusalMessage(for: reason))
+            }
             guard pasteWrite.stillHoldsText() else {
                 return .skipped(reason: Self.clipboardChangedReason)
             }
@@ -589,6 +689,20 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             scheduleRestore(after: pasteWrite)
         }
         return outcome
+    }
+
+    /// Copies the final text without pasting, for an insertion that was
+    /// refused before any side effect.
+    func copyForRecovery(
+        _ text: String,
+        commitAuthorization: InsertionCommitAuthorization?,
+        commitLease: InsertionCommitLease?
+    ) async throws {
+        try Task.checkCancellation()
+        guard commitAuthorization?.canStartNewCommit != false else {
+            throw CancellationError()
+        }
+        try await commitClipboard(text, authorization: commitAuthorization, lease: commitLease)
     }
 
     /// The dictation written for an auto-paste, plus what is needed to put the

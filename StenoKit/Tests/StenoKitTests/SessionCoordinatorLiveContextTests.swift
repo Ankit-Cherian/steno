@@ -2515,7 +2515,11 @@ private func coordinatorGlobalCancelReachesSetupBeforeLiveCleanupScenario(shutdo
         styleProfileService: StyleProfileService(),
         editorTargetCapture: {
             let result = EditorTargetHandle.capture(target: $0, client: ax)
-            ax.blockNextCapture()
+            // Every session looks up its target. Only the nearby-text session
+            // in Notes holds its setup task at the next capture.
+            if $0 == app {
+                ax.blockNextCapture()
+            }
             return result
         }
     )

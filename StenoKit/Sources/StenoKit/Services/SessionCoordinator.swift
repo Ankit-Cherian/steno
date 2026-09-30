@@ -383,6 +383,7 @@ public actor SessionCoordinator {
         var setupTasks: [Task<Void, Never>]
         #if os(macOS)
         var editorTarget: EditorTargetHandle?
+        var insertionGuard: InsertionTargetGuard?
         var continuationContext: ContinuationContextState
         #endif
     }
@@ -547,6 +548,7 @@ public actor SessionCoordinator {
             livePipeline: nil,
             setupTasks: [],
             editorTarget: nil,
+            insertionGuard: nil,
             continuationContext: .unavailable
         )
         commitAuthorizations[sessionID] = commitAuthorization
@@ -568,10 +570,17 @@ public actor SessionCoordinator {
             }
         ))
 
-        // Audio is already running. Bind the exact focused field synchronously
-        // before start returns; only bounded context reads are deferred.
+        // Audio is already running. Look up the focused field synchronously
+        // before start returns; only bounded context reads are deferred. Every
+        // session keeps the lookup as a refusal-only guard against a secure
+        // field or a focus change before insertion. Only nearby text also uses
+        // it as the exact target.
+        let result = editorTargetCapture(appContext)
+        activeSessions[sessionID]?.insertionGuard = InsertionTargetGuard(
+            startCapture: result,
+            lookup: editorTargetCapture
+        )
         if options.nearbyContextEnabled {
-            let result = editorTargetCapture(appContext)
             if case .success(let handle) = result {
                 activeSessions[sessionID]?.editorTarget = handle
             }
@@ -824,6 +833,7 @@ public actor SessionCoordinator {
                 text: insertionPayload,
                 target: active.appContext,
                 editorTarget: active.editorTarget,
+                insertionGuard: active.insertionGuard,
                 clipboardRecoveryText: cleanedTranscript.text,
                 commitAuthorization: insertionCommitAuthorization
             )
