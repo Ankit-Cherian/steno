@@ -75,8 +75,8 @@ struct HistoryTab: View {
             let matchesFilter: Bool
             switch selectedFilter {
             case .all: matchesFilter = true
-            case .inserted: matchesFilter = entry.insertionStatus == .inserted
-            case .copied: matchesFilter = entry.insertionStatus == .copiedOnly
+            case .inserted: matchesFilter = entry.insertionStatus == .inserted || entry.wasPasted
+            case .copied: matchesFilter = entry.insertionStatus == .copiedOnly && !entry.wasPasted
             case .needsAttention: matchesFilter = entry.insertionStatus == .failed
             }
             let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -142,7 +142,7 @@ struct HistoryTab: View {
                                 .lineSpacing(3)
                                 .lineLimit(2)
                             HStack(spacing: 6) {
-                                Image(systemName: statusSymbol(entry.insertionStatus))
+                                Image(systemName: statusSymbol(entry))
                                 Text(StenoDesign.appDisplayName(for: entry.appBundleID)).lineLimit(1)
                                 Spacer(minLength: 0)
                                 Text(entry.createdAt.formatted(date: .abbreviated, time: .omitted))
@@ -154,7 +154,7 @@ struct HistoryTab: View {
                         .tag(entry.id)
                         .accessibilityIdentifier("history.row.\(entry.id.uuidString)")
                         .accessibilityElement(children: .combine)
-                        .accessibilityLabel("\(StenoDesign.appDisplayName(for: entry.appBundleID)), \(entry.createdAt.formatted(date: .long, time: .shortened)). \(statusLabel(entry.insertionStatus)). \(transcriptText(entry))")
+                        .accessibilityLabel("\(StenoDesign.appDisplayName(for: entry.appBundleID)), \(entry.createdAt.formatted(date: .long, time: .shortened)). \(statusLabel(entry)). \(transcriptText(entry))")
                         .contextMenu {
                             Button("Copy transcript") { controller.pasteEntry(entry) }
                             Button("Run cleanup again") { controller.retryCleanup(for: entry) }
@@ -179,7 +179,7 @@ struct HistoryTab: View {
             if let entry = selectedEntry {
                 VStack(alignment: .leading, spacing: 18) {
                     detailHeader(entry, theme: theme)
-                    if entry.insertionStatus == .failed || entry.insertionStatus == .copiedOnly {
+                    if entry.insertionStatus == .failed || (entry.insertionStatus == .copiedOnly && !entry.wasPasted) {
                         Text("Copy your transcript, then paste it into the app where you need it.")
                             .font(.system(size: 13)).foregroundStyle(theme.textDim)
                     }
@@ -256,7 +256,7 @@ struct HistoryTab: View {
     }
 
     private func detailStatus(_ entry: TranscriptEntry, theme: StenoTheme) -> some View {
-        Label(statusLabel(entry.insertionStatus), systemImage: statusSymbol(entry.insertionStatus))
+        Label(statusLabel(entry), systemImage: statusSymbol(entry))
             .font(.system(size: 12, weight: .medium))
             .foregroundStyle(entry.insertionStatus == .failed ? theme.danger : theme.textDim)
             .fixedSize()
@@ -294,16 +294,18 @@ struct HistoryTab: View {
         let seconds = max(0, duration / 1000)
         return seconds >= 60 ? "\(seconds / 60)m \(seconds % 60)s" : "\(seconds)s"
     }
-    private func statusLabel(_ status: InsertionStatus) -> String {
-        switch status {
+    private func statusLabel(_ entry: TranscriptEntry) -> String {
+        if entry.wasPasted { return "Pasted" }
+        switch entry.insertionStatus {
         case .inserted: return "Inserted"
         case .copiedOnly: return "Copied to clipboard"
         case .failed: return "Insertion failed"
         case .noSpeech: return "No speech detected"
         }
     }
-    private func statusSymbol(_ status: InsertionStatus) -> String {
-        switch status {
+    private func statusSymbol(_ entry: TranscriptEntry) -> String {
+        if entry.wasPasted { return "checkmark.circle" }
+        switch entry.insertionStatus {
         case .inserted: return "checkmark.circle"
         case .copiedOnly: return "doc.on.clipboard"
         case .failed: return "exclamationmark.circle"

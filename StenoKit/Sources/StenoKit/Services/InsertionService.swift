@@ -121,7 +121,8 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                         status: .copiedOnly,
                         method: .clipboardPaste,
                         insertedText: committedText,
-                        errorMessage: outcome.skippedReason
+                        errorMessage: outcome.skippedReason,
+                        pasteAttempted: outcome == .attempted ? true : nil
                     )
                 } catch is CancellationError {
                     return Self.cancelledResult(text: text)

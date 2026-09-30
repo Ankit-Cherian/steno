@@ -131,6 +131,10 @@ public struct InsertResult: Sendable, Codable, Equatable {
     public var errorMessage: String?
     public var cleanupOutcome: CleanupOutcome?
     public var usageAnalyticsWarning: String?
+    /// True when a `.copiedOnly` clipboard insertion also sent the paste
+    /// keystroke. Steno can't confirm the paste landed, so the status stays
+    /// `.copiedOnly`; this flag lets the UI say it was pasted.
+    public var pasteAttempted: Bool?
 
     public init(
         status: InsertionStatus,
@@ -138,7 +142,8 @@ public struct InsertResult: Sendable, Codable, Equatable {
         insertedText: String,
         errorMessage: String? = nil,
         cleanupOutcome: CleanupOutcome? = nil,
-        usageAnalyticsWarning: String? = nil
+        usageAnalyticsWarning: String? = nil,
+        pasteAttempted: Bool? = nil
     ) {
         self.status = status
         self.method = method
@@ -146,6 +151,7 @@ public struct InsertResult: Sendable, Codable, Equatable {
         self.errorMessage = errorMessage
         self.cleanupOutcome = cleanupOutcome
         self.usageAnalyticsWarning = usageAnalyticsWarning
+        self.pasteAttempted = pasteAttempted
     }
 }
 

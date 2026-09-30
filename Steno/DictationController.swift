@@ -1543,7 +1543,7 @@ final class DictationController: ObservableObject {
                     lastTranscript = result.insertedText
                     status = copiedOnlyStatusMessage(for: result)
                     lastError = result.errorMessage ?? ""
-                    overlay.show(state: .copiedOnly)
+                    overlay.show(state: result.pasteAttempted == true ? .inserted : .copiedOnly)
                 case .failed:
                     lastTranscript = result.insertedText
                     status = "Transcript ready but insertion failed."
@@ -2011,6 +2011,11 @@ final class DictationController: ObservableObject {
     }
 
     private func copiedOnlyStatusMessage(for result: InsertResult) -> String {
+        if result.pasteAttempted == true {
+            // Steno restores the previous clipboard shortly after pasting, so
+            // this must not suggest pasting again.
+            return "Transcript pasted."
+        }
         guard let reason = result.errorMessage?.lowercased() else {
             return "Transcript copied to clipboard. Paste with Cmd+V."
         }

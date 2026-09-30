@@ -855,7 +855,8 @@ public actor SessionCoordinator {
             durationMS: rawTranscript.durationMS,
             // Audio artifacts are ephemeral; do not persist paths that are deleted on return.
             audioURL: nil,
-            insertionStatus: insertResult.status
+            insertionStatus: insertResult.status,
+            pasteAttempted: insertResult.pasteAttempted
         )
         try await historyStore.append(entry: entry)
         if !insertionCommitted {

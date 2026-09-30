@@ -357,3 +357,46 @@ func pollUntil(
     return await condition()
 }
 #endif
+
+#if os(macOS)
+import StenoKitTestSupport
+
+struct ProductionCoordinatorHarness {
+    let coordinator: SessionCoordinator
+    let historyStore: HistoryStore
+    let historyURL: URL
+}
+
+/// Builds `SessionCoordinator` the way DictationController does, with a
+/// scripted recognizer, the production insertion service passed in, and the
+/// editor-target lookup reading the same fake Accessibility client.
+func makeProductionCoordinator(
+    recognizedText: String,
+    insertionService: InsertionService,
+    accessibility: FakeAccessibilityClient,
+    profile: StyleProfile? = nil
+) throws -> ProductionCoordinatorHarness {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+    let audioURL = directory.appendingPathComponent("insertion-\(UUID().uuidString).wav")
+    try Data().write(to: audioURL)
+    let historyURL = directory.appendingPathComponent("insertion-history-\(UUID().uuidString).json")
+    let historyStore = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let coordinator = SessionCoordinator(
+        captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
+        transcriptionEngine: StaticTranscriptionEngine { _, _ in
+            RawTranscript(text: recognizedText, avgConfidence: 0.93)
+        },
+        cleanupEngine: RuleBasedCleanupEngine(),
+        insertionService: insertionService,
+        historyStore: historyStore,
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: profile.map { StyleProfileService(globalProfile: $0) } ?? StyleProfileService(),
+        editorTargetCapture: { EditorTargetHandle.capture(target: $0, client: accessibility) }
+    )
+    return ProductionCoordinatorHarness(
+        coordinator: coordinator,
+        historyStore: historyStore,
+        historyURL: historyURL
+    )
+}
+#endif
