@@ -287,6 +287,7 @@ final class DictationController: ObservableObject {
     private var activeRecordingMode: RecordingMode?
     private var activeMediaToken: MediaInterruptionToken?
     private var deferredMediaTokens: [MediaInterruptionToken] = []
+    private var mediaReleaseTasks: [UUID: Task<Void, Never>] = [:]
     private var captureTerminationBarriers: [UUID: Task<Void, Never>] = [:]
     private var activeStartTask: Task<Void, Never>?
     private var activeSessionGeneration: UUID?
@@ -524,6 +525,10 @@ final class DictationController: ObservableObject {
             }
             for token in deferredMediaTokens {
                 await mediaInterruption.endInterruption(token: token)
+            }
+            // Quitting completes any resume still verifying in the background.
+            for release in Array(mediaReleaseTasks.values) {
+                await release.value
             }
             await waitForRuntimeRebuilds()
             await coordinator?.shutdown()
@@ -1350,12 +1355,8 @@ final class DictationController: ObservableObject {
                 await sessionCoordinator.cancel(sessionID: sessionID)
             }
 
-            if let mediaToken {
-                await mediaInterruption.endInterruption(token: mediaToken)
-            }
-            for token in deferredMediaTokens {
-                await mediaInterruption.endInterruption(token: token)
-            }
+            // A new press must not wait for this session's resume to verify.
+            await startMediaRelease([mediaToken].compactMap { $0 } + deferredMediaTokens)
 
             guard !Task.isCancelled, !isTearingDown else {
                 sessionCleanupStartGate.reset()
@@ -1496,16 +1497,12 @@ final class DictationController: ObservableObject {
                 overlay.show(state: .transcribing)
                 // Capture closes at the key-up boundary above. Only final
                 // inference waits for optional media setup to settle, so a
-                // late pause token is released before transcription begins.
+                // late pause token's resume begins before transcription. The
+                // resume then verifies alongside transcription instead of
+                // delaying it.
                 await pendingStart?.value
                 try await sessionCoordinator.endPressToTalkCapture(sessionID: activeSessionID)
-                if let mediaToken {
-                    await mediaInterruption.endInterruption(token: mediaToken)
-                    releasedMedia = true
-                }
-                for token in deferredMediaTokens {
-                    await mediaInterruption.endInterruption(token: token)
-                }
+                await startMediaRelease([mediaToken].compactMap { $0 } + deferredMediaTokens)
                 releasedMedia = true
 
                 try Task.checkCancellation()
@@ -1591,13 +1588,8 @@ final class DictationController: ObservableObject {
                 if let resolvedSessionID, !captureCancelledAfterStopFailure {
                     await sessionCoordinator.cancel(sessionID: resolvedSessionID)
                 }
-                if let mediaToken, !releasedMedia {
-                    await mediaInterruption.endInterruption(token: mediaToken)
-                }
                 if !releasedMedia {
-                    for token in deferredMediaTokens {
-                        await mediaInterruption.endInterruption(token: token)
-                    }
+                    await startMediaRelease([mediaToken].compactMap { $0 } + deferredMediaTokens)
                 }
 
                 if !Task.isCancelled,
@@ -1674,7 +1666,30 @@ final class DictationController: ObservableObject {
             deferredMediaTokens.append(token)
             return
         }
-        await mediaInterruption.endInterruption(token: token)
+        await startMediaRelease([token])
+    }
+
+    /// Begins releasing media ownership and returns once the release has
+    /// started, without waiting for the resume to be verified. Work that
+    /// follows (transcription, insertion, a new capture) therefore cannot
+    /// delay the resume, and does not wait for it. The media service still
+    /// decides whether to resume, so ownership rules are unchanged.
+    private func startMediaRelease(_ tokens: [MediaInterruptionToken]) async {
+        guard !tokens.isEmpty else { return }
+        let releaseID = UUID()
+        let mediaInterruption = self.mediaInterruption
+        await withCheckedContinuation { (started: CheckedContinuation<Void, Never>) in
+            let release = Task { @MainActor [weak self] in
+                // Resuming the caller only enqueues it; the release below runs
+                // first, up to its first real suspension.
+                started.resume()
+                for token in tokens {
+                    await mediaInterruption.endInterruption(token: token)
+                }
+                self?.mediaReleaseTasks.removeValue(forKey: releaseID)
+            }
+            mediaReleaseTasks[releaseID] = release
+        }
     }
 
     private func installCaptureTerminationBarrier(
@@ -1731,9 +1746,7 @@ final class DictationController: ObservableObject {
         await applyDeferredMemoryPressureUnloadIfNeeded()
         let deferredMediaTokens = self.deferredMediaTokens
         self.deferredMediaTokens.removeAll()
-        for token in deferredMediaTokens {
-            await mediaInterruption.endInterruption(token: token)
-        }
+        await startMediaRelease(deferredMediaTokens)
         if !isTearingDown, activeSessionGeneration == nil, !isRecording {
             status = "Failed to start"
         }
