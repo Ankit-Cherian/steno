@@ -1735,7 +1735,7 @@ final class DictationController: ObservableObject {
                     lastTranscript = result.insertedText
                     status = copiedOnlyStatusMessage(for: result)
                     lastError = result.errorMessage ?? ""
-                    overlay.show(state: .copiedOnly)
+                    overlay.show(state: result.pasteAttempted == true ? .inserted : .copiedOnly)
                 case .failed:
                     lastTranscript = result.insertedText
                     status = "Transcript ready but insertion failed."
@@ -2207,8 +2207,20 @@ final class DictationController: ObservableObject {
     }
 
     private func copiedOnlyStatusMessage(for result: InsertResult) -> String {
+        if result.pasteAttempted == true {
+            // Steno restores the previous clipboard shortly after pasting, so
+            // this must not suggest pasting again.
+            return "Transcript pasted."
+        }
         guard let reason = result.errorMessage?.lowercased() else {
             return "Transcript copied to clipboard. Paste with Cmd+V."
+        }
+
+        // These reasons already say why the text was copied.
+        if reason.contains("secure text field")
+            || reason.contains("focused field changed")
+            || reason.contains("respond in time") {
+            return result.errorMessage ?? "Transcript copied to clipboard. Paste with Cmd+V."
         }
 
         if reason.contains("accessibility permission") {
@@ -2493,59 +2505,9 @@ private struct DictationRuntimeFactory {
     }
 
     func makeInsertionTransports() -> [any InsertionTransport] {
-        var transports: [any InsertionTransport] = []
-
-        for method in snapshot.insertion.orderedMethods {
-            switch method {
-            case .direct:
-                transports.append(DirectTypingInsertionTransport())
-            case .accessibility:
-                transports.append(AccessibilityInsertionTransport())
-            case .clipboardPaste:
-                transports.append(
-                    ClipboardInsertionTransport(
-                        clipboard: clipboardService,
-                        autoPaste: { target, permit in
-                            await MacPasteHelper.activateAndPaste(
-                                target: target,
-                                commitPermit: permit
-                            )
-                        },
-                        exactTargetAutoPaste: { target, editorTarget, permit in
-                            await MacPasteHelper.activateAndPaste(
-                                target: target,
-                                editorTarget: editorTarget,
-                                commitPermit: permit
-                            )
-                        }
-                    )
-                )
-            case .none:
-                continue
-            }
-        }
-
-        if !transports.contains(where: { $0.method == .clipboardPaste }) {
-            transports.append(
-                ClipboardInsertionTransport(
-                    clipboard: clipboardService,
-                    autoPaste: { target, permit in
-                        await MacPasteHelper.activateAndPaste(
-                            target: target,
-                            commitPermit: permit
-                        )
-                    },
-                    exactTargetAutoPaste: { target, editorTarget, permit in
-                        await MacPasteHelper.activateAndPaste(
-                            target: target,
-                            editorTarget: editorTarget,
-                            commitPermit: permit
-                        )
-                    }
-                )
-            )
-        }
-
-        return transports
+        MacInsertionTransportFactory.makeTransports(
+            orderedMethods: snapshot.insertion.orderedMethods,
+            clipboard: clipboardService
+        )
     }
 }

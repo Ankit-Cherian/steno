@@ -1,0 +1,99 @@
+#if os(macOS)
+import Foundation
+import Testing
+@testable import StenoKit
+
+private let terminalContext = AppContext(
+    bundleIdentifier: "com.apple.Terminal",
+    appName: "Terminal"
+)
+
+private func makeTerminalService(
+    pasteboard: FakePasteboard,
+    keys: FakeKeyPoster,
+    activator: FakeApplicationActivator = FakeApplicationActivator(
+        frontmost: terminalContext.bundleIdentifier,
+        running: [terminalContext.bundleIdentifier]
+    )
+) -> InsertionService {
+    InsertionService(transports: MacInsertionTransportFactory.makeTransports(
+        orderedMethods: defaultInsertionOrder,
+        clipboard: pasteboard,
+        system: makeFakeInsertionSystem(
+            keys: keys,
+            activator: activator,
+            accessibility: FakeAccessibilityClient(focusedBundle: terminalContext.bundleIdentifier)
+        ),
+        clipboardRestoreDelay: .milliseconds(50)
+    ))
+}
+
+@Test("A paste-based insertion puts the user's previous clipboard back")
+func pasteRestoresPreviousClipboard() async {
+    let pasteboard = FakePasteboard(items: [copiedImageItem])
+    let keys = FakeKeyPoster()
+    let service = makeTerminalService(pasteboard: pasteboard, keys: keys)
+
+    let result = await service.insert(text: "git status", target: terminalContext)
+
+    #expect(keys.commandShortcuts.count == 1)
+    #expect(result.method == .clipboardPaste)
+    #expect(pasteboard.transientWrites == ["git status"])
+    #expect(await pollUntil { pasteboard.restoreCount == 1 })
+    #expect(pasteboard.items == [copiedImageItem])
+}
+
+@Test("A copy-only fallback leaves the dictation on the clipboard")
+func copyOnlyFallbackKeepsDictationOnClipboard() async throws {
+    let pasteboard = FakePasteboard(items: [copiedImageItem])
+    let keys = FakeKeyPoster()
+    let activator = FakeApplicationActivator(
+        frontmost: "com.apple.Notes",
+        running: [terminalContext.bundleIdentifier, "com.apple.Notes"],
+        activatable: ["com.apple.Notes"]
+    )
+    let service = makeTerminalService(pasteboard: pasteboard, keys: keys, activator: activator)
+
+    let result = await service.insert(text: "git status", target: terminalContext)
+
+    #expect(result.status == .copiedOnly)
+    #expect(keys.events.isEmpty)
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(pasteboard.restoreCount == 0)
+    #expect(pasteboard.plainText == "git status")
+}
+
+@Test("Paste is not sent when the clipboard changed after Steno's write")
+func pasteSkippedWhenClipboardChangedBeforeKeystroke() async throws {
+    let pasteboard = FakePasteboard(items: [copiedImageItem])
+    let other = FakePasteboard.Item(representations: ["public.utf8-plain-text": Data("other".utf8)])
+    pasteboard.simulateExternalWriteAfterNextTransientWrite(other)
+    let keys = FakeKeyPoster()
+    let service = makeTerminalService(pasteboard: pasteboard, keys: keys)
+
+    let result = await service.insert(text: "rm -rf build", target: terminalContext)
+
+    #expect(keys.events.isEmpty)
+    #expect(result.status == .copiedOnly)
+    #expect(result.errorMessage?.localizedCaseInsensitiveContains("clipboard changed") == true)
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(pasteboard.restoreCount == 0)
+    #expect(pasteboard.items == [other])
+}
+
+@Test("A copy made after the paste is not overwritten by the restore")
+func restoreSkipsWhenUserCopiedAfterPaste() async throws {
+    let pasteboard = FakePasteboard(items: [copiedImageItem])
+    let keys = FakeKeyPoster()
+    let service = makeTerminalService(pasteboard: pasteboard, keys: keys)
+
+    _ = await service.insert(text: "make test", target: terminalContext)
+    let fresh = FakePasteboard.Item(representations: ["public.utf8-plain-text": Data("fresh copy".utf8)])
+    pasteboard.userCopies(fresh)
+    try await Task.sleep(for: .milliseconds(200))
+
+    #expect(keys.commandShortcuts.count == 1)
+    #expect(pasteboard.restoreCount == 0)
+    #expect(pasteboard.items == [fresh])
+}
+#endif

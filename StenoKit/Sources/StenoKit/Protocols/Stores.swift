@@ -69,6 +69,17 @@ public protocol InsertionServiceProtocol: Sendable {
         clipboardRecoveryText: String,
         commitAuthorization: InsertionCommitAuthorization
     ) async -> InsertResult
+
+    /// Like the commit-authorized insert, plus a refusal-only target check
+    /// for sessions without an exact editor target.
+    func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?,
+        insertionGuard: InsertionTargetGuard?,
+        clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization
+    ) async -> InsertResult
     #endif
 }
 
@@ -114,6 +125,25 @@ public extension InsertionServiceProtocol {
             target: target,
             editorTarget: editorTarget,
             clipboardRecoveryText: clipboardRecoveryText
+        )
+    }
+
+    /// Services without refusal support insert as before.
+    func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?,
+        insertionGuard: InsertionTargetGuard?,
+        clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization
+    ) async -> InsertResult {
+        _ = insertionGuard
+        return await insert(
+            text: text,
+            target: target,
+            editorTarget: editorTarget,
+            clipboardRecoveryText: clipboardRecoveryText,
+            commitAuthorization: commitAuthorization
         )
     }
     #endif

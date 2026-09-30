@@ -23,6 +23,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - If macOS pauses the hands-free key's listener, Steno now always turns it back on, and saving settings also recovers it.
 - If the release of Option is missed, for example around a password field or a screen lock, the recording now ends within about a second and is transcribed. Recordings stop automatically after one hour, with a countdown in the overlay during the last minute, and the audio is transcribed rather than lost.
 - Pressing a dictation shortcut while the previous dictation is still finishing now shows a brief notice in the overlay instead of silently doing nothing.
+- Direct typing no longer types into another app when the original app can't be brought back to the front. The transcript is copied to the clipboard instead.
+- Auto-paste now sends the Command-V shortcut for the current keyboard layout. On Dvorak it previously sent Command-K, which clears the terminal.
+- Auto-paste now puts your previous clipboard contents back shortly after pasting, and marks the transcript it places on the clipboard as transient so clipboard managers skip it. If another app changes the clipboard before the paste, Steno no longer pastes. When Steno only copies the transcript, it stays on the clipboard.
+- After pasting into Terminal, iTerm2 or Warp, Steno now says the transcript was pasted instead of asking you to press Command-V, which pasted it twice. History shows these entries as Pasted.
+- Steno now copies the transcript instead of inserting it when the cursor is in a password or other secure field, or when focus moved to a different field while it was transcribing. This works with default settings; nearby-text continuation is not required. Apps that answer Accessibility slowly keep inserting as before.
+- A recording recognized as punctuation only, such as a lone period, or one that cleanup empties entirely, such as fillers under Aggressive cleanup, is now reported as no speech. Nothing is inserted or saved, and the clipboard is left alone.
+- Remote-desktop and virtual-machine apps now receive dictation by clipboard paste first, like terminals, because they may not pass typed characters through correctly.
+- The Insertion order setting now explains when Steno changes the order, and an app that is too slow to answer Accessibility is reported as a timeout instead of "Target changed".
 
 ## [1.0.0] - 2026-09-17
 

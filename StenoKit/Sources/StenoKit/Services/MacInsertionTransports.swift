@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import ApplicationServices
+import Carbon
 import Foundation
 
 /// Preferred tap location for synthetic event posting.
@@ -13,6 +14,184 @@ let stenoSyntheticEventTapLocation: CGEventTapLocation = {
     return .cgAnnotatedSessionEventTap
 }()
 
+/// Operating-system boundary shared by the insertion transports. Production
+/// uses `live`; tests replace it so no application is activated, no keyboard
+/// event is posted, and no real Accessibility element is read.
+struct MacInsertionSystem: Sendable {
+    var accessibility: any MacAccessibilityClient
+    /// Requests activation and reports whether a running application matched.
+    var activateApplication: @Sendable (_ bundleIdentifier: String) async -> Bool
+    var frontmostApplicationBundleIdentifier: @Sendable () async -> String?
+    var postKeyEvents: @Sendable (_ keyDown: CGEvent, _ keyUp: CGEvent) -> Void
+    var pasteKeyCode: @Sendable () async -> CGKeyCode
+
+    static let live = MacInsertionSystem(
+        accessibility: SystemMacAccessibilityClient(),
+        activateApplication: { bundleIdentifier in
+            await MainActor.run {
+                guard let app = NSRunningApplication.runningApplications(
+                    withBundleIdentifier: bundleIdentifier
+                ).first else {
+                    return false
+                }
+                app.activate()
+                return true
+            }
+        },
+        frontmostApplicationBundleIdentifier: {
+            await MainActor.run {
+                NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            }
+        },
+        postKeyEvents: { keyDown, keyUp in
+            keyDown.post(tap: stenoSyntheticEventTapLocation)
+            keyUp.post(tap: stenoSyntheticEventTapLocation)
+        },
+        pasteKeyCode: {
+            // Text Input Sources must be queried on the main thread.
+            await MainActor.run { MacPasteKeyCode.currentLayoutKeyCode() }
+        }
+    )
+}
+
+/// Finds the key that produces "v" while Command is held under the current
+/// keyboard layout. Key code 9 is "v" only on QWERTY-positioned layouts; on
+/// Dvorak it is "k", and Command+K clears a terminal.
+enum MacPasteKeyCode {
+    static let fallback: CGKeyCode = 9
+
+    static func resolve(characterWithCommand: (CGKeyCode) -> String?) -> CGKeyCode {
+        if characterWithCommand(fallback)?.lowercased() == "v" {
+            return fallback
+        }
+        for keyCode in CGKeyCode(0)..<CGKeyCode(128)
+        where characterWithCommand(keyCode)?.lowercased() == "v" {
+            return keyCode
+        }
+        return fallback
+    }
+
+    @MainActor
+    static func currentLayoutKeyCode() -> CGKeyCode {
+        guard let layout = CurrentKeyboardLayout() else { return fallback }
+        return resolve { layout.characterWithCommand(for: $0) }
+    }
+
+    @MainActor
+    static func currentLayoutCharacterWithCommand(for keyCode: CGKeyCode) -> String? {
+        CurrentKeyboardLayout()?.characterWithCommand(for: keyCode)
+    }
+
+    private struct CurrentKeyboardLayout {
+        private let layoutData: Data
+
+        @MainActor
+        init?() {
+            guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+                  let property = TISGetInputSourceProperty(
+                      source,
+                      kTISPropertyUnicodeKeyLayoutData
+                  ) else {
+                return nil
+            }
+            layoutData = Unmanaged<CFData>.fromOpaque(property).takeUnretainedValue() as Data
+        }
+
+        func characterWithCommand(for keyCode: CGKeyCode) -> String? {
+            layoutData.withUnsafeBytes { rawBuffer -> String? in
+                guard let layout = rawBuffer.bindMemory(to: UCKeyboardLayout.self).baseAddress else {
+                    return nil
+                }
+                var deadKeyState: UInt32 = 0
+                var length = 0
+                var characters = [UniChar](repeating: 0, count: 4)
+                let status = UCKeyTranslate(
+                    layout,
+                    keyCode,
+                    UInt16(kUCKeyActionDown),
+                    UInt32((cmdKey >> 8) & 0xFF),
+                    UInt32(LMGetKbdType()),
+                    OptionBits(kUCKeyTranslateNoDeadKeysBit),
+                    &deadKeyState,
+                    characters.count,
+                    &length,
+                    &characters
+                )
+                guard status == noErr, length > 0 else { return nil }
+                return String(utf16CodeUnits: characters, count: length)
+            }
+        }
+    }
+}
+
+/// Builds the insertion transports in the user's configured order, with the
+/// clipboard transport always available as the last recovery path.
+public enum MacInsertionTransportFactory {
+    public static func makeTransports(
+        orderedMethods: [InsertionMethod],
+        clipboard: any ClipboardService
+    ) -> [any InsertionTransport] {
+        makeTransports(
+            orderedMethods: orderedMethods,
+            clipboard: clipboard,
+            system: .live
+        )
+    }
+
+    static func makeTransports(
+        orderedMethods: [InsertionMethod],
+        clipboard: any ClipboardService,
+        system: MacInsertionSystem,
+        clipboardRestoreDelay: Duration = ClipboardInsertionTransport.defaultRestoreDelay
+    ) -> [any InsertionTransport] {
+        var transports: [any InsertionTransport] = []
+        for method in orderedMethods {
+            switch method {
+            case .direct:
+                transports.append(DirectTypingInsertionTransport(system: system))
+            case .accessibility:
+                transports.append(AccessibilityInsertionTransport(client: system.accessibility))
+            case .clipboardPaste:
+                transports.append(makeClipboardTransport(
+                    clipboard: clipboard,
+                    system: system,
+                    restoreDelay: clipboardRestoreDelay
+                ))
+            case .none:
+                continue
+            }
+        }
+        if !transports.contains(where: { $0.method == .clipboardPaste }) {
+            transports.append(makeClipboardTransport(
+                clipboard: clipboard,
+                system: system,
+                restoreDelay: clipboardRestoreDelay
+            ))
+        }
+        return transports
+    }
+
+    private static func makeClipboardTransport(
+        clipboard: any ClipboardService,
+        system: MacInsertionSystem,
+        restoreDelay: Duration
+    ) -> ClipboardInsertionTransport {
+        ClipboardInsertionTransport(
+            clipboard: clipboard,
+            restoreDelay: restoreDelay
+        ) { request in
+            await MacPasteHelper.activateAndPaste(
+                target: request.target,
+                editorTarget: request.editorTarget,
+                commitPermit: request.commitPermit,
+                system: system,
+                insertionGuard: request.insertionGuard,
+                clipboardStillHoldsText: request.clipboardStillHoldsText
+            )
+        }
+    }
+}
+
 public enum MacInsertionError: Error, LocalizedError {
     case eventSourceUnavailable
     case accessibilityPermissionMissing
@@ -21,6 +200,9 @@ public enum MacInsertionError: Error, LocalizedError {
     case attributeUpdateFailed
     case exactTargetUnavailable(EditorTargetUnavailableReason)
     case attributeUpdateIndeterminate
+    /// The target check refused before any side effect. The service copies
+    /// the final text and does not try another transport.
+    case insertionRefused(EditorTargetUnavailableReason)
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +220,8 @@ public enum MacInsertionError: Error, LocalizedError {
             return "Exact editor target is unavailable: \(reason.rawValue)"
         case .attributeUpdateIndeterminate:
             return "The editor did not confirm whether the insertion completed"
+        case .insertionRefused(let reason):
+            return InsertionTargetGuard.refusalMessage(for: reason)
         }
     }
 }
@@ -52,14 +236,26 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
         _ chunkIndex: Int
     ) -> Void
     private let interChunkPause: @Sendable () -> Void
+    private let activateApplication: @Sendable (_ bundleIdentifier: String) async -> Bool
+    private let frontmostApplicationBundleIdentifier: @Sendable () async -> String?
 
     public init() {
-        isProcessTrusted = { AXIsProcessTrusted() }
+        self.init(system: .live, interChunkPause: { usleep(10_000) })
+    }
+
+    init(
+        system: MacInsertionSystem,
+        interChunkPause: @escaping @Sendable () -> Void = {}
+    ) {
+        let accessibility = system.accessibility
+        let postKeyEvents = system.postKeyEvents
+        isProcessTrusted = { accessibility.isProcessTrusted() }
         preparedEventPoster = { keyDown, keyUp, _, _ in
-            keyDown.post(tap: stenoSyntheticEventTapLocation)
-            keyUp.post(tap: stenoSyntheticEventTapLocation)
+            postKeyEvents(keyDown, keyUp)
         }
-        interChunkPause = { usleep(10_000) }
+        self.interChunkPause = interChunkPause
+        activateApplication = system.activateApplication
+        frontmostApplicationBundleIdentifier = system.frontmostApplicationBundleIdentifier
     }
 
     init(
@@ -70,17 +266,24 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
             _ chunk: String,
             _ chunkIndex: Int
         ) -> Void,
-        interChunkPause: @escaping @Sendable () -> Void = {}
+        interChunkPause: @escaping @Sendable () -> Void = {},
+        activateApplication: @escaping @Sendable (_ bundleIdentifier: String) async -> Bool
+            = MacInsertionSystem.live.activateApplication,
+        frontmostApplicationBundleIdentifier: @escaping @Sendable () async -> String?
+            = MacInsertionSystem.live.frontmostApplicationBundleIdentifier
     ) {
         self.isProcessTrusted = isProcessTrusted
         self.preparedEventPoster = preparedEventPoster
         self.interChunkPause = interChunkPause
+        self.activateApplication = activateApplication
+        self.frontmostApplicationBundleIdentifier = frontmostApplicationBundleIdentifier
     }
 
     public func insert(text: String, target: AppContext) async throws {
         try await insert(
             text: text,
             target: target,
+            insertionGuard: nil,
             commitAuthorization: nil,
             commitLease: nil
         )
@@ -89,6 +292,7 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
     func insert(
         text: String,
         target: AppContext,
+        insertionGuard: InsertionTargetGuard?,
         commitAuthorization: InsertionCommitAuthorization?,
         commitLease: InsertionCommitLease?
     ) async throws {
@@ -98,8 +302,11 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
             throw MacInsertionError.accessibilityPermissionMissing
         }
 
-        try await Self.activateTargetApp(target)
+        try await activateTargetApp(target)
         try Task.checkCancellation()
+        if let insertionGuard, case .refuse(let reason) = insertionGuard.evaluate(for: target) {
+            throw MacInsertionError.insertionRefused(reason)
+        }
 
         try await typeUnicode(
             text,
@@ -147,31 +354,27 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
         )
     }
 
-    private static func activateTargetApp(_ target: AppContext) async throws {
+    /// Typing posts events to whichever app is frontmost, so this refuses
+    /// before any event when the target can't be brought back. The service
+    /// then falls through to transports that verify the target themselves.
+    private func activateTargetApp(_ target: AppContext) async throws {
         guard target.bundleIdentifier != "unknown" else { return }
 
         for attempt in 0..<3 {
             try Task.checkCancellation()
-            let activationTriggered = await MainActor.run { () -> Bool in
-                guard let app = NSRunningApplication.runningApplications(
-                    withBundleIdentifier: target.bundleIdentifier
-                ).first else {
-                    return false
-                }
-                return app.activate()
+            guard await activateApplication(target.bundleIdentifier) else {
+                throw MacInsertionError.exactTargetUnavailable(.applicationUnavailable)
             }
 
             let delay = UInt64(150_000_000 + (50_000_000 * attempt))
             try await Task.sleep(nanoseconds: delay)
             try Task.checkCancellation()
 
-            let isFrontmost = await MainActor.run {
-                NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleIdentifier
-            }
-            if isFrontmost || !activationTriggered {
+            if await frontmostApplicationBundleIdentifier() == target.bundleIdentifier {
                 return
             }
         }
+        throw MacInsertionError.exactTargetUnavailable(.applicationNotFrontmost)
     }
 
     private func typeUnicode(
@@ -336,6 +539,7 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
         try await insert(
             text: text,
             target: target,
+            insertionGuard: nil,
             commitAuthorization: nil,
             commitLease: nil
         )
@@ -344,12 +548,16 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
     func insert(
         text: String,
         target: AppContext,
+        insertionGuard: InsertionTargetGuard?,
         commitAuthorization: InsertionCommitAuthorization?,
         commitLease: InsertionCommitLease?
     ) async throws {
         try Task.checkCancellation()
         guard client.isProcessTrusted() else {
             throw MacInsertionError.accessibilityPermissionMissing
+        }
+        if let insertionGuard, case .refuse(let reason) = insertionGuard.evaluate(for: target) {
+            throw MacInsertionError.insertionRefused(reason)
         }
         switch EditorTargetHandle.capture(target: target, client: client) {
         case .success(let editorTarget):
@@ -421,7 +629,8 @@ public enum MacPasteHelper {
         await activateAndPaste(
             target: target,
             editorTarget: nil,
-            commitPermit: commitPermit
+            commitPermit: commitPermit,
+            system: .live
         )
     }
 
@@ -435,24 +644,28 @@ public enum MacPasteHelper {
         await activateAndPaste(
             target: target,
             editorTarget: Optional(editorTarget),
-            commitPermit: commitPermit
+            commitPermit: commitPermit,
+            system: .live
         )
     }
 
-    private static func activateAndPaste(
+    static func activateAndPaste(
         target: AppContext,
         editorTarget: EditorTargetHandle?,
-        commitPermit: InsertionCommitPermit?
+        commitPermit: InsertionCommitPermit?,
+        system: MacInsertionSystem,
+        insertionGuard: InsertionTargetGuard? = nil,
+        clipboardStillHoldsText: @Sendable () -> Bool = { true }
     ) async -> AutoPasteOutcome {
         guard !Task.isCancelled else {
             return .skipped(reason: "Auto-paste canceled.")
         }
-        guard AXIsProcessTrusted() else {
+        guard system.accessibility.isProcessTrusted() else {
             return .skipped(reason: "Accessibility permission is required for auto-paste.")
         }
 
         if editorTarget == nil {
-            let activationResult = await activateTargetApp(target)
+            let activationResult = await activateTargetApp(target, system: system)
             switch activationResult {
             case .activated, .unknownTarget:
                 break
@@ -461,18 +674,31 @@ public enum MacPasteHelper {
             case .focusNotAcquired:
                 return .skipped(reason: "Could not focus target app before auto-paste.")
             }
+            if let insertionGuard, case .refuse(let reason) = insertionGuard.evaluate(for: target) {
+                return .skipped(reason: InsertionTargetGuard.refusalMessage(for: reason))
+            }
         } else if let editorTarget, case .failure(let reason) = await editorTarget.revalidate() {
-            return .skipped(reason: "Exact editor target is unavailable: \(reason.rawValue).")
+            return .skipped(reason: exactTargetSkipReason(reason))
         }
 
+        let pasteKeyCode = await system.pasteKeyCode()
         for attempt in 0..<2 {
             guard !Task.isCancelled else {
                 return .skipped(reason: "Auto-paste canceled.")
             }
             if let editorTarget, case .failure(let reason) = await editorTarget.revalidate() {
-                return .skipped(reason: "Exact editor target is unavailable: \(reason.rawValue).")
+                return .skipped(reason: exactTargetSkipReason(reason))
             }
-            if simulateCommandV(commitPermit: commitPermit) {
+            // Another app may have written to the clipboard since Steno's
+            // write. Pasting now would insert its content instead.
+            guard clipboardStillHoldsText() else {
+                return .skipped(reason: ClipboardInsertionTransport.clipboardChangedReason)
+            }
+            if simulateCommandV(
+                keyCode: pasteKeyCode,
+                commitPermit: commitPermit,
+                postKeyEvents: system.postKeyEvents
+            ) {
                 return .attempted
             }
             if commitPermit?.cancellationRequested == true {
@@ -490,7 +716,16 @@ public enum MacPasteHelper {
         return .skipped(reason: "Unable to synthesize Cmd+V for auto-paste.")
     }
 
-    private static func activateTargetApp(_ target: AppContext) async -> ActivationResult {
+    private static func exactTargetSkipReason(_ reason: EditorTargetUnavailableReason) -> String {
+        reason == .timedOut
+            ? ClipboardInsertionTransport.exactTargetSkipReason(reason)
+            : "Exact editor target is unavailable: \(reason.rawValue)."
+    }
+
+    private static func activateTargetApp(
+        _ target: AppContext,
+        system: MacInsertionSystem
+    ) async -> ActivationResult {
         guard target.bundleIdentifier != "unknown" else {
             return .unknownTarget
         }
@@ -499,17 +734,7 @@ public enum MacPasteHelper {
             guard !Task.isCancelled else {
                 return .focusNotAcquired
             }
-            let didFindApp = await MainActor.run { () -> Bool in
-                guard let app = NSRunningApplication.runningApplications(
-                    withBundleIdentifier: target.bundleIdentifier
-                ).first else {
-                    return false
-                }
-                app.activate()
-                return true
-            }
-
-            guard didFindApp else {
+            guard await system.activateApplication(target.bundleIdentifier) else {
                 return .appNotFound
             }
 
@@ -520,10 +745,7 @@ public enum MacPasteHelper {
                 return .focusNotAcquired
             }
 
-            let isFrontmost = await MainActor.run {
-                NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleIdentifier
-            }
-            if isFrontmost {
+            if await system.frontmostApplicationBundleIdentifier() == target.bundleIdentifier {
                 return .activated
             }
         }
@@ -531,24 +753,30 @@ public enum MacPasteHelper {
         return .focusNotAcquired
     }
 
+    @MainActor
     public static func simulateCommandV() -> Bool {
-        simulateCommandV(commitPermit: nil)
+        simulateCommandV(
+            keyCode: MacPasteKeyCode.currentLayoutKeyCode(),
+            commitPermit: nil,
+            postKeyEvents: MacInsertionSystem.live.postKeyEvents
+        )
     }
 
     private static func simulateCommandV(
-        commitPermit: InsertionCommitPermit?
+        keyCode: CGKeyCode,
+        commitPermit: InsertionCommitPermit?,
+        postKeyEvents: @Sendable (_ keyDown: CGEvent, _ keyUp: CGEvent) -> Void
     ) -> Bool {
         guard !Task.isCancelled else { return false }
         guard let source = CGEventSource(stateID: .privateState),
-              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
         else { return false }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
         guard !Task.isCancelled else { return false }
         let postEvents = {
-            keyDown.post(tap: stenoSyntheticEventTapLocation)
-            keyUp.post(tap: stenoSyntheticEventTapLocation)
+            postKeyEvents(keyDown, keyUp)
             return true
         }
         return performCommandVPasteIfAuthorized(

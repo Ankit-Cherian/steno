@@ -383,6 +383,7 @@ public actor SessionCoordinator {
         var setupTasks: [Task<Void, Never>]
         #if os(macOS)
         var editorTarget: EditorTargetHandle?
+        var insertionGuard: InsertionTargetGuard?
         var continuationContext: ContinuationContextState
         #endif
     }
@@ -547,6 +548,7 @@ public actor SessionCoordinator {
             livePipeline: nil,
             setupTasks: [],
             editorTarget: nil,
+            insertionGuard: nil,
             continuationContext: .unavailable
         )
         commitAuthorizations[sessionID] = commitAuthorization
@@ -568,10 +570,17 @@ public actor SessionCoordinator {
             }
         ))
 
-        // Audio is already running. Bind the exact focused field synchronously
-        // before start returns; only bounded context reads are deferred.
+        // Audio is already running. Look up the focused field synchronously
+        // before start returns; only bounded context reads are deferred. Every
+        // session keeps the lookup as a refusal-only guard against a secure
+        // field or a focus change before insertion. Only nearby text also uses
+        // it as the exact target.
+        let result = editorTargetCapture(appContext)
+        activeSessions[sessionID]?.insertionGuard = InsertionTargetGuard(
+            startCapture: result,
+            lookup: editorTargetCapture
+        )
         if options.nearbyContextEnabled {
-            let result = editorTargetCapture(appContext)
             if case .success(let handle) = result {
                 activeSessions[sessionID]?.editorTarget = handle
             }
@@ -752,7 +761,10 @@ public actor SessionCoordinator {
         )
         try checkCompletionOwnership(sessionID: sessionID)
 
-        if rawTranscript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Recognized text with no letter or digit, such as a lone "." from a
+        // cough, is not speech. Spoken commands like "period" or "new line"
+        // arrive as words and become symbols only in cleanup.
+        if !Self.containsLetterOrDigit(rawTranscript.text) {
             return noSpeechResult()
         }
 
@@ -760,7 +772,7 @@ public actor SessionCoordinator {
             rawTranscript,
             request: request
         ) {
-            if sanitizedPromptContamination.isEmpty {
+            if !Self.containsLetterOrDigit(sanitizedPromptContamination) {
                 return noSpeechResult()
             }
             rawTranscript.text = sanitizedPromptContamination
@@ -800,6 +812,11 @@ public actor SessionCoordinator {
             directivePlan,
             toCleanedText: cleanedTranscript.text
         )
+        // Cleanup can remove everything, for example fillers under the
+        // aggressive policy. Nothing is left to insert or record.
+        if cleanedTranscript.text.trimmingCharacters(in: .whitespaces).isEmpty {
+            return noSpeechResult()
+        }
         if directivePlan.kind != .none {
             cleanedTranscript.edits.append(TranscriptEdit(
                 kind: .commandTransform,
@@ -824,6 +841,7 @@ public actor SessionCoordinator {
                 text: insertionPayload,
                 target: active.appContext,
                 editorTarget: active.editorTarget,
+                insertionGuard: active.insertionGuard,
                 clipboardRecoveryText: cleanedTranscript.text,
                 commitAuthorization: insertionCommitAuthorization
             )
@@ -855,7 +873,8 @@ public actor SessionCoordinator {
             durationMS: rawTranscript.durationMS,
             // Audio artifacts are ephemeral; do not persist paths that are deleted on return.
             audioURL: nil,
-            insertionStatus: insertResult.status
+            insertionStatus: insertResult.status,
+            pasteAttempted: insertResult.pasteAttempted
         )
         do {
             try await historyStore.append(entry: entry)
@@ -890,6 +909,10 @@ public actor SessionCoordinator {
 
     private func noSpeechResult() -> InsertResult {
         InsertResult(status: .noSpeech, method: .none, insertedText: "")
+    }
+
+    private static func containsLetterOrDigit(_ text: String) -> Bool {
+        text.contains { $0.isLetter || $0.isNumber }
     }
 
     private func prepareLivePipeline(
