@@ -11,8 +11,10 @@ func lexiconGlobalAndScopedReplacement() async throws {
     let generalContext = AppContext(bundleIdentifier: "com.apple.Notes", appName: "Notes")
     let ideContext = AppContext(bundleIdentifier: "com.example.editor", appName: "EditorPro", isIDE: true)
 
-    let general = await service.apply(to: "hey stenoh open editor", appContext: generalContext)
-    let ide = await service.apply(to: "hey stenoh open editor", appContext: ideContext)
+    let general = LexiconMatcher(lexicon: await service.snapshot(for: generalContext))
+        .apply(to: "hey stenoh open editor").text
+    let ide = LexiconMatcher(lexicon: await service.snapshot(for: ideContext))
+        .apply(to: "hey stenoh open editor").text
 
     #expect(general == "hey Steno open editor")
     #expect(ide == "hey Steno open EditorPro")
@@ -35,10 +37,8 @@ func lexiconAliasesAndHotTerms() async throws {
         isIDE: true
     )
 
-    let result = await service.applyWithEdits(
-        to: "ping ter so about steno kit",
-        appContext: ideContext
-    )
+    let result = LexiconMatcher(lexicon: await service.snapshot(for: ideContext))
+        .apply(to: "ping ter so about steno kit")
     let hotTerms = await service.hotTerms(for: ideContext, limit: 4)
 
     #expect(result.text == "ping TURSO about StenoKit")
@@ -58,7 +58,7 @@ func lexiconSkipsDangerousCommonWordLiteralReplacements() async throws {
     ]
 
     for example in examples {
-        let result = await service.applyWithEdits(to: example, appContext: nil)
+        let result = LexiconMatcher(lexicon: await service.snapshot(for: nil)).apply(to: example)
 
         #expect(result.text == example)
         #expect(result.edits.isEmpty)

@@ -367,32 +367,8 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     // MARK: - Lexicon
 
     private func applyLexicon(text: String, lexicon: PersonalLexicon) -> (text: String, edits: [TranscriptEdit]) {
-        var updated = text
-        var edits: [TranscriptEdit] = []
-
-        // Lexicon entries are already sorted longest-first by the PersonalLexicon invariant.
-        for entry in lexicon.entries {
-            for variant in lexiconVariants(for: entry) {
-                if variant.caseInsensitiveCompare(entry.preferred) == .orderedSame {
-                    continue
-                }
-                if LexiconSafety.shouldSkipLiteralReplacement(entry: entry, variant: variant) {
-                    continue
-                }
-                let escaped = NSRegularExpression.escapedPattern(for: variant)
-                let pattern = "\\b\(escaped)\\b"
-                guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
-                let range = NSRange(updated.startIndex..., in: updated)
-                let count = regex.numberOfMatches(in: updated, range: range)
-                if count > 0 {
-                    let safeReplacement = NSRegularExpression.escapedTemplate(for: entry.preferred)
-                    updated = regex.stringByReplacingMatches(in: updated, range: range, withTemplate: safeReplacement)
-                    edits.append(TranscriptEdit(kind: .lexiconCorrection, from: variant, to: entry.preferred))
-                }
-            }
-        }
-
-        return (updated, edits)
+        let result = LexiconMatcher(lexicon: lexicon).apply(to: text)
+        return (result.text, result.edits)
     }
 
     // MARK: - Structure
@@ -431,27 +407,5 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     private func capitalizedSentence(_ text: String) -> String {
         guard let first = text.first else { return text }
         return String(first).uppercased() + text.dropFirst()
-    }
-
-    private func lexiconVariants(for entry: LexiconEntry) -> [String] {
-        var variants = [entry.term]
-        variants.append(contentsOf: entry.aliases)
-
-        for source in [entry.term, entry.preferred] {
-            let spaced = source
-                .replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression)
-                .replacingOccurrences(of: #"[-_/]+"#, with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if spaced.caseInsensitiveCompare(source) != .orderedSame {
-                variants.append(spaced)
-            }
-        }
-
-        var seen: Set<String> = []
-        return variants
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .sorted { $0.count > $1.count }
-            .filter { seen.insert($0.lowercased()).inserted }
     }
 }

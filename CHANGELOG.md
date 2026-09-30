@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Vocabulary corrections no longer chain into each other, an app-specific correction always takes precedence over an all-apps correction for the same word, and corrections that only change capitalization, such as "github" to "GitHub", now apply.
+- A correction no longer rewrites text that already has its preferred spelling, so "Visual Studio" does not become "Visual Studio Studio". Terms such as C++, C# and .NET can now be corrected.
+
 ## [1.0.0] - 2026-09-17
 
 [Download Steno 1.0.0](https://github.com/Ankit-Cherian/steno/releases/tag/v1.0.0). The Developer ID signed installer is notarized and includes the local speech model.

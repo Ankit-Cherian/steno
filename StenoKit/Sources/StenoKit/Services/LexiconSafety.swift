@@ -22,9 +22,9 @@ enum LexiconSafety {
     ]
 
     static func shouldSkipLiteralReplacement(entry: LexiconEntry, variant: String) -> Bool {
+        // Casing-only entries are guarded too: they now apply, and a guarded word must stay as spoken.
         let source = normalized(variant)
-        let preferred = normalized(entry.preferred)
-        guard source.isEmpty == false, source != preferred else { return false }
+        guard source.isEmpty == false else { return false }
         guard source.split(separator: " ").count == 1 else { return false }
         return guardedCommonLiteralTerms.contains(source)
     }
