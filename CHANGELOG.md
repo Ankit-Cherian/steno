@@ -10,6 +10,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Fixed
 - History is no longer erased when its file can't be read in full. Entries that can't be read are skipped and kept in a copy of the original file, a file that can't be read at all is moved aside instead of overwritten, and the previous version of the file is kept after each save.
 - Two copies of Steno running at the same time, such as a development build next to the installed app, no longer remove each other's History entries.
+- A transcript that was inserted but couldn't be saved to History is no longer reported as a failed transcription. Steno says the text was inserted, offers it for copying, and never inserts it again.
+- When History can't be read in full, Steno now says so once and can show the kept file in Finder.
 
 ## [1.0.0] - 2026-09-17
 

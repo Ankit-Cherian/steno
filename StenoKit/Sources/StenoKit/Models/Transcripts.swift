@@ -137,6 +137,9 @@ public struct InsertResult: Sendable, Codable, Equatable {
     public var errorMessage: String?
     public var cleanupOutcome: CleanupOutcome?
     public var usageAnalyticsWarning: String?
+    /// Set when the transcript couldn't be saved to History. The insertion
+    /// outcome in `status` is unaffected.
+    public var historyWarning: String? = nil
 
     public init(
         status: InsertionStatus,

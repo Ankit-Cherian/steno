@@ -258,6 +258,8 @@ final class DictationController: ObservableObject {
     @Published var usageAnalyticsError: String = ""
     @Published var usageAnalyticsWriteWarning: String = ""
     @Published var isLoadingUsageAnalytics = false
+    /// A data file couldn't be read in full, or a transcript couldn't be saved.
+    @Published var storageNotice: StorageRecoveryNotice?
 
     private let captureService = MacAudioCaptureService()
     private let clipboardService: any ClipboardService
@@ -619,6 +621,9 @@ final class DictationController: ObservableObject {
 
     func bootstrap() async {
         guard !isIsolatedPreview else { hasBootstrapped = true; return }
+        await historyStore.setRecoveryNoticeHandler { [weak self] notice in
+            Task { @MainActor [weak self] in self?.presentStorageNotice(notice) }
+        }
         var loaded = await preferencesStore.load()
         loaded.normalize()
 
@@ -939,6 +944,56 @@ final class DictationController: ObservableObject {
                 lastError = ""
             } catch {
                 status = "Cleanup re-run failed"
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    /// The insertion outcome stands; only the History copy is missing, so the
+    /// text is offered for copying instead of being inserted again.
+    private func presentHistorySaveFailure(for result: InsertResult) {
+        status = "\(status) It couldn't be saved to History."
+        let message: String
+        switch result.status {
+        case .inserted:
+            message = "This transcript was inserted but couldn't be saved to History."
+        case .copiedOnly:
+            message = "This transcript was copied but couldn't be saved to History."
+        case .failed, .noSpeech:
+            message = "This transcript couldn't be inserted or saved to History."
+        }
+        storageNotice = StorageRecoveryNotice(
+            message: message,
+            fileURL: nil,
+            recoverableText: result.insertedText.isEmpty ? nil : result.insertedText
+        )
+    }
+
+    private func presentStorageNotice(_ notice: StorageRecoveryNotice) {
+        storageNotice = notice
+    }
+
+    func dismissStorageNotice() {
+        storageNotice = nil
+    }
+
+    func revealStorageNoticeFile() {
+        guard let fileURL = storageNotice?.fileURL else { return }
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+        } else {
+            NSWorkspace.shared.open(fileURL.deletingLastPathComponent())
+        }
+    }
+
+    func copyStorageNoticeText() {
+        guard !isIsolatedPreview, let text = storageNotice?.recoverableText else { return }
+        Task {
+            do {
+                try await clipboardService.setString(text)
+                status = "Transcript copied to clipboard. Paste with Cmd+V."
+            } catch {
+                status = "Copy failed"
                 lastError = error.localizedDescription
             }
         }
@@ -1562,6 +1617,10 @@ final class DictationController: ObservableObject {
 
                 if let analyticsWarning = result.usageAnalyticsWarning {
                     usageAnalyticsWriteWarning = analyticsWarning
+                }
+
+                if result.historyWarning != nil {
+                    presentHistorySaveFailure(for: result)
                 }
 
                 dismissOverlaySoon()
