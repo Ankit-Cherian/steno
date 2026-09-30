@@ -332,6 +332,10 @@ public struct RawEngineSampleResult: Sendable, Codable {
     public var audioDurationMS: Int?
     public var rtf: Double?
     public var metrics: BenchmarkTextQualityMetrics?
+    /// Decoder segments and mean token confidence, carried into the pipeline stage so cleanup
+    /// sees the same transcript shape the app produces.
+    public var segments: [TranscriptSegment]?
+    public var avgConfidence: Double?
 
     public init(
         id: String,
@@ -345,7 +349,9 @@ public struct RawEngineSampleResult: Sendable, Codable {
         elapsedMS: Int,
         audioDurationMS: Int?,
         rtf: Double?,
-        metrics: BenchmarkTextQualityMetrics?
+        metrics: BenchmarkTextQualityMetrics?,
+        segments: [TranscriptSegment]? = nil,
+        avgConfidence: Double? = nil
     ) {
         self.id = id
         self.dataset = dataset
@@ -359,6 +365,8 @@ public struct RawEngineSampleResult: Sendable, Codable {
         self.audioDurationMS = audioDurationMS
         self.rtf = rtf
         self.metrics = metrics
+        self.segments = segments
+        self.avgConfidence = avgConfidence
     }
 }
 

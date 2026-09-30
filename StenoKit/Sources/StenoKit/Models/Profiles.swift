@@ -151,16 +151,26 @@ public struct LexiconEntry: Sendable, Codable, Equatable {
 public struct PersonalLexicon: Sendable, Codable, Equatable {
     public var entries: [LexiconEntry]
 
-    /// Entries are sorted longest-term-first so longer multi-word phrases
-    /// match before shorter substrings during lexicon application.
+    /// Entries are sorted longest-term-first; entries of equal length keep their saved order,
+    /// which decides between duplicate terms.
     public init(entries: [LexiconEntry] = []) {
-        self.entries = entries.sorted {
-            Self.sortKey(for: $0) > Self.sortKey(for: $1)
-        }
+        self.entries = Self.longestFirst(entries)
+    }
+
+    static func longestFirst(_ entries: [LexiconEntry]) -> [LexiconEntry] {
+        entries.enumerated()
+            .sorted { lhs, rhs in
+                let lhsKey = sortKey(for: lhs.element)
+                let rhsKey = sortKey(for: rhs.element)
+                return lhsKey != rhsKey ? lhsKey > rhsKey : lhs.offset < rhs.offset
+            }
+            .map(\.element)
     }
 
     private static func sortKey(for entry: LexiconEntry) -> Int {
-        ([entry.term] + entry.aliases).map(\.count).max() ?? entry.term.count
+        ([entry.term] + entry.aliases)
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ").count }
+            .max() ?? 0
     }
 }
 

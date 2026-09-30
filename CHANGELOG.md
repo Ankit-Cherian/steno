@@ -35,6 +35,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - When media pausing is on, transcription no longer waits for the paused app to resume, so text appears one to three seconds sooner. A new recording started right after Cancel no longer waits for the previous resume either.
 - A media player that was slow to confirm a pause is now resumed after dictation instead of being left paused.
 - The media settings caption now says that media you paused yourself a few seconds before dictating may be resumed, instead of promising it always stays paused.
+- Saved vocabulary corrections now apply to every dictation, including short ones and ones the recognizer was confident about. Corrections that join words, such as "steno kit" to "StenoKit", no longer need a long sentence.
+- Spoken corrections such as "scratch that" and "never mind" now apply however confident the recognizer was, and paragraph capitalization is no longer dropped from clearly recognized speech.
+- "Never mind" and "scratch that" are now recognized when the recognizer writes them as "Nevermind.", after a full stop, or without a comma before the corrected name.
+- Paragraph formatting no longer capitalizes deliberately lowercase spellings at the start of a dictation: "iPhone", "eBay" and "macOS" stay as spoken, and a saved spelling such as "npm" is kept.
+- Settings now shows whether each correction is active, never applies (a common word Steno keeps as spoken, or an app scope with no bundle ID), or is overridden by another correction. Saving a correction for a common word such as "won" asks for confirmation, and an app scope without a bundle ID or a near-duplicate entry is rejected.
+- Vocabulary corrections no longer chain into each other, an app-specific correction always takes precedence over an all-apps correction for the same word, and corrections that only change capitalization, such as "github" to "GitHub", now apply.
+- A correction no longer rewrites text that already has its preferred spelling, so "Visual Studio" does not become "Visual Studio Studio". Terms such as C++, C# and .NET can now be corrected.
 
 ## [1.0.0] - 2026-09-17
 

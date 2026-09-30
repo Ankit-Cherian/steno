@@ -110,22 +110,34 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         profile: StyleProfile,
         lexicon: PersonalLexicon
     ) async throws -> CleanTranscript {
+        // Saved vocabulary is an explicit instruction, so it is applied deterministically before
+        // any candidate is scored. Only edits Steno infers on its own are ranked.
+        let vocabulary = LexiconMatcher(lexicon: lexicon).apply(to: raw.text)
+        var corrected = raw
+        corrected.text = vocabulary.text
+
         let generator = RuleBasedCleanupCandidateGenerator()
         let candidates = try await generator.generateCandidates(
-            raw: raw,
+            raw: corrected,
             profile: profile,
             lexicon: lexicon
         )
+
+        // A spoken correction that passed the repair guards is also explicit: the ranker only
+        // chooses how to resolve it, never whether to.
+        let spokenCorrections = candidates.filter { candidate in
+            candidate.appliedEdits.contains { $0.kind == .repairResolution }
+        }
         let ranker = LocalCleanupRanker()
         let best = ranker.bestCandidate(
-            raw: raw,
-            candidates: candidates,
+            raw: corrected,
+            candidates: spokenCorrections.isEmpty ? candidates : spokenCorrections,
             profile: profile
         )
 
         return CleanTranscript(
             text: best.text,
-            edits: best.appliedEdits,
+            edits: vocabulary.edits + best.appliedEdits,
             removedFillers: best.removedFillers,
             uncertaintyFlags: []
         )
@@ -148,11 +160,11 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         removedFillers = fillerResult.removed
         edits.append(contentsOf: fillerResult.edits)
 
-        let lexiconResult = applyLexicon(text: text, lexicon: lexicon)
-        text = lexiconResult.text
-        edits.append(contentsOf: lexiconResult.edits)
-
-        let structureResult = applyStructure(text: text, mode: profile.structureMode)
+        let structureResult = applyStructure(
+            text: text,
+            mode: profile.structureMode,
+            preservedSpellings: lexicon.entries.map(\.preferred)
+        )
         text = structureResult.text
         edits.append(contentsOf: structureResult.edits)
 
@@ -364,40 +376,17 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         character == 0x20 || character == 0x09
     }
 
-    // MARK: - Lexicon
-
-    private func applyLexicon(text: String, lexicon: PersonalLexicon) -> (text: String, edits: [TranscriptEdit]) {
-        var updated = text
-        var edits: [TranscriptEdit] = []
-
-        // Lexicon entries are already sorted longest-first by the PersonalLexicon invariant.
-        for entry in lexicon.entries {
-            for variant in lexiconVariants(for: entry) {
-                if variant.caseInsensitiveCompare(entry.preferred) == .orderedSame {
-                    continue
-                }
-                if LexiconSafety.shouldSkipLiteralReplacement(entry: entry, variant: variant) {
-                    continue
-                }
-                let escaped = NSRegularExpression.escapedPattern(for: variant)
-                let pattern = "\\b\(escaped)\\b"
-                guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
-                let range = NSRange(updated.startIndex..., in: updated)
-                let count = regex.numberOfMatches(in: updated, range: range)
-                if count > 0 {
-                    let safeReplacement = NSRegularExpression.escapedTemplate(for: entry.preferred)
-                    updated = regex.stringByReplacingMatches(in: updated, range: range, withTemplate: safeReplacement)
-                    edits.append(TranscriptEdit(kind: .lexiconCorrection, from: variant, to: entry.preferred))
-                }
-            }
-        }
-
-        return (updated, edits)
-    }
-
     // MARK: - Structure
 
-    private func applyStructure(text: String, mode: StructureMode) -> (text: String, edits: [TranscriptEdit]) {
+    private func applyStructure(
+        text: String,
+        mode: StructureMode,
+        preservedSpellings: [String]
+    ) -> (text: String, edits: [TranscriptEdit]) {
+        let capitalizedSentence = { (sentence: String) in
+            self.capitalizedSentence(sentence, preservedSpellings: preservedSpellings)
+        }
+
         switch mode {
         case .natural, .command:
             return (text, [])
@@ -405,7 +394,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return (capitalizedSentence(trimmed), [TranscriptEdit(kind: .structureRewrite, from: "raw", to: "paragraph")])
         case .bullets:
-            let clauses = splitIntoClauses(text)
+            let clauses = splitIntoClauses(text, capitalizedSentence: capitalizedSentence)
             let bulletText = clauses.map { "- \($0)" }.joined(separator: "\n")
             return (bulletText, [TranscriptEdit(kind: .structureRewrite, from: "raw", to: "bullets")])
         case .email:
@@ -415,7 +404,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         }
     }
 
-    private func splitIntoClauses(_ text: String) -> [String] {
+    private func splitIntoClauses(_ text: String, capitalizedSentence: (String) -> String) -> [String] {
         let separators = CharacterSet(charactersIn: ",.;")
         let pieces = text.components(separatedBy: separators)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -428,30 +417,23 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         return pieces.map(capitalizedSentence)
     }
 
-    private func capitalizedSentence(_ text: String) -> String {
+    /// Uppercases the first character unless the leading word is spelled deliberately: it has an
+    /// interior capital (iPhone, eBay, macOS) or it is a saved preferred spelling (npm).
+    private func capitalizedSentence(_ text: String, preservedSpellings: [String]) -> String {
         guard let first = text.first else { return text }
-        return String(first).uppercased() + text.dropFirst()
-    }
-
-    private func lexiconVariants(for entry: LexiconEntry) -> [String] {
-        var variants = [entry.term]
-        variants.append(contentsOf: entry.aliases)
-
-        for source in [entry.term, entry.preferred] {
-            let spaced = source
-                .replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression)
-                .replacingOccurrences(of: #"[-_/]+"#, with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if spaced.caseInsensitiveCompare(source) != .orderedSame {
-                variants.append(spaced)
-            }
+        let leadingWord = text.prefix { $0.isWhitespace == false }
+        if leadingWord.dropFirst().contains(where: \.isUppercase) {
+            return text
         }
-
-        var seen: Set<String> = []
-        return variants
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .sorted { $0.count > $1.count }
-            .filter { seen.insert($0.lowercased()).inserted }
+        let startsWithPreservedSpelling = preservedSpellings.contains { spelling in
+            let spelling = spelling.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard spelling.first?.isLowercase == true, text.hasPrefix(spelling) else { return false }
+            guard let next = text.dropFirst(spelling.count).first else { return true }
+            return next.isLetter == false && next.isNumber == false
+        }
+        if startsWithPreservedSpelling {
+            return text
+        }
+        return String(first).uppercased() + text.dropFirst()
     }
 }
