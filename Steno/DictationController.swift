@@ -2252,59 +2252,9 @@ private struct DictationRuntimeFactory {
     }
 
     func makeInsertionTransports() -> [any InsertionTransport] {
-        var transports: [any InsertionTransport] = []
-
-        for method in snapshot.insertion.orderedMethods {
-            switch method {
-            case .direct:
-                transports.append(DirectTypingInsertionTransport())
-            case .accessibility:
-                transports.append(AccessibilityInsertionTransport())
-            case .clipboardPaste:
-                transports.append(
-                    ClipboardInsertionTransport(
-                        clipboard: clipboardService,
-                        autoPaste: { target, permit in
-                            await MacPasteHelper.activateAndPaste(
-                                target: target,
-                                commitPermit: permit
-                            )
-                        },
-                        exactTargetAutoPaste: { target, editorTarget, permit in
-                            await MacPasteHelper.activateAndPaste(
-                                target: target,
-                                editorTarget: editorTarget,
-                                commitPermit: permit
-                            )
-                        }
-                    )
-                )
-            case .none:
-                continue
-            }
-        }
-
-        if !transports.contains(where: { $0.method == .clipboardPaste }) {
-            transports.append(
-                ClipboardInsertionTransport(
-                    clipboard: clipboardService,
-                    autoPaste: { target, permit in
-                        await MacPasteHelper.activateAndPaste(
-                            target: target,
-                            commitPermit: permit
-                        )
-                    },
-                    exactTargetAutoPaste: { target, editorTarget, permit in
-                        await MacPasteHelper.activateAndPaste(
-                            target: target,
-                            editorTarget: editorTarget,
-                            commitPermit: permit
-                        )
-                    }
-                )
-            )
-        }
-
-        return transports
+        MacInsertionTransportFactory.makeTransports(
+            orderedMethods: snapshot.insertion.orderedMethods,
+            clipboard: clipboardService
+        )
     }
 }
