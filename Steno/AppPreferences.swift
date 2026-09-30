@@ -68,10 +68,29 @@ struct AppPreferences: Codable, Sendable, Equatable {
             self.handsFreeGlobalKeyCode = handsFreeGlobalKeyCode
         }
 
+        private enum CodingKeys: String, CodingKey {
+            case optionPressToTalkEnabled
+            case handsFreeGlobalKeyCode
+        }
+
+        /// A present null means the user chose Disabled; an absent key is a
+        /// file from before that choice existed and keeps the F18 default.
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             optionPressToTalkEnabled = try container.decodeIfPresent(Bool.self, forKey: .optionPressToTalkEnabled) ?? true
-            handsFreeGlobalKeyCode = try container.decodeIfPresent(UInt16.self, forKey: .handsFreeGlobalKeyCode) ?? 79
+            if !container.contains(.handsFreeGlobalKeyCode) {
+                handsFreeGlobalKeyCode = 79
+            } else if try container.decodeNil(forKey: .handsFreeGlobalKeyCode) {
+                handsFreeGlobalKeyCode = nil
+            } else {
+                handsFreeGlobalKeyCode = try container.decode(UInt16.self, forKey: .handsFreeGlobalKeyCode)
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(optionPressToTalkEnabled, forKey: .optionPressToTalkEnabled)
+            try container.encode(handsFreeGlobalKeyCode, forKey: .handsFreeGlobalKeyCode)
         }
     }
 
