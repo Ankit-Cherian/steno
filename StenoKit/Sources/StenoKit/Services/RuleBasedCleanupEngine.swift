@@ -110,22 +110,34 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         profile: StyleProfile,
         lexicon: PersonalLexicon
     ) async throws -> CleanTranscript {
+        // Saved vocabulary is an explicit instruction, so it is applied deterministically before
+        // any candidate is scored. Only edits Steno infers on its own are ranked.
+        let vocabulary = LexiconMatcher(lexicon: lexicon).apply(to: raw.text)
+        var corrected = raw
+        corrected.text = vocabulary.text
+
         let generator = RuleBasedCleanupCandidateGenerator()
         let candidates = try await generator.generateCandidates(
-            raw: raw,
+            raw: corrected,
             profile: profile,
             lexicon: lexicon
         )
+
+        // A spoken correction that passed the repair guards is also explicit: the ranker only
+        // chooses how to resolve it, never whether to.
+        let spokenCorrections = candidates.filter { candidate in
+            candidate.appliedEdits.contains { $0.kind == .repairResolution }
+        }
         let ranker = LocalCleanupRanker()
         let best = ranker.bestCandidate(
-            raw: raw,
-            candidates: candidates,
+            raw: corrected,
+            candidates: spokenCorrections.isEmpty ? candidates : spokenCorrections,
             profile: profile
         )
 
         return CleanTranscript(
             text: best.text,
-            edits: best.appliedEdits,
+            edits: vocabulary.edits + best.appliedEdits,
             removedFillers: best.removedFillers,
             uncertaintyFlags: []
         )
@@ -147,10 +159,6 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         text = fillerResult.text
         removedFillers = fillerResult.removed
         edits.append(contentsOf: fillerResult.edits)
-
-        let lexiconResult = applyLexicon(text: text, lexicon: lexicon)
-        text = lexiconResult.text
-        edits.append(contentsOf: lexiconResult.edits)
 
         let structureResult = applyStructure(text: text, mode: profile.structureMode)
         text = structureResult.text
@@ -362,13 +370,6 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
     private func isHorizontalWhitespace(_ character: unichar) -> Bool {
         character == 0x20 || character == 0x09
-    }
-
-    // MARK: - Lexicon
-
-    private func applyLexicon(text: String, lexicon: PersonalLexicon) -> (text: String, edits: [TranscriptEdit]) {
-        let result = LexiconMatcher(lexicon: lexicon).apply(to: text)
-        return (result.text, result.edits)
     }
 
     // MARK: - Structure

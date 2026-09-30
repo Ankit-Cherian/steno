@@ -8,6 +8,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Fixed
+- Saved vocabulary corrections now apply to every dictation, including short ones and ones the recognizer was confident about. Corrections that join words, such as "steno kit" to "StenoKit", no longer need a long sentence.
+- Spoken corrections such as "scratch that" and "never mind" now apply however confident the recognizer was, and paragraph capitalization is no longer dropped from clearly recognized speech.
 - Vocabulary corrections no longer chain into each other, an app-specific correction always takes precedence over an all-apps correction for the same word, and corrections that only change capitalization, such as "github" to "GitHub", now apply.
 - A correction no longer rewrites text that already has its preferred spelling, so "Visual Studio" does not become "Visual Studio Studio". Terms such as C++, C# and .NET can now be corrected.
 

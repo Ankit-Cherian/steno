@@ -637,7 +637,7 @@ private func runLocalCleanup(
     )
 
     return try await engine.cleanup(
-        raw: RawTranscript(text: text),
+        raw: dictatedTranscript(text),
         profile: profile,
         lexicon: lexicon
     )
@@ -657,7 +657,7 @@ private func runGeneratedCandidates(
     )
 
     return try await generator.generateCandidates(
-        raw: RawTranscript(text: text),
+        raw: dictatedTranscript(text),
         profile: profile,
         lexicon: PersonalLexicon(entries: [])
     )

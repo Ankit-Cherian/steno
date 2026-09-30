@@ -266,10 +266,11 @@ public struct LocalCleanupRanker: Sendable {
         RepairMarkerMatcher.containsRepairMarker(in: text)
     }
 
+    /// Confidence gates only the corrections Steno infers by itself (phonetic recovery). Saved
+    /// vocabulary and spoken corrections are explicit instructions and are never penalized here.
     private func confidenceAdjustment(raw: RawTranscript, candidate: CleanupCandidate) -> Double {
-        let relevantEdits = candidate.appliedEdits.filter {
-            $0.kind == .repairResolution || $0.kind == .lexiconCorrection
-        }
+        guard isPhoneticRecovery(candidate) else { return 0 }
+        let relevantEdits = candidate.appliedEdits.filter { $0.kind == .lexiconCorrection }
         guard relevantEdits.isEmpty == false else { return 0 }
 
         let segmentConfidences = raw.segments.compactMap { segment -> Double? in
@@ -302,7 +303,11 @@ public struct LocalCleanupRanker: Sendable {
     }
 
     private func phoneticPenalty(candidate: CleanupCandidate) -> Double {
-        candidate.rulePathID.contains("/phonetic-") ? 0.02 : 0
+        isPhoneticRecovery(candidate) ? 0.02 : 0
+    }
+
+    private func isPhoneticRecovery(_ candidate: CleanupCandidate) -> Bool {
+        candidate.rulePathID.contains("/phonetic-")
     }
 
     private func levenshteinDistance<Element: Equatable>(

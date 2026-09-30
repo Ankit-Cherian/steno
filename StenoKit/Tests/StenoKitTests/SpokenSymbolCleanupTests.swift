@@ -153,7 +153,7 @@ func candidateGeneratorRejectsAmbiguousSpokenSymbolInterpretations() async throw
 
     for example in examples {
         let candidates = try await generator.generateCandidates(
-            raw: RawTranscript(text: example),
+            raw: dictatedTranscript(example),
             profile: profile,
             lexicon: PersonalLexicon(entries: [])
         )
@@ -217,7 +217,7 @@ func candidateGeneratorDoesNotInferSpokenSymbolIntent() async throws {
 
     for example in examples {
         let candidates = try await generator.generateCandidates(
-            raw: RawTranscript(text: example),
+            raw: dictatedTranscript(example),
             profile: profile,
             lexicon: PersonalLexicon(entries: [])
         )
@@ -237,7 +237,7 @@ private func runSymbolCleanup(_ text: String) async throws -> String {
     )
 
     let cleaned = try await engine.cleanup(
-        raw: RawTranscript(text: text),
+        raw: dictatedTranscript(text),
         profile: profile,
         lexicon: PersonalLexicon(entries: [])
     )
