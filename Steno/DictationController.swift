@@ -742,10 +742,12 @@ final class DictationController: ObservableObject {
             self?.recorderStoppedEarly(sessionID: sessionID)
         }
         if systemIntegrationsEnabled {
-            // A crash or force quit leaves the recording in progress behind.
-            // It holds the user's speech, and no session can own it at launch.
+            // A crash or force quit leaves the recording in progress and the
+            // backup engine's transcript files behind. They hold the user's
+            // speech and text, and no session can own them at launch.
             Task.detached(priority: .utility) {
                 MacAudioCaptureService.removeStaleRecordings()
+                WhisperCLITranscriptionEngine.removeStaleOutputFiles()
             }
         }
         await historyStore.setRecoveryNoticeHandler { [weak self] notice in

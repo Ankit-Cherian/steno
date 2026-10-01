@@ -74,7 +74,7 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         }
 
         let outputBase = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("steno-out-\(UUID().uuidString)")
+            .appendingPathComponent("\(Self.outputFilePrefix)\(UUID().uuidString)")
 
         let txtURL = outputBase.appendingPathExtension("txt")
         let jsonURL = outputBase.appendingPathExtension("json")
@@ -139,6 +139,28 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         }
 
         return try parsePlainTranscript(at: txtURL)
+    }
+
+    private static let outputFilePrefix = "steno-out-"
+
+    /// Deletes transcript files a run left in the temporary folder when Steno
+    /// quit before it could remove them, for example after a crash. They hold
+    /// dictated text. Every normal run deletes its own files, so only files
+    /// named exactly as this engine names them, and older than `minimumAge`,
+    /// are removed. Returns the removed files.
+    @discardableResult
+    public static func removeStaleOutputFiles(
+        in directory: URL = URL(fileURLWithPath: NSTemporaryDirectory()),
+        olderThan minimumAge: TimeInterval = 5 * 60,
+        now: Date = Date()
+    ) -> [URL] {
+        StaleTemporaryFileSweep.remove(
+            in: directory,
+            prefix: outputFilePrefix,
+            extensions: ["txt", "json"],
+            olderThan: minimumAge,
+            now: now
+        )
     }
 
     private func normalizeLanguage(from hint: String) -> String? {

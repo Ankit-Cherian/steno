@@ -284,34 +284,13 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
         olderThan minimumAge: TimeInterval = 5 * 60,
         now: Date = Date()
     ) -> [URL] {
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey]
-        guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: keys,
-            options: [.skipsSubdirectoryDescendants]
-        ) else {
-            return []
-        }
-
-        var removed: [URL] = []
-        for url in contents {
-            let name = url.lastPathComponent
-            guard name.hasPrefix(tempAudioPrefix),
-                  url.pathExtension == "wav",
-                  UUID(uuidString: String(url.deletingPathExtension().lastPathComponent.dropFirst(tempAudioPrefix.count))) != nil,
-                  let values = try? url.resourceValues(forKeys: Set(keys)),
-                  values.isRegularFile == true,
-                  values.isSymbolicLink != true,
-                  let modified = values.contentModificationDate,
-                  now.timeIntervalSince(modified) > minimumAge
-            else {
-                continue
-            }
-            if (try? FileManager.default.removeItem(at: url)) != nil {
-                removed.append(url)
-            }
-        }
-        return removed
+        StaleTemporaryFileSweep.remove(
+            in: directory,
+            prefix: tempAudioPrefix,
+            extensions: ["wav"],
+            olderThan: minimumAge,
+            now: now
+        )
     }
 
     public func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
