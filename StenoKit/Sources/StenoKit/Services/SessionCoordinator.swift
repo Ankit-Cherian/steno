@@ -1037,6 +1037,7 @@ public actor SessionCoordinator {
             do {
                 let poll = try await streamer.poll(sessionID: sessionID)
                 try await processLiveFrames(poll.frames, sessionID: sessionID)
+                launchPendingLiveHypothesisFromPump(sessionID: sessionID)
             } catch is CancellationError {
                 return
             } catch {
@@ -1188,7 +1189,6 @@ public actor SessionCoordinator {
                 }
 
                 activeSessions[sessionID]?.livePipeline = current
-                resumePendingLiveHypothesis(sessionID: sessionID, identity: identity)
                 return
             }
 
@@ -1236,10 +1236,9 @@ public actor SessionCoordinator {
                !captureStopWasRequested(sessionID: sessionID) {
                 await liveSnapshotHandler(reduction.snapshot)
             }
-            // Read pending state after the callback suspension so any newer
-            // watermark replaces the older descriptor. Active ownership is
-            // required here, so ordinary stop never launches queued preview.
-            resumePendingLiveHypothesis(sessionID: sessionID, identity: identity)
+            // A queued preview is launched only by the pump, between its own
+            // appends. Launching it here could reach the runtime while an
+            // append is awaiting acknowledgement, which the runtime rejects.
         } catch is CancellationError {
             if activeSessions[sessionID]?.livePipeline?.identity == identity {
                 activeSessions[sessionID]?.livePipeline?.hypothesisTask = nil
@@ -1252,12 +1251,12 @@ public actor SessionCoordinator {
         }
     }
 
-    private func resumePendingLiveHypothesis(
-        sessionID: SessionID,
-        identity: LiveTranscriptionSession
-    ) {
+    /// Runs only on the pump, whose appends have all been acknowledged at
+    /// this point. Active ownership is required, so ordinary stop never
+    /// launches queued preview.
+    private func launchPendingLiveHypothesisFromPump(sessionID: SessionID) {
         guard let latest = activeSessions[sessionID]?.livePipeline,
-              latest.identity == identity,
+              latest.hypothesisTask == nil,
               let pending = latest.pendingHypothesis else {
             return
         }

@@ -524,3 +524,34 @@ func failedCaptureStopReleasesLiveSession() async throws {
     #expect(secondOutcome == .finished("Helper final"))
     #expect(await events.unavailable[second] == nil)
 }
+
+// MARK: - Queued previews never collide with an append
+
+@Test("A queued preview waits for the pump, so slow append acknowledgements never end live preview")
+func queuedPreviewNeverCollidesWithAppend() async throws {
+    for trial in 0..<3 {
+        let factory = GuardedLiveRuntimeFactory(
+            appendDelay: .milliseconds(8),
+            decodeDelay: .milliseconds(120)
+        )
+        let events = LiveRuntimeEvents()
+        let coordinator = makeLiveCoordinator(
+            engine: makeRetainedEngine(factory),
+            capture: LiveRuntimeCapture(seconds: 60),
+            events: events
+        )
+        let sessionID = try await startLiveDictation(coordinator)
+        try await Task.sleep(for: .seconds(2))
+        try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+        let completion = Task { try await coordinator.completePressToTalk(sessionID: sessionID) }
+        let final = await outcome(of: completion, within: .seconds(20))
+
+        let runtime = try #require(factory.sessions.first)
+        #expect(await events.unavailable[sessionID] == nil, "trial \(trial)")
+        #expect(await runtime.rejectedHypotheses == 0, "trial \(trial)")
+        #expect(await runtime.hypotheses >= 5, "trial \(trial)")
+        #expect(await events.snapshots >= 5, "trial \(trial)")
+        #expect(factory.sessions.count == 1, "trial \(trial)")
+        #expect(final == .finished("Helper final"), "trial \(trial)")
+    }
+}
