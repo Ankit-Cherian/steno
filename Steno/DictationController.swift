@@ -1654,6 +1654,11 @@ final class DictationController: ObservableObject {
             guard !isTearingDown,
                   completionTaskID == taskID
             else {
+                // This task already took the session's media tokens, so
+                // teardown cannot see them. Release them here once capture has
+                // closed, or media Steno paused stays paused after quitting.
+                await captureTerminationBarrier.value
+                await startMediaRelease([mediaToken].compactMap { $0 } + deferredMediaTokens)
                 await finishCompletionTask(id: taskID)
                 return
             }

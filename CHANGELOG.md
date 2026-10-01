@@ -50,6 +50,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - When the backup transcription path fails, the overlay and VoiceOver now give a one-line message instead of the tool's full log, which included file paths.
 - A dictation started right after the previous one was inserted is no longer ignored while History and Insights update.
 - Macs with an M1, M2 or M3 Ultra chip now get a speech model recommendation, and an M3 Ultra is no longer shown as a base M3.
+- Quitting Steno immediately after releasing the dictation key no longer leaves media that Steno paused still paused.
 
 ## [1.0.0] - 2026-09-17
 
