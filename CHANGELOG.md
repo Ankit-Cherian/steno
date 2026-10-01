@@ -42,6 +42,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Settings now shows whether each correction is active, never applies (a common word Steno keeps as spoken, or an app scope with no bundle ID), or is overridden by another correction. Saving a correction for a common word such as "won" asks for confirmation, and an app scope without a bundle ID or a near-duplicate entry is rejected.
 - Vocabulary corrections no longer chain into each other, an app-specific correction always takes precedence over an all-apps correction for the same word, and corrections that only change capitalization, such as "github" to "GitHub", now apply.
 - A correction no longer rewrites text that already has its preferred spelling, so "Visual Studio" does not become "Visual Studio Studio". Terms such as C++, C# and .NET can now be corrected.
+- A dictation can now be canceled while it is transcribing, with the X in the overlay or Cancel transcription on the Dictate tab. Nothing is inserted or saved to History, the recording is deleted, and the next dictation starts normally.
+- If the backup transcription path stops responding, it is now stopped after a time limit that grows with the recording length, and Steno reports that transcription took too long. Previously it could keep Steno transcribing until it was quit.
+- The live transcript no longer disappears partway through a recording. The final transcript was never affected.
+- Saving settings no longer unloads the speech model unless a transcription setting changed, so the next dictation after editing a snippet, a vocabulary correction or another unrelated setting starts at full speed. A dictation started while those settings are being applied is no longer dropped.
+- If the speech engine's background process ends between dictations, Steno now starts a new one instead of sending the next dictation down the slower backup path. Canceling a dictation as it starts no longer unloads the speech model.
+- When the backup transcription path fails, the overlay and VoiceOver now give a one-line message instead of the tool's full log, which included file paths.
+- A dictation started right after the previous one was inserted is no longer ignored while History and Insights update.
+- Macs with an M1, M2 or M3 Ultra chip now get a speech model recommendation, and an M3 Ultra is no longer shown as a base M3.
+- Quitting Steno immediately after releasing the dictation key no longer leaves media that Steno paused still paused.
+- When a media player is slow to confirm a pause, transcription now starts without waiting for it, up to a second sooner on short dictations. If the player then confirms the pause, Steno still resumes it.
 
 ## [1.0.0] - 2026-09-17
 

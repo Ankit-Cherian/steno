@@ -101,3 +101,41 @@ func compatibilityServiceClassifiesCurrentModelStatus() {
     #expect(quantized.level == .custom)
     #expect(quantized.modelID == nil)
 }
+
+@Test("Ultra chips are classified as Ultra and get a model recommendation", arguments: [
+    ("Apple M1 Ultra", 64, AppleSiliconChipClass.m1Ultra),
+    ("Apple M2 Ultra", 192, AppleSiliconChipClass.m2Ultra),
+    ("Apple M3 Ultra", 96, AppleSiliconChipClass.m3Ultra),
+    ("Apple M3 Ultra", 512, AppleSiliconChipClass.m3Ultra),
+])
+func ultraChipsGetRecommendation(brand: String, memoryGB: Int, expected: AppleSiliconChipClass) throws {
+    let profile = try #require(WhisperCompatibilityService.hardwareProfile(
+        brandString: brand,
+        physicalMemoryBytes: UInt64(memoryGB) * 1_073_741_824
+    ))
+    #expect(profile.chipClass == expected)
+    #expect(profile.chipClass.displayName.hasSuffix("ULTRA"))
+
+    let service = try WhisperCompatibilityService.bundled()
+    let recommendation = try #require(service.recommendation(for: profile))
+    #expect(recommendation.modelID == .largeV3Turbo)
+}
+
+@Test("An Ultra chip without its own class is reported as unclassified, not as the base chip")
+func unknownUltraChipIsUnclassified() {
+    #expect(WhisperCompatibilityService.hardwareProfile(
+        brandString: "Apple M4 Ultra",
+        physicalMemoryBytes: 256 * 1_073_741_824
+    ) == nil)
+}
+
+@Test("Every chip class has at least one row in the bundled matrix")
+func everyChipClassHasBundledRows() throws {
+    let service = try WhisperCompatibilityService.bundled()
+    for chipClass in AppleSiliconChipClass.allCases {
+        let hasRow = [8, 16, 24, 32, 48, 64, 96, 128, 192, 256, 512].contains { memoryGB in
+            service.recommendation(for: .init(chipClass: chipClass, memoryGB: memoryGB)) != nil
+        }
+        #expect(hasRow, "\(chipClass)")
+    }
+}

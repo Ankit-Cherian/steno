@@ -1049,6 +1049,8 @@ private actor ProcessWhisperStreamingRuntimeSession: WhisperStreamingRuntimeSess
     private let inferenceTimeout: Duration
     private let runtimeIdentity: LiveTranscriptionRuntimeIdentity
     private var phase: Phase = .idle
+
+    nonisolated var isRunning: Bool { state.isRunning }
     private var previewInFlightRevision: UInt64?
     private var appendAcknowledgementExpectedDuringFinish: AppendAcknowledgement?
     private var finalizedAppendAcknowledgements: Set<AppendAcknowledgement> = []
@@ -1183,6 +1185,14 @@ private actor ProcessWhisperStreamingRuntimeSession: WhisperStreamingRuntimeSess
             }
             phase = .active(id: id, generation: generation, nextSequence: 0, watermark: 0, revision: 0)
             return streamIdentity
+        } catch is CancellationError {
+            // The helper may already have started this stream. Withdraw it so
+            // the helper accepts the next start; its late StreamStarted no
+            // longer matches any request and is dropped.
+            if phase == .starting(id: id, generation: generation) {
+                await withdrawStream(id: id, generation: generation)
+            }
+            throw CancellationError()
         } catch {
             if phase == .starting(id: id, generation: generation) { phase = .idle }
             throw error
@@ -1218,7 +1228,11 @@ private actor ProcessWhisperStreamingRuntimeSession: WhisperStreamingRuntimeSess
             revision: revision
         )
         do {
-            let response = try await state.exchange(
+            // Write the frame before this actor can run anything else. A
+            // finish requested while this append awaits its acknowledgement is
+            // then always framed after it, so the helper never receives audio
+            // for a stream it is already finishing.
+            let registration = try state.send(
                 .init(
                     operation: .audioAppend,
                     requestID: streamID,
@@ -1226,9 +1240,9 @@ private actor ProcessWhisperStreamingRuntimeSession: WhisperStreamingRuntimeSess
                     payload: WhisperStreamingRuntimeProtocol.appendPayload(chunk)
                 ),
                 expecting: .audioAccepted,
-                discriminator: chunk.sequence,
-                timeout: .seconds(5)
+                discriminator: chunk.sequence
             )
+            let response = try await state.response(to: registration, timeout: .seconds(5))
             let accepted = try WhisperStreamingRuntimeProtocol.parseAccepted(response.payload)
             guard accepted.sequence == chunk.sequence,
                   accepted.watermark == expectedWatermark,
@@ -1462,26 +1476,37 @@ private actor ProcessWhisperStreamingRuntimeSession: WhisperStreamingRuntimeSess
             matchesActiveStream = false
         }
         guard matchesActiveStream else { return }
+        await withdrawStream(id: id, generation: generation)
+    }
+
+    private func withdrawStream(id: UUID, generation: UInt64) async {
         appendAcknowledgementExpectedDuringFinish = nil
         phase = .cancelling(id: id, generation: generation)
         state.supersedeHypotheses(requestID: id, generation: generation)
         state.supersedeFinalResult(requestID: id, generation: generation)
-        do {
-            _ = try await state.exchange(
-                .init(
-                    operation: .streamCancel,
-                    requestID: id,
-                    generation: generation,
-                    payload: Data()
-                ),
-                expecting: .cancelled,
-                discriminator: nil,
-                timeout: .seconds(2)
-            )
-        } catch {
-            // Cancellation is best-effort. A timeout already marks an unhealthy
-            // helper unavailable; an acknowledged cancel keeps it retained.
-        }
+        // Callers are often cancelled tasks, such as an abandoned dictation.
+        // Send StreamCancel from a task that does not inherit that
+        // cancellation, or it would never be written.
+        let state = self.state
+        await Task {
+            do {
+                _ = try await state.exchange(
+                    .init(
+                        operation: .streamCancel,
+                        requestID: id,
+                        generation: generation,
+                        payload: Data()
+                    ),
+                    expecting: .cancelled,
+                    discriminator: nil,
+                    timeout: .seconds(2)
+                )
+            } catch {
+                // Cancellation is best-effort. A timeout already marks an
+                // unhealthy helper unavailable; an acknowledged cancel keeps it
+                // retained.
+            }
+        }.value
         if phase == .cancelling(id: id, generation: generation) {
             phase = .idle
         }
@@ -1657,6 +1682,10 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
     private let output: FileHandle
     private let registry = WhisperStreamingResponseRegistry()
     private var isTerminated = false
+    #if DEBUG
+    /// Tests can hold an AudioAppend just before its write to probe ordering.
+    private let debugAppendWriteDelayMicroseconds: useconds_t?
+    #endif
     // An idle helper leaves this read blocked until a frame or EOF arrives.
     private let readerQueue = DispatchQueue(label: "steno.runtime.streaming-reader", qos: .userInitiated)
 
@@ -1685,6 +1714,11 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
         )
         environment["STENO_PARENT_PID"] = String(getpid())
         process.environment = environment
+        #if DEBUG
+        debugAppendWriteDelayMicroseconds = environment["STENO_TEST_APPEND_WRITE_DELAY_MS"]
+            .flatMap(useconds_t.init)
+            .map { $0 * 1_000 }
+        #endif
 
         do {
             try process.run()
@@ -1709,6 +1743,22 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
         timeout: Duration,
         terminateOnCancellation: Bool = false
     ) async throws -> WhisperStreamingRuntimeProtocol.Frame {
+        let registration = try send(frame, expecting: operation, discriminator: discriminator)
+        return try await response(
+            to: registration,
+            timeout: timeout,
+            terminateOnCancellation: terminateOnCancellation
+        )
+    }
+
+    /// Registers for the reply and writes the frame without suspending, so a
+    /// caller on an actor knows the frame is on the pipe before that actor
+    /// runs anything else.
+    func send(
+        _ frame: WhisperStreamingRuntimeProtocol.Frame,
+        expecting operation: WhisperStreamingRuntimeProtocol.Operation,
+        discriminator: UInt64?
+    ) throws -> WhisperStreamingResponseRegistry.Registration {
         try Task.checkCancellation()
         let registration = try registry.register(
             .init(
@@ -1725,8 +1775,15 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
             registry.fail(token: registration.token, with: error)
             throw error
         }
+        return registration
+    }
 
-        return try await withTaskCancellationHandler {
+    func response(
+        to registration: WhisperStreamingResponseRegistry.Registration,
+        timeout: Duration,
+        terminateOnCancellation: Bool = false
+    ) async throws -> WhisperStreamingRuntimeProtocol.Frame {
+        try await withTaskCancellationHandler {
             try await withThrowingTaskGroup(of: WhisperStreamingRuntimeProtocol.Frame.self) { group in
                 group.addTask { try await registration.pending.wait() }
                 group.addTask { [weak self] in
@@ -1768,6 +1825,10 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
         closeHandles()
     }
 
+    var isRunning: Bool {
+        stateLock.withLock { !isTerminated && process.isRunning }
+    }
+
     func supersedeHypotheses(requestID: UUID, generation: UInt64) {
         registry.failMatching(
             requestID: requestID,
@@ -1787,6 +1848,11 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
     }
 
     private func write(_ frame: WhisperStreamingRuntimeProtocol.Frame) throws {
+        #if DEBUG
+        if frame.operation == .audioAppend, let debugAppendWriteDelayMicroseconds {
+            usleep(debugAppendWriteDelayMicroseconds)
+        }
+        #endif
         try writeLock.withLock {
             guard stateLock.withLock({ !isTerminated && process.isRunning }) else {
                 throw RetainedWhisperRuntimeError.helperUnavailable

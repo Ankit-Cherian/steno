@@ -92,8 +92,10 @@ struct RecordTab: View {
             .disabled(isProcessing)
             .keyboardShortcut(.space, modifiers: [])
             .accessibilityIdentifier("record.primary")
-            if controller.isRecording {
-                Button("Cancel recording", role: .cancel) { controller.cancelActiveRecording() }
+            if controller.isRecording || isProcessing {
+                Button(isProcessing ? "Cancel transcription" : "Cancel recording", role: .cancel) {
+                    controller.cancelActiveRecording()
+                }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(theme.textDim)

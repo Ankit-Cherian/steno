@@ -37,6 +37,9 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     private var stopAction: (() -> Void)?
     private var cancelAction: (() -> Void)?
     private var cancelButtonVisible = false
+    /// Cancel stays available while the final transcription runs, so a slow
+    /// or stalled transcription can always be abandoned.
+    private var transcriptionCancelAvailable = false
     private var timer: Timer?
     private var listeningStartDate: Date?
     private var listeningHandsFree = false
@@ -297,6 +300,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         }
         if case .failure(let message) = state { failureMessage = "Error: \(message)" }
         else { failureMessage = nil }
+        transcriptionCancelAvailable = state == .transcribing
         switch state {
         case .listening(let handsFree, _):
             liveTranscriptEnabled = configuredLiveTranscriptEnabled
@@ -335,7 +339,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             updateText("Transcribing...")
             hideLiveTranscriptFields()
             setBarColor(.darkGray)
-            hideCancelControl()
+            showTranscriptionCancelControl()
 
         case .inserted:
             endListeningPresentation()
@@ -654,7 +658,7 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
             + CGFloat(Self.barCount) * Self.barWidth
             + CGFloat(Self.barCount - 1) * Self.barSpacing
             + 14
-        let trailingInset: CGFloat = listeningSessionIsActive ? 92 : 20
+        let trailingInset: CGFloat = listeningSessionIsActive ? 92 : (transcriptionCancelAvailable ? 56 : 20)
         let textWidth = max(0, size.width - transcriptLeading - trailingInset)
 
         textField?.lineBreakMode = failureMessage == nil ? .byTruncatingTail : .byWordWrapping
@@ -990,6 +994,17 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
     func hostedEvidencePressStop() { stopButton?.performClick(nil) }
 
     func hostedEvidencePressCancel() { cancelButton?.performClick(nil) }
+
+    func hostedEvidenceCancelIsAvailable() -> Bool {
+        cancelButtonVisible && cancelButton?.isHidden == false
+    }
+
+    /// The status line ends before any visible control begins.
+    func hostedEvidenceStatusTextClearsControls() -> Bool {
+        guard let textField else { return false }
+        let visibleControls = [stopButton, cancelButton].compactMap { $0 }.filter { !$0.isHidden }
+        return visibleControls.allSatisfy { textField.frame.maxX <= $0.frame.minX }
+    }
 
     func hostedEvidenceAccentColor() -> NSColor { accentColor }
 
@@ -1409,9 +1424,21 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
         cancelButton.alphaValue = 1
     }
 
+    /// Only Cancel: once capture has closed there is nothing left to stop.
+    @MainActor
+    private func showTranscriptionCancelControl() {
+        cancelButtonVisible = true
+        stopButton?.isHidden = true
+        stopButton?.isEnabled = false
+        guard let cancelButton else { return }
+        cancelButton.isHidden = false
+        cancelButton.alphaValue = 1
+    }
+
     @MainActor
     private func hideCancelControl() {
         cancelButtonVisible = false
+        transcriptionCancelAvailable = false
         stopButton?.isHidden = true
         stopButton?.isEnabled = false
         guard let cancelButton else { return }
@@ -1428,7 +1455,8 @@ public final class WaveformOverlayPresenter: OverlayPresenter {
 
     @MainActor
     private func handleCancelButtonPressed() {
-        guard listeningSessionIsActive, cancelButtonVisible else { return }
+        guard listeningSessionIsActive || transcriptionCancelAvailable,
+              cancelButtonVisible else { return }
         hideCancelControl()
         announceOnce(.cancelled, message: "Steno dictation cancelled")
         cancelAction?()
