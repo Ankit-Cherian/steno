@@ -113,8 +113,10 @@ func whisperCLITranscriptionEngineCancellationEscalation() async throws {
         """
         #!/bin/sh
         trap '' TERM
-        while :; do
+        i=0
+        while [ "$i" -lt 30 ]; do
           sleep 1
+          i=$((i + 1))
         done
         """
     )

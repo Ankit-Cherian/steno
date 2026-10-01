@@ -50,11 +50,13 @@ func exitedWhisperHelperFallsBackExactlyOnce() async throws {
     let modelURL = directory.appendingPathComponent("model.bin")
     let pidURL = directory.appendingPathComponent("helper.pid")
     try Data([0]).write(to: modelURL)
+    let markerURL = directory.appendingPathComponent("inference.received")
     try fakeExitedHelperSource.write(to: helperURL, atomically: true, encoding: .utf8)
     #expect(chmod(helperURL.path, S_IRWXU) == 0)
 
     var environment = ProcessInfo.processInfo.environment
     environment["STENO_TEST_HELPER_PID_FILE"] = pidURL.path
+    environment["STENO_TEST_HELPER_MARKER_FILE"] = markerURL.path
     let fallbackState = ProcessFallbackState()
     let engine = RetainedWhisperTranscriptionEngine(
         configuration: RetainedWhisperTranscriptionConfiguration(
@@ -77,6 +79,8 @@ func exitedWhisperHelperFallsBackExactlyOnce() async throws {
 
     #expect(result.text == "fallback")
     #expect(await fallbackState.count == 1)
+    // The helper loaded and accepted the transcription before exiting.
+    #expect(try String(contentsOf: markerURL, encoding: .utf8) == "transcribe")
     let pid = try #require(Int32(
         String(contentsOf: pidURL, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -150,11 +154,13 @@ func stalledWhisperHelperInferenceFallsBackExactlyOnce() async throws {
     let modelURL = directory.appendingPathComponent("model.bin")
     let pidURL = directory.appendingPathComponent("helper.pid")
     try Data([0]).write(to: modelURL)
-    try fakeWedgedHelperSource.write(to: helperURL, atomically: true, encoding: .utf8)
+    let markerURL = directory.appendingPathComponent("inference.received")
+    try fakeInferenceStalledHelperSource.write(to: helperURL, atomically: true, encoding: .utf8)
     #expect(chmod(helperURL.path, S_IRWXU) == 0)
 
     var environment = ProcessInfo.processInfo.environment
     environment["STENO_TEST_HELPER_PID_FILE"] = pidURL.path
+    environment["STENO_TEST_HELPER_MARKER_FILE"] = markerURL.path
     let fallbackState = ProcessFallbackState()
     let engine = RetainedWhisperTranscriptionEngine(
         configuration: RetainedWhisperTranscriptionConfiguration(
@@ -182,6 +188,14 @@ func stalledWhisperHelperInferenceFallsBackExactlyOnce() async throws {
     #expect(started.duration(to: clock.now) < .seconds(7))
     #expect(result.text == "fallback")
     #expect(await fallbackState.count == 1)
+    // The helper loaded and was stalled in inference, not at load.
+    #expect(try String(contentsOf: markerURL, encoding: .utf8) == "transcribe")
+    let pid = try #require(Int32(
+        String(contentsOf: pidURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    ))
+    #expect(kill(pid, 0) == -1)
+    #expect(errno == ESRCH)
 }
 
 @Test("Inference watchdog expands for long WAV captures")
@@ -408,36 +422,24 @@ private extension Data {
     }
 }
 
-private let fakeExitedHelperSource = #"""
-#!/usr/bin/env python3
-import os
-import struct
-import sys
-
-with open(os.environ["STENO_TEST_HELPER_PID_FILE"], "w", encoding="utf-8") as handle:
-    handle.write(str(os.getpid()))
-
-def read_exact(count):
-    data = b""
-    while len(data) < count:
-        chunk = sys.stdin.buffer.read(count - len(data))
-        if not chunk:
-            raise SystemExit(1)
-        data += chunk
-    return data
-
-def read_frame():
-    header = read_exact(36)
-    values = struct.unpack(">IHH16sQI", header)
-    read_exact(values[-1])
-    return values
-
-magic, version, _, request_id, generation, _ = read_frame()
-sys.stdout.buffer.write(struct.pack(">IHH16sQI", magic, version, 2, request_id, generation, 0))
-sys.stdout.buffer.flush()
-
-read_frame()
+// Loads, accepts one transcription, then exits mid-inference.
+private let fakeExitedHelperSource = fakeStreamingProtocolPrelude + "\n" + #"""
+request = read_frame()
+if request[2] == 3:
+    with open(os.environ["STENO_TEST_HELPER_MARKER_FILE"], "w", encoding="utf-8") as handle:
+        handle.write("transcribe")
 raise SystemExit(17)
+"""#
+
+// Loads, accepts one transcription, then stalls in inference ignoring SIGTERM.
+private let fakeInferenceStalledHelperSource = fakeStreamingProtocolPrelude + "\n" + #"""
+import signal
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+request = read_frame()
+if request[2] == 3:
+    with open(os.environ["STENO_TEST_HELPER_MARKER_FILE"], "w", encoding="utf-8") as handle:
+        handle.write("transcribe")
+park()
 """#
 
 private let fakeWedgedHelperSource = #"""
@@ -447,6 +449,15 @@ import signal
 import struct
 import sys
 import time
+
+def park():
+    # Stand-in for a wedged helper. Exit once orphaned, and never outlive
+    # the test run, so an interrupted run cannot leave a helper behind.
+    parent = os.getppid()
+    deadline = time.monotonic() + 30
+    while os.getppid() == parent and time.monotonic() < deadline:
+        time.sleep(0.1)
+    os._exit(0)
 
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 with open(os.environ["STENO_TEST_HELPER_PID_FILE"], "w", encoding="utf-8") as handle:
@@ -471,8 +482,7 @@ sys.stdout.buffer.flush()
 header = read_exact(36)
 _, _, _, _, _, payload_size = struct.unpack(">IHH16sQI", header)
 read_exact(payload_size)
-while True:
-    time.sleep(60)
+park()
 """#
 
 private let fakeLoadStalledHelperSource = #"""
@@ -481,6 +491,15 @@ import os
 import struct
 import sys
 import time
+
+def park():
+    # Stand-in for a wedged helper. Exit once orphaned, and never outlive
+    # the test run, so an interrupted run cannot leave a helper behind.
+    parent = os.getppid()
+    deadline = time.monotonic() + 30
+    while os.getppid() == parent and time.monotonic() < deadline:
+        time.sleep(0.1)
+    os._exit(0)
 
 with open(os.environ["STENO_TEST_HELPER_PID_FILE"], "w", encoding="utf-8") as handle:
     handle.write(str(os.getpid()))
@@ -491,8 +510,7 @@ if len(header) != 36:
 payload_size = struct.unpack(">IHH16sQI", header)[-1]
 if len(sys.stdin.buffer.read(payload_size)) != payload_size:
     raise SystemExit(1)
-while True:
-    time.sleep(60)
+park()
 """#
 
 private let fakeGracefulHelperSource = #"""
@@ -1345,6 +1363,7 @@ func streamConfigurationPayloadEncodesVocabularyPromptOnFlagBit2() throws {
         ) == expected(flags: 5, trailing: vocabulary)
     )
 }
+
 }
 
 private extension Data {
@@ -1473,6 +1492,16 @@ private let fakeStreamingProtocolPrelude = #"""
 import os
 import struct
 import sys
+import time
+
+def park():
+    # Stand-in for a wedged helper. Exit once orphaned, and never outlive
+    # the test run, so an interrupted run cannot leave a helper behind.
+    parent = os.getppid()
+    deadline = time.monotonic() + 30
+    while os.getppid() == parent and time.monotonic() < deadline:
+        time.sleep(0.1)
+    os._exit(0)
 
 with open(os.environ["STENO_TEST_HELPER_PID_FILE"], "w", encoding="utf-8") as handle:
     handle.write(str(os.getpid()))

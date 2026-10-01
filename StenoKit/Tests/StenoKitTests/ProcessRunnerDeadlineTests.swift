@@ -31,7 +31,7 @@ func processRunnerTerminatesChildAtDeadline() async throws {
     await #expect(throws: ProcessRunnerError.timedOut(after: .seconds(1))) {
         _ = try await ProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
-            arguments: ["-c", "echo $$ > '\(pidURL.path)'; exec sleep 600"],
+            arguments: ["-c", "echo $$ > '\(pidURL.path)'; exec sleep 30"],
             timeout: .seconds(1)
         )
     }
@@ -50,7 +50,7 @@ func processRunnerKillsChildIgnoringTerminationAtDeadline() async throws {
     await #expect(throws: ProcessRunnerError.timedOut(after: .seconds(1))) {
         _ = try await ProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
-            arguments: ["-c", "trap '' TERM; echo $$ > '\(pidURL.path)'; while :; do sleep 0.2; done"],
+            arguments: ["-c", "trap '' TERM; echo $$ > '\(pidURL.path)'; i=0; while [ $i -lt 150 ]; do sleep 0.2; i=$((i + 1)); done"],
             timeout: .seconds(1)
         )
     }
@@ -76,7 +76,7 @@ func whisperCLIFallbackStopsAtDeadline() async throws {
     let scriptURL = deadlineScratchURL("whisper-cli.sh")
     try """
     #!/bin/sh
-    while :; do sleep 0.2; done
+    i=0; while [ $i -lt 150 ]; do sleep 0.2; i=$((i + 1)); done
     """.write(to: scriptURL, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
     let audioURL = deadlineScratchURL("audio.wav")
