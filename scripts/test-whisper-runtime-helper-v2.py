@@ -50,7 +50,20 @@ RECEIPT_SCHEMA_VERSION = 3
 SAMPLE_RATE_HZ = 16_000
 CHANNEL_COUNT = 1
 SAMPLE_WIDTH_BYTES = 2
-STREAM_THREAD_COUNT = 8
+
+
+def configured_thread_count(default: int) -> int:
+    """Return the test-side ASR thread request, optionally set for the runner."""
+    value = os.environ.get("STENO_TEST_WHISPER_THREADS")
+    if value is None:
+        return default
+    if not re.fullmatch(r"[1-9][0-9]?", value) or int(value) > 64:
+        raise SystemExit("STENO_TEST_WHISPER_THREADS must be an integer from 1 to 64")
+    return int(value)
+
+
+STREAM_THREAD_COUNT = configured_thread_count(8)
+ONE_SHOT_THREAD_COUNT = configured_thread_count(4)
 PREVIEW_WINDOW_SAMPLES = 12 * SAMPLE_RATE_HZ
 MAXIMUM_STREAM_SAMPLES = 12 * 60 * 60 * SAMPLE_RATE_HZ
 
@@ -187,7 +200,7 @@ def one_shot_configuration(
     prompt: str | None = None,
     vocabulary_prompt: str | None = None,
     vad_model: Path | None = None,
-    threads: int = 4,
+    threads: int = ONE_SHOT_THREAD_COUNT,
     beam_size: int = 1,
     best_of: int = 1,
     suppress_nst: bool = True,
@@ -1487,6 +1500,11 @@ def test_prompted_jfk_accepted_verification(executable: Path, model: Path, audio
             # The repeated label word is corroborated by the prompt-free decode,
             # which hears `country` as often.
             require(window["wordsN"] >= 20, "prompt-free decode did not hear the sentence")
+            # Numbers only, so runs with different thread counts can be compared.
+            print(
+                f"prompted JFK verification: wordsP={prompted['words']} wordsN={window['wordsN']} "
+                f"country.first={suspects['country']['first']:.4f}"
+            )
         except TestFailure as error:
             raise TestFailure(
                 f"{error}; observed verification={json.dumps(observed, sort_keys=True, ensure_ascii=True)}"
@@ -1829,6 +1847,7 @@ def main() -> int:
                     )
                 )
 
+    print(f"ASR threads: stream {STREAM_THREAD_COUNT}, one-shot {ONE_SHOT_THREAD_COUNT}")
     started = time.monotonic()
     failures: list[str] = []
     case_results: list[dict[str, object]] = []

@@ -30,7 +30,7 @@ swift run --package-path "$REPO_ROOT/StenoKit" StenoBenchmarkCLI run-all \
   --manifest "$OUTPUT/manifest.json" --raw-output "$OUTPUT/raw_engine.json" \
   --pipeline-output "$OUTPUT/steno_pipeline.json" --mac-sanity "$OUTPUT/mac_sanity.json" \
   --report-output "$OUTPUT/REPORT.md" --whisper-cli "$RUNTIME_BUILD/bin/whisper-cli" \
-  --model "$WHISPER_ROOT/models/ggml-small.en.bin" --threads 4 --default-language en
+  --model "$WHISPER_ROOT/models/ggml-small.en.bin" --threads "${STENO_TEST_WHISPER_THREADS:-4}" --default-language en
 swift run --package-path "$REPO_ROOT/StenoKit" StenoBenchmarkCLI validate-report --report "$OUTPUT/REPORT.md"
 swift run --package-path "$REPO_ROOT/StenoKit" StenoBenchmarkCLI validate-pipeline \
   --pipeline "$OUTPUT/steno_pipeline.json" --max-wer-delta 0 --max-cer-delta 0 --max-regressed-samples 0

@@ -14,8 +14,10 @@ func retainedProcessRuntimeMatchesCLIContract() async throws {
     }
 
     let vadPath = environment["STENO_TEST_WHISPER_VAD"].map(URL.init(fileURLWithPath:))
+    // The helper and the CLI must use the same count for their outputs to match.
+    let threadCount = try integrationThreadCount(default: 6)
     let extraArguments = WhisperRuntimeConfiguration.additionalArguments(
-        threadCount: 6,
+        threadCount: threadCount,
         vadEnabled: vadPath != nil,
         vadModelPath: vadPath?.path ?? ""
     )
@@ -30,7 +32,7 @@ func retainedProcessRuntimeMatchesCLIContract() async throws {
         configuration: RetainedWhisperTranscriptionConfiguration(
             helperExecutableURL: URL(fileURLWithPath: helperPath),
             modelPath: URL(fileURLWithPath: modelPath),
-            threadCount: 6,
+            threadCount: threadCount,
             vadModelPath: vadPath,
             suppressNonSpeechTokens: true,
             suppressRegex: nil,
@@ -162,6 +164,21 @@ func retainedProcessRuntimeRejectsUnknownLanguage() async throws {
             request: TranscriptionRequest(languageHints: ["not-a-language"])
         )
     }
+}
+
+/// Runners with few CPUs can lower the request with STENO_TEST_WHISPER_THREADS.
+private func integrationThreadCount(default defaultCount: Int) throws -> Int {
+    guard let configured = ProcessInfo.processInfo.environment["STENO_TEST_WHISPER_THREADS"] else {
+        return defaultCount
+    }
+    guard let count = Int(configured), (1...64).contains(count) else {
+        throw IntegrationConfigurationError.invalidThreadCount(configured)
+    }
+    return count
+}
+
+private enum IntegrationConfigurationError: Error {
+    case invalidThreadCount(String)
 }
 
 private actor IntegrationFallbackState {

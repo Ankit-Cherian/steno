@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -23,7 +24,8 @@
 namespace {
 
 int failures = 0;
-constexpr int kThreads = 4;
+// Inference threads; STENO_TEST_WHISPER_THREADS overrides the default.
+int thread_count = 4;
 
 void require(bool condition, const std::string & message) {
     if (!condition) {
@@ -86,7 +88,7 @@ struct Fixture {
 
     bool score(const std::string & text, steno::SupportScores & scores) const {
         return steno::score_hypothesis_support(
-            context, audio, silent, language_id, kThreads, blank_token, text, labels, terms, scores);
+            context, audio, silent, language_id, thread_count, blank_token, text, labels, terms, scores);
     }
 
     // The average-log-probability rule the scorer replaced, measured on the
@@ -96,7 +98,7 @@ struct Fixture {
         std::vector<double> values;
         if (!steno::tokenize_hypothesis(context, text, hypothesis)
             || !steno::teacher_forced_log_probabilities(
-                context, audio, language_id, kThreads, blank_token, hypothesis.tokens, values)) {
+                context, audio, language_id, thread_count, blank_token, hypothesis.tokens, values)) {
             return 0.0;
         }
         double total = 0.0;
@@ -255,7 +257,7 @@ Fixture load_fixture(whisper_context * context, steno::SilentReference & silent,
     Fixture fixture;
     fixture.name = name;
     fixture.context = context;
-    fixture.silent = silent.state_for(context, kThreads);
+    fixture.silent = silent.state_for(context, thread_count);
     fixture.language_id = whisper_lang_id("en");
     fixture.blank_token = steno::blank_token_id(context);
     fixture.terms = steno::vocabulary_terms(kVocabulary);
@@ -268,7 +270,7 @@ Fixture load_fixture(whisper_context * context, steno::SilentReference & silent,
 
     // The prompt-free decode, with the helper's decode parameters.
     whisper_full_params parameters = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
-    parameters.n_threads = kThreads;
+    parameters.n_threads = thread_count;
     parameters.no_context = true;
     parameters.no_timestamps = true;
     parameters.print_realtime = false;
@@ -300,8 +302,8 @@ Fixture load_fixture(whisper_context * context, steno::SilentReference & silent,
     require(fixture.audio != nullptr, name + ": state");
     if (fixture.audio != nullptr) {
         require(whisper_pcm_to_mel_with_state(context, fixture.audio, samples.data(),
-                    static_cast<int>(samples.size()), kThreads) == 0, name + ": mel");
-        require(whisper_encode_with_state(context, fixture.audio, 0, kThreads) == 0, name + ": encode");
+                    static_cast<int>(samples.size()), thread_count) == 0, name + ": mel");
+        require(whisper_encode_with_state(context, fixture.audio, 0, thread_count) == 0, name + ": encode");
     }
     return fixture;
 }
@@ -322,6 +324,16 @@ int main(int argc, char ** argv) {
         std::cerr << "usage: prompt-scoring-tests MODEL FIXTURE_DIR\n";
         return 2;
     }
+    if (const char * configured = std::getenv("STENO_TEST_WHISPER_THREADS")) {
+        char * end = nullptr;
+        const long value = std::strtol(configured, &end, 10);
+        if (*configured == '\0' || *end != '\0' || value < 1 || value > 64) {
+            std::cerr << "STENO_TEST_WHISPER_THREADS must be an integer from 1 to 64\n";
+            return 2;
+        }
+        thread_count = static_cast<int>(value);
+    }
+    std::printf("Inference threads: %d\n", thread_count);
     whisper_log_set([](ggml_log_level, const char *, void *) {}, nullptr);
     whisper_context_params parameters = whisper_context_default_params();
     parameters.flash_attn = true;
@@ -332,8 +344,8 @@ int main(int argc, char ** argv) {
     }
     const std::string directory = argv[2];
     steno::SilentReference silent;
-    require(silent.state_for(context, kThreads) != nullptr, "silent reference encodes");
-    require(silent.state_for(context, kThreads) == silent.state_for(context, kThreads), "silent reference is reused");
+    require(silent.state_for(context, thread_count) != nullptr, "silent reference encodes");
+    require(silent.state_for(context, thread_count) == silent.state_for(context, thread_count), "silent reference is reused");
 
     {
         Fixture jfk = load_fixture(context, silent, directory, "jfk");

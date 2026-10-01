@@ -50,6 +50,33 @@ class InferenceBudgetTests(unittest.TestCase):
         self.assertEqual(deadlines["networkMonitorStop"], 6.0)
 
 
+class ThreadConfigurationTests(unittest.TestCase):
+    def test_unset_variable_keeps_each_default(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("STENO_TEST_WHISPER_THREADS", None)
+            self.assertEqual(harness.configured_thread_count(8), 8)
+            self.assertEqual(harness.configured_thread_count(4), 4)
+
+    def test_variable_overrides_every_default(self):
+        with patch.dict(os.environ, {"STENO_TEST_WHISPER_THREADS": "3"}):
+            self.assertEqual(harness.configured_thread_count(8), 3)
+            self.assertEqual(harness.configured_thread_count(4), 3)
+
+    def test_invalid_values_fail_instead_of_falling_back(self):
+        for value in ("", "0", "-1", "3.5", "three", "65", "007", " 3"):
+            with self.subTest(value=value), patch.dict(os.environ, {"STENO_TEST_WHISPER_THREADS": value}):
+                with self.assertRaises(SystemExit):
+                    harness.configured_thread_count(4)
+
+    def test_stream_request_and_receipt_use_the_same_count(self):
+        self.assertEqual(harness.declared_configuration()["streamRequest"]["threads"],
+                         harness.STREAM_THREAD_COUNT)
+        self.assertEqual(int.from_bytes(harness.stream_configuration()[:4], "big"),
+                         harness.STREAM_THREAD_COUNT)
+        self.assertEqual(int.from_bytes(harness.one_shot_configuration(Path("audio.wav"))[:4], "big"),
+                         harness.ONE_SHOT_THREAD_COUNT)
+
+
 class NetworkMonitorTests(unittest.TestCase):
     def setUp(self):
         self.process = Mock(pid=123, poll=Mock(return_value=None))
