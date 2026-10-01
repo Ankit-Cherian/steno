@@ -33,12 +33,17 @@ func aggressiveCleanupIsLinear() async throws {
     let text = String(repeating: unit, count: 77)
     #expect(text.count >= 10_000)
 
-    _ = try await clean(String(repeating: unit, count: 2))
-    let start = ContinuousClock.now
-    let cleaned = try await clean(text, structure: .paragraph)
-    let elapsed = ContinuousClock.now - start
+    // Best of several runs, so other tests running in parallel don't decide the result. The
+    // quadratic version took about a second here.
+    var fastest = Duration.seconds(60)
+    var cleaned = ""
+    for _ in 0..<5 {
+        let start = ContinuousClock.now
+        cleaned = try await clean(text, structure: .paragraph)
+        fastest = min(fastest, ContinuousClock.now - start)
+    }
 
-    #expect(elapsed < .milliseconds(100), "took \(elapsed)")
+    #expect(fastest < .milliseconds(100), "took \(fastest)")
     #expect(cleaned.contains(" um ") == false)
     #expect(cleaned.contains(" uh ") == false)
     #expect(cleaned.contains("basically") == false)
@@ -94,4 +99,51 @@ private struct SplitMix64: RandomNumberGenerator {
         z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
         return z ^ (z >> 31)
     }
+}
+
+// MARK: - The recognizer's filler forms
+
+// Recognizer output (small.en, production arguments) for a conversational recording.
+private let recordedConversation =
+    "I feel like we're just like down to like the wire. Um, I tried on dresses yesterday. That was exciting. So, yeah. Um, yeah. Um, my dress."
+
+@Test("Aggressive removes fillers written with a capital and a comma at the start of a sentence")
+func aggressiveRemovesSentenceInitialFillers() async throws {
+    #expect(try await clean(recordedConversation)
+        == "I feel like we're just like down to like the wire. I tried on dresses yesterday. That was exciting. So, yeah. Yeah. My dress.")
+    #expect(try await clean("Um, I think we should ship.") == "I think we should ship.")
+    #expect(try await clean("Call me later. Uh. Thanks.") == "Call me later. Thanks.")
+    #expect(try await clean("Call me later. Um.") == "Call me later.")
+    #expect(try await clean("It works. Basically, we ship on Friday.") == "It works. We ship on Friday.")
+    #expect(try await clean("Um, iPhone sales are up.") == "iPhone sales are up.")
+}
+
+@Test("A dictation of only fillers is emptied under Aggressive and treated as no speech")
+func aggressiveEmptiesFillerOnlyDictation() async throws {
+    #expect(try await clean("Um, uh.") == "")
+    #expect(try await clean("Uh.") == "")
+    #expect(try await clean("Um, uh.", confidence: nil) == "")
+
+    let inserted = try await dictateThroughCoordinator("Um, uh.", profile: profile(.aggressive, .paragraph))
+    #expect(inserted == nil)
+}
+
+@Test("Minimal and Balanced keep the recognizer's fillers")
+func minimalAndBalancedKeepRecognizerFillers() async throws {
+    for policy in [FillerPolicy.minimal, .balanced] {
+        #expect(try await clean("Um, uh.", policy) == "Um, uh.")
+        #expect(try await clean(recordedConversation, policy) == recordedConversation)
+        #expect(try await clean("I think, um, this should, you know, ship today.", policy)
+            == "I think, um, this should, you know, ship today.")
+    }
+    let inserted = try await dictateThroughCoordinator("Um, uh.", profile: profile(.balanced, .paragraph))
+    #expect(inserted == "Um, uh.")
+}
+
+@Test("Aggressive still keeps literal and quoted fillers")
+func aggressiveKeepsLiteralFillers() async throws {
+    #expect(try await clean("The word um is a filler.") == "The word um is a filler.")
+    #expect(try await clean("She said \"Um, no.\" and left.") == "She said \"Um, no.\" and left.")
+    #expect(try await clean("I think, um, this should, you know, ship today.")
+        == "I think this should, you know, ship today.")
 }

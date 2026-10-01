@@ -70,11 +70,16 @@ struct FillerLiteralContext {
         self.insideQuoteBefore = insideQuoteBefore
     }
 
-    func isProtected(_ range: NSRange, matchedText: String) -> Bool {
+    /// With `sentenceStartIsLineStart`, a match that begins a sentence ("wire. Um, I tried") is
+    /// judged like one that begins a line: its capital is the sentence's, not a sign of a name, and
+    /// words in the previous sentence are not literal cues for it.
+    func isProtected(_ range: NSRange, matchedText: String, sentenceStartIsLineStart: Bool = false) -> Bool {
         let start = range.location
         let end = NSMaxRange(range)
+        let startsSentence = sentenceStartIsLineStart && startsSentence(at: start)
 
-        if wordsBefore(start, limit: 8).contains(where: { Self.literalCueWords.contains($0.lowercased()) }) {
+        if startsSentence == false,
+           wordsBefore(start, limit: 8).contains(where: { Self.literalCueWords.contains($0.lowercased()) }) {
             return true
         }
 
@@ -97,12 +102,15 @@ struct FillerLiteralContext {
             return true
         }
 
-        let lineStartsHere = isLinePrefixBlank(before: start)
+        let lineStartsHere = isLinePrefixBlank(before: start) || startsSentence
         if lineStartsHere == false, matchedText.first?.isUppercase == true {
             return true
         }
 
-        if lineStartsHere {
+        // A filler that is a sentence of its own ("Uh. Thanks.") is followed by the next
+        // sentence, whose capital says nothing about the filler.
+        let endsOwnSentence = firstNonWhitespaceUnit(from: end).map { $0 == 0x2E || $0 == 0x21 || $0 == 0x3F } ?? false
+        if lineStartsHere, endsOwnSentence == false {
             if let first = suffixWords.first,
                let firstCharacter = first.first,
                firstCharacter.isUppercase,
@@ -180,6 +188,12 @@ struct FillerLiteralContext {
         return index < units.count ? units[index] : nil
     }
 
+    /// Whether a full stop, question mark or exclamation mark ends the text before `offset`.
+    private func startsSentence(at offset: Int) -> Bool {
+        guard let last = lastNonWhitespaceUnit(before: offset) else { return false }
+        return last == 0x2E || last == 0x21 || last == 0x3F
+    }
+
     /// Whether only spaces or tabs separate `offset` from the start of its line.
     private func isLinePrefixBlank(before offset: Int) -> Bool {
         var index = offset - 1
@@ -215,6 +229,20 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             profile: profile,
             lexicon: lexicon
         )
+
+        // Under Aggressive, a dictation made only of fillers has nothing left to insert, however
+        // short it is. Returning the empty text lets the session treat it as no speech.
+        if let fillerOnly = candidates.first(where: { candidate in
+            candidate.removedFillers.isEmpty == false
+                && candidate.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) {
+            return CleanTranscript(
+                text: "",
+                edits: vocabulary.edits + fillerOnly.appliedEdits,
+                removedFillers: fillerOnly.removedFillers,
+                uncertaintyFlags: []
+            )
+        }
 
         // A spoken correction that passed the repair guards is also explicit: the ranker only
         // chooses how to resolve it, never whether to.
@@ -316,6 +344,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             applyFillerRemoval(
                 filler,
                 regex: regex,
+                sentenceStartIsLineStart: true,
                 to: &updated,
                 removed: &removed,
                 edits: &edits
@@ -327,6 +356,9 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             applyFillerRemoval(
                 filler,
                 regex: regex,
+                // "I" is always written with a capital, and "I mean" opening a sentence often
+                // carries meaning ("I mean what I say"), so it keeps the stricter rule.
+                sentenceStartIsLineStart: filler != "i mean",
                 to: &updated,
                 removed: &removed,
                 edits: &edits
@@ -343,6 +375,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     private func applyFillerRemoval(
         _ filler: String,
         regex: NSRegularExpression,
+        sentenceStartIsLineStart: Bool,
         to text: inout String,
         removed: inout [String],
         edits: inout [TranscriptEdit]
@@ -354,7 +387,11 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             guard match.numberOfRanges > 1 else { return nil }
             let fillerRange = match.range(at: 1)
             guard fillerRange.location != NSNotFound else { return nil }
-            guard context.isProtected(fillerRange, matchedText: source.substring(with: fillerRange)) == false else {
+            guard context.isProtected(
+                fillerRange,
+                matchedText: source.substring(with: fillerRange),
+                sentenceStartIsLineStart: sentenceStartIsLineStart
+            ) == false else {
                 return nil
             }
             return fillerRange
@@ -406,7 +443,76 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         return result
     }
 
+    /// Removes a filler run with the spacing and punctuation around it. At the start of a sentence,
+    /// a run followed by the sentence's closing punctuation ("Um, uh.") is removed together with
+    /// that punctuation, and the capital the filler carried moves to the word that now opens the
+    /// sentence ("Um, yeah." becomes "Yeah.").
     private func localFillerRemovalEdit(
+        for fillerRange: NSRange,
+        in source: NSString
+    ) -> (NSRange, String) {
+        var left = fillerRange.location - 1
+        while left >= 0, isHorizontalWhitespace(source.character(at: left)) {
+            left -= 1
+        }
+        let startsSentence = left < 0 || [0x2E, 0x21, 0x3F, 0x0A, 0x0D].contains(source.character(at: left))
+        guard startsSentence else {
+            return fillerRemovalEdit(for: fillerRange, in: source)
+        }
+
+        var right = NSMaxRange(fillerRange)
+        while right < source.length, isHorizontalWhitespace(source.character(at: right)) {
+            right += 1
+        }
+
+        var edit: (range: NSRange, replacement: String)
+        if right < source.length, isTerminalPunctuation(source.character(at: right)) {
+            var end = right
+            while end < source.length, isTerminalPunctuation(source.character(at: end)) {
+                end += 1
+            }
+            while end < source.length, isHorizontalWhitespace(source.character(at: end)) {
+                end += 1
+            }
+            var start = fillerRange.location
+            if end >= source.length {
+                while start > 0, isHorizontalWhitespace(source.character(at: start - 1)) {
+                    start -= 1
+                }
+            }
+            edit = (NSRange(location: start, length: end - start), "")
+        } else {
+            edit = fillerRemovalEdit(for: fillerRange, in: source)
+        }
+
+        guard edit.replacement.isEmpty,
+              source.substring(with: fillerRange).first?.isUppercase == true
+        else {
+            return edit
+        }
+        var wordEnd = NSMaxRange(edit.range)
+        while wordEnd < source.length,
+              let scalar = Unicode.Scalar(source.character(at: wordEnd)),
+              CharacterSet.letters.contains(scalar) {
+            wordEnd += 1
+        }
+        let nextWord = source.substring(with: NSRange(location: NSMaxRange(edit.range), length: wordEnd - NSMaxRange(edit.range)))
+        guard let initial = nextWord.first,
+              initial.isLowercase,
+              nextWord.dropFirst().contains(where: \.isUppercase) == false
+        else {
+            return edit
+        }
+        edit.range.length += String(initial).utf16.count
+        edit.replacement = String(initial).uppercased()
+        return edit
+    }
+
+    private func isTerminalPunctuation(_ character: unichar) -> Bool {
+        character == 0x2E || character == 0x21 || character == 0x3F
+    }
+
+    private func fillerRemovalEdit(
         for fillerRange: NSRange,
         in source: NSString
     ) -> (NSRange, String) {
