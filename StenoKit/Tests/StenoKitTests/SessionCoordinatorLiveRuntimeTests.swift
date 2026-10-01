@@ -74,6 +74,7 @@ private actor GuardedLiveRuntime: WhisperStreamingRuntimeSession {
     private var appending = false
     private var previewInFlight = false
     private(set) var rejectedHypotheses = 0
+    private(set) var rejectedAppends: [String] = []
     private(set) var hypotheses = 0
     private(set) var cancelledStreams = 0
     private(set) var finishedStreams = 0
@@ -108,6 +109,7 @@ private actor GuardedLiveRuntime: WhisperStreamingRuntimeSession {
 
     func append(_ chunk: WhisperStreamAudioChunk, streamID: UUID, generation: UInt64) async throws {
         guard !appending, chunk.sampleOffset == acceptedWatermark else {
+            rejectedAppends.append("appending=\(appending) offset=\(chunk.sampleOffset) accepted=\(acceptedWatermark)")
             throw RetainedWhisperRuntimeError.staleResponse
         }
         appending = true
@@ -552,6 +554,66 @@ func queuedPreviewNeverCollidesWithAppend() async throws {
         #expect(await runtime.hypotheses >= 5, "trial \(trial)")
         #expect(await events.snapshots >= 5, "trial \(trial)")
         #expect(factory.sessions.count == 1, "trial \(trial)")
+        let rejectedAppends = await runtime.rejectedAppends
+        let finishedStreams = await runtime.finishedStreams
+        #expect(rejectedAppends.isEmpty, "trial \(trial)")
+        #expect(finishedStreams == 1, "trial \(trial)")
         #expect(final == .finished("Helper final"), "trial \(trial)")
     }
+}
+
+// MARK: - A stop between poll and append keeps every frame
+
+private actor PollGate {
+    private var armed = false
+    private var reached = false
+    private var released = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func arm() { armed = true }
+    func hasReached() -> Bool { reached }
+
+    func pass() async {
+        guard armed, !reached else { return }
+        reached = true
+        if released { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+
+    func release() {
+        released = true
+        waiter?.resume()
+        waiter = nil
+    }
+}
+
+@Test("A stop that lands between the pump's poll and its append keeps the live final")
+func stopBetweenPollAndAppendKeepsLiveFinal() async throws {
+    let factory = GuardedLiveRuntimeFactory()
+    let events = LiveRuntimeEvents()
+    let coordinator = makeLiveCoordinator(
+        engine: makeRetainedEngine(factory),
+        capture: LiveRuntimeCapture(seconds: 5),
+        events: events
+    )
+    let gate = PollGate()
+    await coordinator.setLivePumpPollObserver { await gate.pass() }
+    let sessionID = try await startLiveDictation(coordinator)
+
+    await gate.arm()
+    for _ in 0..<500 where !(await gate.hasReached()) {
+        try await Task.sleep(for: .milliseconds(2))
+    }
+    try #require(await gate.hasReached())
+    // The pump holds a polled frame it has not appended yet.
+    try await coordinator.endPressToTalkCapture(sessionID: sessionID)
+    let completion = Task { try await coordinator.completePressToTalk(sessionID: sessionID) }
+    try await Task.sleep(for: .milliseconds(20))
+    await gate.release()
+
+    let final = await outcome(of: completion, within: .seconds(5))
+    let runtime = try #require(factory.sessions.first)
+    #expect(final == .finished("Helper final"))
+    #expect(await runtime.rejectedAppends.isEmpty)
+    #expect(await runtime.finishedStreams == 1)
 }

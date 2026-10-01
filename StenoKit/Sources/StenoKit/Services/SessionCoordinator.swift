@@ -643,6 +643,13 @@ public actor SessionCoordinator {
         liveAppendWaitObserver = observer
     }
 
+    private var livePumpPollObserver: (@Sendable () async -> Void)?
+
+    /// Runs on the pump after a poll returns and before its frames are appended.
+    func setLivePumpPollObserver(_ observer: (@Sendable () async -> Void)?) {
+        livePumpPollObserver = observer
+    }
+
     private var completionCheckpointObserver: (@Sendable (SessionID) -> Void)?
 
     /// Runs synchronously on the completion task at every ownership check, so
@@ -1029,14 +1036,28 @@ public actor SessionCoordinator {
     private func runLivePump(sessionID: SessionID) async {
         while !Task.isCancelled {
             guard !captureStopWasRequested(sessionID: sessionID),
-                  let streamer = activeSessions[sessionID]?.livePipeline?.streamer else {
+                  let pipeline = activeSessions[sessionID]?.livePipeline else {
                 return
             }
-            guard activeSessions[sessionID]?.livePipeline?.failed == false else { return }
+            guard !pipeline.failed else { return }
 
+            // Busy from poll through append. A polled frame has left the
+            // canonical stream, so finalization must wait for it to reach the
+            // runtime; otherwise the tail drain resumes after a missing frame
+            // and the runtime rejects the gap.
+            let appendActivity = pipeline.appendActivity
+            appendActivity.begin()
             do {
-                let poll = try await streamer.poll(sessionID: sessionID)
-                try await processLiveFrames(poll.frames, sessionID: sessionID)
+                do {
+                    defer { appendActivity.end() }
+                    let poll = try await pipeline.streamer.poll(sessionID: sessionID)
+                    #if DEBUG
+                    if !poll.frames.isEmpty, let livePumpPollObserver {
+                        await livePumpPollObserver()
+                    }
+                    #endif
+                    try await processLiveFrames(poll.frames, sessionID: sessionID, identity: pipeline.identity)
+                }
                 launchPendingLiveHypothesisFromPump(sessionID: sessionID)
             } catch is CancellationError {
                 return
@@ -1053,35 +1074,27 @@ public actor SessionCoordinator {
         }
     }
 
+    /// Appends frames the pump has already polled. They are appended even if
+    /// capture stopped meanwhile, because the final's tail drain continues
+    /// after them; only a cancelled session discards them.
     private func processLiveFrames(
         _ frames: [LivePCMFrame],
-        sessionID: SessionID
+        sessionID: SessionID,
+        identity: LiveTranscriptionSession
     ) async throws {
         guard !frames.isEmpty,
-              !captureStopWasRequested(sessionID: sessionID),
               let liveEngine = transcriptionEngine as? any LiveTranscriptionEngine else {
             return
         }
-        guard activeSessions[sessionID]?.livePipeline?.failed == false else { return }
 
         for frame in frames {
             try Task.checkCancellation()
-            guard !captureStopWasRequested(sessionID: sessionID),
-                  let pipeline = activeSessions[sessionID]?.livePipeline else {
-                throw CancellationError()
-            }
-            let identity = pipeline.identity
-            let appendActivity = pipeline.appendActivity
-            appendActivity.begin()
-            defer { appendActivity.end() }
             try await liveEngine.appendLiveAudio(frame, session: identity)
             try Task.checkCancellation()
-            guard !captureStopWasRequested(sessionID: sessionID),
-                  activeSessions[sessionID]?.livePipeline?.identity == identity else {
-                throw CancellationError()
+            if activeSessions[sessionID]?.livePipeline?.identity == identity {
+                activeSessions[sessionID]?.livePipeline?.decodedAudioWatermark =
+                    frame.sampleOffset + UInt64(frame.sampleCount)
             }
-            activeSessions[sessionID]?.livePipeline?.decodedAudioWatermark =
-                frame.sampleOffset + UInt64(frame.sampleCount)
         }
 
         guard !captureStopWasRequested(sessionID: sessionID),
