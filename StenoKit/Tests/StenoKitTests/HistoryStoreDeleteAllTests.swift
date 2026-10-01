@@ -58,4 +58,36 @@ struct HistoryStoreDeleteAllTests {
 
         #expect(await store.recent(limit: 10).map(\.id) == [kept.id])
     }
+
+    @Test("A dictation after Delete all leaves no deleted transcript in the file or its previous copy")
+    func dictationAfterDeleteAllKeepsNoDeletedText() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HistoryDeleteAll-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("transcript-history.json")
+        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+
+        let deletedTexts = ["Fictional deleted alpha", "Fictional deleted beta", "Fictional deleted gamma"]
+        for (index, text) in deletedTexts.enumerated() {
+            try await store.append(entry: Self.entry(text, daysAgo: Double(90 - index * 40)))
+        }
+        try await store.deleteAll()
+        try await store.append(entry: Self.entry("Fictional new dictation", daysAgo: 0))
+
+        let previousURL = StorageFilePreservation.previousCopyURL(for: url)
+        let files = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        let names = Set(files.map(\.lastPathComponent))
+        #expect(names.contains(url.lastPathComponent))
+        #expect(names.contains(previousURL.lastPathComponent))
+        for file in files {
+            let contents = try Data(contentsOf: file)
+            for text in deletedTexts {
+                #expect(contents.range(of: Data(text.utf8)) == nil, "\(file.lastPathComponent) still holds \(text)")
+            }
+        }
+        #expect(try String(contentsOf: url, encoding: .utf8).contains("Fictional new dictation"))
+    }
 }

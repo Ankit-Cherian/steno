@@ -57,6 +57,51 @@ struct DictationControllerRuntimeReuseTests {
         await controller.teardownAndWait()
         #expect(await engines.built[1].shutdowns == 1)
     }
+
+    @Test("Saving a change to only the model path loads the new model, and saving again does not")
+    func modelPathChangeReplacesEngine() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StenoRuntimeReuse-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engines = EngineBuildLog()
+        let clipboard = MemoryClipboardService()
+        let controller = DictationController(
+            hotkey: TranscriptionCancelHotkey(),
+            clipboardService: clipboard,
+            overlay: WaveformOverlayPresenter(observeAccessibilityChanges: false),
+            mediaInterruption: IsolatedTestMediaService(),
+            preferencesStore: AppPreferencesStore(storageURL: directory.appendingPathComponent("preferences.json")),
+            transcriptionEngineFactory: { settings in engines.build(settings) },
+            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json"), clipboardService: clipboard),
+            usageAnalyticsStore: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
+            legacyHistoryURL: directory.appendingPathComponent("legacy.json"),
+            systemIntegrationsEnabled: false
+        )
+
+        var draft = controller.preferences
+        #expect(await controller.applySettingsDraft(preferences: draft).value)
+        #expect(engines.built.count == 1)
+
+        let otherModel = directory.appendingPathComponent("ggml-base.en.bin")
+        try Data("fictional model".utf8).write(to: otherModel)
+        draft = controller.preferences
+        draft.dictation.modelPath = otherModel.path
+        draft.dictation.vadModelPath = controller.preferences.dictation.vadModelPath
+        #expect(await controller.applySettingsDraft(preferences: draft).value)
+
+        #expect(engines.built.count == 2)
+        #expect(engines.settings.last?.modelPath == controller.preferences.dictation.modelPath)
+        #expect(engines.settings.last?.modelPath != engines.settings.first?.modelPath)
+        #expect(await engines.built[0].shutdowns == 1)
+
+        // Saving the same settings again keeps the newly loaded engine.
+        #expect(await controller.applySettingsDraft(preferences: controller.preferences).value)
+        #expect(engines.built.count == 2)
+        #expect(await engines.built[1].shutdowns == 0)
+
+        await controller.teardownAndWait()
+    }
 }
 
 @MainActor
