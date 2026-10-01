@@ -839,6 +839,49 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// Deletes a downloaded model. Removing the model in use switches to the
+    /// included model first, so dictation never points at a missing file.
+    func removeDownloadedModel(_ modelID: WhisperModelID) {
+        guard !isIsolatedPreview, activeModelDownloadID == nil else { return }
+        let title = WhisperModelCatalog.title(for: modelID)
+        guard let downloadedPath = WhisperModelLibrary.downloadedModelPath(
+            for: modelID,
+            locations: modelDownloadService.locations
+        ) else { return }
+        let isInUse = preferences.dictation.modelPath == downloadedPath
+
+        Task {
+            var switchedTo: String?
+            if isInUse {
+                let fallbackID = WhisperModelCatalog.bundledDefaultModel
+                guard let fallbackPath = modelDownloadService.locations.bundledModelPath(fallbackID) else {
+                    let failure = "Couldn't remove \(title) because it's in use and the included model isn't available."
+                    showModelMessage(failure, isError: true)
+                    reportModelError(failure)
+                    return
+                }
+                var snapshot = preferences
+                snapshot.dictation.updateModelPath(fallbackPath)
+                snapshot.normalize()
+                guard await commitModelSelection(snapshot, failurePrefix: "Couldn't remove \(title).") else { return }
+                switchedTo = WhisperModelCatalog.title(for: fallbackID)
+                await rebuildRuntimeOrDefer()
+            }
+
+            do {
+                try await modelDownloadService.removeDownloadedModel(modelID)
+            } catch {
+                let failure = "Couldn't remove \(title). \(error.localizedDescription)"
+                showModelMessage(failure, isError: true)
+                reportModelError(failure)
+                return
+            }
+            let message = switchedTo.map { "Removed \(title) and switched to \($0)." } ?? "Removed \(title)."
+            showModelMessage(message)
+            status = message
+        }
+    }
+
     /// A voice-detection path the user didn't choose: empty, or the default
     /// that sits next to the selected model.
     static func vadModelPathIsDerived(_ dictation: AppPreferences.Dictation) -> Bool {

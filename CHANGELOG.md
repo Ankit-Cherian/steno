@@ -49,6 +49,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Choosing or downloading a model no longer reports that Steno switched to it when the change couldn't be saved. The current model stays in use and the reason is shown with the model controls.
 - Appearance changes that can't be saved are now reported on the Appearance page instead of failing silently.
 - When a model download finishes while Settings has unsaved edits, the locked Save now explains that the download changed the saved speech model.
+- Downloaded models can now be removed or downloaded again from Settings > Speech model. Removing the model in use switches to the included Small model first.
 
 ## [1.0.0] - 2026-09-17
 

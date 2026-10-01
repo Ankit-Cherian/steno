@@ -318,3 +318,69 @@ struct SettingsDraftModelConflictTests {
         #expect(state.conflictCause == .externalChange)
     }
 }
+
+@MainActor
+@Suite("Removing and downloading a model again")
+struct ModelRemovalControllerTests {
+    @Test("Removing the model in use switches to the included model first")
+    func removingActiveModelSwitchesToBundled() async throws {
+        let fixture = try ModelSetupFixture()
+        defer { fixture.tearDown() }
+        let controller = fixture.controller!
+        controller.downloadWhisperModel(.mediumEn)
+        #expect(await fixture.waitForDownloadToFinish())
+        #expect(controller.preferences.dictation.modelPath == fixture.downloadedPath(.mediumEn))
+
+        controller.removeDownloadedModel(.mediumEn)
+        #expect(await waitForModelSetupCondition { controller.modelDownloadMessage.hasPrefix("Removed") })
+
+        #expect(controller.modelDownloadMessage == "Removed Medium and switched to Small.")
+        #expect(!FileManager.default.fileExists(atPath: fixture.downloadedPath(.mediumEn)))
+        #expect(controller.preferences.dictation.modelPath == fixture.bundledPath(.smallEn))
+        #expect(await AppPreferencesStore(storageURL: fixture.preferencesURL).load().dictation.modelPath == fixture.bundledPath(.smallEn))
+        #expect(controller.whisperModelOptions.first { $0.modelID == .mediumEn }?.isInstalled == false)
+    }
+
+    @Test("Removing a model that isn't in use leaves the current model alone")
+    func removingInactiveModel() async throws {
+        let fixture = try ModelSetupFixture()
+        defer { fixture.tearDown() }
+        let controller = fixture.controller!
+        try fixture.placeDownloadedModel(.largeV3Turbo)
+        let before = controller.preferences
+
+        controller.removeDownloadedModel(.largeV3Turbo)
+        #expect(await waitForModelSetupCondition { controller.modelDownloadMessage == "Removed Large V3 Turbo." })
+
+        #expect(controller.preferences == before)
+        #expect(!FileManager.default.fileExists(atPath: fixture.downloadedPath(.largeV3Turbo)))
+    }
+
+    @Test("Downloading again replaces a damaged downloaded file with a verified one")
+    func downloadAgainReplacesDamagedFile() async throws {
+        let fixture = try ModelSetupFixture()
+        defer { fixture.tearDown() }
+        let controller = fixture.controller!
+        try Data("damaged".utf8).write(to: URL(fileURLWithPath: fixture.downloadedPath(.mediumEn)))
+
+        controller.downloadWhisperModel(.mediumEn)
+        #expect(await fixture.waitForDownloadToFinish())
+
+        #expect(try Data(contentsOf: URL(fileURLWithPath: fixture.downloadedPath(.mediumEn))) == fixture.modelBytes)
+        #expect(controller.preferences.dictation.modelPath == fixture.downloadedPath(.mediumEn))
+    }
+
+    @Test("A failed download again keeps the existing file in place")
+    func failedDownloadAgainKeepsExistingFile() async throws {
+        let fixture = try ModelSetupFixture(body: Data("<html>blocked</html>".utf8))
+        defer { fixture.tearDown() }
+        let controller = fixture.controller!
+        try fixture.placeDownloadedModel(.mediumEn)
+
+        controller.downloadWhisperModel(.mediumEn)
+        #expect(await fixture.waitForDownloadToFinish())
+
+        #expect(controller.modelDownloadMessageIsError)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: fixture.downloadedPath(.mediumEn))) == fixture.modelBytes)
+    }
+}

@@ -146,6 +146,10 @@ struct EngineSettingsSection: View {
 
                     Spacer()
 
+                    if option.source == .downloaded {
+                        downloadedModelMenu(for: option)
+                    }
+
                     if option.isActive && controller.activeModelDownloadID != option.modelID {
                         Label("Using", systemImage: "checkmark")
                             .font(.system(size: 12, weight: .medium))
@@ -181,6 +185,27 @@ struct EngineSettingsSection: View {
                 )
             }
         }
+    }
+
+    private func downloadedModelMenu(for option: WhisperModelOption) -> some View {
+        Menu {
+            Button("Download again") {
+                controller.downloadWhisperModel(option.modelID)
+            }
+            Button("Remove", role: .destructive) {
+                controller.removeDownloadedModel(option.modelID)
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 14))
+                .foregroundStyle(StenoDesign.textSecondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(hasUnsavedChanges || controller.activeModelDownloadID != nil)
+        .help("Download \(option.title) again or remove it")
+        .accessibilityLabel("More actions for \(option.title)")
     }
 
     @ViewBuilder
