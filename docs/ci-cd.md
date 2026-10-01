@@ -125,6 +125,8 @@ For the production GPU path, use a new output directory and `--backend metal`. T
 
 ## Release operation
 
+For 1.0.1, follow the step-by-step [1.0.1 release procedure](release/1.0.1-checklist.md). It adds the ordering rules that no workflow enforces: an unchanged main between merge and dispatch, the rehearsal and `plan` check before tagging, and what to do when a step fails after the tag exists.
+
 Complete the source checks, measured evaluation, and native-app acceptance in the [1.0 checklist](release/1.0-checklist.md), integrate the intended source into main, and create the approved version tag before dispatching a release. Distribution and publication receipts are completed later against the resulting signed artifact. Before approving the release tag, finalize the README candidate status and move the approved changelog entries from `[Unreleased]` to the selected version with its actual release date in that source. Keeping candidate wording and `[Unreleased]` during PR preparation is intentional; the tagged release must describe the released version. The `/releases/latest` download link needs no version-specific edit. Tag creation is deliberately not automatic. The selected source must be the dispatch's main commit, with matching `project.yml` version and existing `vX.Y.Z` tag. No metadata is bumped automatically.
 
 A version tag is permanent: a repository rule prevents moving or deleting it. Before creating one, check the hand-edited release facts at the intended commit:
