@@ -65,7 +65,7 @@ func savedDisabledHandsFreeKeyShowsNoErrorAtLaunch() async throws {
     // the isolated fixture skips that, so it is replayed here.
     hotkey.start()
     await controller.bootstrap()
-    #expect(await waitForShortcutCondition { controller.status == "Running local transcription + local cleanup." })
+    #expect(await waitForShortcutCondition { controller.hasBootstrapped })
 
     // A key the user turned off is never registered, so a Mac where the
     // listener can't be installed has nothing to report either.

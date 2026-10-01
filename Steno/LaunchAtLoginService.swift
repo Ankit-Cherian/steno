@@ -1,5 +1,6 @@
 import Foundation
 import ServiceManagement
+import StenoKit
 
 enum LaunchAtLoginServiceError: Error, LocalizedError {
     case failed(underlying: Error)
@@ -13,32 +14,43 @@ enum LaunchAtLoginServiceError: Error, LocalizedError {
 }
 
 @MainActor
-final class LaunchAtLoginService {
+protocol LaunchAtLoginServicing: AnyObject {
+    var status: LaunchAtLoginSystemStatus { get }
+    func setEnabled(_ enabled: Bool) throws
+    func openLoginItemsSettings()
+}
+
+@MainActor
+final class LaunchAtLoginService: LaunchAtLoginServicing {
+    var status: LaunchAtLoginSystemStatus {
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            return .enabled
+        case .requiresApproval:
+            return .requiresApproval
+        case .notRegistered:
+            return .notRegistered
+        case .notFound:
+            return .notFound
+        @unknown default:
+            return .notFound
+        }
+    }
+
     func setEnabled(_ enabled: Bool) throws {
         let service = SMAppService.mainApp
-
         do {
             if enabled {
-                switch service.status {
-                case .enabled, .requiresApproval:
-                    return
-                case .notRegistered, .notFound:
-                    try service.register()
-                @unknown default:
-                    try service.register()
-                }
+                try service.register()
             } else {
-                switch service.status {
-                case .notRegistered, .notFound:
-                    return
-                case .enabled, .requiresApproval:
-                    try service.unregister()
-                @unknown default:
-                    try service.unregister()
-                }
+                try service.unregister()
             }
         } catch {
             throw LaunchAtLoginServiceError.failed(underlying: error)
         }
+    }
+
+    func openLoginItemsSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 }

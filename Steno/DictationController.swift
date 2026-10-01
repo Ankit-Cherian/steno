@@ -278,6 +278,8 @@ final class DictationController: ObservableObject {
     private let appContextProvider: @MainActor () -> AppContext
     private let targetDisplayPointProvider: (@MainActor () -> CGPoint)?
     private let workspaceNotificationCenter: NotificationCenter?
+    private let applicationNotificationCenter: NotificationCenter?
+    private let permissionStatusReader: @MainActor () -> PermissionStatusSnapshot
 
     @Published var status: String = "Idle"
     @Published var lastTranscript: String = ""
@@ -287,6 +289,8 @@ final class DictationController: ObservableObject {
     @Published var recentEntries: [TranscriptEntry] = []
     @Published var hotkeyRegistrationMessage: String = ""
     @Published var launchAtLoginWarning: String = ""
+    /// macOS registered the login item but shows it as off until the user allows it.
+    @Published var launchAtLoginNeedsApproval = false
     @Published var preferences: AppPreferences = .default
     @Published var microphonePermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var accessibilityPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
@@ -296,6 +300,8 @@ final class DictationController: ObservableObject {
     @Published var hasBootstrapped = false
     @Published var activeModelDownloadID: WhisperModelID?
     @Published var modelDownloadMessage: String = ""
+    /// The model message reports a failure and uses the error color role.
+    @Published var modelDownloadMessageIsError = false
     @Published var usageAnalyticsSnapshot: UsageAnalyticsSnapshot = .empty
     @Published var usageAnalyticsError: String = ""
     @Published var usageAnalyticsWriteWarning: String = ""
@@ -314,7 +320,7 @@ final class DictationController: ObservableObject {
     private let overlay: WaveformOverlayPresenter
     private let mediaInterruption: MediaInterruptionService
     private let preferencesStore: AppPreferencesStore
-    private let launchAtLoginService: LaunchAtLoginService
+    private let launchAtLoginService: (any LaunchAtLoginServicing)?
     private let runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)?
     private let transcriptionEngineFactory: @MainActor (TranscriptionEngineSettings) -> any TranscriptionEngine
     /// Outlives coordinator rebuilds while its settings are unchanged, so a
@@ -322,7 +328,7 @@ final class DictationController: ObservableObject {
     private var retainedTranscriptionEngine: (engine: any TranscriptionEngine, settings: TranscriptionEngineSettings)?
     private let overlayDismissDelay: @Sendable () async -> Void
     private let overlayDismissAction: @MainActor @Sendable () -> Void
-    private let modelDownloadService = WhisperModelDownloadService()
+    private let modelDownloadService: WhisperModelDownloadService
     private let compatibilityService = try? WhisperCompatibilityService.bundled()
 
     private var lexiconService: PersonalLexiconService
@@ -369,12 +375,18 @@ final class DictationController: ObservableObject {
     private var runtimeRebuildGeneration: UInt64 = 0
     private var activeRuntimeRebuilds = 0
     private var runtimeRebuildWaiters: [CheckedContinuation<Void, Never>] = []
-    private var launchAtLoginServicePreference = AppPreferences.default.general.launchAtLoginEnabled
+    /// The launch-at-login value last written to the settings file.
+    private var savedLaunchAtLoginPreference = AppPreferences.default.general.launchAtLoginEnabled
+    /// The model failure currently shown in `lastError`, cleared once a model change succeeds.
+    private var lastModelError = ""
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
     private var terminationTask: Task<Void, Never>?
     private var shutdownTask: Task<Void, Never>?
     private var workspaceSleepObserver: NSObjectProtocol?
+    private var applicationActiveObserver: NSObjectProtocol?
+    /// The page that fixes the problem in `lastError`, when the error names one.
+    private(set) var lastErrorTarget: ErrorRecoveryTarget?
     private var workspaceWakeObserver: NSObjectProtocol?
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var hasPreparedUsageAnalyticsHistory = false
@@ -387,7 +399,8 @@ final class DictationController: ObservableObject {
         overlay: WaveformOverlayPresenter = WaveformOverlayPresenter(),
         mediaInterruption: MediaInterruptionService = MacMediaInterruptionService(),
         preferencesStore: AppPreferencesStore = AppPreferencesStore(),
-        launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService(),
+        launchAtLoginService: (any LaunchAtLoginServicing)? = nil,
+        modelDownloadService: WhisperModelDownloadService = WhisperModelDownloadService(),
         coordinator: (any DictationSessionCoordinating)? = nil,
         runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)? = nil,
         transcriptionEngineFactory: (@MainActor (TranscriptionEngineSettings) -> any TranscriptionEngine)? = nil,
@@ -402,7 +415,9 @@ final class DictationController: ObservableObject {
         isIsolatedPreview: Bool = false,
         appContextProvider: @escaping @MainActor () -> AppContext = { AppContextProvider.current() },
         targetDisplayPointProvider: (@MainActor () -> CGPoint)? = nil,
-        workspaceNotificationCenter: NotificationCenter? = nil
+        workspaceNotificationCenter: NotificationCenter? = nil,
+        applicationNotificationCenter: NotificationCenter? = nil,
+        permissionStatusReader: @escaping @MainActor () -> PermissionStatusSnapshot = { .current() }
     ) {
         self.isIsolatedPreview = isIsolatedPreview
         self.systemIntegrationsEnabled = systemIntegrationsEnabled
@@ -410,15 +425,20 @@ final class DictationController: ObservableObject {
         self.targetDisplayPointProvider = targetDisplayPointProvider
         self.workspaceNotificationCenter = workspaceNotificationCenter
             ?? (systemIntegrationsEnabled && !isIsolatedPreview ? NSWorkspace.shared.notificationCenter : nil)
+        self.applicationNotificationCenter = applicationNotificationCenter
+            ?? (systemIntegrationsEnabled && !isIsolatedPreview ? NotificationCenter.default : nil)
+        self.permissionStatusReader = permissionStatusReader
         self.hotkey = hotkey
         self.clipboardService = clipboardService
         self.overlay = overlay
         self.mediaInterruption = mediaInterruption
         self.preferencesStore = preferencesStore
         self.launchAtLoginService = launchAtLoginService
+            ?? (systemIntegrationsEnabled && !isIsolatedPreview ? LaunchAtLoginService() : nil)
+        self.modelDownloadService = modelDownloadService
         self.coordinator = coordinator
         self.runtimeRebuildOverride = runtimeRebuildOverride
-        self.transcriptionEngineFactory = transcriptionEngineFactory ?? DictationRuntimeFactory.makeTranscriptionEngine(settings:)
+        self.transcriptionEngineFactory = transcriptionEngineFactory ?? { DictationRuntimeFactory.makeTranscriptionEngine(settings: $0) }
         self.overlayDismissDelay = overlayDismissDelay
         self.overlayDismissAction = overlayDismissAction ?? { [weak overlay] in
             overlay?.hide()
@@ -465,6 +485,18 @@ final class DictationController: ObservableObject {
         if systemIntegrationsEnabled && !isIsolatedPreview {
             hotkey.start()
             menuBar.setup(controller: self)
+        }
+
+        // Permissions are granted and revoked in System Settings, so read them
+        // again whenever the user comes back to Steno.
+        applicationActiveObserver = self.applicationNotificationCenter?.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshPermissionStatuses(reinstallHotkeysOnlyIfChanged: true)
+            }
         }
 
         workspaceSleepObserver = self.workspaceNotificationCenter?.addObserver(
@@ -522,6 +554,10 @@ final class DictationController: ObservableObject {
         runtimeRebuildGeneration &+= 1
         terminationTask?.cancel()
         terminationTask = nil
+        if let applicationActiveObserver {
+            applicationNotificationCenter?.removeObserver(applicationActiveObserver)
+            self.applicationActiveObserver = nil
+        }
         if let workspaceSleepObserver {
             workspaceNotificationCenter?.removeObserver(workspaceSleepObserver)
             self.workspaceSleepObserver = nil
@@ -650,8 +686,16 @@ final class DictationController: ObservableObject {
     }
     #endif
 
+    #if DEBUG
+    /// Model rows shown by an isolated preview instead of the default sample rows.
+    var previewWhisperModelOptions: [WhisperModelOption]?
+    #endif
+
     var whisperModelOptions: [WhisperModelOption] {
         if isIsolatedPreview {
+            #if DEBUG
+            if let previewWhisperModelOptions { return previewWhisperModelOptions }
+            #endif
             return WhisperModelLibrary.managedModelIDs.map {
                 WhisperModelOption(modelID: $0, source: $0 == .smallEn ? .bundled : nil,
                     path: nil, isInstalled: $0 == .smallEn, isActive: $0 == .smallEn,
@@ -660,7 +704,8 @@ final class DictationController: ObservableObject {
         }
         return WhisperModelLibrary.installedOptions(
             preferences: preferences,
-            compatibilityService: compatibilityService
+            compatibilityService: compatibilityService,
+            locations: modelDownloadService.locations
         )
     }
 
@@ -713,11 +758,13 @@ final class DictationController: ObservableObject {
         loaded.normalize()
 
         applyPreferencesLocally(loaded)
-        launchAtLoginServicePreference = loaded.general.launchAtLoginEnabled
+        savedLaunchAtLoginPreference = loaded.general.launchAtLoginEnabled
         launchAtLoginWarning = ""
+        await refreshLaunchAtLoginStatus()
         refreshPermissionStatuses()
-        validateWhisperPaths()
         await rebuildRuntime()
+        // After the rebuild, whose own status would otherwise replace the warning.
+        validateWhisperPaths()
         await refreshHistory()
         await refreshUsageAnalytics()
         overlay.prepareWindow()
@@ -728,6 +775,10 @@ final class DictationController: ObservableObject {
         guard !isIsolatedPreview else { status = "Preview settings updated."; return }
         var snapshot = preferences
         snapshot.normalize()
+        snapshot.general.launchAtLoginEnabled = applyLaunchAtLoginChange(
+            requestedPreference: snapshot.general.launchAtLoginEnabled,
+            previousPreference: savedLaunchAtLoginPreference
+        )
         applyPreferencesLocally(snapshot)
 
         Task {
@@ -749,6 +800,10 @@ final class DictationController: ObservableObject {
         let previous = preferences
         var snapshot = draft
         snapshot.normalize()
+        snapshot.general.launchAtLoginEnabled = applyLaunchAtLoginChange(
+            requestedPreference: snapshot.general.launchAtLoginEnabled,
+            previousPreference: previous.general.launchAtLoginEnabled
+        )
         applyPreferencesLocally(snapshot)
 
         return Task {
@@ -771,10 +826,7 @@ final class DictationController: ObservableObject {
                 lastError = ""
             }
             settingsSaveError = ""
-            applyLaunchAtLoginPreference(
-                requestedPreference: snapshot.general.launchAtLoginEnabled,
-                userInitiated: true
-            )
+            savedLaunchAtLoginPreference = snapshot.general.launchAtLoginEnabled
             status = "Settings saved."
             return true
         case .failure(let error):
@@ -794,7 +846,17 @@ final class DictationController: ObservableObject {
         applyOverlayAppearance(for: snapshot.appearance)
 
         Task {
-            await preferencesStore.save(snapshot)
+            switch await preferencesStore.save(snapshot) {
+            case .success:
+                if !settingsSaveError.isEmpty, lastError == settingsSaveError {
+                    lastError = ""
+                }
+                settingsSaveError = ""
+            case .failure(let error):
+                settingsSaveError = error.localizedDescription
+                status = "Appearance couldn't be saved."
+                reportError(error.localizedDescription, fixedIn: .appearance)
+            }
         }
     }
 
@@ -822,17 +884,15 @@ final class DictationController: ObservableObject {
               let path = option.path
         else { return }
 
+        let title = WhisperModelCatalog.title(for: modelID)
         var snapshot = preferences
         snapshot.dictation.updateModelPath(path)
         snapshot.normalize()
-        preferences = snapshot
 
         Task {
-            await preferencesStore.save(snapshot)
-            await MainActor.run {
-                modelDownloadMessage = "Using \(WhisperModelCatalog.title(for: modelID))."
-                status = "Using \(WhisperModelCatalog.title(for: modelID))."
-            }
+            guard await commitModelSelection(snapshot, failurePrefix: "Couldn't switch to \(title).") else { return }
+            showModelMessage("Using \(title).")
+            status = "Using \(title)."
             await rebuildRuntimeOrDefer()
         }
     }
@@ -841,8 +901,9 @@ final class DictationController: ObservableObject {
         guard !isIsolatedPreview else { return }
         guard activeModelDownloadID == nil else { return }
 
+        let title = WhisperModelCatalog.title(for: modelID)
         activeModelDownloadID = modelID
-        modelDownloadMessage = "Downloading \(WhisperModelCatalog.title(for: modelID))..."
+        showModelMessage("Downloading \(title)...")
 
         let bundledVADPath = BundledWhisperRuntime.resolvedPaths()?.vadModelPath
         let currentVADPath = FileManager.default.fileExists(atPath: preferences.dictation.vadModelPath)
@@ -851,39 +912,147 @@ final class DictationController: ObservableObject {
         let preferredVADSource = bundledVADPath ?? currentVADPath
 
         Task {
+            let installed: WhisperModelInstallResult
             do {
-                let installed = try await modelDownloadService.install(
+                installed = try await modelDownloadService.install(
                     modelID: modelID,
                     vadSourcePath: preferredVADSource
                 )
-
-                var snapshot = preferences
-                snapshot.dictation.updateModelPath(installed.modelPath)
-                if let installedVADPath = installed.vadModelPath {
-                    snapshot.dictation.vadModelPath = installedVADPath
-                }
-                snapshot.normalize()
-
-                await preferencesStore.save(snapshot)
-
-                await MainActor.run {
-                    preferences = snapshot
-                    activeModelDownloadID = nil
-                    modelDownloadMessage = "Downloaded \(WhisperModelCatalog.title(for: modelID)) and switched to it."
-                    status = "Downloaded \(WhisperModelCatalog.title(for: modelID)) and switched to it."
-                    lastError = ""
-                }
-
-                await rebuildRuntimeOrDefer()
             } catch {
-                await MainActor.run {
-                    activeModelDownloadID = nil
-                    modelDownloadMessage = ""
-                    status = "Model download failed."
-                    lastError = error.localizedDescription
-                }
+                let failure = Self.modelDownloadFailureMessage(for: modelID, error: error)
+                activeModelDownloadID = nil
+                showModelMessage(failure, isError: true)
+                status = "Model download failed."
+                reportModelError(failure)
+                return
             }
+
+            // Start from the settings as they are now, so a change saved during
+            // the download is kept.
+            var snapshot = preferences
+            let previousDictation = snapshot.dictation
+            snapshot.dictation.updateModelPath(installed.modelPath)
+            if let installedVADPath = installed.vadModelPath,
+               Self.vadModelPathIsDerived(previousDictation) {
+                snapshot.dictation.vadModelPath = installedVADPath
+            }
+            snapshot.normalize()
+
+            activeModelDownloadID = nil
+            guard await commitModelSelection(
+                snapshot,
+                failurePrefix: "Downloaded \(title), but couldn't switch to it."
+            ) else { return }
+            showModelMessage("Downloaded \(title) and switched to it.")
+            status = "Downloaded \(title) and switched to it."
+            await rebuildRuntimeOrDefer()
         }
+    }
+
+    /// Deletes a downloaded model. Removing the model in use switches to the
+    /// included model first, so dictation never points at a missing file.
+    func removeDownloadedModel(_ modelID: WhisperModelID) {
+        guard !isIsolatedPreview, activeModelDownloadID == nil else { return }
+        let title = WhisperModelCatalog.title(for: modelID)
+        guard let downloadedPath = WhisperModelLibrary.downloadedModelPath(
+            for: modelID,
+            locations: modelDownloadService.locations
+        ) else { return }
+        let isInUse = preferences.dictation.modelPath == downloadedPath
+
+        Task {
+            var switchedTo: String?
+            if isInUse {
+                let fallbackID = WhisperModelCatalog.bundledDefaultModel
+                guard let fallbackPath = modelDownloadService.locations.bundledModelPath(fallbackID) else {
+                    let failure = "Couldn't remove \(title) because it's in use and the included model isn't available."
+                    showModelMessage(failure, isError: true)
+                    reportModelError(failure)
+                    return
+                }
+                var snapshot = preferences
+                snapshot.dictation.updateModelPath(fallbackPath)
+                snapshot.normalize()
+                guard await commitModelSelection(snapshot, failurePrefix: "Couldn't remove \(title).") else { return }
+                switchedTo = WhisperModelCatalog.title(for: fallbackID)
+                await rebuildRuntimeOrDefer()
+            }
+
+            do {
+                try await modelDownloadService.removeDownloadedModel(modelID)
+            } catch {
+                let failure = "Couldn't remove \(title). \(error.localizedDescription)"
+                showModelMessage(failure, isError: true)
+                reportModelError(failure)
+                return
+            }
+            let message = switchedTo.map { "Removed \(title) and switched to \($0)." } ?? "Removed \(title)."
+            showModelMessage(message)
+            status = message
+        }
+    }
+
+    /// A voice-detection path the user didn't choose: empty, or the default
+    /// that sits next to the selected model.
+    static func vadModelPathIsDerived(_ dictation: AppPreferences.Dictation) -> Bool {
+        dictation.vadModelPath.isEmpty
+            || dictation.vadModelPath == WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: dictation.modelPath)
+    }
+
+    /// Applies a model change at once and saves it. If the save fails, the
+    /// previous model stays selected and the failure is shown with the model controls.
+    private func commitModelSelection(_ snapshot: AppPreferences, failurePrefix: String) async -> Bool {
+        let previous = preferences
+        preferences = snapshot
+        switch await preferencesStore.save(snapshot) {
+        case .success:
+            if !lastModelError.isEmpty, lastError == lastModelError {
+                lastError = ""
+            }
+            lastModelError = ""
+            return true
+        case .failure(let error):
+            if preferences == snapshot {
+                preferences = previous
+            }
+            let failure = "\(failurePrefix) \(error.localizedDescription)"
+            showModelMessage(failure, isError: true)
+            status = "Settings couldn't be saved."
+            reportModelError(failure)
+            return false
+        }
+    }
+
+    private func reportModelError(_ message: String) {
+        lastModelError = message
+        reportError(message, fixedIn: .engine)
+    }
+
+    private func reportError(_ message: String, fixedIn section: SettingsSection) {
+        lastError = message
+        lastErrorTarget = ErrorRecoveryTarget(message: message, section: section)
+    }
+
+    /// The Settings page that "Review settings" opens for the current problems.
+    var recoverySection: SettingsSection {
+        SettingsRecovery.section(for: .init(
+            microphone: microphonePermissionStatus,
+            accessibility: accessibilityPermissionStatus,
+            inputMonitoring: inputMonitoringPermissionStatus,
+            lastError: lastError,
+            lastErrorTarget: lastErrorTarget,
+            hotkeyMessage: hotkeyRegistrationMessage
+        ))
+    }
+
+    /// Shown next to the control that started the download, in Settings and onboarding.
+    static func modelDownloadFailureMessage(for modelID: WhisperModelID, error: Error) -> String {
+        "Couldn't download \(WhisperModelCatalog.title(for: modelID)). \(error.localizedDescription) Your current model is still in use."
+    }
+
+    private func showModelMessage(_ message: String, isError: Bool = false) {
+        modelDownloadMessage = message
+        modelDownloadMessageIsError = isError
     }
 
     func requestMicrophonePermission() {
@@ -932,11 +1101,50 @@ final class DictationController: ObservableObject {
         PermissionDiagnostics.revealCurrentAppInFinder()
     }
 
-    func refreshPermissionStatuses() {
+    /// Runs a short real transcription with the given settings through
+    /// separately created engines. The warm runtime, any dictation, History,
+    /// and Insights are left untouched.
+    func runSetupCheck(preferences draft: AppPreferences) async -> [WhisperSetupCheckStage] {
+        if isIsolatedPreview {
+            return [.init(title: "Setup check", outcome: .skipped, detail: "Unavailable in preview.")]
+        }
+        guard recordingStateMachine.state == .idle,
+              activeStartTask == nil,
+              completionTasks.isEmpty,
+              !sessionCleanupStartGate.isCleanupInProgress
+        else {
+            return [.init(title: "Setup check", outcome: .skipped, detail: "Finish the current dictation, then try again.")]
+        }
+
+        var snapshot = draft
+        snapshot.normalize()
+        let engines = DictationRuntimeFactory(snapshot: snapshot, clipboardService: clipboardService)
+            .makeSetupCheckEngines()
+        return await WhisperSetupSelfTest.run(.init(
+            microphoneAllowed: permissionStatusReader().microphone == .granted,
+            modelPath: snapshot.dictation.modelPath,
+            vadEnabled: snapshot.dictation.vadEnabled,
+            vadModelPath: snapshot.dictation.vadModelPath,
+            mainEngine: engines.main,
+            toolEngine: engines.tool
+        ))
+    }
+
+    /// Reads permission status. The hotkey monitor is reinstalled only while
+    /// idle; on app activation only when a shortcut permission changed or the
+    /// last registration failed.
+    func refreshPermissionStatuses(reinstallHotkeysOnlyIfChanged: Bool = false) {
         guard !isIsolatedPreview else { return }
-        microphonePermissionStatus = PermissionDiagnostics.microphoneStatus()
-        accessibilityPermissionStatus = PermissionDiagnostics.accessibilityStatus()
-        inputMonitoringPermissionStatus = PermissionDiagnostics.inputMonitoringStatus()
+        let previousShortcutAccess = (accessibilityPermissionStatus, inputMonitoringPermissionStatus)
+        let current = permissionStatusReader()
+        microphonePermissionStatus = current.microphone
+        accessibilityPermissionStatus = current.accessibility
+        inputMonitoringPermissionStatus = current.inputMonitoring
+
+        let shortcutAccessChanged = previousShortcutAccess != (current.accessibility, current.inputMonitoring)
+        if reinstallHotkeysOnlyIfChanged, !shortcutAccessChanged, hotkeyRegistrationMessage.isEmpty {
+            return
+        }
 
         // If permissions changed while app was running, reinstall monitors/hotkeys.
         if recordingStateMachine.state == .idle {
@@ -2366,29 +2574,73 @@ final class DictationController: ObservableObject {
         await unloadRetainedRuntimeForSystemEvent()
     }
 
-    private func applyLaunchAtLoginPreference(requestedPreference: Bool, userInitiated: Bool) {
-        guard systemIntegrationsEnabled else { return }
+    /// Registers or unregisters the login item when the user changed the
+    /// setting, and returns what macOS reports, so On is saved only after
+    /// registration succeeds.
+    private func applyLaunchAtLoginChange(requestedPreference: Bool, previousPreference: Bool) -> Bool {
+        guard let launchAtLoginService else { return requestedPreference }
         let decision = LaunchAtLoginMutationPolicy.decision(
-            currentPreference: launchAtLoginServicePreference,
+            systemStatus: launchAtLoginService.status,
             requestedPreference: requestedPreference,
-            userInitiated: userInitiated
+            previousPreference: previousPreference
         )
+        guard case .setEnabled(let enabled) = decision else {
+            return requestedPreference
+        }
 
-        switch decision {
-        case .skip:
+        var errorDescription: String?
+        do {
+            try launchAtLoginService.setEnabled(enabled)
+        } catch {
+            errorDescription = error.localizedDescription
+        }
+        let outcome = LaunchAtLoginMutationPolicy.outcome(
+            requestedPreference: requestedPreference,
+            statusAfter: launchAtLoginService.status,
+            errorDescription: errorDescription
+        )
+        showLaunchAtLoginNotice(outcome.notice, requestedPreference: requestedPreference)
+        return outcome.preference
+    }
+
+    /// Reads the login item from macOS, which the user can change in System
+    /// Settings at any time, and saves the setting when it no longer matches.
+    func refreshLaunchAtLoginStatus() async {
+        guard !isIsolatedPreview, let launchAtLoginService else { return }
+        let status = launchAtLoginService.status
+        launchAtLoginNeedsApproval = status == .requiresApproval
+        if !launchAtLoginNeedsApproval, launchAtLoginWarning == Self.launchAtLoginApprovalMessage {
             launchAtLoginWarning = ""
-        case .setEnabled(let enabled):
-            do {
-                try launchAtLoginService.setEnabled(enabled)
-                launchAtLoginServicePreference = enabled
-                launchAtLoginWarning = ""
-            } catch {
-                launchAtLoginWarning = LaunchAtLoginMutationPolicy.warningMessage(
-                    requestedPreference: requestedPreference,
-                    userInitiated: userInitiated,
-                    errorDescription: error.localizedDescription
-                ) ?? ""
-            }
+        }
+        guard preferences.general.launchAtLoginEnabled != status.isRegistered else { return }
+
+        var snapshot = preferences
+        snapshot.general.launchAtLoginEnabled = status.isRegistered
+        preferences = snapshot
+        if case .success = await preferencesStore.save(snapshot) {
+            savedLaunchAtLoginPreference = status.isRegistered
+        }
+    }
+
+    func openLoginItemsSettings() {
+        guard !isIsolatedPreview else { return }
+        launchAtLoginService?.openLoginItemsSettings()
+    }
+
+    static let launchAtLoginApprovalMessage =
+        "macOS needs your approval before Steno can open at login. Turn on Steno in Login Items."
+
+    private func showLaunchAtLoginNotice(_ notice: LaunchAtLoginNotice?, requestedPreference: Bool) {
+        launchAtLoginNeedsApproval = notice == .needsApproval
+        switch notice {
+        case nil:
+            launchAtLoginWarning = ""
+        case .needsApproval:
+            launchAtLoginWarning = Self.launchAtLoginApprovalMessage
+        case .failed(let reason):
+            let action = requestedPreference ? "turn on" : "turn off"
+            launchAtLoginWarning = "Steno couldn't \(action) launch at login."
+                + (reason.map { " \($0)" } ?? " macOS didn't accept the change.")
         }
     }
 
@@ -2400,15 +2652,21 @@ final class DictationController: ObservableObject {
     }
 
     private func validateWhisperPaths() {
-        let cliExists = FileManager.default.fileExists(atPath: preferences.dictation.whisperCLIPath)
-        let modelExists = FileManager.default.fileExists(atPath: preferences.dictation.modelPath)
+        if let warning = Self.startupPathWarning(
+            cliExists: FileManager.default.fileExists(atPath: preferences.dictation.whisperCLIPath),
+            modelExists: FileManager.default.fileExists(atPath: preferences.dictation.modelPath)
+        ) {
+            status = warning
+        }
+    }
 
-        if !cliExists && !modelExists {
-            status = "whisper-cli and model not found. Check Settings \u{2192} Engine."
-        } else if !cliExists {
-            status = "whisper-cli not found. Check Settings \u{2192} Engine."
-        } else if !modelExists {
-            status = "Model file not found. Check Settings \u{2192} Engine."
+    static func startupPathWarning(cliExists: Bool, modelExists: Bool) -> String? {
+        let location = "Check Settings \u{2192} Speech model."
+        switch (cliExists, modelExists) {
+        case (true, true): return nil
+        case (false, false): return "The transcription tool and speech model weren't found. \(location)"
+        case (false, true): return "The transcription tool wasn't found. \(location)"
+        case (true, false): return "The speech model file wasn't found. \(location)"
         }
     }
 
@@ -2694,7 +2952,25 @@ private struct DictationRuntimeFactory {
         SnippetService(snippets: snapshot.snippets)
     }
 
-    static func makeTranscriptionEngine(settings: TranscriptionEngineSettings) -> any TranscriptionEngine {
+    /// Separate engines for the Speech model setup check. The main engine's
+    /// fallback refuses, so a helper failure is reported rather than hidden.
+    /// They never share the controller's engine.
+    func makeSetupCheckEngines() -> (main: (any TranscriptionEngine)?, tool: any TranscriptionEngine) {
+        let settings = TranscriptionEngineSettings(snapshot: snapshot)
+        let main = settings.retainedHelperPath != nil
+            ? Self.makeTranscriptionEngine(
+                settings: settings,
+                retainedFallback: WhisperSetupSelfTest.RefusingFallbackEngine()
+            )
+            : nil
+        return (main, Self.makeTranscriptionEngine(settings: settings, includeRetained: false))
+    }
+
+    static func makeTranscriptionEngine(
+        settings: TranscriptionEngineSettings,
+        retainedFallback: (any TranscriptionEngine)? = nil,
+        includeRetained: Bool = true
+    ) -> any TranscriptionEngine {
         let modelPath = URL(fileURLWithPath: settings.modelPath)
         let extraArgs = WhisperRuntimeConfiguration.additionalArguments(
             threadCount: settings.threadCount,
@@ -2711,7 +2987,7 @@ private struct DictationRuntimeFactory {
             )
         )
 
-        guard let helperPath = settings.retainedHelperPath else {
+        guard includeRetained, let helperPath = settings.retainedHelperPath else {
             return fallback
         }
 
@@ -2732,7 +3008,7 @@ private struct DictationRuntimeFactory {
                 beamSize: 5,
                 bestOf: 5
             ),
-            fallback: fallback
+            fallback: retainedFallback ?? fallback
         )
     }
 

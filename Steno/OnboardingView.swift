@@ -217,10 +217,6 @@ struct OnboardingView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            guard !controller.isIsolatedPreview else { return }
-            controller.refreshPermissionStatuses()
-        }
     }
 
     // MARK: - Step 3: Whisper Setup
@@ -373,9 +369,10 @@ struct OnboardingView: View {
             }
 
             if !controller.modelDownloadMessage.isEmpty {
-                Text(controller.modelDownloadMessage)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.textSecondary)
+                ModelActionMessage(
+                    message: controller.modelDownloadMessage,
+                    isError: controller.modelDownloadMessageIsError
+                )
             }
         }
         .cardStyle()
@@ -427,7 +424,6 @@ struct OnboardingView: View {
                 .buttonStyle(.bordered)
                 .keyboardShortcut("[", modifiers: .command)
                 .help("Previous step (Command-[)")
-                .accessibilityLabel("Go to previous step")
             }
 
             Spacer()
@@ -438,7 +434,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.bordered)
                 .help("Continue setup without completing this step")
-                .accessibilityLabel("Set up \(currentStep.name.lowercased()) later")
+                .accessibilityLabel("Set up later, skipping \(currentStep.name.lowercased())")
             }
 
             if currentStep == .featureTour {
@@ -451,7 +447,7 @@ struct OnboardingView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(StenoDesign.theme(for: controller.preferences).accent)
                 .keyboardShortcut(.defaultAction)
-                .accessibilityLabel("Finish onboarding and start using Steno")
+                .accessibilityLabel("Open Steno and finish setup")
             } else {
                 Button {
                     goForward()

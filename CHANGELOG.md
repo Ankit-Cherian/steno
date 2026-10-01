@@ -58,6 +58,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Macs with an M1, M2 or M3 Ultra chip now get a speech model recommendation, and an M3 Ultra is no longer shown as a base M3.
 - Quitting Steno immediately after releasing the dictation key no longer leaves media that Steno paused still paused.
 - When a media player is slow to confirm a pause, transcription now starts without waiting for it, up to a second sooner on short dictations. If the player then confirms the pause, Steno still resumes it.
+- Moving Steno after its first launch, for example from Downloads to Applications, no longer switches a downloaded speech model back to the included Small model. Only the path that stopped working is repaired, and a custom voice-detection model is kept.
+- Model downloads are now checked against the published file before they are installed. A download that doesn't match, such as a page returned by a network filter, is deleted, the current model stays in use, and Steno says what happened.
+- A failed model download now shows the reason next to the Download button, in Settings and during setup.
+- Downloading a model no longer replaces a voice-detection model you chose yourself.
+- Choosing or downloading a model no longer reports that Steno switched to it when the change couldn't be saved. The current model stays in use and the reason is shown with the model controls.
+- Appearance changes that can't be saved are now reported on the Appearance page instead of failing silently.
+- When a model download finishes while Settings has unsaved edits, the locked Save now explains that the download changed the saved speech model.
+- Downloaded models can now be removed or downloaded again from Settings > Speech model. Removing the model in use switches to the included Small model first.
+- Permission status now updates when you return to Steno after changing access in System Settings, and a hands-free key that failed for missing access is set up again without Check again or a relaunch.
+- Review settings on the Dictate tab now opens the page that fixes the problem, such as Permissions for missing Accessibility or Input Monitoring access and Speech model for a model problem. Each Open Settings button opens the matching list in Privacy & Security.
+- Launch at login is now saved as On only after macOS accepts it. If registration fails, the setting stays Off and Settings says why. If macOS needs your approval, Settings says so and offers to open Login Items. Turning Steno off in Login Items is now reflected in Settings.
+- Test setup in Settings > Speech model now transcribes a short test clip with the main engine and the fallback tool and reports each step, instead of only checking that the tool starts. It doesn't affect a dictation in progress or add anything to History or Insights.
+- The General settings control for the setup guide now says that the guide opens when you save, rather than "on next launch".
+- A missing voice-detection model now shows a plain instruction, with a button to use the included model, instead of a developer command. A missing speech model or transcription tool at launch is now reported in Last activity instead of being replaced at once, and points to Settings > Speech model.
+- Model buttons in Settings now name their model for VoiceOver and Voice Control, and the setup guide's Back, Set up later and Open Steno buttons can be activated by their visible names.
 
 ## [1.0.0] - 2026-09-17
 

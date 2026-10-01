@@ -68,9 +68,16 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
 /// Keeps edits local until the user applies them and rejects stale overwrites.
 struct SettingsDraftState {
+    enum ConflictCause: Equatable {
+        /// Only the speech model changed, which happens when a download finishes.
+        case modelChange
+        case externalChange
+    }
+
     private(set) var preferences: AppPreferences
     private(set) var savedPreferences: AppPreferences
-    private(set) var hasConflictingUpdate = false
+    private(set) var conflictCause: ConflictCause?
+    var hasConflictingUpdate: Bool { conflictCause != nil }
 
     init(saved preferences: AppPreferences) {
         self.preferences = preferences
@@ -80,7 +87,7 @@ struct SettingsDraftState {
     mutating func edit(_ updatedPreferences: AppPreferences) {
         preferences = updatedPreferences
         if preferences == savedPreferences {
-            hasConflictingUpdate = false
+            conflictCause = nil
         }
     }
 
@@ -88,13 +95,13 @@ struct SettingsDraftState {
     mutating func restoreUnsaved(_ unsavedPreferences: AppPreferences, saved: AppPreferences) {
         preferences = unsavedPreferences
         savedPreferences = saved
-        hasConflictingUpdate = false
+        conflictCause = nil
     }
 
     mutating func reload(_ updatedPreferences: AppPreferences) {
         preferences = updatedPreferences
         savedPreferences = updatedPreferences
-        hasConflictingUpdate = false
+        conflictCause = nil
     }
 
     mutating func reconcile(_ updatedPreferences: AppPreferences) {
@@ -107,13 +114,23 @@ struct SettingsDraftState {
         previousWithUpdatedAppearance.appearance = updatedPreferences.appearance
         if previousWithUpdatedAppearance == updatedPreferences {
             preferences.appearance = updatedPreferences.appearance
+        } else if Self.onlyModelChanged(from: savedPreferences, to: updatedPreferences),
+                  conflictCause != .externalChange {
+            conflictCause = .modelChange
         } else {
-            hasConflictingUpdate = true
+            conflictCause = .externalChange
         }
         savedPreferences = updatedPreferences
         if preferences == savedPreferences {
-            hasConflictingUpdate = false
+            conflictCause = nil
         }
+    }
+
+    private static func onlyModelChanged(from old: AppPreferences, to new: AppPreferences) -> Bool {
+        var withNewModel = old
+        withNewModel.dictation.modelPath = new.dictation.modelPath
+        withNewModel.dictation.vadModelPath = new.dictation.vadModelPath
+        return withNewModel == new
     }
 }
 
@@ -160,6 +177,7 @@ struct SettingsView: View {
 
         }
         .onAppear {
+            Task { await controller.refreshLaunchAtLoginStatus() }
             guard !didLoad else { return }
             draftState.reload(controller.preferences)
             didLoad = true
@@ -174,7 +192,7 @@ struct SettingsView: View {
             content: settingsContent(theme: theme),
             footer: conditionalFooter(theme: theme),
             theme: theme,
-            showsFooter: selectedSection != .appearance || preferencesDraft != controller.preferences
+            showsFooter: showsFooter
         )
     }
 
@@ -188,9 +206,17 @@ struct SettingsView: View {
         }
     }
 
+    /// Appearance saves as it changes, so its page shows the footer only for
+    /// pending edits or a failed save.
+    private var showsFooter: Bool {
+        selectedSection != .appearance
+            || preferencesDraft != controller.preferences
+            || !controller.settingsSaveError.isEmpty
+    }
+
     @ViewBuilder
     private func conditionalFooter(theme: StenoTheme) -> some View {
-        if selectedSection != .appearance || preferencesDraft != controller.preferences {
+        if showsFooter {
             footer(theme: theme)
         }
     }
@@ -263,7 +289,9 @@ struct SettingsView: View {
         case .general:
             GeneralSettingsSection(
                 preferences: preferencesBinding,
-                launchAtLoginWarning: controller.launchAtLoginWarning
+                launchAtLoginWarning: controller.launchAtLoginWarning,
+                launchAtLoginNeedsApproval: controller.launchAtLoginNeedsApproval,
+                onOpenLoginItems: { controller.openLoginItemsSettings() }
             )
         }
     }
@@ -284,10 +312,25 @@ struct SettingsView: View {
     }
 
     private func footerStatus(theme: StenoTheme) -> some View {
-        Text(hasConflictingUpdate ? "Settings changed elsewhere. Discard to reload before saving." : preferencesDraft == controller.preferences ? "No pending changes" : controller.settingsSaveError.isEmpty ? "You have unsaved changes" : "Save failed. \(controller.settingsSaveError)")
-            .font(.system(size: preferencesDraft == controller.preferences && !hasConflictingUpdate ? 11 : 12))
+        Text(footerStatusText)
+            .font(.system(size: preferencesDraft == controller.preferences && controller.settingsSaveError.isEmpty && !hasConflictingUpdate ? 11 : 12))
             .foregroundStyle(theme.textDim)
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var footerStatusText: String {
+        switch draftState.conflictCause {
+        case .modelChange:
+            return "A model download changed the saved speech model. Discard to reload, then make your changes again."
+        case .externalChange:
+            return "Settings changed elsewhere. Discard to reload before saving."
+        case nil:
+            break
+        }
+        if !controller.settingsSaveError.isEmpty {
+            return "Save failed. \(controller.settingsSaveError)"
+        }
+        return preferencesDraft == controller.preferences ? "No pending changes" : "You have unsaved changes"
     }
 
     private func footerActions(theme: StenoTheme) -> some View {

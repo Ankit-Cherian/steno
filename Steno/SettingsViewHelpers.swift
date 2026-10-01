@@ -170,3 +170,26 @@ func settingsTextField(_ title: String, prompt: String, text: Binding<String>) -
             .accessibilityLabel(title)
     }
 }
+
+/// Reports the outcome of a model action next to the control that started it.
+struct ModelActionMessage: View {
+    let message: String
+    let isError: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: StenoDesign.xs) {
+            if isError {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(StenoDesign.caption())
+                    .accessibilityHidden(true)
+            }
+            Text(message)
+                .font(StenoDesign.caption())
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .foregroundStyle(isError ? StenoDesign.error : StenoDesign.textSecondary)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(isError ? "Error: \(message)" : message)
+    }
+}

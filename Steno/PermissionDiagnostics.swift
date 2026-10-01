@@ -3,6 +3,21 @@ import AVFoundation
 import ApplicationServices
 import Foundation
 
+struct PermissionStatusSnapshot: Equatable {
+    var microphone: PermissionDiagnostics.AccessStatus
+    var accessibility: PermissionDiagnostics.AccessStatus
+    var inputMonitoring: PermissionDiagnostics.AccessStatus
+
+    @MainActor
+    static func current() -> PermissionStatusSnapshot {
+        .init(
+            microphone: PermissionDiagnostics.microphoneStatus(),
+            accessibility: PermissionDiagnostics.accessibilityStatus(),
+            inputMonitoring: PermissionDiagnostics.inputMonitoringStatus()
+        )
+    }
+}
+
 struct PermissionDiagnostics {
     enum AccessStatus: String {
         case granted = "Granted"
@@ -49,16 +64,38 @@ struct PermissionDiagnostics {
         return false
     }
 
+    /// The System Settings list that grants each permission.
+    enum PrivacyPane: CaseIterable {
+        case microphone
+        case accessibility
+        case inputMonitoring
+
+        var settingsURL: URL {
+            let anchor = switch self {
+            case .microphone: "Privacy_Microphone"
+            case .accessibility: "Privacy_Accessibility"
+            case .inputMonitoring: "Privacy_ListenEvent"
+            }
+            return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)")!
+        }
+    }
+
     static func openAccessibilitySettings() {
-        openPrivacySecuritySettings()
+        openPrivacyPane(.accessibility)
     }
 
     static func openMicrophoneSettings() {
-        openPrivacySecuritySettings()
+        openPrivacyPane(.microphone)
     }
 
     static func openInputMonitoringSettings() {
-        openPrivacySecuritySettings()
+        openPrivacyPane(.inputMonitoring)
+    }
+
+    static func openPrivacyPane(_ pane: PrivacyPane) {
+        if !NSWorkspace.shared.open(pane.settingsURL) {
+            openPrivacySecuritySettings()
+        }
     }
 
     static func revealCurrentAppInFinder() {

@@ -5,15 +5,33 @@ struct EngineSettingsSection: View {
     @Binding var preferences: AppPreferences
     let controller: DictationController
     var hasUnsavedChanges = false
-    @State private var testResult: String?
-    @State private var testResultIsError = false
+    @State private var setupCheckStages: [WhisperSetupCheckStage] = []
     @State private var isTesting = false
+    @State private var showsAdvanced = false
     private let compatibilityService = try? WhisperCompatibilityService.bundled()
+
+    init(preferences: Binding<AppPreferences>, controller: DictationController, hasUnsavedChanges: Bool = false) {
+        _preferences = preferences
+        self.controller = controller
+        self.hasUnsavedChanges = hasUnsavedChanges
+    }
+
+    #if DEBUG
+    init(
+        preferences: Binding<AppPreferences>,
+        controller: DictationController,
+        previewSetupCheckStages: [WhisperSetupCheckStage]
+    ) {
+        self.init(preferences: preferences, controller: controller)
+        _setupCheckStages = State(initialValue: previewSetupCheckStages)
+        _showsAdvanced = State(initialValue: true)
+    }
+    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             settingsCard("Available models") { modelLibraryPanel }
-            DisclosureGroup("Advanced setup and diagnostics") {
+            DisclosureGroup("Advanced setup and diagnostics", isExpanded: $showsAdvanced) {
                 VStack(alignment: .leading, spacing: 14) {
                     TextField("whisper-cli path", text: $preferences.dictation.whisperCLIPath)
                         .textFieldStyle(.roundedBorder)
@@ -52,36 +70,59 @@ struct EngineSettingsSection: View {
                             .font(.system(.body, design: .monospaced))
                             .truncationMode(.middle)
                         if let error = vadModelPathError {
-                            HStack(spacing: StenoDesign.xs) {
+                            HStack(alignment: .firstTextBaseline, spacing: StenoDesign.xs) {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .font(StenoDesign.caption())
+                                    .accessibilityHidden(true)
                                 Text(error)
                                     .font(StenoDesign.caption())
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let includedVADPath {
+                                    Spacer(minLength: StenoDesign.sm)
+                                    Button("Use included model") {
+                                        preferences.dictation.vadModelPath = includedVADPath
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .fixedSize()
+                                }
                             }
                             .foregroundStyle(StenoDesign.warning)
                         }
                     }
 
-                    HStack(spacing: StenoDesign.sm) {
-                        Button {
-                            runTestSetup()
-                        } label: {
-                            if isTesting {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
-                            } else {
-                                Text("Test setup")
+                    VStack(alignment: .leading, spacing: StenoDesign.sm) {
+                        HStack(spacing: StenoDesign.sm) {
+                            Button {
+                                runTestSetup()
+                            } label: {
+                                if isTesting {
+                                    HStack(spacing: StenoDesign.xs) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
+                                            .accessibilityHidden(true)
+                                        Text("Testing…")
+                                    }
+                                } else {
+                                    Text("Test setup")
+                                }
                             }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isTesting || whisperCLIPathError != nil || modelPathError != nil)
-                        .accessibilityLabel("Test whisper setup")
+                            .buttonStyle(.bordered)
+                            .disabled(isTesting || controller.isRecording || whisperCLIPathError != nil || modelPathError != nil)
+                            .accessibilityLabel(isTesting ? "Testing setup" : "Test setup")
 
-                        if let result = testResult {
-                            Text(result)
+                            Text("Transcribes a one-second test clip with these settings.")
                                 .font(StenoDesign.caption())
-                                .foregroundStyle(testResultIsError ? StenoDesign.error : StenoDesign.success)
+                                .foregroundStyle(StenoDesign.textSecondary)
+                        }
+
+                        if !setupCheckStages.isEmpty {
+                            VStack(alignment: .leading, spacing: StenoDesign.xs) {
+                                ForEach(Array(setupCheckStages.enumerated()), id: \.offset) { _, stage in
+                                    setupCheckRow(stage)
+                                }
+                            }
                         }
                     }
                 }
@@ -146,6 +187,10 @@ struct EngineSettingsSection: View {
 
                     Spacer()
 
+                    if option.source == .downloaded {
+                        downloadedModelMenu(for: option)
+                    }
+
                     if option.isActive && controller.activeModelDownloadID != option.modelID {
                         Label("Using", systemImage: "checkmark")
                             .font(.system(size: 12, weight: .medium))
@@ -165,6 +210,11 @@ struct EngineSettingsSection: View {
                         }
                         .buttonStyle(.bordered)
                         .fixedSize()
+                        .accessibilityLabel(
+                            controller.activeModelDownloadID == option.modelID
+                                ? "Downloading \(option.title)"
+                                : "\(buttonLabel(for: option)) \(option.title)"
+                        )
                         .disabled(hasUnsavedChanges || option.isActive || (controller.activeModelDownloadID != nil && controller.activeModelDownloadID != option.modelID))
                     }
                 }
@@ -175,11 +225,33 @@ struct EngineSettingsSection: View {
             }
 
             if !controller.modelDownloadMessage.isEmpty {
-                Text(controller.modelDownloadMessage)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.textSecondary)
+                ModelActionMessage(
+                    message: controller.modelDownloadMessage,
+                    isError: controller.modelDownloadMessageIsError
+                )
             }
         }
+    }
+
+    private func downloadedModelMenu(for option: WhisperModelOption) -> some View {
+        Menu {
+            Button("Download again") {
+                controller.downloadWhisperModel(option.modelID)
+            }
+            Button("Remove", role: .destructive) {
+                controller.removeDownloadedModel(option.modelID)
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 14))
+                .foregroundStyle(StenoDesign.textSecondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(hasUnsavedChanges || controller.activeModelDownloadID != nil)
+        .help("Download \(option.title) again or remove it")
+        .accessibilityLabel("More actions for \(option.title)")
     }
 
     @ViewBuilder
@@ -250,12 +322,31 @@ struct EngineSettingsSection: View {
 
     private var vadModelPathError: String? {
         guard !controller.isIsolatedPreview else { return nil }
-        let path = preferences.dictation.vadModelPath
+        return Self.vadModelPathMessage(
+            path: preferences.dictation.vadModelPath,
+            fileExists: FileManager.default.fileExists(atPath:),
+            includedModelAvailable: includedVADPath != nil
+        )
+    }
+
+    private var includedVADPath: String? {
+        guard !controller.isIsolatedPreview else { return nil }
+        return BundledWhisperRuntime.resolvedPaths()?.vadModelPath
+    }
+
+    static func vadModelPathMessage(
+        path: String,
+        fileExists: (String) -> Bool,
+        includedModelAvailable: Bool
+    ) -> String? {
+        let fix = includedModelAvailable
+            ? "Enter the path to a voice-detection model file, or use the included one."
+            : "Enter the path to a voice-detection model file, or turn off voice activity detection."
         guard !path.isEmpty else {
-            return "VAD model path is empty. Download with: ./models/download-vad-model.sh silero-v6.2.0"
+            return "No voice-detection model is set. \(fix)"
         }
-        if FileManager.default.fileExists(atPath: path) { return nil }
-        return "VAD model not found. Dictation will work without it, but silence/noise suppression will be weaker. Download with: ./models/download-vad-model.sh silero-v6.2.0"
+        if fileExists(path) { return nil }
+        return "Voice-detection model not found. Dictation still works, but silence and background noise are filtered less. \(fix)"
     }
 
     private var compatibilityAssessment: WhisperCompatibilityAssessment? {
@@ -323,77 +414,56 @@ struct EngineSettingsSection: View {
         return "Download"
     }
 
-    private func runTestSetup() {
-        guard !controller.isIsolatedPreview else {
-            testResult = "Setup testing is unavailable in preview."
-            return
+    private func setupCheckRow(_ stage: WhisperSetupCheckStage) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: StenoDesign.xs) {
+            Image(systemName: setupCheckSymbol(stage.outcome))
+                .font(StenoDesign.caption())
+                .foregroundStyle(setupCheckColor(stage.outcome))
+                .accessibilityHidden(true)
+            Text(stage.title)
+                .font(StenoDesign.caption().weight(.medium))
+                .foregroundStyle(StenoDesign.textPrimary)
+            Text(stage.detail)
+                .font(StenoDesign.caption())
+                .foregroundStyle(stage.outcome == .failed ? StenoDesign.error : StenoDesign.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(stage.title), \(setupCheckOutcomeName(stage.outcome)). \(stage.detail)")
+    }
+
+    private func setupCheckSymbol(_ outcome: WhisperSetupCheckStage.Outcome) -> String {
+        switch outcome {
+        case .passed: return "checkmark.circle.fill"
+        case .failed: return "xmark.circle.fill"
+        case .skipped: return "minus.circle"
+        }
+    }
+
+    private func setupCheckColor(_ outcome: WhisperSetupCheckStage.Outcome) -> Color {
+        switch outcome {
+        case .passed: return StenoDesign.success
+        case .failed: return StenoDesign.error
+        case .skipped: return StenoDesign.textSecondary
+        }
+    }
+
+    private func setupCheckOutcomeName(_ outcome: WhisperSetupCheckStage.Outcome) -> String {
+        switch outcome {
+        case .passed: return "passed"
+        case .failed: return "failed"
+        case .skipped: return "skipped"
+        }
+    }
+
+    private func runTestSetup() {
         isTesting = true
-        testResult = nil
-
+        setupCheckStages = []
+        let draft = preferences
         Task {
-            // Check microphone permission
-            let micStatus = PermissionDiagnostics.microphoneStatus()
-            guard micStatus == .granted else {
-                await MainActor.run {
-                    testResult = "Microphone permission not granted."
-                    testResultIsError = true
-                    isTesting = false
-                }
-                return
-            }
-
-            // Test whisper-cli with --help
-            let cliPath = preferences.dictation.whisperCLIPath
-            let environment = WhisperRuntimeConfiguration.processEnvironment(
-                whisperCLIPath: cliPath,
-                modelPath: preferences.dictation.modelPath
-            )
-
-            do {
-                let result = try await ProcessRunner.run(
-                    executableURL: URL(fileURLWithPath: cliPath),
-                    arguments: ["--help"],
-                    environment: environment,
-                    standardOutput: FileHandle.nullDevice,
-                    standardError: nil
-                )
-                let success = result.terminationStatus == 0
-                let stderr = String(data: result.standardError, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                await MainActor.run {
-                    if success {
-                        testResult = "whisper-cli is working."
-                        testResultIsError = false
-                        // Auto-clear success after 3 seconds
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                            if testResult == "whisper-cli is working." {
-                                testResult = nil
-                            }
-                        }
-                    } else {
-                        if let stderr, !stderr.isEmpty {
-                            testResult = "whisper-cli exited with code \(result.terminationStatus): \(stderr)"
-                        } else {
-                            testResult = "whisper-cli exited with code \(result.terminationStatus)."
-                        }
-                        testResultIsError = true
-                    }
-                    isTesting = false
-                }
-            } catch is CancellationError {
-                await MainActor.run {
-                    testResult = "whisper-cli test cancelled."
-                    testResultIsError = true
-                    isTesting = false
-                }
-            } catch {
-                await MainActor.run {
-                    testResult = "Failed to run whisper-cli: \(error.localizedDescription)"
-                    testResultIsError = true
-                    isTesting = false
-                }
-            }
+            setupCheckStages = await controller.runSetupCheck(preferences: draft)
+            isTesting = false
         }
     }
 }

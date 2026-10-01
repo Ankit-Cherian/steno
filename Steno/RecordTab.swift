@@ -293,7 +293,7 @@ struct RecordTab: View {
     }
 
     private var recoveryAction: some View {
-        Button("Review settings") { onOpenSettings(needsMicrophone ? .permissions : .recording) }
+        Button("Review settings") { onOpenSettings(controller.recoverySection) }
             .buttonStyle(.bordered)
             .fixedSize()
     }
