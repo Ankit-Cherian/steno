@@ -223,7 +223,126 @@ func releasedPressReportsCaptureStartFailure() async {
     #expect(await coordinator.events == ["start.requested", "start.failed"])
 }
 
+// MARK: - Media and presses that end quickly
+
+@MainActor
+@Test("A 200 ms press that ends while media is being checked sends no Pause and no Play")
+func shortPressEndingDuringMediaCheckLeavesMediaAlone() async {
+    let events = ShortcutEventLog()
+    let media = ProbingTestMediaService(events: events)
+    let hotkey = FilteringHotkeyService()
+    let controller = makeTestDictationController(
+        hotkey: hotkey,
+        overlay: makeShortcutTestPresenter(),
+        mediaInterruption: media,
+        coordinator: ShortcutTestCoordinator(events: events)
+    )
+    defer { controller.teardown() }
+
+    hotkey.press([.option])
+    #expect(await waitForShortcutEvent("capture.start", in: events))
+    hotkey.holdPastConfirmationWindow()
+    // The media check has started, as it would about 150 ms into the press.
+    #expect(await waitForShortcutEvent("media.probe", in: events))
+    hotkey.press([], after: 0.05)
+    // Capture closes at key-up; the check then finishes.
+    #expect(await waitForShortcutEvent("capture.stop", in: events))
+    await media.finishProbe()
+    #expect(await waitForShortcutEvent("transcription.start", in: events))
+    #expect(await waitForShortcutCondition { controller.recordingLifecycleState == .idle })
+    try? await Task.sleep(for: .milliseconds(100))
+
+    let recorded = await events.snapshot()
+    #expect(!recorded.contains("media.pause"), "\(recorded)")
+    #expect(!recorded.contains("media.release"), "\(recorded)")
+}
+
+@MainActor
+@Test("A press that ends before the media check begins sends no Pause and no Play")
+func pressEndingBeforeMediaCheckLeavesMediaAlone() async {
+    let events = ShortcutEventLog()
+    let startGate = ShortcutGate()
+    let media = ProbingTestMediaService(events: events)
+    let hotkey = FilteringHotkeyService()
+    let coordinator = CaptureTestCoordinator(
+        result: InsertResult(status: .inserted, method: .accessibility, insertedText: "Words"),
+        startGate: startGate
+    )
+    let controller = makeTestDictationController(
+        hotkey: hotkey,
+        overlay: makeShortcutTestPresenter(),
+        mediaInterruption: media,
+        coordinator: coordinator
+    )
+    defer { controller.teardown() }
+
+    hotkey.press([.option])
+    #expect(await waitForShortcutCondition { await coordinator.events == ["start.requested"] })
+    hotkey.holdPastConfirmationWindow()
+    hotkey.press([], after: 0.05)
+    await startGate.open()
+    #expect(await waitForShortcutCondition { controller.lastTranscript == "Words" })
+    await media.finishProbe()
+    try? await Task.sleep(for: .milliseconds(100))
+
+    let recorded = await events.snapshot()
+    #expect(!recorded.contains("media.probe"), "\(recorded)")
+    #expect(!recorded.contains("media.pause"), "\(recorded)")
+    #expect(!recorded.contains("media.release"), "\(recorded)")
+}
+
+@MainActor
+@Test("A press held past the media check still pauses and later resumes media")
+func heldPressStillPausesMedia() async {
+    let events = ShortcutEventLog()
+    let media = ProbingTestMediaService(events: events)
+    let hotkey = FilteringHotkeyService()
+    let controller = makeTestDictationController(
+        hotkey: hotkey,
+        overlay: makeShortcutTestPresenter(),
+        mediaInterruption: media,
+        coordinator: ShortcutTestCoordinator(events: events)
+    )
+    defer { controller.teardown() }
+
+    hotkey.press([.option])
+    hotkey.holdPastConfirmationWindow()
+    #expect(await waitForShortcutEvent("media.probe", in: events))
+    await media.finishProbe()
+    #expect(await waitForShortcutEvent("media.pause", in: events))
+    hotkey.press([], after: 1)
+    #expect(await waitForShortcutEvent("media.release", in: events))
+}
+
 // MARK: - Test doubles
+
+/// Checks for playing media before pausing, like the production service, and
+/// sends no Pause when the begin call is cancelled during the check.
+@MainActor
+final class ProbingTestMediaService: MediaInterruptionService {
+    private let events: ShortcutEventLog
+    private let probeGate = ShortcutGate()
+
+    init(events: ShortcutEventLog) {
+        self.events = events
+    }
+
+    func finishProbe() async {
+        await probeGate.open()
+    }
+
+    func beginInterruption() async -> MediaInterruptionToken? {
+        await events.append("media.probe")
+        await probeGate.wait()
+        guard !Task.isCancelled else { return nil }
+        await events.append("media.pause")
+        return MediaInterruptionToken()
+    }
+
+    func endInterruption(token: MediaInterruptionToken) async {
+        await events.append("media.release")
+    }
+}
 
 actor CaptureTestCoordinator: DictationSessionCoordinating {
     private let result: InsertResult

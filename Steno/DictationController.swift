@@ -1405,9 +1405,12 @@ final class DictationController: ObservableObject {
 
                 // Capture always owns the opening words. Optional media detection
                 // and pausing runs only after the microphone is already recording.
-                // A press that turns out to be a keyboard shortcut never touches media.
-                if shouldPauseMedia, await pressConfirmation?.wait() ?? true {
-                    ownedMediaToken = await mediaInterruption.beginInterruption()
+                // A press that turns out to be a keyboard shortcut never touches media,
+                // and neither does one that has already ended.
+                if shouldPauseMedia,
+                   await pressConfirmation?.wait() ?? true,
+                   activeSessionGeneration == generation {
+                    ownedMediaToken = await beginMediaInterruption(whileHeld: pressConfirmation)
                 }
 
                 try Task.checkCancellation()
@@ -1507,6 +1510,24 @@ final class DictationController: ObservableObject {
         }
         Task { @MainActor in
             if await confirmation.wait() { present() }
+        }
+    }
+
+    /// Pauses media while the press is still held. A press that ends while
+    /// playing media is still being checked cancels the check, so a quick
+    /// press never pauses media only to resume it at once.
+    private func beginMediaInterruption(
+        whileHeld press: PressToTalkConfirmation?
+    ) async -> MediaInterruptionToken? {
+        guard let press else { return await mediaInterruption.beginInterruption() }
+        guard !press.hasEnded else { return nil }
+        let mediaInterruption = self.mediaInterruption
+        let begin = Task { @MainActor in await mediaInterruption.beginInterruption() }
+        press.onEnd { begin.cancel() }
+        return await withTaskCancellationHandler {
+            await begin.value
+        } onCancel: {
+            begin.cancel()
         }
     }
 
@@ -2481,15 +2502,34 @@ private extension CGRect {
 @MainActor
 private final class PressToTalkConfirmation {
     private(set) var isConfirmed = false
+    /// The press is over: the key was released, the press was discarded, or
+    /// its session was canceled.
+    private(set) var hasEnded = false
     private var isSettled = false
     private var waiters: [CheckedContinuation<Bool, Never>] = []
+    private var endHandlers: [() -> Void] = []
 
     func confirm() {
         settle(confirmed: true)
     }
 
+    /// Ends the press. An unconfirmed press settles as not a dictation.
     func release() {
         settle(confirmed: false)
+        guard !hasEnded else { return }
+        hasEnded = true
+        let handlers = endHandlers
+        endHandlers.removeAll()
+        handlers.forEach { $0() }
+    }
+
+    /// Runs `handler` when the press ends, or at once if it already has.
+    func onEnd(_ handler: @escaping () -> Void) {
+        if hasEnded {
+            handler()
+        } else {
+            endHandlers.append(handler)
+        }
     }
 
     /// Returns whether the press was confirmed.
