@@ -1423,9 +1423,21 @@ final class DictationController: ObservableObject {
 
     func refreshHistory() async {
         guard !isIsolatedPreview else { return }
-        let all = await historyStore.recent(limit: 1_000)
-        let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
-        recentEntries = all.filter { $0.createdAt >= thirtyDaysAgo }
+        recentEntries = await historyStore.recent(limit: 1_000)
+    }
+
+    /// Deletes every saved transcript. Insights totals are kept, as they are
+    /// when a single transcript is deleted.
+    func deleteAllHistory() async {
+        guard !isIsolatedPreview else { return }
+        do {
+            try await historyStore.deleteAll()
+            status = "History deleted."
+        } catch {
+            status = "Delete failed"
+            lastError = error.localizedDescription
+        }
+        await refreshHistory()
     }
 
     func refreshUsageAnalytics(

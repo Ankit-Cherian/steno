@@ -1,7 +1,7 @@
 import SwiftUI
 import StenoKit
 
-private enum HistoryFilter: String, CaseIterable, Identifiable {
+enum HistoryFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case inserted = "Inserted"
     case copied = "Copied"
@@ -16,6 +16,7 @@ struct HistoryTab: View {
     @State private var selectedFilter: HistoryFilter = .all
     @State private var selectedEntryID: UUID?
     @State private var entryToDelete: TranscriptEntry?
+    @State private var isConfirmingDeleteAll = false
     @FocusState private var searchFocused: Bool
 
     init(initialSelectedEntryID: UUID? = nil) {
@@ -28,6 +29,13 @@ struct HistoryTab: View {
             HStack(alignment: .firstTextBaseline) {
                 StenoPageTitle("History")
                 Spacer()
+                Button { isConfirmingDeleteAll = true } label: {
+                    Label("Delete all history…", systemImage: "trash")
+                }
+                .buttonStyle(StenoActionButtonStyle(theme: theme, tone: .soft))
+                .disabled(controller.recentEntries.isEmpty)
+                .help("Delete every saved transcript from this Mac")
+                .accessibilityIdentifier("history.deleteAll")
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 24)
@@ -58,6 +66,17 @@ struct HistoryTab: View {
         } message: {
             Text("This removes the saved transcript from this Mac. It does not remove text already inserted into another app.")
         }
+        .confirmationDialog(
+            "Delete all \(InsightsFormatting.count(controller.recentEntries.count, "transcript"))?",
+            isPresented: $isConfirmingDeleteAll
+        ) {
+            Button("Delete all history", role: .destructive) {
+                Task { await controller.deleteAllHistory() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes every saved transcript from this Mac. Insights totals are kept, and text already inserted into other apps isn't affected.")
+        }
     }
 
     @ViewBuilder
@@ -71,15 +90,25 @@ struct HistoryTab: View {
     }
 
     private var filteredEntries: [TranscriptEntry] {
-        controller.recentEntries.filter { entry in
+        Self.entries(controller.recentEntries, matching: searchQuery, filter: selectedFilter)
+    }
+
+    /// The History list: every kept entry with the chosen status whose text or
+    /// app name contains `query`.
+    static func entries(
+        _ entries: [TranscriptEntry],
+        matching query: String,
+        filter: HistoryFilter
+    ) -> [TranscriptEntry] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return entries.filter { entry in
             let matchesFilter: Bool
-            switch selectedFilter {
+            switch filter {
             case .all: matchesFilter = true
             case .inserted: matchesFilter = entry.insertionStatus == .inserted || entry.wasPasted
             case .copied: matchesFilter = entry.insertionStatus == .copiedOnly && !entry.wasPasted
             case .needsAttention: matchesFilter = entry.insertionStatus == .failed
             }
-            let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             return matchesFilter && (query.isEmpty || entry.cleanText.localizedCaseInsensitiveContains(query)
                 || entry.rawText.localizedCaseInsensitiveContains(query)
                 || StenoDesign.appDisplayName(for: entry.appBundleID).localizedCaseInsensitiveContains(query))
@@ -116,7 +145,7 @@ struct HistoryTab: View {
                 ForEach(HistoryFilter.allCases) { filter in Text(filter.rawValue).tag(filter) }
             }
             .padding(.horizontal, 16)
-            Text("\(filteredEntries.count) \(filteredEntries.count == 1 ? "transcript" : "transcripts") · newest first")
+            Text("\(InsightsFormatting.count(filteredEntries.count, "transcript")) · newest first")
                 .font(.system(size: 12)).foregroundStyle(theme.textDim)
                 .padding(.horizontal, 16)
 
@@ -263,7 +292,7 @@ struct HistoryTab: View {
     }
 
     private func detailMetadata(_ entry: TranscriptEntry, theme: StenoTheme) -> some View {
-        Text("\(entry.createdAt.formatted(date: .long, time: .shortened)) · \(transcriptText(entry).split(whereSeparator: \.isWhitespace).count) words · \(durationText(entry.durationMS))")
+        Text("\(entry.createdAt.formatted(date: .long, time: .shortened)) · \(InsightsFormatting.count(transcriptText(entry).split(whereSeparator: \.isWhitespace).count, "word")) in final text · \(durationText(entry.durationMS))")
             .font(.system(size: 11))
             .foregroundStyle(theme.textDim)
             .fixedSize(horizontal: false, vertical: true)

@@ -271,7 +271,7 @@ struct InsightsTab: View {
         [
             InsightMetric(
                 id: "words",
-                label: "Words dictated",
+                label: "Words spoken",
                 value: wordsValue(for: snapshot),
                 detail: wordsDetail(for: snapshot),
                 systemImage: "text.word.spacing"
@@ -353,19 +353,10 @@ struct InsightsTab: View {
     }
 
     private func durationDetail(for snapshot: UsageAnalyticsSnapshot) -> String {
-        if snapshot.estimatedDurationSessionCount > 0,
-           snapshot.unavailableDurationSessionCount > 0 {
-            let estimatedLabel = snapshot.estimatedDurationSessionCount == 1 ? "session" : "sessions"
-            let unavailableLabel = snapshot.unavailableDurationSessionCount == 1 ? "session" : "sessions"
-            return "\(snapshot.estimatedDurationSessionCount) \(estimatedLabel) estimated · \(snapshot.unavailableDurationSessionCount) \(unavailableLabel) unavailable"
-        }
-        if snapshot.unavailableDurationSessionCount > 0 {
-            return "\(snapshot.unavailableDurationSessionCount) sessions lack time"
-        }
-        if snapshot.estimatedDurationSessionCount > 0 {
-            return "\(snapshot.estimatedDurationSessionCount) imported durations estimated"
-        }
-        return "Measured capture time"
+        InsightsFormatting.durationDetail(
+            estimatedSessions: snapshot.estimatedDurationSessionCount,
+            unavailableSessions: snapshot.unavailableDurationSessionCount
+        )
     }
 
     private func wordsValue(for snapshot: UsageAnalyticsSnapshot) -> String {
@@ -374,8 +365,8 @@ struct InsightsTab: View {
 
     private func wordsDetail(for snapshot: UsageAnalyticsSnapshot) -> String {
         snapshot.estimatedCleanupSessionCount > 0
-            ? "Includes word counts recovered from imported history."
-            : ""
+            ? "Counted from recognized speech, including imported history."
+            : "Counted from recognized speech, before cleanup."
     }
 
     private func durationValue(for snapshot: UsageAnalyticsSnapshot) -> String {

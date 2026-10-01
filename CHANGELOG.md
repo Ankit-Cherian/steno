@@ -73,6 +73,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - The General settings control for the setup guide now says that the guide opens when you save, rather than "on next launch".
 - A missing voice-detection model now shows a plain instruction, with a button to use the included model, instead of a developer command. A missing speech model or transcription tool at launch is now reported in Last activity instead of being replaced at once, and points to Settings > Speech model.
 - Model buttons in Settings now name their model for VoiceOver and Voice Control, and the setup guide's Back, Set up later and Open Steno buttons can be activated by their visible names.
+- In time zones where daylight saving skips midnight, such as Cairo, Havana and Santiago, the Insights calendar no longer shows empty days or drops today, and the current streak and active days are counted correctly.
+- Insights and History now use the system's number and plural formatting, so counts read "1 session" instead of "1 sessions", large totals read "1M" instead of "1000K", and long totals show thousands separators. Insights labels its word count as words spoken, counted before cleanup, and History labels its count as words in the final text.
+- History now shows and searches every transcript it keeps, up to 1,000, instead of only the last 30 days, so older transcripts can be found and deleted. A new Delete all history action removes every saved transcript after confirming how many will be deleted; Insights totals are kept.
 
 ## [1.0.0] - 2026-09-17
 
