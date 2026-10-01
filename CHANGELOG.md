@@ -88,6 +88,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Delete all history now also removes the copies Steno kept when the History file couldn't be read in full, which could still hold deleted transcripts. The confirmation says so.
 - When both the live transcript path and its backup fail to transcribe a dictation, Steno now says the dictation couldn't be transcribed and suggests trying again or running Test setup, instead of a technical message.
 - Transcript files the backup transcription path left in the temporary folder after a crash or a force quit are now deleted the next time Steno starts, as recordings already were.
+- Releasing Option after a dictation was refused, for example with microphone access off, or after a recording stopped by itself, such as at the length limit, no longer replaces the explanation with "No active Option recording."
 
 ## [1.0.0] - 2026-09-17
 

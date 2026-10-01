@@ -346,10 +346,14 @@ func recordingLimitStopsAndTranscribes(handsFree: Bool) async {
     #expect(await events.count(of: "capture.cancel") == 0)
 
     if !handsFree {
-        // The late key-up belongs to a press that has already finished.
+        // The late key-up belongs to a press that has already finished, and
+        // leaves the message about how that dictation ended.
+        let statusBeforeRelease = controller.status
         hotkey.press([])
         try? await Task.sleep(for: .milliseconds(50))
         #expect(await events.count(of: "transcription.start") == 1)
+        #expect(controller.status == statusBeforeRelease)
+        #expect(controller.status != "No active Option recording.")
     }
 }
 

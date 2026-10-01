@@ -148,6 +148,24 @@ func deniedMicrophoneBlocksOptionHold() async {
     #expect(await coordinator.events.isEmpty)
     #expect(controller.recordingLifecycleState == .idle)
     #expect(controller.lastError == microphoneOffMessage)
+    // Releasing Option keeps the message that says why nothing was recorded.
+    #expect(controller.status == "Microphone access is off.")
+}
+
+@MainActor
+@Test("Releasing Option after a start refused because the runtime isn't ready keeps that message")
+func refusedStartKeepsStatusAfterRelease() async {
+    let hotkey = FilteringHotkeyService()
+    let controller = makeTestDictationController(hotkey: hotkey, overlay: makeShortcutTestPresenter())
+    defer { controller.teardown() }
+
+    hotkey.press([.option])
+    hotkey.holdPastConfirmationWindow()
+    #expect(controller.status == "Runtime not ready yet.")
+    hotkey.press([], after: 1)
+
+    #expect(controller.recordingLifecycleState == .idle)
+    #expect(controller.status == "Runtime not ready yet.")
 }
 
 @MainActor

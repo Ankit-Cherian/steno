@@ -1201,7 +1201,12 @@ final class DictationController: ObservableObject {
             status = "Option released before the previous recording finished."
             return
         }
-        apply(transition: recordingStateMachine.handleOptionKeyUp())
+        let transition = recordingStateMachine.handleOptionKeyUp()
+        // A release that ends no Option recording, such as one whose start was
+        // refused or that already stopped by itself, keeps the message that
+        // says what happened.
+        if case .ignore = transition { return }
+        apply(transition: transition)
     }
 
     /// Option has been held alone long enough to be a dictation.
