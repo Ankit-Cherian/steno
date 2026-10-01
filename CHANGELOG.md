@@ -84,6 +84,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Settings no longer offers cleanup options that had no effect: Tone, and the Command and Email structures. A saved Command structure works as Natural and a saved Email structure as Paragraph, which is what they did; settings that use them still load.
 - "Run cleanup again" in History now treats VS Code, JetBrains IDEs and Warp the same way live dictation does, so it no longer gives different text. Apps are recognized by their bundle identifier: Microsoft's Windows App is now recognized as a remote-desktop client, and the WordPress app no longer is.
 - "Run cleanup again" in History no longer replaces a transcript's text for good. The text from the original dictation is kept, and "Restore original cleanup" puts it back. Re-running a dictation that began with a spoken "lowercase" command no longer adds the word "lowercase" to the text. An older entry whose command can't be replayed, or one that the current settings would empty, is left unchanged with a note saying why.
+- Deleting a transcript from History now also removes its text from the backup copy Steno keeps of the History file. Previously the text stayed in that copy until the next save.
 
 ## [1.0.0] - 2026-09-17
 

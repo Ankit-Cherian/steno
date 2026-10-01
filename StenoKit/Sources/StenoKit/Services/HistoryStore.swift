@@ -63,8 +63,10 @@ public actor HistoryStore: HistoryStoreProtocol {
         }
     }
 
+    /// Removes one transcript. The previous-generation copy kept beside the
+    /// file is rewritten to match, so the deleted text doesn't stay on disk.
     public func delete(entryID: UUID) async throws {
-        try commit { working in
+        try commit(previousCopy: .matchNewFile) { working in
             let countBefore = working.count
             working.removeAll { $0.id == entryID }
             return working.count != countBefore
@@ -213,7 +215,10 @@ public actor HistoryStore: HistoryStoreProtocol {
     /// Applies `change` to the entries currently on disk and writes the result.
     /// Re-reading under a file lock keeps entries another running copy of Steno
     /// added or removed. Memory changes only after the write succeeds.
-    private func commit(_ change: (inout [TranscriptEntry]) throws -> Bool) throws {
+    private func commit(
+        previousCopy: PreviousCopy = .keepReplacedFile,
+        _ change: (inout [TranscriptEntry]) throws -> Bool
+    ) throws {
         try StorageFileLock.withLock(for: storageURL) {
             refreshFromDisk()
             if loadFailed {
@@ -225,12 +230,21 @@ public actor HistoryStore: HistoryStoreProtocol {
 
             var working = entries
             guard try change(&working) else { return }
-            try write(working)
+            try write(working, previousCopy: previousCopy)
             entries = working
         }
     }
 
-    private func write(_ newEntries: [TranscriptEntry]) throws {
+    /// What a write does with the previous-generation copy kept beside the file.
+    private enum PreviousCopy {
+        /// The copy becomes the file being replaced.
+        case keepReplacedFile
+        /// The copy is rewritten with the new content, so text removed by
+        /// this write is not kept.
+        case matchNewFile
+    }
+
+    private func write(_ newEntries: [TranscriptEntry], previousCopy: PreviousCopy) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = []
         encoder.dateEncodingStrategy = .iso8601
@@ -238,7 +252,8 @@ public actor HistoryStore: HistoryStoreProtocol {
         do {
             try ensureStorageDirectoryExists()
             let data = try encoder.encode(newEntries)
-            if FileManager.default.fileExists(atPath: storageURL.path) {
+            if previousCopy == .keepReplacedFile,
+               FileManager.default.fileExists(atPath: storageURL.path) {
                 do {
                     try StorageFilePreservation.keepPreviousCopy(of: storageURL)
                 } catch {
@@ -246,11 +261,26 @@ public actor HistoryStore: HistoryStoreProtocol {
                 }
             }
             try data.write(to: storageURL, options: [.atomic])
+            if previousCopy == .matchNewFile {
+                try replacePreviousCopy(with: data)
+            }
         } catch {
             throw HistoryStoreError.persistenceFailed
         }
         loadedSignature = StorageFilePreservation.signature(of: storageURL)
         hasLoaded = true
+    }
+
+    /// Rewrites an existing previous-generation copy with `data`, or removes it
+    /// when it can't be rewritten.
+    private func replacePreviousCopy(with data: Data) throws {
+        let previousURL = StorageFilePreservation.previousCopyURL(for: storageURL)
+        guard FileManager.default.fileExists(atPath: previousURL.path) else { return }
+        do {
+            try data.write(to: previousURL, options: [.atomic])
+        } catch {
+            try FileManager.default.removeItem(at: previousURL)
+        }
     }
 
     /// Reloads when the file changed since this store last read or wrote it.
