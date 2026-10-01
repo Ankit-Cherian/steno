@@ -25,6 +25,10 @@ enum SettingsRecovery {
         if !context.lastError.isEmpty,
            let target = context.lastErrorTarget,
            target.message == context.lastError {
+            // Inserting text needs Accessibility; without it that is the fix.
+            if target.section == .output, context.accessibility != .granted {
+                return .permissions
+            }
             return target.section
         }
         let shortcutPermissionsMissing = context.accessibility != .granted || context.inputMonitoring != .granted

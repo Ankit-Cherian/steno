@@ -784,16 +784,20 @@ final class DictationController: ObservableObject {
         applyPreferencesLocally(snapshot)
 
         Task {
-            guard await persistSettings(snapshot) else { return }
+            guard await persistSettings(snapshot, savedFrom: .general) else { return }
             await rebuildRuntimeOrDefer()
         }
     }
 
     /// Applies a Settings draft and saves it. The returned task reports whether
     /// the save succeeded; on failure the previous settings are restored so the
-    /// draft stays unsaved and can be saved again or discarded.
+    /// draft stays unsaved and can be saved again or discarded, and Review
+    /// settings opens `section`, the page the draft was saved from.
     @discardableResult
-    func applySettingsDraft(preferences draft: AppPreferences) -> Task<Bool, Never> {
+    func applySettingsDraft(
+        preferences draft: AppPreferences,
+        savedFrom section: SettingsSection = .general
+    ) -> Task<Bool, Never> {
         guard !isIsolatedPreview else {
             preferences = draft
             status = "Preview settings updated."
@@ -809,7 +813,7 @@ final class DictationController: ObservableObject {
         applyPreferencesLocally(snapshot)
 
         return Task {
-            guard await persistSettings(snapshot) else {
+            guard await persistSettings(snapshot, savedFrom: section) else {
                 if preferences == snapshot {
                     applyPreferencesLocally(previous)
                 }
@@ -821,7 +825,7 @@ final class DictationController: ObservableObject {
     }
 
     /// Writes settings and reports the real outcome; never claims a save that failed.
-    private func persistSettings(_ snapshot: AppPreferences) async -> Bool {
+    private func persistSettings(_ snapshot: AppPreferences, savedFrom section: SettingsSection) async -> Bool {
         switch await preferencesStore.save(snapshot) {
         case .success:
             if !settingsSaveError.isEmpty, lastError == settingsSaveError {
@@ -834,7 +838,7 @@ final class DictationController: ObservableObject {
         case .failure(let error):
             settingsSaveError = error.localizedDescription
             status = "Settings couldn't be saved."
-            lastError = error.localizedDescription
+            reportError(error.localizedDescription, fixedIn: section)
             return false
         }
     }
@@ -2126,13 +2130,17 @@ final class DictationController: ObservableObject {
                 case .copiedOnly:
                     lastTranscript = result.insertedText
                     status = copiedOnlyStatusMessage(for: result)
-                    lastError = result.errorMessage ?? ""
+                    if let reason = result.errorMessage {
+                        reportError(reason, fixedIn: .output)
+                    } else {
+                        lastError = ""
+                    }
                     overlay.show(state: result.pasteAttempted == true ? .inserted : .copiedOnly)
                 case .failed:
                     lastTranscript = result.insertedText
                     status = "Transcript ready but insertion failed."
                     let reason = result.errorMessage ?? "Insertion chain exhausted."
-                    lastError = reason
+                    reportError(reason, fixedIn: .output)
                     overlay.show(state: .failure(message: reason))
                 case .noSpeech:
                     status = "No speech detected."
@@ -2192,8 +2200,13 @@ final class DictationController: ObservableObject {
                 {
                     let isRecordingFailure = error is CaptureStartFailure
                         || error is PromptCaptureStopError
-                    status = isRecordingFailure ? "Recording failed" : "Transcription failed"
-                    lastError = error.localizedDescription
+                    if isRecordingFailure {
+                        status = "Recording failed"
+                        lastError = error.localizedDescription
+                    } else {
+                        status = "Transcription failed"
+                        reportError(error.localizedDescription, fixedIn: .engine)
+                    }
                     overlay.show(state: .failure(message: error.localizedDescription))
                     dismissOverlaySoon()
                     recordingStateMachine.markTranscriptionFailed()

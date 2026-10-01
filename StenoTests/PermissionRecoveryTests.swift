@@ -155,6 +155,14 @@ struct SettingsRecoveryRoutingTests {
         #expect(SettingsRecovery.section(for: context(lastError: message, target: target)) == .engine)
     }
 
+    @Test("An insertion problem opens Text output, or Permissions while Accessibility is missing")
+    func insertionErrorOpensTextOutput() {
+        let message = "The editor closed before insertion."
+        let target = ErrorRecoveryTarget(message: message, section: .output)
+        #expect(SettingsRecovery.section(for: context(lastError: message, target: target)) == .output)
+        #expect(SettingsRecovery.section(for: context(accessibility: .denied, lastError: message, target: target)) == .permissions)
+    }
+
     @Test("A target recorded for an earlier error isn't used for a newer one")
     func staleTargetIsIgnored() {
         let target = ErrorRecoveryTarget(message: "Couldn't download Medium.", section: .engine)

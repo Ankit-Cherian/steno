@@ -344,7 +344,7 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.discard")
             Button("Save changes") {
                 let submitted = preferencesDraft
-                let save = controller.applySettingsDraft(preferences: submitted)
+                let save = controller.applySettingsDraft(preferences: submitted, savedFrom: selectedSection)
                 // Accept synchronously normalized paths and options as the new draft baseline.
                 draftState.reload(controller.preferences)
                 Task {
