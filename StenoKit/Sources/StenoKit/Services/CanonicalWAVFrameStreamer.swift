@@ -73,10 +73,12 @@ public actor CanonicalWAVFrameStreamer {
 
     /// Checks a closed recorder file without reading or retaining its PCM.
     /// Capture validates before returning the URL so one-shot decoding has the
-    /// same container-integrity boundary as live-stream finalization.
-    static func validateFinalizedCapture(source: any CanonicalWAVByteSource) async throws {
+    /// same container-integrity boundary as live-stream finalization. Returns
+    /// the number of complete samples in the finalized payload.
+    @discardableResult
+    static func validateFinalizedCapture(source: any CanonicalWAVByteSource) async throws -> UInt64 {
         let validator = try CanonicalWAVFrameStreamer(sessionID: UUID(), source: source)
-        try await validator.validateFinalizedSource()
+        return try await validator.validateFinalizedSource()
     }
 
     private struct DataLayout {
@@ -287,7 +289,7 @@ public actor CanonicalWAVFrameStreamer {
         }
     }
 
-    private func validateFinalizedSource() throws {
+    private func validateFinalizedSource() throws -> UInt64 {
         let fileByteCount = try source.byteCount()
         guard try discoverDataLayout(fileByteCount: fileByteCount),
               let layout = dataLayout else {
@@ -298,6 +300,7 @@ public actor CanonicalWAVFrameStreamer {
         guard window.isFinalPayloadComplete else {
             throw CanonicalWAVFrameStreamerError.inconsistentDataSize
         }
+        return (window.endOffset - layout.payloadOffset) / UInt64(MemoryLayout<Int16>.size)
     }
 
     private func discoverDataLayout(fileByteCount: UInt64) throws -> Bool {

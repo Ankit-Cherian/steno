@@ -190,6 +190,7 @@ public actor SessionCoordinator {
     private struct CaptureStopReceipt: Sendable {
         var audioURL: URL
         var monotonicEndedAt: ContinuousClock.Instant
+        var interruption: CaptureInterruption?
     }
 
     private enum CaptureStopOutcome: Sendable {
@@ -234,10 +235,14 @@ public actor SessionCoordinator {
                 let sessionID = self.sessionID
                 let created = Task<CaptureStopOutcome, Never> {
                     do {
+                        let audioURL = try await captureService.endCapture(sessionID: sessionID)
                         return CaptureStopOutcome.captured(
                             CaptureStopReceipt(
-                                audioURL: try await captureService.endCapture(sessionID: sessionID),
-                                monotonicEndedAt: monotonicEndedAt
+                                audioURL: audioURL,
+                                monotonicEndedAt: monotonicEndedAt,
+                                interruption: await captureService.takeCaptureInterruption(
+                                    sessionID: sessionID
+                                )
                             )
                         )
                     } catch {
@@ -392,6 +397,7 @@ public actor SessionCoordinator {
         var active: ActiveSession
         var audioURL: URL
         var captureDurationMS: Int
+        var captureInterruption: CaptureInterruption?
     }
 
     private struct CleanupExecutionResult: Sendable {
@@ -710,7 +716,8 @@ public actor SessionCoordinator {
         capturedSessions[sessionID] = CapturedSession(
             active: capturedActive,
             audioURL: audioURL,
-            captureDurationMS: captureDurationMS
+            captureDurationMS: captureDurationMS,
+            captureInterruption: captureStopReceipt.interruption
         )
         transferredCapture = true
     }
@@ -719,6 +726,21 @@ public actor SessionCoordinator {
     public func completePressToTalk(
         sessionID: SessionID,
         languageHints: [String] = ["en-US"]
+    ) async throws -> InsertResult {
+        // A recording the recorder cut short is still transcribed; the result
+        // says so, including when nothing in it was recognized as speech.
+        let captureInterruption = capturedSessions[sessionID]?.captureInterruption
+        var result = try await completeCapturedPressToTalk(
+            sessionID: sessionID,
+            languageHints: languageHints
+        )
+        result.captureWarning = captureInterruption?.message
+        return result
+    }
+
+    private func completeCapturedPressToTalk(
+        sessionID: SessionID,
+        languageHints: [String]
     ) async throws -> InsertResult {
         guard let pendingCaptured = capturedSessions[sessionID] else {
             throw SessionCoordinatorError.sessionNotFound

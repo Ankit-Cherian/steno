@@ -638,6 +638,9 @@ final class DictationController: ObservableObject {
 
     func bootstrap() async {
         guard !isIsolatedPreview else { hasBootstrapped = true; return }
+        captureService.onRecorderStoppedEarly = { [weak self] sessionID in
+            self?.recorderStoppedEarly(sessionID: sessionID)
+        }
         if systemIntegrationsEnabled {
             // A crash or force quit leaves the recording in progress behind.
             // It holds the user's speech, and no session can own it at launch.
@@ -1754,11 +1757,17 @@ final class DictationController: ObservableObject {
                 case .noSpeech:
                     status = "No speech detected."
                     lastError = ""
-                    overlay.show(state: .noSpeechDetected)
+                    if result.captureWarning == nil {
+                        overlay.show(state: .noSpeechDetected)
+                    }
                 }
 
                 if let fallbackWarning = fallbackWarningText(from: result.cleanupOutcome) {
                     status = "\(status) \(fallbackWarning)"
+                }
+
+                if let captureWarning = result.captureWarning {
+                    presentCaptureWarning(captureWarning, for: result.status)
                 }
 
                 if let analyticsWarning = result.usageAnalyticsWarning {
@@ -1816,6 +1825,30 @@ final class DictationController: ObservableObject {
         }
         completionTask = task
         completionTasks[taskID] = task
+    }
+
+    /// The recording stopped before the user ended it. Say so where the user
+    /// is looking; "No speech detected" would blame them for the silence.
+    private func presentCaptureWarning(_ warning: String, for resultStatus: InsertionStatus) {
+        status = resultStatus == .noSpeech
+            ? "Microphone stopped."
+            : "\(status) Microphone stopped early."
+        lastError = lastError.isEmpty ? warning : "\(lastError) \(warning)"
+        switch resultStatus {
+        case .noSpeech, .inserted:
+            overlay.show(state: .failure(message: warning))
+        case .copiedOnly, .failed:
+            // Their own overlay already asks for attention and says what to do.
+            break
+        }
+    }
+
+    /// The recorder stopped by itself during this session, for example
+    /// because the microphone was disconnected. The session stops normally,
+    /// so what was recorded is transcribed rather than lost.
+    func recorderStoppedEarly(sessionID: SessionID) {
+        guard !isIsolatedPreview, !isTearingDown, currentSessionID == sessionID else { return }
+        stopRecording()
     }
 
     private func adoptCaptureStopCapability(
