@@ -1049,6 +1049,8 @@ private actor ProcessWhisperStreamingRuntimeSession: WhisperStreamingRuntimeSess
     private let inferenceTimeout: Duration
     private let runtimeIdentity: LiveTranscriptionRuntimeIdentity
     private var phase: Phase = .idle
+
+    nonisolated var isRunning: Bool { state.isRunning }
     private var previewInFlightRevision: UInt64?
     private var appendAcknowledgementExpectedDuringFinish: AppendAcknowledgement?
     private var finalizedAppendAcknowledgements: Set<AppendAcknowledgement> = []
@@ -1183,6 +1185,14 @@ private actor ProcessWhisperStreamingRuntimeSession: WhisperStreamingRuntimeSess
             }
             phase = .active(id: id, generation: generation, nextSequence: 0, watermark: 0, revision: 0)
             return streamIdentity
+        } catch is CancellationError {
+            // The helper may already have started this stream. Withdraw it so
+            // the helper accepts the next start; its late StreamStarted no
+            // longer matches any request and is dropped.
+            if phase == .starting(id: id, generation: generation) {
+                await withdrawStream(id: id, generation: generation)
+            }
+            throw CancellationError()
         } catch {
             if phase == .starting(id: id, generation: generation) { phase = .idle }
             throw error
@@ -1462,26 +1472,37 @@ private actor ProcessWhisperStreamingRuntimeSession: WhisperStreamingRuntimeSess
             matchesActiveStream = false
         }
         guard matchesActiveStream else { return }
+        await withdrawStream(id: id, generation: generation)
+    }
+
+    private func withdrawStream(id: UUID, generation: UInt64) async {
         appendAcknowledgementExpectedDuringFinish = nil
         phase = .cancelling(id: id, generation: generation)
         state.supersedeHypotheses(requestID: id, generation: generation)
         state.supersedeFinalResult(requestID: id, generation: generation)
-        do {
-            _ = try await state.exchange(
-                .init(
-                    operation: .streamCancel,
-                    requestID: id,
-                    generation: generation,
-                    payload: Data()
-                ),
-                expecting: .cancelled,
-                discriminator: nil,
-                timeout: .seconds(2)
-            )
-        } catch {
-            // Cancellation is best-effort. A timeout already marks an unhealthy
-            // helper unavailable; an acknowledged cancel keeps it retained.
-        }
+        // Callers are often cancelled tasks, such as an abandoned dictation.
+        // Send StreamCancel from a task that does not inherit that
+        // cancellation, or it would never be written.
+        let state = self.state
+        await Task {
+            do {
+                _ = try await state.exchange(
+                    .init(
+                        operation: .streamCancel,
+                        requestID: id,
+                        generation: generation,
+                        payload: Data()
+                    ),
+                    expecting: .cancelled,
+                    discriminator: nil,
+                    timeout: .seconds(2)
+                )
+            } catch {
+                // Cancellation is best-effort. A timeout already marks an
+                // unhealthy helper unavailable; an acknowledged cancel keeps it
+                // retained.
+            }
+        }.value
         if phase == .cancelling(id: id, generation: generation) {
             phase = .idle
         }
@@ -1766,6 +1787,10 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
         terminate()
         await WhisperProcessExitWaiter.wait { [process] in process.isRunning }
         closeHandles()
+    }
+
+    var isRunning: Bool {
+        stateLock.withLock { !isTerminated && process.isRunning }
     }
 
     func supersedeHypotheses(requestID: UUID, generation: UInt64) {

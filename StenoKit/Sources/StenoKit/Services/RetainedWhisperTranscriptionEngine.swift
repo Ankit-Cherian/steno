@@ -126,6 +126,13 @@ struct WhisperRuntimeRequest: Sendable {
 protocol WhisperRuntimeSession: Sendable {
     func transcribe(_ request: WhisperRuntimeRequest) async throws -> Data
     func shutdown() async
+    /// False once the helper process has exited, for example after the
+    /// system ended it while idle. A session that cannot tell reports true.
+    var isRunning: Bool { get }
+}
+
+extension WhisperRuntimeSession {
+    var isRunning: Bool { true }
 }
 
 protocol WhisperRuntimeSessionFactory: Sendable {
@@ -285,7 +292,9 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
                 isLiveHypothesisInFlight = false
             }
 
-            if !isUnsupportedStreamingCapability(error) {
+            // A cancelled start already withdrew its stream request, so the
+            // warm helper and its loaded model stay usable.
+            if !(error is CancellationError), !isUnsupportedStreamingCapability(error) {
                 await invalidateSession()
             }
             if stillOwned {
@@ -781,7 +790,11 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
     ) async throws -> any WhisperRuntimeSession {
         let identity = configuration.loadIdentity
         if let session, sessionIdentity == identity {
-            return session
+            if session.isRunning {
+                return session
+            }
+            // The helper exited while idle. Start a new one instead of
+            // sending this request to a dead process and falling back.
         }
 
         if session != nil {
@@ -790,18 +803,15 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
         await waitForSessionShutdown()
 
         let created = try await sessionFactory.makeSession(configuration: configuration)
-        do {
-            try Task.checkCancellation()
-        } catch {
-            await created.shutdown()
-            throw error
-        }
         guard !isShutDown else {
             await created.shutdown()
             throw RetainedWhisperRuntimeError.shutDown
         }
+        // A load that finished stays retained even if its requester was
+        // cancelled meanwhile; the next dictation uses it.
         session = created
         sessionIdentity = identity
+        try Task.checkCancellation()
         return created
     }
 

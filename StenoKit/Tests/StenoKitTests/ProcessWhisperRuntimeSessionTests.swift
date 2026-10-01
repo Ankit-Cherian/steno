@@ -1364,6 +1364,100 @@ func streamConfigurationPayloadEncodesVocabularyPromptOnFlagBit2() throws {
     )
 }
 
+@Test("Streaming v2 cancellation requested from a cancelled task still reaches the helper")
+func streamingRuntimeCancellationFromCancelledTaskReachesHelper() async throws {
+    let fixture = try StreamingRuntimeFixture(helperSource: fakeStreamingStrictCancelHelperSource)
+    defer { fixture.remove() }
+    let session = try await fixture.makeSession()
+    let configuration = streamingConfiguration()
+    let firstID = UUID()
+    _ = try await session.startStream(id: firstID, generation: 0, configuration: configuration)
+
+    // An abandoned dictation releases its stream from its own cancelled task.
+    await Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        await session.cancelStream(id: firstID, generation: 0)
+    }.value
+
+    // The helper accepts only one stream at a time; this start succeeds only
+    // if the cancel was delivered.
+    let secondID = UUID()
+    _ = try await session.startStream(id: secondID, generation: 0, configuration: configuration)
+    await session.cancelStream(id: secondID, generation: 0)
+    #expect(session.isRunning)
+    await session.shutdown()
+    #expect(!session.isRunning)
+}
+
+@Test("Streaming v2 withdraws a stream whose start was cancelled and keeps the helper")
+func streamingRuntimeCancelledStartWithdrawsStream() async throws {
+    let fixture = try StreamingRuntimeFixture(helperSource: fakeStreamingLateStartHelperSource)
+    defer { fixture.remove() }
+    let session = try await fixture.makeSession()
+    let configuration = streamingConfiguration()
+    let firstID = UUID()
+    let start = Task {
+        try await session.startStream(id: firstID, generation: 0, configuration: configuration)
+    }
+    try await fixture.waitForMarker(contents: "start-received")
+    start.cancel()
+    await #expect(throws: CancellationError.self) { _ = try await start.value }
+
+    let secondID = UUID()
+    _ = try await session.startStream(id: secondID, generation: 0, configuration: configuration)
+    await session.cancelStream(id: secondID, generation: 0)
+    #expect(session.isRunning)
+    await session.shutdown()
+}
+
+@Test("A helper that exited while idle is replaced instead of sending the next dictation to the fallback")
+func idleHelperExitStartsNewHelper() async throws {
+    let fixture = try StreamingRuntimeFixture(helperSource: fakeStreamingExitsWhenIdleHelperSource)
+    defer { fixture.remove() }
+    var environment = ProcessInfo.processInfo.environment
+    environment["STENO_TEST_HELPER_PID_FILE"] = fixture.pidURL.path
+    environment["STENO_TEST_HELPER_MARKER_FILE"] = fixture.markerURL.path
+    let fallbackState = ProcessFallbackState()
+    let engine = RetainedWhisperTranscriptionEngine(
+        configuration: RetainedWhisperTranscriptionConfiguration(
+            helperExecutableURL: fixture.helperURL,
+            modelPath: fixture.modelURL,
+            threadCount: 1,
+            vadModelPath: nil,
+            suppressNonSpeechTokens: true,
+            suppressRegex: nil,
+            modelLoadTimeout: .seconds(10),
+            inferenceTimeout: .seconds(10),
+            environment: environment
+        ),
+        fallback: ProcessFallbackEngine(state: fallbackState)
+    )
+    func launches() -> Int {
+        ((try? String(contentsOf: fixture.markerURL, encoding: .utf8)) ?? "")
+            .split(separator: "\n").count
+    }
+
+    let first = try await engine.transcribe(
+        audioURL: fixture.directory.appendingPathComponent("first.wav"),
+        request: .init()
+    )
+    let firstPID = try #require(Int32(
+        String(contentsOf: fixture.pidURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    ))
+    #expect(await helperHasExited(firstPID))
+
+    let second = try await engine.transcribe(
+        audioURL: fixture.directory.appendingPathComponent("second.wav"),
+        request: .init()
+    )
+    await engine.shutdown()
+
+    #expect(first.text == "helper")
+    #expect(second.text == "helper")
+    #expect(launches() == 2)
+    #expect(await fallbackState.count == 0)
+}
 }
 
 private extension Data {
@@ -1776,4 +1870,56 @@ write_frame(transcribe, 4, b'{"text":"one-shot"}', fragmented=True)
 shutdown = read_frame()
 write_frame(shutdown, 7)
 """#
+private let fakeStreamingStrictCancelHelperSource = fakeStreamingProtocolPrelude + "\n" + #"""
+for _ in range(2):
+    start = read_frame()
+    if start[2] != 9:
+        raise SystemExit(40)
+    write_frame(start, 10)
+    cancel = read_frame()
+    if cancel[2] != 17:
+        raise SystemExit(41)
+    write_frame(cancel, 8)
+shutdown = read_frame()
+write_frame(shutdown, 7)
+"""#
+
+private let fakeStreamingLateStartHelperSource = fakeStreamingProtocolPrelude + "\n" + #"""
+start = read_frame()
+with open(os.environ["STENO_TEST_HELPER_MARKER_FILE"], "w", encoding="utf-8") as handle:
+    handle.write("start-received")
+cancel = read_frame()
+if cancel[2] != 17 or cancel[3] != start[3]:
+    raise SystemExit(42)
+# The start completes late, after Swift abandoned it.
+write_frame(start, 10)
+write_frame(cancel, 8)
+restart = read_frame()
+if restart[2] != 9:
+    raise SystemExit(43)
+write_frame(restart, 10)
+cancel = read_frame()
+write_frame(cancel, 8)
+shutdown = read_frame()
+write_frame(shutdown, 7)
+"""#
+
+// Serves one transcription, then exits while idle, as when the system ends
+// a helper between dictations.
+private let fakeStreamingExitsWhenIdleHelperSource = fakeStreamingProtocolPrelude + "\n" + #"""
+with open(os.environ["STENO_TEST_HELPER_MARKER_FILE"], "a", encoding="utf-8") as handle:
+    handle.write("launch\n")
+request = read_frame()
+write_frame(request, 4, b'{"transcription":[{"offsets":{"from":0,"to":900},"text":" helper","tokens":[{"text":" helper","p":0.9}]}]}')
+raise SystemExit(0)
+"""#
+
+/// Waits briefly for a helper process to exit and be reaped.
+private func helperHasExited(_ pid: Int32) async -> Bool {
+    for _ in 0..<300 {
+        if kill(pid, 0) == -1, errno == ESRCH { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return false
+}
 #endif
