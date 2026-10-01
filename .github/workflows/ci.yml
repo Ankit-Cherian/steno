@@ -10,9 +10,11 @@ on:
 permissions:
   contents: read
 
+# A newer push cancels only an obsolete pull request run. Every other run has
+# its own group, so main is never cancelled or replaced while pending.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate:

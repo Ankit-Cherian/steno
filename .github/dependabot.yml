@@ -1,10 +1,12 @@
 version: 2
 updates:
+  # Each update pull request costs a full validation run, so updates are
+  # checked monthly. Minor and patch updates share one pull request; each major
+  # update stays separate so a breaking change is easy to isolate.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: '08:00'
       timezone: Etc/UTC
     open-pull-requests-limit: 5
@@ -16,11 +18,14 @@ updates:
   - package-ecosystem: swift
     directory: "/StenoKit"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: '08:00'
       timezone: Etc/UTC
     open-pull-requests-limit: 5
+    groups:
+      swift-updates:
+        patterns: ['*']
+        update-types: [minor, patch]
 
 # whisper.cpp and model hashes are reviewed together in scripts/ci/runtime-lock.json.
 # These audited runtime inputs are intentionally not updated by package automation.

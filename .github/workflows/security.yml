@@ -17,9 +17,12 @@ env:
   # The severity gate needs full results on PRs as well as main.
   CODEQL_ACTION_DIFF_INFORMED_QUERIES: 'false'
 
+# A newer push cancels only an obsolete pull request run. Pushes, schedules,
+# dispatches and release calls each have their own group and cannot cancel
+# one another.
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: security-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -112,6 +115,13 @@ jobs:
         run: |
           bash scripts/ci/tools.sh xcodegen
           build/ci-tools/xcodegen/xcodegen/bin/xcodegen generate
+      # Package resolution compiles no project source. Doing it before init keeps
+      # it out of the traced build, which reuses the same derived data.
+      - name: Resolve Swift packages before tracing
+        if: matrix.language == 'swift'
+        run: |
+          xcodebuild -resolvePackageDependencies -project Steno.xcodeproj -scheme Steno \
+            -derivedDataPath build/codeql-swift
       - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
           languages: ${{ matrix.language }}

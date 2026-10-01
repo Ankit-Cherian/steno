@@ -26,11 +26,16 @@ manifest['samples'][0]['audioPath'] = str(audio)
 output.mkdir(parents=True, exist_ok=False)
 (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 PY
-swift run --package-path "$REPO_ROOT/StenoKit" StenoBenchmarkCLI run-all \
+# An optional shared scratch path reuses the Swift build from earlier runtime checks.
+SWIFT_ARGS=(--package-path "$REPO_ROOT/StenoKit")
+if [[ -n "${STENO_SWIFT_SCRATCH_PATH:-}" ]]; then
+  SWIFT_ARGS+=(--scratch-path "$STENO_SWIFT_SCRATCH_PATH")
+fi
+swift run "${SWIFT_ARGS[@]}" StenoBenchmarkCLI run-all \
   --manifest "$OUTPUT/manifest.json" --raw-output "$OUTPUT/raw_engine.json" \
   --pipeline-output "$OUTPUT/steno_pipeline.json" --mac-sanity "$OUTPUT/mac_sanity.json" \
   --report-output "$OUTPUT/REPORT.md" --whisper-cli "$RUNTIME_BUILD/bin/whisper-cli" \
-  --model "$WHISPER_ROOT/models/ggml-small.en.bin" --threads 4 --default-language en
-swift run --package-path "$REPO_ROOT/StenoKit" StenoBenchmarkCLI validate-report --report "$OUTPUT/REPORT.md"
-swift run --package-path "$REPO_ROOT/StenoKit" StenoBenchmarkCLI validate-pipeline \
+  --model "$WHISPER_ROOT/models/ggml-small.en.bin" --threads "${STENO_TEST_WHISPER_THREADS:-4}" --default-language en
+swift run "${SWIFT_ARGS[@]}" StenoBenchmarkCLI validate-report --report "$OUTPUT/REPORT.md"
+swift run "${SWIFT_ARGS[@]}" StenoBenchmarkCLI validate-pipeline \
   --pipeline "$OUTPUT/steno_pipeline.json" --max-wer-delta 0 --max-cer-delta 0 --max-regressed-samples 0

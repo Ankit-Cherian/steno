@@ -1,6 +1,7 @@
 """Regression tests for unsafe workflow structure and policy bypasses."""
 
 import importlib.util
+import json
 import os
 import subprocess
 import tempfile
@@ -221,6 +222,83 @@ class WorkflowPolicyTests(unittest.TestCase):
                             expected += ['--reviewed-dispositions', 'scripts/ci/reviewed-findings.json',
                                          '--source-root', '.']
                         self.assertEqual(arguments.read_text().splitlines(), expected)
+
+    def test_only_pull_request_runs_can_be_cancelled_by_a_newer_run(self):
+        for path, prefix in (('ci.yml', 'ci-'), ('security.yml', 'security-')):
+            with self.subTest(workflow=path):
+                workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows' / path).read_text())
+                concurrency = workflow['concurrency']
+                self.assertEqual(concurrency['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}")
+                # Every non-PR run (main pushes, schedules, dispatches, release calls) gets a group of its own,
+                # so it can be neither cancelled nor replaced while pending.
+                self.assertEqual(concurrency['group'], prefix + "${{ github.event_name == 'pull_request' && "
+                                 "format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}")
+
+    def test_runtime_job_uploads_preview_before_slow_suites_and_runs_both_stages(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/validate.yml').read_text())
+        steps = workflow['jobs']['runtime']['steps']
+        runs = [step.get('run', '') for step in steps]
+        def position(fragment):
+            matches = [index for index, run in enumerate(runs) if fragment in run]
+            self.assertEqual(len(matches), 1, fragment)
+            return matches[0]
+        fast = position('runtime-checks.sh --stage fast ')
+        benchmark = position('scripts/ci/benchmark.sh')
+        preview = position('release-dmg.sh --unsigned-preview')
+        upload = next(index for index, step in enumerate(steps)
+                      if step.get('name') == 'Upload preview for manual testing')
+        slow = position('runtime-checks.sh --stage slow ')
+        self.assertEqual(sorted([fast, benchmark, preview, upload, slow]), [fast, benchmark, preview, upload, slow])
+        # Both stages share one output directory and neither can be skipped by its own condition.
+        output = '--output "$GITHUB_WORKSPACE/build/ci/runtime"'
+        for index in (fast, slow):
+            self.assertIn(output, runs[index])
+            self.assertNotIn('if', steps[index])
+            self.assertNotIn('continue-on-error', steps[index])
+        self.assertEqual(sum('runtime-checks.sh' in run for run in runs), 2)
+        # One Swift build: the package default, which the preview's bundled-runtime test also uses.
+        self.assertEqual(workflow['jobs']['runtime']['env']['STENO_SWIFT_SCRATCH_PATH'],
+                         '${{ github.workspace }}/StenoKit/.build')
+
+    def test_swift_analysis_resolves_packages_before_tracing_the_same_build(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
+        steps = workflow['jobs']['native']['steps']
+        def index(predicate):
+            matches = [position for position, step in enumerate(steps) if predicate(step)]
+            self.assertEqual(len(matches), 1)
+            return matches[0]
+        resolve = index(lambda step: '-resolvePackageDependencies' in step.get('run', ''))
+        init = index(lambda step: str(step.get('uses', '')).startswith('github/codeql-action/init@'))
+        build = index(lambda step: step.get('name') == 'Build Swift app for analysis')
+        self.assertLess(resolve, init)
+        self.assertLess(init, build)
+        self.assertEqual(steps[resolve].get('if'), "matrix.language == 'swift'")
+        self.assertIn('-derivedDataPath build/codeql-swift', steps[resolve]['run'])
+        self.assertIn('-derivedDataPath build/codeql-swift', steps[build]['run'])
+        # Resolution must not compile the app; the traced build still does that.
+        self.assertNotIn('xcodebuild build', steps[resolve]['run'])
+
+    def test_native_analysis_checks_out_the_locked_whisper_revision(self):
+        root = Path(__file__).parents[3]
+        lock = json.loads((root / 'scripts/ci/runtime-lock.json').read_text())['whisper']
+        workflow = POLICY.parse_workflow((root / '.github/workflows/security.yml').read_text())
+        checkouts = [step['with'] for step in workflow['jobs']['native']['steps']
+                     if str(step.get('uses', '')).startswith('actions/checkout@')
+                     and 'repository' in step.get('with', {})]
+        self.assertEqual(len(checkouts), 1)
+        self.assertEqual(f"https://github.com/{checkouts[0]['repository']}.git", lock['repository'])
+        self.assertEqual(checkouts[0]['ref'], lock['revision'])
+
+    def test_dependabot_checks_monthly_and_keeps_major_updates_separate(self):
+        config = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/dependabot.yml').read_text())
+        ecosystems = {update['package-ecosystem']: update for update in config['updates']}
+        self.assertEqual(set(ecosystems), {'github-actions', 'swift'})
+        for name, update in ecosystems.items():
+            with self.subTest(ecosystem=name):
+                self.assertEqual(update['schedule']['interval'], 'monthly')
+                groups = update['groups']
+                self.assertEqual(len(groups), 1)
+                self.assertEqual(next(iter(groups.values()))['update-types'], ['minor', 'patch'])
 
     def test_tab_indentation_and_document_indirection_rejected(self):
         self.assertTrue(POLICY.check_workflow(VALID.replace('  test:', '\ttest:')))
