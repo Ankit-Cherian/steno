@@ -121,6 +121,28 @@ private struct PromptCaptureStopError: Error, LocalizedError, Sendable {
     var errorDescription: String? { message }
 }
 
+/// Opens once the coordinator has returned from starting a session. Media
+/// setup comes after that, so stopping can wait for this without waiting for
+/// a media Pause to be acknowledged.
+@MainActor
+private final class CoordinatorStartSignal {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
 private final class CaptureStartHandoff: @unchecked Sendable {
     private let lock = NSLock()
     private var capability: PressToTalkCaptureStopCapability?
@@ -306,6 +328,7 @@ final class DictationController: ObservableObject {
     private var mediaReleaseTasks: [UUID: Task<Void, Never>] = [:]
     private var captureTerminationBarriers: [UUID: Task<Void, Never>] = [:]
     private var activeStartTask: Task<Void, Never>?
+    private var activeCoordinatorStart: CoordinatorStartSignal?
     private var activeSessionGeneration: UUID?
     private var pendingLiveSnapshots: [SessionID: LiveTranscriptionSnapshot] = [:]
     private var pendingLiveUnavailableSessionIDs: Set<SessionID> = []
@@ -1324,10 +1347,15 @@ final class DictationController: ObservableObject {
                             || (mode == .pressToTalk && preferences.media.pauseDuringPressToTalk)
         let pressConfirmation = mode == .pressToTalk ? pressToTalkConfirmation : nil
 
+        let coordinatorStart = CoordinatorStartSignal()
+        activeCoordinatorStart = coordinatorStart
         activeStartTask = Task {
             var ownedMediaToken: MediaInterruptionToken?
             var returnedSessionID: SessionID?
-            defer { captureHandoff.finishPublication() }
+            defer {
+                captureHandoff.finishPublication()
+                coordinatorStart.open()
+            }
 
             do {
                 try Task.checkCancellation()
@@ -1359,6 +1387,7 @@ final class DictationController: ObservableObject {
                         }
                     }
                 )
+                coordinatorStart.open()
 
                 try Task.checkCancellation()
                 guard activeSessionGeneration == generation else { throw CancellationError() }
@@ -1591,6 +1620,8 @@ final class DictationController: ObservableObject {
         let sessionGeneration = activeSessionGeneration
         let pendingStart = activeStartTask
         activeStartTask = nil
+        let coordinatorStart = activeCoordinatorStart
+        activeCoordinatorStart = nil
         let sessionCoordinator = coordinator
         let captureHandoff = activeCaptureStartHandoff
         let captureStopCapability = currentCaptureStopCapability
@@ -1706,12 +1737,13 @@ final class DictationController: ObservableObject {
                 status = "Finishing recording..."
                 lastError = ""
                 overlay.show(state: .transcribing)
-                // Capture closes at the key-up boundary above. Only final
-                // inference waits for optional media setup to settle, so a
-                // late pause token's resume begins before transcription. The
-                // resume then verifies alongside transcription instead of
-                // delaying it.
-                await pendingStart?.value
+                // Capture closes at the key-up boundary above. Stopping never
+                // waits for media setup: a Pause still awaiting its
+                // acknowledgement stays with the start task, which releases
+                // its token as soon as the Pause is answered. If the Pause was
+                // accepted, that release resumes exactly the paused app,
+                // alongside transcription rather than after it.
+                await coordinatorStart?.wait()
                 try await sessionCoordinator.endPressToTalkCapture(sessionID: activeSessionID)
                 await startMediaRelease([mediaToken].compactMap { $0 } + deferredMediaTokens)
                 releasedMedia = true

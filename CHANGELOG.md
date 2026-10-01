@@ -51,6 +51,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A dictation started right after the previous one was inserted is no longer ignored while History and Insights update.
 - Macs with an M1, M2 or M3 Ultra chip now get a speech model recommendation, and an M3 Ultra is no longer shown as a base M3.
 - Quitting Steno immediately after releasing the dictation key no longer leaves media that Steno paused still paused.
+- When a media player is slow to confirm a pause, transcription now starts without waiting for it, up to a second sooner on short dictations. If the player then confirms the pause, Steno still resumes it.
 
 ## [1.0.0] - 2026-09-17
 
