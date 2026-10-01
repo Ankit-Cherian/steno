@@ -147,3 +147,43 @@ func aggressiveKeepsLiteralFillers() async throws {
     #expect(try await clean("I think, um, this should, you know, ship today.")
         == "I think this should, you know, ship today.")
 }
+
+// MARK: - "kind of" and "sort of"
+
+@Test("Aggressive keeps \"kind of\" and \"sort of\" where they mean \"type of\"")
+func aggressiveKeepsTypeOfReading() async throws {
+    let kept = [
+        "What kind of car is that?",
+        "What sort of plan is this?",
+        "He is the kind of person who helps.",
+        "Which kind of coffee do you want?",
+        "That kind of thing happens.",
+        "This sort of problem is common.",
+        "It was some kind of error.",
+        "Is there any sort of discount?",
+        "It's a kind of magic.",
+        "We need a different kind of approach.",
+        "Those kind of meetings run long.",
+    ]
+    for text in kept {
+        #expect(try await clean(text) == text)
+        #expect(try await clean(text, structure: .paragraph) == text)
+    }
+}
+
+@Test("Aggressive still removes \"kind of\" and \"sort of\" used as hedges")
+func aggressiveRemovesHedges() async throws {
+    #expect(try await clean("it's kind of unstable") == "it's unstable")
+    #expect(try await clean("It's kind of unstable.") == "It's unstable.")
+    #expect(try await clean("I sort of agree with you.") == "I agree with you.")
+    #expect(try await clean("The build is kind of slow, sort of.") == "The build is slow.")
+    #expect(try await clean("Kind of weird, right?") == "Weird, right?")
+}
+
+@Test("Minimal and Balanced keep \"kind of\" hedges")
+func minimalAndBalancedKeepHedges() async throws {
+    for policy in [FillerPolicy.minimal, .balanced] {
+        #expect(try await clean("It's kind of unstable.", policy) == "It's kind of unstable.")
+        #expect(try await clean("What kind of car is that?", policy) == "What kind of car is that?")
+    }
+}

@@ -45,6 +45,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Bullet formatting no longer splits decimals, thousands separators, email addresses, web addresses or abbreviations such as "Dr." and "e.g." into separate bullets.
 - Aggressive filler removal no longer slows down on long dictations. A 10,000-character dictation took about a second to clean and now takes well under a tenth of a second.
 - Aggressive filler removal now removes fillers the way the recognizer writes them, such as "Um," at the start of a sentence, and gives the sentence's capital to the next word. A dictation of only fillers, such as "Um, uh.", is now treated as no speech under Aggressive instead of being typed. Minimal and Balanced still keep fillers.
+- Aggressive filler removal no longer removes "kind of" or "sort of" where they mean "type of", as in "What kind of car is that?". They are still removed as hedges, as in "it's kind of unstable".
 
 ## [1.0.0] - 2026-09-17
 

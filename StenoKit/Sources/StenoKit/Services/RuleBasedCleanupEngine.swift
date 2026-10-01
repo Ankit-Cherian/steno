@@ -188,6 +188,16 @@ struct FillerLiteralContext {
         return index < units.count ? units[index] : nil
     }
 
+    /// The word directly before `offset`, separated from it only by spaces or tabs.
+    func adjacentWord(before offset: Int) -> String? {
+        var index = offset - 1
+        while index >= 0, units[index] == 0x20 || units[index] == 0x09 {
+            index -= 1
+        }
+        guard index >= 0, Self.isWordUnit(units[index]) else { return nil }
+        return wordsBefore(index + 1, limit: 1).first
+    }
+
     /// Whether a full stop, question mark or exclamation mark ends the text before `offset`.
     private func startsSentence(at offset: Int) -> Bool {
         guard let last = lastNonWhitespaceUnit(before: offset) else { return false }
@@ -327,6 +337,14 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
     // MARK: - Filler Removal
 
+    /// "kind of" and "sort of" are hedges in "it's kind of unstable" but mean "type of" in "what
+    /// kind of car". After a determiner they introduce a noun and are kept.
+    private static let typeOfFillers: Set<String> = ["kind of", "sort of"]
+    private static let typeOfDeterminers: Set<String> = [
+        "a", "an", "any", "certain", "different", "each", "every", "no", "one", "other",
+        "particular", "same", "some", "that", "the", "these", "this", "those", "what", "which",
+    ]
+
     private func removeFillers(from text: String, policy: FillerPolicy) -> (text: String, removed: [String], edits: [TranscriptEdit]) {
         guard policy == .aggressive else {
             return (text, [], [])
@@ -392,6 +410,11 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
                 matchedText: source.substring(with: fillerRange),
                 sentenceStartIsLineStart: sentenceStartIsLineStart
             ) == false else {
+                return nil
+            }
+            if Self.typeOfFillers.contains(filler),
+               let previous = context.adjacentWord(before: fillerRange.location),
+               Self.typeOfDeterminers.contains(previous.lowercased()) {
                 return nil
             }
             return fillerRange
