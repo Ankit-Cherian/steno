@@ -1,6 +1,7 @@
 """Regression tests for unsafe workflow structure and policy bypasses."""
 
 import importlib.util
+import json
 import os
 import subprocess
 import tempfile
@@ -276,6 +277,17 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn('-derivedDataPath build/codeql-swift', steps[build]['run'])
         # Resolution must not compile the app; the traced build still does that.
         self.assertNotIn('xcodebuild build', steps[resolve]['run'])
+
+    def test_native_analysis_checks_out_the_locked_whisper_revision(self):
+        root = Path(__file__).parents[3]
+        lock = json.loads((root / 'scripts/ci/runtime-lock.json').read_text())['whisper']
+        workflow = POLICY.parse_workflow((root / '.github/workflows/security.yml').read_text())
+        checkouts = [step['with'] for step in workflow['jobs']['native']['steps']
+                     if str(step.get('uses', '')).startswith('actions/checkout@')
+                     and 'repository' in step.get('with', {})]
+        self.assertEqual(len(checkouts), 1)
+        self.assertEqual(f"https://github.com/{checkouts[0]['repository']}.git", lock['repository'])
+        self.assertEqual(checkouts[0]['ref'], lock['revision'])
 
     def test_dependabot_checks_monthly_and_keeps_major_updates_separate(self):
         config = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/dependabot.yml').read_text())
