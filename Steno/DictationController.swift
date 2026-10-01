@@ -1027,6 +1027,35 @@ final class DictationController: ObservableObject {
         PermissionDiagnostics.revealCurrentAppInFinder()
     }
 
+    /// Runs a short real transcription with the given settings through
+    /// separately created engines. The warm runtime, any dictation, History,
+    /// and Insights are left untouched.
+    func runSetupCheck(preferences draft: AppPreferences) async -> [WhisperSetupCheckStage] {
+        if isIsolatedPreview {
+            return [.init(title: "Setup check", outcome: .skipped, detail: "Unavailable in preview.")]
+        }
+        guard recordingStateMachine.state == .idle,
+              activeStartTask == nil,
+              completionTasks.isEmpty,
+              !sessionCleanupStartGate.isCleanupInProgress
+        else {
+            return [.init(title: "Setup check", outcome: .skipped, detail: "Finish the current dictation, then try again.")]
+        }
+
+        var snapshot = draft
+        snapshot.normalize()
+        let engines = DictationRuntimeFactory(snapshot: snapshot, clipboardService: clipboardService)
+            .makeSetupCheckEngines()
+        return await WhisperSetupSelfTest.run(.init(
+            microphoneAllowed: permissionStatusReader().microphone == .granted,
+            modelPath: snapshot.dictation.modelPath,
+            vadEnabled: snapshot.dictation.vadEnabled,
+            vadModelPath: snapshot.dictation.vadModelPath,
+            mainEngine: engines.main,
+            toolEngine: engines.tool
+        ))
+    }
+
     /// Reads permission status. The hotkey monitor is reinstalled only while
     /// idle; on app activation only when a shortcut permission changed or the
     /// last registration failed.
@@ -2685,7 +2714,22 @@ private struct DictationRuntimeFactory {
         SnippetService(snippets: snapshot.snippets)
     }
 
-    func makeTranscriptionEngine() -> any TranscriptionEngine {
+    /// Separate engines for the Speech model setup check. The main engine's
+    /// fallback refuses, so a helper failure is reported rather than hidden.
+    func makeSetupCheckEngines() -> (main: (any TranscriptionEngine)?, tool: any TranscriptionEngine) {
+        let hasRetainedRuntime = WhisperRuntimeConfiguration.retainedRuntimePaths(
+            relativeTo: snapshot.dictation.whisperCLIPath
+        ) != nil
+        let main = hasRetainedRuntime
+            ? makeTranscriptionEngine(retainedFallback: WhisperSetupSelfTest.RefusingFallbackEngine())
+            : nil
+        return (main, makeTranscriptionEngine(includeRetained: false))
+    }
+
+    func makeTranscriptionEngine(
+        retainedFallback: (any TranscriptionEngine)? = nil,
+        includeRetained: Bool = true
+    ) -> any TranscriptionEngine {
         let modelPath = URL(fileURLWithPath: snapshot.dictation.modelPath)
         let extraArgs = WhisperRuntimeConfiguration.additionalArguments(
             threadCount: snapshot.dictation.threadCount,
@@ -2705,7 +2749,7 @@ private struct DictationRuntimeFactory {
             )
         )
 
-        guard let retainedPaths else {
+        guard includeRetained, let retainedPaths else {
             return fallback
         }
 
@@ -2728,7 +2772,7 @@ private struct DictationRuntimeFactory {
                 beamSize: 5,
                 bestOf: 5
             ),
-            fallback: fallback
+            fallback: retainedFallback ?? fallback
         )
     }
 

@@ -53,6 +53,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Permission status now updates when you return to Steno after changing access in System Settings, and a hands-free key that failed for missing access is set up again without Check again or a relaunch.
 - Review settings on the Dictate tab now opens the page that fixes the problem, such as Permissions for missing Accessibility or Input Monitoring access and Speech model for a model problem. Each Open Settings button opens the matching list in Privacy & Security.
 - Launch at login is now saved as On only after macOS accepts it. If registration fails, the setting stays Off and Settings says why. If macOS needs your approval, Settings says so and offers to open Login Items. Turning Steno off in Login Items is now reflected in Settings.
+- Test setup in Settings > Speech model now transcribes a short test clip with the main engine and the fallback tool and reports each step, instead of only checking that the tool starts. It doesn't affect a dictation in progress or add anything to History or Insights.
 
 ## [1.0.0] - 2026-09-17
 

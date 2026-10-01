@@ -5,8 +5,7 @@ struct EngineSettingsSection: View {
     @Binding var preferences: AppPreferences
     let controller: DictationController
     var hasUnsavedChanges = false
-    @State private var testResult: String?
-    @State private var testResultIsError = false
+    @State private var setupCheckStages: [WhisperSetupCheckStage] = []
     @State private var isTesting = false
     private let compatibilityService = try? WhisperCompatibilityService.bundled()
 
@@ -62,26 +61,38 @@ struct EngineSettingsSection: View {
                         }
                     }
 
-                    HStack(spacing: StenoDesign.sm) {
-                        Button {
-                            runTestSetup()
-                        } label: {
-                            if isTesting {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
-                            } else {
-                                Text("Test setup")
+                    VStack(alignment: .leading, spacing: StenoDesign.sm) {
+                        HStack(spacing: StenoDesign.sm) {
+                            Button {
+                                runTestSetup()
+                            } label: {
+                                if isTesting {
+                                    HStack(spacing: StenoDesign.xs) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
+                                            .accessibilityHidden(true)
+                                        Text("Testing…")
+                                    }
+                                } else {
+                                    Text("Test setup")
+                                }
                             }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isTesting || whisperCLIPathError != nil || modelPathError != nil)
-                        .accessibilityLabel("Test whisper setup")
+                            .buttonStyle(.bordered)
+                            .disabled(isTesting || controller.isRecording || whisperCLIPathError != nil || modelPathError != nil)
+                            .accessibilityLabel(isTesting ? "Testing setup" : "Test setup")
 
-                        if let result = testResult {
-                            Text(result)
+                            Text("Transcribes a one-second test clip with these settings.")
                                 .font(StenoDesign.caption())
-                                .foregroundStyle(testResultIsError ? StenoDesign.error : StenoDesign.success)
+                                .foregroundStyle(StenoDesign.textSecondary)
+                        }
+
+                        if !setupCheckStages.isEmpty {
+                            VStack(alignment: .leading, spacing: StenoDesign.xs) {
+                                ForEach(Array(setupCheckStages.enumerated()), id: \.offset) { _, stage in
+                                    setupCheckRow(stage)
+                                }
+                            }
                         }
                     }
                 }
@@ -349,77 +360,56 @@ struct EngineSettingsSection: View {
         return "Download"
     }
 
-    private func runTestSetup() {
-        guard !controller.isIsolatedPreview else {
-            testResult = "Setup testing is unavailable in preview."
-            return
+    private func setupCheckRow(_ stage: WhisperSetupCheckStage) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: StenoDesign.xs) {
+            Image(systemName: setupCheckSymbol(stage.outcome))
+                .font(StenoDesign.caption())
+                .foregroundStyle(setupCheckColor(stage.outcome))
+                .accessibilityHidden(true)
+            Text(stage.title)
+                .font(StenoDesign.caption().weight(.medium))
+                .foregroundStyle(StenoDesign.textPrimary)
+            Text(stage.detail)
+                .font(StenoDesign.caption())
+                .foregroundStyle(stage.outcome == .failed ? StenoDesign.error : StenoDesign.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(stage.title), \(setupCheckOutcomeName(stage.outcome)). \(stage.detail)")
+    }
+
+    private func setupCheckSymbol(_ outcome: WhisperSetupCheckStage.Outcome) -> String {
+        switch outcome {
+        case .passed: return "checkmark.circle.fill"
+        case .failed: return "xmark.circle.fill"
+        case .skipped: return "minus.circle"
+        }
+    }
+
+    private func setupCheckColor(_ outcome: WhisperSetupCheckStage.Outcome) -> Color {
+        switch outcome {
+        case .passed: return StenoDesign.success
+        case .failed: return StenoDesign.error
+        case .skipped: return StenoDesign.textSecondary
+        }
+    }
+
+    private func setupCheckOutcomeName(_ outcome: WhisperSetupCheckStage.Outcome) -> String {
+        switch outcome {
+        case .passed: return "passed"
+        case .failed: return "failed"
+        case .skipped: return "skipped"
+        }
+    }
+
+    private func runTestSetup() {
         isTesting = true
-        testResult = nil
-
+        setupCheckStages = []
+        let draft = preferences
         Task {
-            // Check microphone permission
-            let micStatus = PermissionDiagnostics.microphoneStatus()
-            guard micStatus == .granted else {
-                await MainActor.run {
-                    testResult = "Microphone permission not granted."
-                    testResultIsError = true
-                    isTesting = false
-                }
-                return
-            }
-
-            // Test whisper-cli with --help
-            let cliPath = preferences.dictation.whisperCLIPath
-            let environment = WhisperRuntimeConfiguration.processEnvironment(
-                whisperCLIPath: cliPath,
-                modelPath: preferences.dictation.modelPath
-            )
-
-            do {
-                let result = try await ProcessRunner.run(
-                    executableURL: URL(fileURLWithPath: cliPath),
-                    arguments: ["--help"],
-                    environment: environment,
-                    standardOutput: FileHandle.nullDevice,
-                    standardError: nil
-                )
-                let success = result.terminationStatus == 0
-                let stderr = String(data: result.standardError, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                await MainActor.run {
-                    if success {
-                        testResult = "whisper-cli is working."
-                        testResultIsError = false
-                        // Auto-clear success after 3 seconds
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                            if testResult == "whisper-cli is working." {
-                                testResult = nil
-                            }
-                        }
-                    } else {
-                        if let stderr, !stderr.isEmpty {
-                            testResult = "whisper-cli exited with code \(result.terminationStatus): \(stderr)"
-                        } else {
-                            testResult = "whisper-cli exited with code \(result.terminationStatus)."
-                        }
-                        testResultIsError = true
-                    }
-                    isTesting = false
-                }
-            } catch is CancellationError {
-                await MainActor.run {
-                    testResult = "whisper-cli test cancelled."
-                    testResultIsError = true
-                    isTesting = false
-                }
-            } catch {
-                await MainActor.run {
-                    testResult = "Failed to run whisper-cli: \(error.localizedDescription)"
-                    testResultIsError = true
-                    isTesting = false
-                }
-            }
+            setupCheckStages = await controller.runSetupCheck(preferences: draft)
+            isTesting = false
         }
     }
 }
