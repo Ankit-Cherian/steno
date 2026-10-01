@@ -238,6 +238,27 @@ public enum StorageFilePreservation {
         try fileManager.copyItem(at: url, to: previous)
     }
 
+    /// Copies of `url` that `moveAside` or `preserveCopy` kept under one of
+    /// `labels`. Only names those functions create are matched.
+    public static func keptCopies(of url: URL, labels: [String]) -> [URL] {
+        let base = NSRegularExpression.escapedPattern(for: url.deletingPathExtension().lastPathComponent)
+        let ext = NSRegularExpression.escapedPattern(for: url.pathExtension.isEmpty ? "json" : url.pathExtension)
+        let alternatives = labels.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+        guard !labels.isEmpty,
+              let pattern = try? NSRegularExpression(
+                  pattern: "^\(base)\\.(\(alternatives))-[0-9]{8}T[0-9]{6}Z(-[0-9]+)?\\.\(ext)$"
+              )
+        else { return [] }
+        let names = (try? FileManager.default.contentsOfDirectory(
+            atPath: url.deletingLastPathComponent().path
+        )) ?? []
+        return names.sorted().compactMap { name in
+            let range = NSRange(name.startIndex..., in: name)
+            guard pattern.firstMatch(in: name, range: range) != nil else { return nil }
+            return url.deletingLastPathComponent().appendingPathComponent(name)
+        }
+    }
+
     private static func uniqueTimestampedURL(for url: URL, label: String, now: Date) -> URL {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

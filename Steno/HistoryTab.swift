@@ -75,7 +75,7 @@ struct HistoryTab: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes every saved transcript from this Mac. Insights totals are kept, and text already inserted into other apps isn't affected.")
+            Text("This removes every saved transcript from this Mac, including backup copies Steno kept of the History file and any copies kept when it couldn't be read. Insights totals are kept, and text already inserted into other apps isn't affected.")
         }
     }
 

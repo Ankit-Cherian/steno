@@ -90,4 +90,40 @@ struct HistoryStoreDeleteAllTests {
         }
         #expect(try String(contentsOf: url, encoding: .utf8).contains("Fictional new dictation"))
     }
+
+    @Test("Delete all removes copies kept from a damaged History file and nothing else")
+    func deleteAllRemovesRecoveryCopies() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HistoryDeleteAll-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("transcript-history.json")
+        let deletedText = Data("Fictional text from a damaged file".utf8)
+        let recoveryCopies = [
+            "transcript-history.original-20260101T120000Z.json",
+            "transcript-history.original-20260101T120000Z-2.json",
+            "transcript-history.unreadable-20260214T080910Z.json",
+        ]
+        let unrelated = [
+            "preferences.original-20260101T120000Z.json",
+            "transcript-history.original-notes.json",
+            "transcript-history.unreadable-20260214T080910Z.json.bak",
+            "my transcript-history.original-20260101T120000Z.json",
+        ]
+        for name in recoveryCopies + unrelated {
+            try deletedText.write(to: directory.appendingPathComponent(name))
+        }
+        // The current file is damaged too, so Delete all first moves it aside.
+        try Data("[{\"rawText\": \"Fictional text from a damaged file\"".utf8).write(to: url)
+        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        _ = await store.recent(limit: 10)
+
+        try await store.deleteAll()
+
+        let remaining = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { !$0.hasPrefix(".") })
+        #expect(remaining == Set(unrelated + [url.lastPathComponent]))
+        #expect(try Data(contentsOf: url).range(of: deletedText) == nil)
+        #expect(await store.recent(limit: 10).isEmpty)
+    }
 }
