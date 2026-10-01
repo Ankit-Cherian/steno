@@ -11,6 +11,8 @@ final class ModelSetupFixture {
     let directory: URL
     let modelsDirectory: URL
     let bundledDirectory: URL
+    let preferencesDirectory: URL
+    let downloadsDirectory: URL
     let preferencesURL: URL
     let modelBytes = Data((0..<200_000).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ 5) })
     private(set) var controller: DictationController!
@@ -20,8 +22,12 @@ final class ModelSetupFixture {
             .appendingPathComponent("StenoModelSetupTests-\(UUID().uuidString)", isDirectory: true)
         modelsDirectory = directory.appendingPathComponent("WhisperModels", isDirectory: true)
         bundledDirectory = directory.appendingPathComponent("Bundle/WhisperModels", isDirectory: true)
-        preferencesURL = directory.appendingPathComponent("preferences.json")
-        try FileManager.default.createDirectory(at: bundledDirectory, withIntermediateDirectories: true)
+        preferencesDirectory = directory.appendingPathComponent("Preferences", isDirectory: true)
+        downloadsDirectory = directory.appendingPathComponent("Downloads", isDirectory: true)
+        preferencesURL = preferencesDirectory.appendingPathComponent("preferences.json")
+        for folder in [bundledDirectory, modelsDirectory, preferencesDirectory, downloadsDirectory] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
         try Data("bundled small".utf8).write(to: bundledDirectory.appendingPathComponent("ggml-small.en.bin"))
         try Data("bundled vad".utf8).write(to: bundledDirectory.appendingPathComponent("ggml-silero-v6.2.0.bin"))
 
@@ -30,7 +36,7 @@ final class ModelSetupFixture {
         let expected = WhisperModelFileExpectation(byteCount: Int64(modelBytes.count), sha256: expectedDigest)
         let modelsDirectory = modelsDirectory
         let bundledDirectory = bundledDirectory
-        let scratch = directory
+        let scratch = downloadsDirectory
         let service = WhisperModelDownloadService(
             locations: WhisperModelLocations(
                 modelsDirectory: { modelsDirectory },
@@ -78,17 +84,24 @@ final class ModelSetupFixture {
     }
 
     func leftoverDownloads() -> [String] {
-        ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
-            .filter { $0.hasSuffix(".tmp") }
+        (try? FileManager.default.contentsOfDirectory(atPath: downloadsDirectory.path)) ?? []
     }
 
-    func setDirectoryWritable(_ writable: Bool) {
-        try? FileManager.default.setAttributes([.posixPermissions: writable ? 0o755 : 0o555], ofItemAtPath: directory.path)
+    /// Makes the settings file unwritable while model folders stay writable.
+    func setPreferencesWritable(_ writable: Bool) {
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: writable ? 0o755 : 0o555],
+            ofItemAtPath: preferencesDirectory.path
+        )
+    }
+
+    func placeDownloadedModel(_ modelID: WhisperModelID) throws {
+        try modelBytes.write(to: URL(fileURLWithPath: downloadedPath(modelID)))
     }
 
     func tearDown() {
         controller.teardown()
-        setDirectoryWritable(true)
+        setPreferencesWritable(true)
         try? FileManager.default.removeItem(at: directory)
     }
 
@@ -171,5 +184,80 @@ struct ModelSetupControllerTests {
         #expect(controller.preferences.dictation.modelPath == fixture.downloadedPath(.mediumEn))
         #expect(try Data(contentsOf: URL(fileURLWithPath: fixture.downloadedPath(.mediumEn))) == fixture.modelBytes)
         #expect(controller.whisperModelOptions.first { $0.modelID == .mediumEn }?.isActive == true)
+    }
+
+    @Test("A download keeps a custom voice-detection model")
+    func downloadKeepsCustomVAD() async throws {
+        let fixture = try ModelSetupFixture()
+        defer { fixture.tearDown() }
+        let controller = fixture.controller!
+        let customVAD = fixture.directory.appendingPathComponent("my-silero.bin").path
+        try Data("custom vad".utf8).write(to: URL(fileURLWithPath: customVAD))
+        controller.preferences.dictation.vadModelPath = customVAD
+
+        controller.downloadWhisperModel(.mediumEn)
+        #expect(await fixture.waitForDownloadToFinish())
+
+        #expect(controller.preferences.dictation.modelPath == fixture.downloadedPath(.mediumEn))
+        #expect(controller.preferences.dictation.vadModelPath == customVAD)
+        #expect(await AppPreferencesStore(storageURL: fixture.preferencesURL).load().dictation.vadModelPath == customVAD)
+    }
+
+    @Test("A download moves a derived voice-detection path next to the new model")
+    func downloadFollowsDerivedVAD() async throws {
+        let fixture = try ModelSetupFixture()
+        defer { fixture.tearDown() }
+        let controller = fixture.controller!
+
+        controller.downloadWhisperModel(.mediumEn)
+        #expect(await fixture.waitForDownloadToFinish())
+
+        let expectedVAD = fixture.modelsDirectory.appendingPathComponent("ggml-silero-v6.2.0.bin").path
+        #expect(controller.preferences.dictation.vadModelPath == expectedVAD)
+        #expect(FileManager.default.fileExists(atPath: expectedVAD))
+    }
+
+    @Test("A downloaded model whose switch can't be saved isn't announced as active")
+    func downloadWithUnwritableSettings() async throws {
+        let fixture = try ModelSetupFixture()
+        defer { fixture.tearDown() }
+        let controller = fixture.controller!
+        let before = controller.preferences
+
+        fixture.setPreferencesWritable(false)
+        controller.downloadWhisperModel(.mediumEn)
+        #expect(await fixture.waitForDownloadToFinish())
+        #expect(await waitForModelSetupCondition { controller.modelDownloadMessageIsError })
+
+        #expect(controller.preferences == before)
+        #expect(controller.modelDownloadMessage.hasPrefix("Downloaded Medium, but couldn't switch to it."))
+        #expect(controller.modelDownloadMessage.contains(AppPreferencesStoreError.writeFailed.localizedDescription))
+        #expect(controller.status == "Settings couldn't be saved.")
+        #expect(!controller.status.contains("switched to it"))
+        #expect(FileManager.default.fileExists(atPath: fixture.downloadedPath(.mediumEn)), "the verified file stays for a later Use")
+    }
+
+    @Test("Choosing a model whose switch can't be saved keeps the current model and says so")
+    func activationWithUnwritableSettings() async throws {
+        let fixture = try ModelSetupFixture()
+        defer { fixture.tearDown() }
+        let controller = fixture.controller!
+        try fixture.placeDownloadedModel(.mediumEn)
+        let before = controller.preferences
+
+        fixture.setPreferencesWritable(false)
+        controller.activateWhisperModel(.mediumEn)
+        #expect(await waitForModelSetupCondition { controller.modelDownloadMessageIsError })
+
+        #expect(controller.preferences == before)
+        #expect(controller.modelDownloadMessage.hasPrefix("Couldn't switch to Medium."))
+        #expect(controller.status == "Settings couldn't be saved.")
+
+        fixture.setPreferencesWritable(true)
+        controller.activateWhisperModel(.mediumEn)
+        #expect(await waitForModelSetupCondition { !controller.modelDownloadMessageIsError })
+        #expect(controller.modelDownloadMessage == "Using Medium.")
+        #expect(controller.preferences.dictation.modelPath == fixture.downloadedPath(.mediumEn))
+        #expect(controller.lastError.isEmpty, "the earlier model error is cleared")
     }
 }

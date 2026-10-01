@@ -322,6 +322,8 @@ final class DictationController: ObservableObject {
     private var activeRuntimeRebuilds = 0
     private var runtimeRebuildWaiters: [CheckedContinuation<Void, Never>] = []
     private var launchAtLoginServicePreference = AppPreferences.default.general.launchAtLoginEnabled
+    /// The model failure currently shown in `lastError`, cleared once a model change succeeds.
+    private var lastModelError = ""
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
     private var terminationTask: Task<Void, Never>?
@@ -762,17 +764,15 @@ final class DictationController: ObservableObject {
               let path = option.path
         else { return }
 
+        let title = WhisperModelCatalog.title(for: modelID)
         var snapshot = preferences
         snapshot.dictation.updateModelPath(path)
         snapshot.normalize()
-        preferences = snapshot
 
         Task {
-            await preferencesStore.save(snapshot)
-            await MainActor.run {
-                showModelMessage("Using \(WhisperModelCatalog.title(for: modelID)).")
-                status = "Using \(WhisperModelCatalog.title(for: modelID))."
-            }
+            guard await commitModelSelection(snapshot, failurePrefix: "Couldn't switch to \(title).") else { return }
+            showModelMessage("Using \(title).")
+            status = "Using \(title)."
             await rebuildRuntimeOrDefer()
         }
     }
@@ -781,8 +781,9 @@ final class DictationController: ObservableObject {
         guard !isIsolatedPreview else { return }
         guard activeModelDownloadID == nil else { return }
 
+        let title = WhisperModelCatalog.title(for: modelID)
         activeModelDownloadID = modelID
-        showModelMessage("Downloading \(WhisperModelCatalog.title(for: modelID))...")
+        showModelMessage("Downloading \(title)...")
 
         let bundledVADPath = BundledWhisperRuntime.resolvedPaths()?.vadModelPath
         let currentVADPath = FileManager.default.fileExists(atPath: preferences.dictation.vadModelPath)
@@ -791,38 +792,77 @@ final class DictationController: ObservableObject {
         let preferredVADSource = bundledVADPath ?? currentVADPath
 
         Task {
+            let installed: WhisperModelInstallResult
             do {
-                let installed = try await modelDownloadService.install(
+                installed = try await modelDownloadService.install(
                     modelID: modelID,
                     vadSourcePath: preferredVADSource
                 )
-
-                var snapshot = preferences
-                snapshot.dictation.updateModelPath(installed.modelPath)
-                if let installedVADPath = installed.vadModelPath {
-                    snapshot.dictation.vadModelPath = installedVADPath
-                }
-                snapshot.normalize()
-
-                await preferencesStore.save(snapshot)
-
-                await MainActor.run {
-                    preferences = snapshot
-                    activeModelDownloadID = nil
-                    showModelMessage("Downloaded \(WhisperModelCatalog.title(for: modelID)) and switched to it.")
-                    status = "Downloaded \(WhisperModelCatalog.title(for: modelID)) and switched to it."
-                    lastError = ""
-                }
-
-                await rebuildRuntimeOrDefer()
             } catch {
                 let failure = Self.modelDownloadFailureMessage(for: modelID, error: error)
                 activeModelDownloadID = nil
                 showModelMessage(failure, isError: true)
                 status = "Model download failed."
-                lastError = failure
+                reportModelError(failure)
+                return
             }
+
+            // Start from the settings as they are now, so a change saved during
+            // the download is kept.
+            var snapshot = preferences
+            let previousDictation = snapshot.dictation
+            snapshot.dictation.updateModelPath(installed.modelPath)
+            if let installedVADPath = installed.vadModelPath,
+               Self.vadModelPathIsDerived(previousDictation) {
+                snapshot.dictation.vadModelPath = installedVADPath
+            }
+            snapshot.normalize()
+
+            activeModelDownloadID = nil
+            guard await commitModelSelection(
+                snapshot,
+                failurePrefix: "Downloaded \(title), but couldn't switch to it."
+            ) else { return }
+            showModelMessage("Downloaded \(title) and switched to it.")
+            status = "Downloaded \(title) and switched to it."
+            await rebuildRuntimeOrDefer()
         }
+    }
+
+    /// A voice-detection path the user didn't choose: empty, or the default
+    /// that sits next to the selected model.
+    static func vadModelPathIsDerived(_ dictation: AppPreferences.Dictation) -> Bool {
+        dictation.vadModelPath.isEmpty
+            || dictation.vadModelPath == WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: dictation.modelPath)
+    }
+
+    /// Applies a model change at once and saves it. If the save fails, the
+    /// previous model stays selected and the failure is shown with the model controls.
+    private func commitModelSelection(_ snapshot: AppPreferences, failurePrefix: String) async -> Bool {
+        let previous = preferences
+        preferences = snapshot
+        switch await preferencesStore.save(snapshot) {
+        case .success:
+            if !lastModelError.isEmpty, lastError == lastModelError {
+                lastError = ""
+            }
+            lastModelError = ""
+            return true
+        case .failure(let error):
+            if preferences == snapshot {
+                preferences = previous
+            }
+            let failure = "\(failurePrefix) \(error.localizedDescription)"
+            showModelMessage(failure, isError: true)
+            status = "Settings couldn't be saved."
+            reportModelError(failure)
+            return false
+        }
+    }
+
+    private func reportModelError(_ message: String) {
+        lastModelError = message
+        lastError = message
     }
 
     /// Shown next to the control that started the download, in Settings and onboarding.
