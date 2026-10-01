@@ -148,10 +148,16 @@ with wave.open(sys.argv[1], "wb") as audio:
     audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
     audio.writeframes(b"\0\0" * 32000)
 PY
+  # The Swift client against the real helper. Requiring the helper turns any
+  # fallback to the command-line engine into a failure.
   run_check retained-silence env STENO_TEST_WHISPER_AUDIO="$OUTPUT/silence.wav" \
     STENO_TEST_WHISPER_EXPECT_EMPTY=1 STENO_TEST_WHISPER_REPETITIONS=5 \
+    STENO_TEST_REQUIRE_RETAINED_HELPER=1 \
     swift test --package-path "$ROOT_DIR/StenoKit" \
     --scratch-path "$SWIFT_SCRATCH" --filter retainedProcessRuntimeMatchesCLIContract
+  run_check retained-speech env STENO_TEST_WHISPER_REPETITIONS=1 STENO_TEST_REQUIRE_RETAINED_HELPER=1 \
+    swift test --package-path "$ROOT_DIR/StenoKit" --scratch-path "$SWIFT_SCRATCH" \
+    --filter 'retainedProcessRuntimeMatchesCLIContract|retainedProcessRuntimeStreamsSpeechToOneFinal'
   echo fast > "$OUTPUT/completed-stages.txt"
 }
 

@@ -28,6 +28,9 @@ func retainedProcessRuntimeMatchesCLIContract() async throws {
             additionalArguments: extraArguments
         )
     )
+    // The retained engine falls back to the CLI on a helper error, which would
+    // make this comparison pass without the helper. Count those fallbacks.
+    let fallbackState = IntegrationFallbackState()
     let retained = RetainedWhisperTranscriptionEngine(
         configuration: RetainedWhisperTranscriptionConfiguration(
             helperExecutableURL: URL(fileURLWithPath: helperPath),
@@ -39,7 +42,7 @@ func retainedProcessRuntimeMatchesCLIContract() async throws {
             beamSize: 5,
             bestOf: 5
         ),
-        fallback: cli
+        fallback: RecordingFallbackEngine(state: fallbackState, inner: cli)
     )
     let request = TranscriptionRequest(
         languageHints: [environment["STENO_TEST_WHISPER_LANGUAGE"] ?? "en-US"],
@@ -63,9 +66,88 @@ func retainedProcessRuntimeMatchesCLIContract() async throws {
         if environment["STENO_TEST_WHISPER_EXPECT_EMPTY"] == "1" {
             #expect(actual.text.isEmpty)
             #expect(actual.segments.isEmpty)
+        } else if requiresRetainedHelper {
+            #expect(!actual.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
     await retained.shutdown()
+    if requiresRetainedHelper {
+        #expect(await fallbackState.count == 0, "the retained helper did not serve every request")
+    }
+}
+
+@Test("Retained engine streams real speech through the real helper to one final transcript")
+func retainedProcessRuntimeStreamsSpeechToOneFinal() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard requiresRetainedHelper,
+          environment["STENO_TEST_WHISPER_EXPECT_EMPTY"] != "1",
+          let helperPath = environment["STENO_TEST_RETAINED_HELPER"],
+          let modelPath = environment["STENO_TEST_WHISPER_MODEL"],
+          let audioPath = environment["STENO_TEST_WHISPER_AUDIO"],
+          let vadPath = environment["STENO_TEST_WHISPER_VAD"]
+    else {
+        return
+    }
+
+    let fallbackState = IntegrationFallbackState()
+    let engine = RetainedWhisperTranscriptionEngine(
+        configuration: RetainedWhisperTranscriptionConfiguration(
+            helperExecutableURL: URL(fileURLWithPath: helperPath),
+            modelPath: URL(fileURLWithPath: modelPath),
+            threadCount: try integrationThreadCount(default: 4),
+            vadModelPath: URL(fileURLWithPath: vadPath),
+            suppressNonSpeechTokens: true,
+            suppressRegex: nil
+        ),
+        fallback: IntegrationFallbackEngine(state: fallbackState)
+    )
+    let request = TranscriptionRequest(languageHints: ["en-US"])
+    let sessionID = SessionID()
+    let audioURL = URL(fileURLWithPath: audioPath)
+
+    let session = try await engine.startLiveTranscription(
+        sessionID: sessionID,
+        controllerGeneration: UUID(),
+        request: request
+    )
+    // Stream the WAV the way capture does: bounded frames from the canonical file.
+    let streamer = try CanonicalWAVFrameStreamer(sessionID: sessionID, audioURL: audioURL)
+    var poll = try await streamer.finalize(sessionID: sessionID)
+    var appendedFrames = 0
+    while true {
+        for frame in poll.frames {
+            try await engine.appendLiveAudio(frame, session: session)
+            appendedFrames += 1
+        }
+        guard case .draining = poll.state else { break }
+        poll = try await streamer.drain(sessionID: sessionID)
+    }
+    guard case let .finalized(summary) = poll.state else {
+        Issue.record("the speech sample did not stream to completion: \(poll.state)")
+        await engine.shutdown()
+        return
+    }
+    #expect(appendedFrames > 1)
+    #expect(summary.frameCount == UInt64(appendedFrames))
+
+    let final = try await engine.finishLiveTranscription(
+        session: session,
+        canonicalAudioURL: audioURL,
+        streamSummary: summary,
+        request: request
+    )
+    #expect(!final.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    // The stream is closed: a second finish must not produce another final.
+    await #expect(throws: (any Error).self) {
+        _ = try await engine.finishLiveTranscription(
+            session: session,
+            canonicalAudioURL: audioURL,
+            streamSummary: summary,
+            request: request
+        )
+    }
+    await engine.shutdown()
+    #expect(await fallbackState.count == 0, "the stream final came from the fallback, not the helper")
 }
 
 @Test("Missing and corrupt models fail closed through one fallback")
@@ -166,6 +248,11 @@ func retainedProcessRuntimeRejectsUnknownLanguage() async throws {
     }
 }
 
+/// Set where the real helper must serve requests; any fallback then fails the test.
+private var requiresRetainedHelper: Bool {
+    ProcessInfo.processInfo.environment["STENO_TEST_REQUIRE_RETAINED_HELPER"] == "1"
+}
+
 /// Runners with few CPUs can lower the request with STENO_TEST_WHISPER_THREADS.
 private func integrationThreadCount(default defaultCount: Int) throws -> Int {
     guard let configured = ProcessInfo.processInfo.environment["STENO_TEST_WHISPER_THREADS"] else {
@@ -197,6 +284,17 @@ private struct IntegrationFallbackEngine: TranscriptionEngine {
         _ = request
         await state.record()
         return RawTranscript(text: "fallback")
+    }
+}
+
+/// Records each fallback, then delegates so the comparison can still complete.
+private struct RecordingFallbackEngine: TranscriptionEngine {
+    let state: IntegrationFallbackState
+    let inner: any TranscriptionEngine
+
+    func transcribe(audioURL: URL, request: TranscriptionRequest) async throws -> RawTranscript {
+        await state.record()
+        return try await inner.transcribe(audioURL: audioURL, request: request)
     }
 }
 

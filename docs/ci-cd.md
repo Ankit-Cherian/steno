@@ -14,7 +14,7 @@ Within that job, the native build, the short native contract checks, the retaine
 | --- | --- | --- |
 | Workflow and release contracts | PRs, main, merge queue, manual dispatch, release | Workflow syntax/security policy; automation regression tests; generated-project hygiene |
 | Package and hosted tests | Every main push, merge group, release or manual validation, and PRs that change more than documentation; macOS 15 and 26 | Swift package assertions, app compilation, hosted controller/state tests, production-view render assertions and coverage artifacts |
-| Native runtime | Same full-validation events, Apple silicon | Pinned native build with reviewed source corrections, allocation-failure regressions, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-process silence contract |
+| Native runtime | Same full-validation events, Apple silicon | Pinned native build with reviewed source corrections, allocation-failure regressions, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-engine one-shot and streaming requests through the real helper |
 | Public audio benchmark | Same native lane | Actual inference on the pinned public JFK sample and zero WER/CER regression introduced by the cleanup pipeline |
 | Distribution preview | Same native lane | Self-contained ad-hoc app/DMG, bundled libraries and models, architecture, deployment target, code signature structure, relocatable dependencies, bundled inference |
 | Security | PRs, main, merge queue, weekly, release | Actions analysis and PR dependency review always run; Swift/C++ analysis skips only verified documentation-only PRs. Main pushes, weekly scans and releases analyze all languages. |
@@ -54,7 +54,7 @@ If the protocol suite fails, the runtime lane keeps that failure and checks the 
 
 The public benchmark is a **single-fixture smoke regression**, not a general recognition-accuracy score or a comparison against the previous release. It compares raw recognition against Steno's cleanup pipeline on that fixture. The existing broader benchmark manifest and release evaluation remain separate requirements for relevant changes. Some historical fixtures are local-only and are deliberately not uploaded by CI.
 
-The normal package suite includes opt-in runtime integration tests. CI activates the retained-helper contract explicitly in the native lane. Ordinary package-test success alone is not proof that a real model or helper executed. Real microphone behavior, actual editor insertion, permissions, supported media applications, native Metal inference, and macOS 13 acceptance remain in the [release checklist](release/1.0-checklist.md).
+The normal package suite includes opt-in runtime integration tests. CI activates the retained-helper contract explicitly in the native lane, on generated silence and on the public speech sample, and also streams that sample through the Swift live-transcription client to one final transcript. There it sets `STENO_TEST_REQUIRE_RETAINED_HELPER=1`, so a request answered by the command-line fallback instead of the real helper fails the check. Ordinary package-test success alone is not proof that a real model or helper executed. Real microphone behavior, actual editor insertion, permissions, supported media applications, native Metal inference, and macOS 13 acceptance remain in the [release checklist](release/1.0-checklist.md).
 
 ## Contributor experience
 

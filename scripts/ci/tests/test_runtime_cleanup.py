@@ -816,7 +816,8 @@ class GateDiagnosticTests(unittest.TestCase):
         git.write_text('#!/bin/sh\necho 764482c3175d9c3bc6089c1ec84df7d1b9537d83\n')
         git.chmod(0o755)
         swift = commands / "swift"
-        swift.write_text('#!/bin/sh\necho "swift-called audio=$STENO_TEST_WHISPER_AUDIO empty=$STENO_TEST_WHISPER_EXPECT_EMPTY"\n'
+        swift.write_text('#!/bin/sh\necho "swift-called audio=$STENO_TEST_WHISPER_AUDIO empty=$STENO_TEST_WHISPER_EXPECT_EMPTY '
+                         'require=$STENO_TEST_REQUIRE_RETAINED_HELPER"\n'
                          'echo "swift-args: $*"\n')
         swift.chmod(0o755)
         self.environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
@@ -894,7 +895,12 @@ class GateDiagnosticTests(unittest.TestCase):
         result = self.run_gate(0, 0)
         self.assertLess(result.stdout.index("swift-called"), result.stdout.index("protocol-called"))
         # Silence applies only to the retained-engine check; the protocol suite keeps the speech sample.
-        self.assertIn(f"swift-called audio={self.root / 'output/silence.wav'} empty=1", result.stdout)
+        self.assertIn(f"swift-called audio={self.root / 'output/silence.wav'} empty=1 require=1", result.stdout)
+        # Speech through the real helper, including the stream test; neither may fall back.
+        jfk = self.runtime / "samples/jfk.wav"
+        self.assertIn(f"swift-called audio={jfk} empty= require=1", result.stdout)
+        self.assertIn("retainedProcessRuntimeMatchesCLIContract|retainedProcessRuntimeStreamsSpeechToOneFinal",
+                      result.stdout)
         self.assertIn("protocol-called audio=" + str(self.runtime / "samples/jfk.wav"), result.stdout)
 
     def test_fast_stage_stops_before_the_slow_suites(self):
