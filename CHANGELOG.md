@@ -91,6 +91,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Releasing Option after a dictation was refused, for example with microphone access off, or after a recording stopped by itself, such as at the length limit, no longer replaces the explanation with "No active Option recording."
 - Review settings on the Dictate tab now opens Text output after an insertion problem, Speech model after a transcription failure, and the page you were saving after a settings save fails, instead of Permissions or Recording.
 - "Settings saved." now stays visible after a save instead of being replaced at once by "Running local transcription + local cleanup." Switching or downloading a model, and a dictation's result, are no longer replaced by that line either.
+- Turning off Hold Option to talk while holding Option to dictate now ends that recording and transcribes it. Previously the release of Option was ignored and the recording ran until Stop, Cancel or the one-hour limit.
 
 ## [1.0.0] - 2026-09-17
 

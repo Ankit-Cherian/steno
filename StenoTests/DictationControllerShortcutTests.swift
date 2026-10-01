@@ -356,6 +356,40 @@ func recordingLimitStopsAndTranscribes(handsFree: Bool) async {
     }
 }
 
+// MARK: - Turning off Hold Option to talk
+
+@MainActor
+@Test("Turning off Hold Option to talk during an Option recording stops it, and the audio is transcribed")
+func disablingOptionHoldStopsRecording() async {
+    let events = ShortcutEventLog()
+    let hotkey = FilteringHotkeyService()
+    let controller = makeTestDictationController(
+        hotkey: hotkey,
+        overlay: makeShortcutTestPresenter(),
+        coordinator: ShortcutTestCoordinator(events: events)
+    )
+    defer { controller.teardown() }
+
+    hotkey.press([.option])
+    hotkey.holdPastConfirmationWindow()
+    #expect(await waitForShortcutCondition { controller.isRecording })
+
+    var draft = controller.preferences
+    draft.hotkeys.optionPressToTalkEnabled = false
+    controller.applySettingsDraft(preferences: draft)
+
+    #expect(await waitForShortcutEvent("transcription.start", in: events, attempts: 1_000))
+    #expect(await waitForShortcutCondition { controller.lastTranscript == "Nearby words" })
+    #expect(await waitForShortcutCondition { controller.recordingLifecycleState == .idle })
+    #expect(await events.count(of: "capture.cancel") == 0)
+
+    // The release that follows changes nothing.
+    hotkey.press([], after: 1)
+    try? await Task.sleep(for: .milliseconds(50))
+    #expect(await events.count(of: "transcription.start") == 1)
+    #expect(await events.count(of: "capture.start") == 1)
+}
+
 enum OptionShortcut: String, CaseIterable, CustomTestStringConvertible, Sendable {
     case optionArrow
     case optionDelete

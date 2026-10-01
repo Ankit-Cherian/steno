@@ -2444,12 +2444,19 @@ final class DictationController: ObservableObject {
     }
 
     private func applyPreferencesLocally(_ newValue: AppPreferences) {
+        let endsOptionRecording = !newValue.hotkeys.optionPressToTalkEnabled
+            && recordingStateMachine.state == .recordingPressToTalk
         preferences = newValue
         hotkey.isOptionPressToTalkEnabled = newValue.hotkeys.optionPressToTalkEnabled
         hotkey.globalToggleKeyCode = newValue.hotkeys.handsFreeGlobalKeyCode
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
         applyOverlayAppearance(for: newValue.appearance)
         overlay.setLiveTranscriptEnabled(newValue.dictation.showLiveTranscriptWhileRecording)
+        // With Hold Option to talk off, Option's release is no longer
+        // reported, so the recording in progress stops here and is transcribed.
+        if endsOptionRecording {
+            stopRecording()
+        }
     }
 
     private func rebuildRuntimeOrDefer() async {
