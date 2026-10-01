@@ -141,6 +141,17 @@ The 1.0 draft was ultimately verified and published manually by its existing rel
 
 The steps below describe the standard **Release** workflow. For the 1.0 recovery, use its linked instructions; the original **Publish release** workflow cannot promote a recovery draft unchanged because it assumes one source SHA for both the app and workflow. Recovery also verifies its checked-in release notes before publication, so do not replace those notes during the protected approval step.
 
+### Release rehearsal
+
+**Actions → Release rehearsal → Run workflow** on main exercises signing before the version tag exists. It takes the version and a mode, runs the `plan` check above first in both modes, and then waits at the same protected **release** environment as a real release.
+
+- **`signing`** (about a minute after approval): imports the Developer ID certificate into a temporary keychain, sets the keychain search list, signs and verifies a small executable and a small library, and makes one read-only notary-service request to prove the notary credentials. Its credential steps repeat those in `release-sign.sh`, and a test keeps the two identical. Nothing is built, notarized or uploaded.
+- **`full`**: also prepares the pinned runtime and runs the unchanged `release-sign.sh` and `release-dmg.sh`: the app build, signing of the app and bundled runtime, the bundled-runtime smoke test, one notarization submission, stapling and Gatekeeper verification. Apple keeps a record of that submission. The signed app and disk image are deleted on the runner; only the sanitized notary receipt and a summary of file hashes are uploaded.
+
+Its permissions make publication impossible rather than merely unintended: every scope is read-only, so it cannot push a tag or create a release or draft, and it has no `id-token` or `attestations` permission, so it cannot create an attestation (attestations for a public repository are permanent public records). It has its own concurrency group and cannot replace a pending release.
+
+A rehearsal cannot exercise: creating the draft release and finding it again by listing and ID, verifying the new build's attestation against `release.yml`, publication and the latest-release check, handing the signed artifact between release jobs, the `release-draft` and `release-publish` approvals, or acceptance testing of the final signed download. Those first run in the real release.
+
 From **Actions → Release → Run workflow**, select main, enter the stable version and full 40-character commit SHA, and confirm manual acceptance only after completing the source and native-app checks for that exact source. Leave `publish_release` false to stop at a draft. Enable it only when public publication is intended.
 
 Draft creation resolves the unpublished release through authenticated, paginated release listings, requires one exact match, and verifies it again by numeric ID. A missing or ambiguous result stops without retrying creation. Later publication uses that retained ID; it does not look up an unpublished draft through the public tag endpoint.
