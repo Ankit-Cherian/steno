@@ -3,6 +3,7 @@ import importlib.util
 import itertools
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -136,6 +137,106 @@ class SelectionTests(unittest.TestCase):
             result = subprocess.run(['bash', '-e', '-c', command], env=env, capture_output=True)
             expected = classification == 'success' and ((scope == 'docs' and native == 'skipped') or (scope == 'full' and native == 'success'))
             self.assertEqual(result.returncode == 0, expected)
+
+# A gate skipped by its own condition reports success to required checks, so
+# its wiring matters as much as its script.
+GATES = {'validate.yml': 'policy', 'security.yml': 'changes'}
+REFERENCE = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+')
+
+
+def gate_wiring_errors(workflow, classifier):
+    errors = []
+    jobs = workflow['jobs']
+    gate = jobs.get('gate', {})
+    others = [name for name in jobs if name != 'gate']
+    if gate.get('if') != 'always()':
+        errors.append('gate must run with exactly if: always()')
+    needs = gate.get('needs')
+    needs = [needs] if isinstance(needs, str) else needs or []
+    if sorted(needs) != sorted(others):
+        errors.append(f'gate needs {sorted(needs)} instead of every other job {sorted(others)}')
+    steps = gate.get('steps', [])
+    environment = {}
+    for step in steps:
+        if 'if' in step or 'continue-on-error' in step:
+            errors.append('gate steps must not be conditional or allowed to fail')
+        environment.update(step.get('env', {}))
+        environment.update(gate.get('env', {}))
+    script = '\n'.join(step.get('run', '') for step in steps)
+    results = {name: value for name, value in environment.items()
+               if isinstance(value, str) and '.result' in value}
+    for job in needs:
+        mapped = [name for name, value in results.items() if value == '${{ needs.' + job + '.result }}']
+        if len(mapped) != 1:
+            errors.append(f'{job} result must reach the gate through exactly one variable, found {mapped}')
+        elif '$' + mapped[0] not in script:
+            errors.append(f'gate script never reads {mapped[0]}')
+    for name, value in results.items():
+        if not re.fullmatch(r'\$\{\{ needs\.[A-Za-z0-9_-]+\.result \}\}', value) or value[len('${{ needs.'):-len('.result }}')] not in needs:
+            errors.append(f'{name} does not hold exactly one needed job result')
+    if 'if' in jobs.get(classifier, {}):
+        errors.append('the classifier itself must always run')
+    for name in others:
+        condition = jobs[name].get('if')
+        if condition is None:
+            continue
+        for reference in REFERENCE.findall(condition):
+            if reference.startswith(f'needs.{classifier}.outputs.'):
+                job_needs = jobs[name].get('needs')
+                job_needs = [job_needs] if isinstance(job_needs, str) else job_needs or []
+                if classifier not in job_needs:
+                    errors.append(f'{name} reads the classifier without needing it')
+            elif reference == 'github.event_name' and environment.get('EVENT_NAME') == '${{ github.event_name }}':
+                # The gate checks the same event, so it knows which result to expect.
+                continue
+            else:
+                errors.append(f'{name} condition uses {reference}, which the gate cannot see')
+    return errors
+
+
+class GateWiringTests(unittest.TestCase):
+    def workflow(self, path, replacements=()):
+        source = (ROOT / '.github/workflows' / path).read_text()
+        for old, new in replacements:
+            self.assertEqual(source.count(old), 1, old)
+            source = source.replace(old, new)
+        return POLICY.parse_workflow(source)
+
+    def test_both_gates_are_wired_to_every_job_and_always_run(self):
+        for path, classifier in GATES.items():
+            with self.subTest(workflow=path):
+                self.assertEqual(gate_wiring_errors(self.workflow(path), classifier), [])
+
+    def test_conditional_gate_is_rejected(self):
+        for path, classifier in GATES.items():
+            with self.subTest(workflow=path):
+                workflow = self.workflow(path, [('\n    if: always()\n', f"\n    if: needs.{classifier}.result == 'success'\n")])
+                self.assertIn('gate must run with exactly if: always()', gate_wiring_errors(workflow, classifier))
+
+    def test_job_missing_from_gate_needs_is_rejected(self):
+        validate = self.workflow('validate.yml', [('needs: [policy, macos, runtime]', 'needs: [policy, runtime]')])
+        self.assertTrue(any('gate needs' in error for error in gate_wiring_errors(validate, 'policy')))
+        security = self.workflow('security.yml', [('needs: [changes, dependency-review, actions, native]', 'needs: [changes, dependency-review, actions]')])
+        self.assertTrue(any('gate needs' in error for error in gate_wiring_errors(security, 'changes')))
+
+    def test_result_variable_pointing_at_the_wrong_job_is_rejected(self):
+        validate = self.workflow('validate.yml', [('MACOS_RESULT: ${{ needs.macos.result }}', 'MACOS_RESULT: ${{ needs.runtime.result }}')])
+        self.assertTrue(any('macos result' in error for error in gate_wiring_errors(validate, 'policy')))
+        security = self.workflow('security.yml', [('NATIVE_RESULT: ${{ needs.native.result }}', 'NATIVE_RESULT: ${{ needs.actions.result }}')])
+        self.assertTrue(any('native result' in error for error in gate_wiring_errors(security, 'changes')))
+
+    def test_job_conditions_outside_the_classifier_are_rejected(self):
+        validate = self.workflow('validate.yml', [("    if: needs.policy.outputs.scope == 'full'\n    name: Runtime",
+                                                   "    if: github.ref == 'refs/heads/main'\n    name: Runtime")])
+        self.assertTrue(any('github.ref' in error for error in gate_wiring_errors(validate, 'policy')))
+        unchecked_event = self.workflow('security.yml', [('          EVENT_NAME: ${{ github.event_name }}\n', '')])
+        self.assertTrue(any('github.event_name' in error for error in gate_wiring_errors(unchecked_event, 'changes')))
+
+    def test_conditional_gate_step_is_rejected(self):
+        validate = self.workflow('validate.yml', [('      - name: Require every validation job to succeed\n',
+                                                   '      - name: Require every validation job to succeed\n        if: false\n')])
+        self.assertIn('gate steps must not be conditional or allowed to fail', gate_wiring_errors(validate, 'policy'))
+
 
 if __name__ == '__main__':
     unittest.main()
