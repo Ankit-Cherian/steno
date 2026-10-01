@@ -65,6 +65,9 @@ struct PermissionsSettingsSection: View {
                     .stroke(StenoDesign.border, lineWidth: StenoDesign.borderThin)
             )
         }
+        .onAppear {
+            controller.refreshPermissionStatuses(reinstallHotkeysOnlyIfChanged: true)
+        }
     }
     private var allPermissionsGranted: Bool {
         controller.microphonePermissionStatus == .granted

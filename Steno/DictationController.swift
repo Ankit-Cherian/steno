@@ -236,6 +236,8 @@ final class DictationController: ObservableObject {
     private let appContextProvider: @MainActor () -> AppContext
     private let targetDisplayPointProvider: (@MainActor () -> CGPoint)?
     private let workspaceNotificationCenter: NotificationCenter?
+    private let applicationNotificationCenter: NotificationCenter?
+    private let permissionStatusReader: @MainActor () -> PermissionStatusSnapshot
 
     @Published var status: String = "Idle"
     @Published var lastTranscript: String = ""
@@ -329,6 +331,9 @@ final class DictationController: ObservableObject {
     private var terminationTask: Task<Void, Never>?
     private var shutdownTask: Task<Void, Never>?
     private var workspaceSleepObserver: NSObjectProtocol?
+    private var applicationActiveObserver: NSObjectProtocol?
+    /// The page that fixes the problem in `lastError`, when the error names one.
+    private(set) var lastErrorTarget: ErrorRecoveryTarget?
     private var workspaceWakeObserver: NSObjectProtocol?
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var hasPreparedUsageAnalyticsHistory = false
@@ -356,7 +361,9 @@ final class DictationController: ObservableObject {
         isIsolatedPreview: Bool = false,
         appContextProvider: @escaping @MainActor () -> AppContext = { AppContextProvider.current() },
         targetDisplayPointProvider: (@MainActor () -> CGPoint)? = nil,
-        workspaceNotificationCenter: NotificationCenter? = nil
+        workspaceNotificationCenter: NotificationCenter? = nil,
+        applicationNotificationCenter: NotificationCenter? = nil,
+        permissionStatusReader: @escaping @MainActor () -> PermissionStatusSnapshot = { .current() }
     ) {
         self.isIsolatedPreview = isIsolatedPreview
         self.systemIntegrationsEnabled = systemIntegrationsEnabled
@@ -364,6 +371,9 @@ final class DictationController: ObservableObject {
         self.targetDisplayPointProvider = targetDisplayPointProvider
         self.workspaceNotificationCenter = workspaceNotificationCenter
             ?? (systemIntegrationsEnabled && !isIsolatedPreview ? NSWorkspace.shared.notificationCenter : nil)
+        self.applicationNotificationCenter = applicationNotificationCenter
+            ?? (systemIntegrationsEnabled && !isIsolatedPreview ? NotificationCenter.default : nil)
+        self.permissionStatusReader = permissionStatusReader
         self.hotkey = hotkey
         self.clipboardService = clipboardService
         self.overlay = overlay
@@ -421,6 +431,18 @@ final class DictationController: ObservableObject {
             menuBar.setup(controller: self)
         }
 
+        // Permissions are granted and revoked in System Settings, so read them
+        // again whenever the user comes back to Steno.
+        applicationActiveObserver = self.applicationNotificationCenter?.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshPermissionStatuses(reinstallHotkeysOnlyIfChanged: true)
+            }
+        }
+
         workspaceSleepObserver = self.workspaceNotificationCenter?.addObserver(
             forName: NSWorkspace.willSleepNotification,
             object: nil,
@@ -476,6 +498,10 @@ final class DictationController: ObservableObject {
         runtimeRebuildGeneration &+= 1
         terminationTask?.cancel()
         terminationTask = nil
+        if let applicationActiveObserver {
+            applicationNotificationCenter?.removeObserver(applicationActiveObserver)
+            self.applicationActiveObserver = nil
+        }
         if let workspaceSleepObserver {
             workspaceNotificationCenter?.removeObserver(workspaceSleepObserver)
             self.workspaceSleepObserver = nil
@@ -745,7 +771,7 @@ final class DictationController: ObservableObject {
             case .failure(let error):
                 settingsSaveError = error.localizedDescription
                 status = "Appearance couldn't be saved."
-                lastError = error.localizedDescription
+                reportError(error.localizedDescription, fixedIn: .appearance)
             }
         }
     }
@@ -915,7 +941,24 @@ final class DictationController: ObservableObject {
 
     private func reportModelError(_ message: String) {
         lastModelError = message
+        reportError(message, fixedIn: .engine)
+    }
+
+    private func reportError(_ message: String, fixedIn section: SettingsSection) {
         lastError = message
+        lastErrorTarget = ErrorRecoveryTarget(message: message, section: section)
+    }
+
+    /// The Settings page that "Review settings" opens for the current problems.
+    var recoverySection: SettingsSection {
+        SettingsRecovery.section(for: .init(
+            microphone: microphonePermissionStatus,
+            accessibility: accessibilityPermissionStatus,
+            inputMonitoring: inputMonitoringPermissionStatus,
+            lastError: lastError,
+            lastErrorTarget: lastErrorTarget,
+            hotkeyMessage: hotkeyRegistrationMessage
+        ))
     }
 
     /// Shown next to the control that started the download, in Settings and onboarding.
@@ -974,11 +1017,21 @@ final class DictationController: ObservableObject {
         PermissionDiagnostics.revealCurrentAppInFinder()
     }
 
-    func refreshPermissionStatuses() {
+    /// Reads permission status. The hotkey monitor is reinstalled only while
+    /// idle; on app activation only when a shortcut permission changed or the
+    /// last registration failed.
+    func refreshPermissionStatuses(reinstallHotkeysOnlyIfChanged: Bool = false) {
         guard !isIsolatedPreview else { return }
-        microphonePermissionStatus = PermissionDiagnostics.microphoneStatus()
-        accessibilityPermissionStatus = PermissionDiagnostics.accessibilityStatus()
-        inputMonitoringPermissionStatus = PermissionDiagnostics.inputMonitoringStatus()
+        let previousShortcutAccess = (accessibilityPermissionStatus, inputMonitoringPermissionStatus)
+        let current = permissionStatusReader()
+        microphonePermissionStatus = current.microphone
+        accessibilityPermissionStatus = current.accessibility
+        inputMonitoringPermissionStatus = current.inputMonitoring
+
+        let shortcutAccessChanged = previousShortcutAccess != (current.accessibility, current.inputMonitoring)
+        if reinstallHotkeysOnlyIfChanged, !shortcutAccessChanged, hotkeyRegistrationMessage.isEmpty {
+            return
+        }
 
         // If permissions changed while app was running, reinstall monitors/hotkeys.
         if recordingStateMachine.state == .idle {

@@ -217,10 +217,6 @@ struct OnboardingView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            guard !controller.isIsolatedPreview else { return }
-            controller.refreshPermissionStatuses()
-        }
     }
 
     // MARK: - Step 3: Whisper Setup
