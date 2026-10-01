@@ -112,11 +112,19 @@ private enum CaptureHandoffRequest: Equatable {
 
 private enum PromptCaptureStopResult: Sendable {
     case unavailable
+    case startFailed(message: String)
     case stopped(PressToTalkCaptureStopCapability)
     case failed(PressToTalkCaptureStopCapability, message: String)
 }
 
 private struct PromptCaptureStopError: Error, LocalizedError, Sendable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+/// Capture never started. A stop that arrived first reports this error
+/// instead of a missing session.
+private struct CaptureStartFailure: Error, LocalizedError, Sendable {
     let message: String
     var errorDescription: String? { message }
 }
@@ -127,6 +135,7 @@ private final class CaptureStartHandoff: @unchecked Sendable {
     private var pendingRequest: CaptureHandoffRequest?
     private var publicationFinished = false
     private var stopCapabilityClaimed = false
+    private var startFailureMessage: String?
     private var stopWaiters: [CheckedContinuation<PressToTalkCaptureStopCapability?, Never>] = []
 
     func publish(
@@ -195,6 +204,17 @@ private final class CaptureStartHandoff: @unchecked Sendable {
                 continuation.resume(returning: immediate)
             }
         }
+    }
+
+    /// Keeps the reason capture failed to start for a stop that is already
+    /// waiting on this handoff. Record it before `finishPublication`.
+    func recordStartFailure(_ error: Error) {
+        let message = error.localizedDescription
+        lock.withLock { startFailureMessage = message }
+    }
+
+    var startFailure: String? {
+        lock.withLock { startFailureMessage }
     }
 
     func finishPublication() {
@@ -1436,6 +1456,7 @@ final class DictationController: ObservableObject {
                     )
                 }
             } catch {
+                captureHandoff.recordStartFailure(error)
                 if let sessionID = takeFailedStartSession(
                     returnedSessionID: returnedSessionID,
                     handoff: captureHandoff,
@@ -1643,7 +1664,12 @@ final class DictationController: ObservableObject {
             } else {
                 capability = await captureHandoff?.awaitStopCapability()
             }
-            guard let capability else { return .unavailable }
+            guard let capability else {
+                if let startFailure = captureHandoff?.startFailure {
+                    return .startFailed(message: startFailure)
+                }
+                return .unavailable
+            }
             capability.markStopRequested()
             do {
                 try await capability.stopCapture()
@@ -1724,6 +1750,8 @@ final class DictationController: ObservableObject {
                 switch captureStopResult {
                 case .unavailable:
                     break
+                case .startFailed(let message):
+                    throw CaptureStartFailure(message: message)
                 case .stopped(let capability):
                     if resolvedSessionID == nil {
                         resolvedSessionID = capability.sessionID
@@ -1852,7 +1880,9 @@ final class DictationController: ObservableObject {
                    !isTearingDown,
                    completionTaskID == taskID
                 {
-                    status = "Transcription failed"
+                    let isRecordingFailure = error is CaptureStartFailure
+                        || error is PromptCaptureStopError
+                    status = isRecordingFailure ? "Recording failed" : "Transcription failed"
                     lastError = error.localizedDescription
                     overlay.show(state: .failure(message: error.localizedDescription))
                     dismissOverlaySoon()

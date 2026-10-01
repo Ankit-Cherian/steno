@@ -191,6 +191,38 @@ func undeterminedMicrophoneStartsCapture() async {
     #expect(await waitForShortcutEvent("capture.start", in: events))
 }
 
+// MARK: - A capture start that fails after the key is released
+
+@MainActor
+@Test("A press released before its capture start fails reports the recording error")
+func releasedPressReportsCaptureStartFailure() async {
+    let startGate = ShortcutGate()
+    let presenter = makeShortcutTestPresenter()
+    let coordinator = CaptureTestCoordinator(
+        result: InsertResult(status: .inserted, method: .accessibility, insertedText: "unused"),
+        startGate: startGate,
+        startError: MacAudioCaptureError.failedToStartRecording
+    )
+    let controller = makeTestDictationController(
+        hotkey: StatusReportingHotkeyService(),
+        overlay: presenter,
+        coordinator: coordinator
+    )
+    defer { controller.teardown() }
+
+    controller.pressToTalkStart()
+    #expect(await waitForShortcutCondition { await coordinator.events == ["start.requested"] })
+    controller.pressToTalkStop()
+    await startGate.open()
+
+    #expect(await waitForShortcutCondition { controller.recordingLifecycleState == .idle })
+    #expect(await waitForShortcutCondition { controller.lastError == "Failed to start audio recording" })
+    #expect(controller.status == "Recording failed")
+    #expect(presenter.hostedEvidenceShownStates().last == .failure(message: "Failed to start audio recording"))
+    #expect(!presenter.hostedEvidenceShownStates().contains(.failure(message: "Session not found")))
+    #expect(await coordinator.events == ["start.requested", "start.failed"])
+}
+
 // MARK: - Test doubles
 
 actor CaptureTestCoordinator: DictationSessionCoordinating {
