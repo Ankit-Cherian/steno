@@ -222,6 +222,29 @@ class WorkflowPolicyTests(unittest.TestCase):
                                          '--source-root', '.']
                         self.assertEqual(arguments.read_text().splitlines(), expected)
 
+    def test_runtime_job_uploads_preview_before_slow_suites_and_runs_both_stages(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/validate.yml').read_text())
+        steps = workflow['jobs']['runtime']['steps']
+        runs = [step.get('run', '') for step in steps]
+        def position(fragment):
+            matches = [index for index, run in enumerate(runs) if fragment in run]
+            self.assertEqual(len(matches), 1, fragment)
+            return matches[0]
+        fast = position('runtime-checks.sh --stage fast ')
+        benchmark = position('scripts/ci/benchmark.sh')
+        preview = position('release-dmg.sh --unsigned-preview')
+        upload = next(index for index, step in enumerate(steps)
+                      if step.get('name') == 'Upload preview for manual testing')
+        slow = position('runtime-checks.sh --stage slow ')
+        self.assertEqual(sorted([fast, benchmark, preview, upload, slow]), [fast, benchmark, preview, upload, slow])
+        # Both stages share one output directory and neither can be skipped by its own condition.
+        output = '--output "$GITHUB_WORKSPACE/build/ci/runtime"'
+        for index in (fast, slow):
+            self.assertIn(output, runs[index])
+            self.assertNotIn('if', steps[index])
+            self.assertNotIn('continue-on-error', steps[index])
+        self.assertEqual(sum('runtime-checks.sh' in run for run in runs), 2)
+
     def test_swift_analysis_resolves_packages_before_tracing_the_same_build(self):
         workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
         steps = workflow['jobs']['native']['steps']

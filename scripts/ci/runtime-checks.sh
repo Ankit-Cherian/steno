@@ -6,16 +6,25 @@ WHISPER_ROOT="$ROOT_DIR/vendor/whisper.cpp"
 OUTPUT=""
 BACKEND="metal"
 RECEIPT=""
+STAGE="all"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root) WHISPER_ROOT="${2:?--root requires a path}"; shift 2 ;;
     --output) OUTPUT="${2:?--output requires a path}"; shift 2 ;;
     --backend) BACKEND="${2:?--backend requires cpu or metal}"; shift 2 ;;
     --verify-receipt) RECEIPT="${2:?--verify-receipt requires a path}"; shift 2 ;;
-    *) echo "Usage: $0 [--root PATH] [--backend cpu|metal] --output NEW_DIRECTORY
+    --stage) STAGE="${2:?--stage requires all, fast or slow}"; shift 2 ;;
+    *) echo "Usage: $0 [--root PATH] [--backend cpu|metal] [--stage all|fast] --output NEW_DIRECTORY
+       $0 [--root PATH] [--backend cpu|metal] --stage slow --output FAST_STAGE_OUTPUT
        $0 [--backend cpu|metal] --verify-receipt RECEIPT_JSON" >&2; exit 2 ;;
   esac
 done
+# The fast stage builds the runtime and runs the short contract checks; the slow
+# stage runs the protocol matrix and prompt scoring against that same build.
+case "$STAGE" in
+  all|fast|slow) ;;
+  *) echo "Error: --stage must be all, fast or slow" >&2; exit 2 ;;
+esac
 case "$BACKEND" in
   cpu) export GGML_METAL_DEVICES=0 ;;
   metal) unset GGML_METAL_DEVICES ;;
@@ -80,15 +89,24 @@ fi
 }
 bash "$ROOT_DIR/scripts/ci/prepare-runtime.sh" --root "$WHISPER_ROOT" --verify-only
 WHISPER_ROOT="$(cd "$WHISPER_ROOT" && pwd)"
-OUTPUT="$(python3 - "$OUTPUT" "$WHISPER_ROOT" <<'PY'
+OUTPUT="$(python3 - "$OUTPUT" "$WHISPER_ROOT" "$STAGE" <<'PY'
 import os, pathlib, sys
 p = pathlib.Path(os.path.abspath(sys.argv[1]))
 runtime = pathlib.Path(sys.argv[2])
-if p.exists() or any(x.is_symlink() for x in [p, *p.parents]):
-    raise SystemExit("Error: runtime check output must be a new directory without symlinks")
+stage = sys.argv[3]
+if any(x.is_symlink() for x in [p, *p.parents]):
+    raise SystemExit("Error: runtime check output must not contain symlinks")
 if p == runtime or runtime in p.parents or p in runtime.parents:
     raise SystemExit("Error: runtime check output must not overlap runtime sources")
-p.mkdir(parents=True)
+if stage == "slow":
+    stages = p / "completed-stages.txt"
+    completed = stages.read_text().split() if stages.is_file() and not stages.is_symlink() else []
+    if completed != ["fast"]:
+        raise SystemExit("Error: the slow stage requires the output of a completed fast stage")
+else:
+    if p.exists():
+        raise SystemExit("Error: runtime check output must be a new directory")
+    p.mkdir(parents=True)
 print(p)
 PY
 )"
@@ -107,50 +125,66 @@ run_check() {
   echo "==> $name"
   "$@" 2>&1 | tee "$OUTPUT/$name.log"
 }
-run_check build bash "$ROOT_DIR/scripts/build-whisper-runtime-helper.sh"
-PATCHED_SOURCE="$(python3 "$ROOT_DIR/scripts/ci/prepare-patched-runtime.py" \
-  --root "$WHISPER_ROOT" --build-dir "$STENO_WHISPER_BUILD_DIR" \
-  --revision "$(git -C "$WHISPER_ROOT" rev-parse HEAD)")"
-run_check backend-discovery python3 "$ROOT_DIR/scripts/ci/test-backend-discovery.py" \
-  --whisper-root "$PATCHED_SOURCE" --build-dir "$STENO_WHISPER_BUILD_DIR"
-run_check allocation-failures python3 "$ROOT_DIR/scripts/ci/test-vendor-allocation-failures.py" \
-  --whisper-root "$PATCHED_SOURCE" --build-dir "$STENO_WHISPER_BUILD_DIR"
-run_check cancellation python3 "$ROOT_DIR/scripts/ci/test-native-cancellation.py" \
-  --whisper-root "$PATCHED_SOURCE" --build-dir "$STENO_WHISPER_BUILD_DIR" --backend "$BACKEND"
-run_check prompt-verification bash "$ROOT_DIR/scripts/test-whisper-prompt-verification.sh"
-run_check vad-integrity bash "$ROOT_DIR/scripts/test-whisper-vad-integrity.sh"
-if run_check helper-protocol bash "$ROOT_DIR/scripts/test-whisper-runtime-helper-v2.sh" \
-  --vad-model "$STENO_TEST_WHISPER_VAD" --receipt "$OUTPUT/helper-protocol.json"; then
-  :
-else
-  protocol_status=$?
-  # Additional evidence cannot turn the failed protocol gate into a pass.
-  run_check helper-diagnostic python3 "$ROOT_DIR/scripts/ci/diagnose-runtime-inference.py" \
-    --helper "$STENO_TEST_RETAINED_HELPER" --model "$STENO_TEST_WHISPER_MODEL" \
-    --audio "$STENO_TEST_WHISPER_AUDIO" || echo "Runtime diagnostic did not complete successfully."
-  run_check vad-diagnostic python3 "$ROOT_DIR/scripts/ci/diagnose-vad-runtime.py" \
-    --build-dir "$STENO_WHISPER_BUILD_DIR" --model "$STENO_TEST_WHISPER_VAD" \
-    --audio "$STENO_TEST_WHISPER_AUDIO" || echo "VAD diagnostic did not complete successfully."
-  run_check stream-diagnostic python3 "$ROOT_DIR/scripts/ci/diagnose-runtime-inference.py" \
-    --helper "$STENO_TEST_RETAINED_HELPER" --model "$STENO_TEST_WHISPER_MODEL" \
-    --audio "$STENO_TEST_WHISPER_AUDIO" --vad-model "$STENO_TEST_WHISPER_VAD" \
-    || echo "Stream diagnostic did not complete successfully."
-  exit "$protocol_status"
-fi
-verify_receipt "$OUTPUT/helper-protocol.json" | tee "$OUTPUT/backend-verification.log"
-run_check prompt-scoring bash "$ROOT_DIR/scripts/test-whisper-prompt-scoring.sh"
 
-python3 - "$OUTPUT/silence.wav" <<'PY'
+run_fast_checks() {
+  run_check build bash "$ROOT_DIR/scripts/build-whisper-runtime-helper.sh"
+  PATCHED_SOURCE="$(python3 "$ROOT_DIR/scripts/ci/prepare-patched-runtime.py" \
+    --root "$WHISPER_ROOT" --build-dir "$STENO_WHISPER_BUILD_DIR" \
+    --revision "$(git -C "$WHISPER_ROOT" rev-parse HEAD)")"
+  run_check backend-discovery python3 "$ROOT_DIR/scripts/ci/test-backend-discovery.py" \
+    --whisper-root "$PATCHED_SOURCE" --build-dir "$STENO_WHISPER_BUILD_DIR"
+  run_check allocation-failures python3 "$ROOT_DIR/scripts/ci/test-vendor-allocation-failures.py" \
+    --whisper-root "$PATCHED_SOURCE" --build-dir "$STENO_WHISPER_BUILD_DIR"
+  run_check cancellation python3 "$ROOT_DIR/scripts/ci/test-native-cancellation.py" \
+    --whisper-root "$PATCHED_SOURCE" --build-dir "$STENO_WHISPER_BUILD_DIR" --backend "$BACKEND"
+  run_check prompt-verification bash "$ROOT_DIR/scripts/test-whisper-prompt-verification.sh"
+  run_check vad-integrity bash "$ROOT_DIR/scripts/test-whisper-vad-integrity.sh"
+
+  python3 - "$OUTPUT/silence.wav" <<'PY'
 import sys, wave
 with wave.open(sys.argv[1], "wb") as audio:
     audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
     audio.writeframes(b"\0\0" * 32000)
 PY
-export STENO_TEST_WHISPER_AUDIO="$OUTPUT/silence.wav"
-export STENO_TEST_WHISPER_EXPECT_EMPTY=1
-export STENO_TEST_WHISPER_REPETITIONS=5
-run_check retained-silence swift test --package-path "$ROOT_DIR/StenoKit" \
-  --scratch-path "$OUTPUT/swift-build" --filter retainedProcessRuntimeMatchesCLIContract
+  run_check retained-silence env STENO_TEST_WHISPER_AUDIO="$OUTPUT/silence.wav" \
+    STENO_TEST_WHISPER_EXPECT_EMPTY=1 STENO_TEST_WHISPER_REPETITIONS=5 \
+    swift test --package-path "$ROOT_DIR/StenoKit" \
+    --scratch-path "$OUTPUT/swift-build" --filter retainedProcessRuntimeMatchesCLIContract
+  echo fast > "$OUTPUT/completed-stages.txt"
+}
+
+run_slow_checks() {
+  if run_check helper-protocol bash "$ROOT_DIR/scripts/test-whisper-runtime-helper-v2.sh" \
+    --vad-model "$STENO_TEST_WHISPER_VAD" --receipt "$OUTPUT/helper-protocol.json"; then
+    :
+  else
+    protocol_status=$?
+    # Additional evidence cannot turn the failed protocol gate into a pass.
+    run_check helper-diagnostic python3 "$ROOT_DIR/scripts/ci/diagnose-runtime-inference.py" \
+      --helper "$STENO_TEST_RETAINED_HELPER" --model "$STENO_TEST_WHISPER_MODEL" \
+      --audio "$STENO_TEST_WHISPER_AUDIO" || echo "Runtime diagnostic did not complete successfully."
+    run_check vad-diagnostic python3 "$ROOT_DIR/scripts/ci/diagnose-vad-runtime.py" \
+      --build-dir "$STENO_WHISPER_BUILD_DIR" --model "$STENO_TEST_WHISPER_VAD" \
+      --audio "$STENO_TEST_WHISPER_AUDIO" || echo "VAD diagnostic did not complete successfully."
+    run_check stream-diagnostic python3 "$ROOT_DIR/scripts/ci/diagnose-runtime-inference.py" \
+      --helper "$STENO_TEST_RETAINED_HELPER" --model "$STENO_TEST_WHISPER_MODEL" \
+      --audio "$STENO_TEST_WHISPER_AUDIO" --vad-model "$STENO_TEST_WHISPER_VAD" \
+      || echo "Stream diagnostic did not complete successfully."
+    exit "$protocol_status"
+  fi
+  verify_receipt "$OUTPUT/helper-protocol.json" | tee "$OUTPUT/backend-verification.log"
+  run_check prompt-scoring bash "$ROOT_DIR/scripts/test-whisper-prompt-scoring.sh"
+  echo slow >> "$OUTPUT/completed-stages.txt"
+}
+
+if [[ "$STAGE" != slow ]]; then
+  run_fast_checks
+fi
+if [[ "$STAGE" == fast ]]; then
+  echo "Fast native runtime checks passed with $BACKEND inference. Run --stage slow with the same output to finish."
+  exit 0
+fi
+run_slow_checks
 echo "All native runtime checks passed with $BACKEND inference. Evidence: $OUTPUT"
 if [[ "$BACKEND" == cpu ]]; then
   echo "CPU checks do not qualify production Metal performance or manual app acceptance."

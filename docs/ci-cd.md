@@ -6,6 +6,8 @@ The workflow files define triggers after they are pushed to GitHub; execution al
 
 The runtime and distribution job has a 75-minute overall limit. It includes native tests, the public benchmark, app packaging and DMG verification. Individual inference and diagnostic deadlines remain separate.
 
+Within that job, the native build, the short native contract checks, the retained-engine checks, the benchmark and the preview DMG run first. The preview is uploaded before the 26-case protocol matrix and prompt-scoring suites start, so it is available for manual testing sooner. It can therefore appear before those suites have passed. The preview is ad-hoc signed and is not the shipped configuration; `CI Gate` still fails unless every step of the job succeeds.
+
 ## What runs
 
 | Stage | When | What it proves |
@@ -104,6 +106,8 @@ STENO_WHISPER_BUILD_DIR="$PWD/build/runtime-checks-cpu/build-steno" \
 STENO_CI_BENCHMARK_OUTPUT="$PWD/build/benchmark-cpu" \
   bash scripts/ci/benchmark.sh
 ```
+
+`runtime-checks.sh` runs every check by default. `--stage fast` builds the runtime and runs the short checks into a new output directory; `--stage slow` then runs the protocol matrix and prompt scoring against that same directory, and refuses an output without a completed fast stage.
 
 For the production GPU path, use a new output directory and `--backend metal`. That mode explicitly removes inherited GPU suppression and requires observed Metal evidence. `prepare-runtime.sh --verify-only --root <path>` validates existing dependencies without downloading or modifying them.
 

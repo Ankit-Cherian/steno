@@ -137,8 +137,10 @@ jobs:
           bash scripts/ci/tools.sh xcodegen
           echo "$GITHUB_WORKSPACE/build/ci-tools/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
           bash scripts/ci/prepare-runtime.sh
-      - name: Native runtime contracts
-        run: bash scripts/ci/runtime-checks.sh --backend cpu --root "$GITHUB_WORKSPACE/vendor/whisper.cpp" --output "$GITHUB_WORKSPACE/build/ci/runtime"
+      # The preview is built before the slow suites so it is available sooner.
+      # The gate still requires every step, including the slow suites, to pass.
+      - name: Native runtime build and contracts
+        run: bash scripts/ci/runtime-checks.sh --stage fast --backend cpu --root "$GITHUB_WORKSPACE/vendor/whisper.cpp" --output "$GITHUB_WORKSPACE/build/ci/runtime"
       - name: Public audio benchmark and zero cleanup regression
         env:
           STENO_WHISPER_BUILD_DIR: ${{ github.workspace }}/build/ci/runtime/build-steno
@@ -151,6 +153,16 @@ jobs:
           STENO_BUNDLED_VAD_MODEL_PATH: ${{ github.workspace }}/vendor/whisper.cpp/models/ggml-silero-v6.2.0.bin
           STENO_DIST_DIR: ${{ github.workspace }}/build/ci/distribution
         run: bash scripts/release-dmg.sh --unsigned-preview
+      - name: Upload preview for manual testing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-preview-arm64-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0
+          path: build/ci/distribution/*-preview.dmg
+      - name: Native protocol matrix and prompt scoring
+        run: bash scripts/ci/runtime-checks.sh --stage slow --backend cpu --root "$GITHUB_WORKSPACE/vendor/whisper.cpp" --output "$GITHUB_WORKSPACE/build/ci/runtime"
       - name: Upload runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -163,14 +175,6 @@ jobs:
             build/ci/runtime/*.txt
             build/ci/benchmark/*.json
             build/ci/benchmark/*.md
-      - name: Upload preview for manual testing
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: unsigned-preview-arm64-${{ github.sha }}
-          retention-days: 7
-          if-no-files-found: error
-          compression-level: 0
-          path: build/ci/distribution/*-preview.dmg
 
   gate:
     name: CI Gate
