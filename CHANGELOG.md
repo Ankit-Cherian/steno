@@ -49,6 +49,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - If the speech engine's background process ends between dictations, Steno now starts a new one instead of sending the next dictation down the slower backup path. Canceling a dictation as it starts no longer unloads the speech model.
 - When the backup transcription path fails, the overlay and VoiceOver now give a one-line message instead of the tool's full log, which included file paths.
 - A dictation started right after the previous one was inserted is no longer ignored while History and Insights update.
+- Macs with an M1, M2 or M3 Ultra chip now get a speech model recommendation, and an M3 Ultra is no longer shown as a base M3.
 
 ## [1.0.0] - 2026-09-17
 

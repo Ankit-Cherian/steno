@@ -12,6 +12,7 @@ public enum AppleSiliconChipClass: String, Codable, CaseIterable, Sendable, Equa
     case m3 = "m3"
     case m3Pro = "m3-pro"
     case m3Max = "m3-max"
+    case m3Ultra = "m3-ultra"
     case m4 = "m4"
     case m4Pro = "m4-pro"
     case m4Max = "m4-max"

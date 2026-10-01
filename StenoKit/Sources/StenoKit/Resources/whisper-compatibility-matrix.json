@@ -230,6 +230,16 @@
     "notes": "Preferred default for M1 Max Macs pending release signoff."
   },
   {
+    "chipClass": "m1-ultra",
+    "memoryRangeGB": { "minGB": 64, "maxGB": 512 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 850,
+    "p99BudgetMS": 1250,
+    "notes": "Preferred default for M1 Ultra Macs, which pair two M1 Max chips, pending release signoff."
+  },
+  {
     "chipClass": "m2-max",
     "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
     "modelID": "large-v3-turbo",
@@ -240,6 +250,16 @@
     "notes": "Preferred default for M2 Max Macs pending release signoff."
   },
   {
+    "chipClass": "m2-ultra",
+    "memoryRangeGB": { "minGB": 64, "maxGB": 512 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 850,
+    "p99BudgetMS": 1250,
+    "notes": "Preferred default for M2 Ultra Macs, which pair two M2 Max chips, pending release signoff."
+  },
+  {
     "chipClass": "m3-max",
     "memoryRangeGB": { "minGB": 32, "maxGB": 128 },
     "modelID": "large-v3-turbo",
@@ -248,6 +268,16 @@
     "p90BudgetMS": 800,
     "p99BudgetMS": 1200,
     "notes": "Preferred default for M3 Max Macs pending release signoff."
+  },
+  {
+    "chipClass": "m3-ultra",
+    "memoryRangeGB": { "minGB": 64, "maxGB": 512 },
+    "modelID": "large-v3-turbo",
+    "supportLevel": "allowed-warning",
+    "qualityTier": "recommended",
+    "p90BudgetMS": 800,
+    "p99BudgetMS": 1200,
+    "notes": "Preferred default for M3 Ultra Macs, which pair two M3 Max chips, pending release signoff."
   },
   {
     "chipClass": "m4-max",
