@@ -12,14 +12,25 @@ public struct ProcessExecutionResult: Sendable {
     }
 }
 
+public enum ProcessRunnerError: Error, Equatable, Sendable {
+    /// The child ran past its deadline and was terminated.
+    case timedOut(after: Duration)
+}
+
 public enum ProcessRunner {
+    /// Runs a child process to completion.
+    ///
+    /// With a `timeout`, a child still running at the deadline is terminated
+    /// (SIGTERM, then SIGKILL if it ignores that) and the call throws
+    /// `ProcessRunnerError.timedOut` once the child has exited.
     public static func run(
         executableURL: URL,
         arguments: [String] = [],
         environment: [String: String]? = nil,
         currentDirectoryURL: URL? = nil,
         standardOutput: FileHandle? = nil,
-        standardError: FileHandle? = nil
+        standardError: FileHandle? = nil,
+        timeout: Duration? = nil
     ) async throws -> ProcessExecutionResult {
         let process = Process()
         process.executableURL = executableURL
@@ -83,6 +94,13 @@ public enum ProcessRunner {
                 do {
                     try process.run()
                     state.didLaunch()
+                    if let timeout {
+                        DispatchQueue.global().asyncAfter(
+                            deadline: .now() + timeout.timeInterval
+                        ) {
+                            state.timeOut(after: timeout)
+                        }
+                    }
                 } catch {
                     process.terminationHandler = nil
                     outputPipe?.fileHandleForReading.readabilityHandler = nil
@@ -128,6 +146,7 @@ private final class ProcessRunState: @unchecked Sendable {
     private var continuation: CheckedContinuation<ProcessExecutionResult, Error>?
     private var hasFinished = false
     private var wasCancelled = false
+    private var timedOutAfter: Duration?
     private var launchState: LaunchState = .notStarted
 
     init(process: Process) {
@@ -170,12 +189,17 @@ private final class ProcessRunState: @unchecked Sendable {
         hasFinished = true
         self.continuation = nil
         let cancelled = wasCancelled
+        let timedOutAfter = self.timedOutAfter
         lock.unlock()
 
         // Never resume continuations while holding lock.
         // Cancellation handlers may execute concurrently and can otherwise deadlock.
         if cancelled {
             continuation.resume(throwing: CancellationError())
+            return
+        }
+        if let timedOutAfter {
+            continuation.resume(throwing: ProcessRunnerError.timedOut(after: timedOutAfter))
             return
         }
 
@@ -202,6 +226,19 @@ private final class ProcessRunState: @unchecked Sendable {
         continuation.resume(throwing: cancelled ? CancellationError() : error)
     }
 
+    func timeOut(after timeout: Duration) {
+        lock.lock()
+        let shouldTerminate = !hasFinished && !wasCancelled && launchState == .running
+        if shouldTerminate {
+            timedOutAfter = timeout
+        }
+        lock.unlock()
+
+        if shouldTerminate {
+            terminateAndEscalate()
+        }
+    }
+
     func cancel() {
         lock.lock()
         wasCancelled = true
@@ -226,5 +263,12 @@ private final class ProcessRunState: @unchecked Sendable {
             }
             kill(pid, SIGKILL)
         }
+    }
+}
+
+private extension Duration {
+    var timeInterval: TimeInterval {
+        let parts = components
+        return TimeInterval(parts.seconds) + TimeInterval(parts.attoseconds) / 1e18
     }
 }
