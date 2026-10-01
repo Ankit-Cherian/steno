@@ -46,9 +46,20 @@ struct HistoryStoreRecoveryTests {
         try await store.delete(entryID: deleted)
 
         fixture.restorePermissions()
-        let copies = try fixture.filesContaining(original)
-        #expect(!copies.isEmpty, "The original file content must survive in place or moved aside")
-        #expect(copies.allSatisfy { $0.lastPathComponent != fixture.storageURL.lastPathComponent })
+        if damage.keepsReadableEntries {
+            // The deleted entry is removed from the kept copy too. Everything
+            // else in the original, including the entry this version can't
+            // read, survives.
+            #expect(original.range(of: Data(deleted.uuidString.utf8)) != nil)
+            let copies = try fixture.filesHolding(try fixture.objects(in: original, removing: deleted))
+            #expect(!copies.isEmpty, "The rest of the original content must survive in a kept copy")
+            #expect(copies.allSatisfy { $0.lastPathComponent != fixture.storageURL.lastPathComponent })
+            #expect(try fixture.filesMentioning(deleted).isEmpty, "The deleted entry must not stay on disk")
+        } else {
+            let copies = try fixture.filesContaining(original)
+            #expect(!copies.isEmpty, "The original file content must survive in place or moved aside")
+            #expect(copies.allSatisfy { $0.lastPathComponent != fixture.storageURL.lastPathComponent })
+        }
 
         let onDisk = try fixture.decodeMainFile()
         if damage.keepsReadableEntries {
@@ -257,6 +268,27 @@ struct HistoryFixture {
     func filesContaining(_ original: Data) throws -> [URL] {
         try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { (try? Data(contentsOf: $0)) == original }
+    }
+
+    /// The JSON objects in `data` without the entry whose `id` is `removed`.
+    func objects(in data: Data, removing removed: UUID) throws -> NSArray {
+        let objects = try #require(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        return objects.filter { ($0["id"] as? String).flatMap(UUID.init(uuidString:)) != removed } as NSArray
+    }
+
+    func filesHolding(_ objects: NSArray) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { url in
+                guard let data = try? Data(contentsOf: url),
+                      let parsed = (try? JSONSerialization.jsonObject(with: data)) as? NSArray
+                else { return false }
+                return parsed.isEqual(objects)
+            }
+    }
+
+    func filesMentioning(_ id: UUID) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { (try? Data(contentsOf: $0))?.range(of: Data(id.uuidString.utf8)) != nil }
     }
 
     func decodeMainFile() throws -> [TranscriptEntry] {
