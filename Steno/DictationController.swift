@@ -3102,6 +3102,11 @@ struct TranscriptionEngineSettings: Equatable {
     var whisperCLIPath: String
     var retainedHelperPath: String?
     var retainedCLIPath: String?
+    /// The model files on disk when the settings were read. A file replaced at
+    /// the same path, such as a model downloaded again, changes these, so the
+    /// engine that loaded the old file is replaced.
+    var modelFileIdentity: StorageFilePreservation.Signature?
+    var vadModelFileIdentity: StorageFilePreservation.Signature?
 
     init(
         modelPath: String,
@@ -3111,7 +3116,9 @@ struct TranscriptionEngineSettings: Equatable {
         vadModelExists: Bool,
         whisperCLIPath: String,
         retainedHelperPath: String?,
-        retainedCLIPath: String?
+        retainedCLIPath: String?,
+        modelFileIdentity: StorageFilePreservation.Signature? = nil,
+        vadModelFileIdentity: StorageFilePreservation.Signature? = nil
     ) {
         self.modelPath = modelPath
         self.threadCount = threadCount
@@ -3121,6 +3128,8 @@ struct TranscriptionEngineSettings: Equatable {
         self.whisperCLIPath = whisperCLIPath
         self.retainedHelperPath = retainedHelperPath
         self.retainedCLIPath = retainedCLIPath
+        self.modelFileIdentity = modelFileIdentity
+        self.vadModelFileIdentity = vadModelFileIdentity
     }
 
     init(snapshot: AppPreferences) {
@@ -3136,8 +3145,15 @@ struct TranscriptionEngineSettings: Equatable {
             vadModelExists: FileManager.default.fileExists(atPath: dictation.vadModelPath),
             whisperCLIPath: dictation.whisperCLIPath,
             retainedHelperPath: retainedPaths?.helperPath,
-            retainedCLIPath: retainedPaths?.whisperCLIPath
+            retainedCLIPath: retainedPaths?.whisperCLIPath,
+            modelFileIdentity: Self.fileIdentity(atPath: dictation.modelPath),
+            vadModelFileIdentity: Self.fileIdentity(atPath: dictation.vadModelPath)
         )
+    }
+
+    private static func fileIdentity(atPath path: String) -> StorageFilePreservation.Signature? {
+        guard !path.isEmpty else { return nil }
+        return StorageFilePreservation.signature(of: URL(fileURLWithPath: path))
     }
 }
 

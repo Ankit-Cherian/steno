@@ -107,6 +107,65 @@ struct DictationControllerRuntimeReuseTests {
     }
 }
 
+extension DictationControllerRuntimeReuseTests {
+    @Test("A model file replaced at the same path, such as one downloaded again, loads a new engine once")
+    func replacedModelFileReplacesEngine() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StenoRuntimeReuse-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engines = EngineBuildLog()
+        let clipboard = MemoryClipboardService()
+        let controller = DictationController(
+            hotkey: TranscriptionCancelHotkey(),
+            clipboardService: clipboard,
+            overlay: WaveformOverlayPresenter(observeAccessibilityChanges: false),
+            mediaInterruption: IsolatedTestMediaService(),
+            preferencesStore: AppPreferencesStore(storageURL: directory.appendingPathComponent("preferences.json")),
+            transcriptionEngineFactory: { settings in engines.build(settings) },
+            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json"), clipboardService: clipboard),
+            usageAnalyticsStore: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
+            legacyHistoryURL: directory.appendingPathComponent("legacy.json"),
+            systemIntegrationsEnabled: false
+        )
+
+        let model = directory.appendingPathComponent("ggml-base.en.bin")
+        let vadModel = directory.appendingPathComponent("ggml-silero-v6.2.0.bin")
+        try Data("fictional damaged model".utf8).write(to: model)
+        try Data("fictional voice detection".utf8).write(to: vadModel)
+        var draft = controller.preferences
+        draft.dictation.modelPath = model.path
+        draft.dictation.vadModelPath = vadModel.path
+        #expect(await controller.applySettingsDraft(preferences: draft).value)
+        #expect(engines.built.count == 1)
+        #expect(controller.preferences.dictation.modelPath == model.path)
+        #expect(controller.preferences.dictation.vadModelPath == vadModel.path)
+
+        // An unchanged file keeps the loaded engine.
+        #expect(await controller.applySettingsDraft(preferences: controller.preferences).value)
+        #expect(engines.built.count == 1)
+
+        // Downloading the model again replaces the file at the same path.
+        try Data("fictional repaired model, a different size".utf8).write(to: model, options: .atomic)
+        #expect(await controller.applySettingsDraft(preferences: controller.preferences).value)
+        #expect(engines.built.count == 2)
+        #expect(await engines.built[0].shutdowns == 1)
+        #expect(engines.settings[1].modelPath == engines.settings[0].modelPath)
+
+        #expect(await controller.applySettingsDraft(preferences: controller.preferences).value)
+        #expect(engines.built.count == 2)
+
+        // So does replacing the voice-detection model.
+        try Data("fictional voice detection, replaced".utf8).write(to: vadModel, options: .atomic)
+        #expect(await controller.applySettingsDraft(preferences: controller.preferences).value)
+        #expect(engines.built.count == 3)
+        #expect(await engines.built[1].shutdowns == 1)
+        #expect(await engines.built[2].shutdowns == 0)
+
+        await controller.teardownAndWait()
+    }
+}
+
 @MainActor
 final class EngineBuildLog {
     private(set) var built: [CountingShutdownEngine] = []
