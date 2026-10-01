@@ -22,11 +22,6 @@ public struct LexiconMatcher: Sendable {
         var isProtectedSpelling: Bool
     }
 
-    private struct PlannedMatch {
-        var range: NSRange
-        var pattern: Pattern
-    }
-
     private let patterns: [Pattern]
 
     public init(lexicon: PersonalLexicon) {
@@ -73,53 +68,45 @@ public struct LexiconMatcher: Sendable {
 
         let source = text as NSString
         let fullRange = NSRange(location: 0, length: source.length)
-        var planned: [PlannedMatch] = []
+        var planned: [PhraseMatchPlanner.Match<Pattern>] = []
         for pattern in patterns {
             for match in pattern.regex.matches(in: text, range: fullRange) {
-                planned.append(PlannedMatch(range: match.range, pattern: pattern))
+                planned.append(PhraseMatchPlanner.Match(range: match.range, payload: pattern))
             }
         }
 
-        planned.sort { lhs, rhs in
-            if lhs.range.length != rhs.range.length { return lhs.range.length > rhs.range.length }
-            if lhs.range.location != rhs.range.location { return lhs.range.location < rhs.range.location }
-            if lhs.pattern.isProtectedSpelling != rhs.pattern.isProtectedSpelling {
-                return rhs.pattern.isProtectedSpelling
+        let accepted = PhraseMatchPlanner.resolveOverlaps(planned) { lhs, rhs in
+            if lhs.isProtectedSpelling != rhs.isProtectedSpelling {
+                return rhs.isProtectedSpelling
             }
-            return lhs.pattern.rank < rhs.pattern.rank
-        }
-
-        var accepted: [PlannedMatch] = []
-        for candidate in planned where accepted.allSatisfy({ NSIntersectionRange($0.range, candidate.range).length == 0 }) {
-            accepted.append(candidate)
+            return lhs.rank < rhs.rank
         }
 
         let replacements = accepted
-            .filter { $0.pattern.isProtectedSpelling == false }
-            .filter { source.substring(with: $0.range) != $0.pattern.preferred }
-            .sorted { $0.range.location < $1.range.location }
+            .filter { $0.payload.isProtectedSpelling == false }
+            .filter { source.substring(with: $0.range) != $0.payload.preferred }
         guard replacements.isEmpty == false else {
             return LexiconApplicationResult(text: text, edits: [])
         }
 
-        let updated = NSMutableString(string: text)
-        for replacement in replacements.reversed() {
-            updated.replaceCharacters(in: replacement.range, with: replacement.pattern.preferred)
-        }
+        let updated = PhraseMatchPlanner.apply(
+            replacements.map { (range: $0.range, replacement: $0.payload.preferred) },
+            to: text
+        )
 
         var edits: [TranscriptEdit] = []
         var seen: Set<String> = []
         for replacement in replacements {
-            let key = replacement.pattern.variant.lowercased() + "\u{0}" + replacement.pattern.preferred
+            let key = replacement.payload.variant.lowercased() + "\u{0}" + replacement.payload.preferred
             guard seen.insert(key).inserted else { continue }
             edits.append(TranscriptEdit(
                 kind: .lexiconCorrection,
-                from: replacement.pattern.variant,
-                to: replacement.pattern.preferred
+                from: replacement.payload.variant,
+                to: replacement.payload.preferred
             ))
         }
 
-        return LexiconApplicationResult(text: String(updated), edits: edits)
+        return LexiconApplicationResult(text: updated, edits: edits)
     }
 
     /// The entries that can apply, in precedence order. Entries that can never fire (blank term or
@@ -205,18 +192,7 @@ public struct LexiconMatcher: Sendable {
         ([entry.term] + entry.aliases).map { normalizedSpokenForm($0).count }.max() ?? 0
     }
 
-    private static let wordCharacter = #"[\p{L}\p{N}_]"#
-    private static let tokenJoiner = #"[.@/]"#
-
     private static func regex(for phrase: String) -> NSRegularExpression? {
-        let parts = phrase.split(whereSeparator: \.isWhitespace).map {
-            NSRegularExpression.escapedPattern(for: String($0))
-        }
-        guard parts.isEmpty == false else { return nil }
-        let body = parts.joined(separator: #"\s+"#)
-        let pattern = "(?<!\(wordCharacter))(?<![\\p{L}\\p{N}]\(tokenJoiner))"
-            + body
-            + "(?!\(wordCharacter))(?!\(tokenJoiner)[\\p{L}\\p{N}])"
-        return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        PhraseMatchPlanner.regex(for: phrase)
     }
 }

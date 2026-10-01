@@ -1321,7 +1321,9 @@ final class DictationController: ObservableObject {
                     entryID: entry.id,
                     using: RuleBasedCleanupEngine(),
                     profile: profile,
-                    lexicon: lexicon
+                    lexicon: lexicon,
+                    appContext: context,
+                    snippets: snippetService
                 )
                 await refreshHistory()
                 await refreshUsageAnalytics(forceHistoryReconciliation: true)
@@ -1329,6 +1331,23 @@ final class DictationController: ObservableObject {
                 lastError = ""
             } catch {
                 status = "Cleanup re-run failed"
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Puts back the text live dictation produced before "Run cleanup again" replaced it.
+    func restoreOriginalCleanup(for entry: TranscriptEntry) {
+        guard !isIsolatedPreview else { return }
+        Task {
+            do {
+                try await historyStore.restoreOriginalCleanText(entryID: entry.id)
+                await refreshHistory()
+                await refreshUsageAnalytics(forceHistoryReconciliation: true)
+                status = "Original cleanup restored."
+                lastError = ""
+            } catch {
+                status = "Restoring the original cleanup failed"
                 lastError = error.localizedDescription
             }
         }
@@ -2689,13 +2708,7 @@ final class DictationController: ObservableObject {
     }
 
     private func appContext(for bundleID: String) -> AppContext {
-        let name = StenoDesign.appDisplayName(for: bundleID)
-        return AppContext(
-            bundleIdentifier: bundleID,
-            appName: name,
-            isRemoteDesktop: bundleID.lowercased().contains("remote"),
-            isIDE: bundleID.contains("Xcode") || bundleID.contains("com.todesktop") || bundleID.contains("warp")
-        )
+        AppContext.classified(bundleIdentifier: bundleID, appName: StenoDesign.appDisplayName(for: bundleID))
     }
 
     private func copiedOnlyStatusMessage(for result: InsertResult) -> String {

@@ -23,7 +23,9 @@ struct SnippetsSettingsSection: View {
                 } else {
                     ForEach(preferences.snippets) { snippet in
                         entryRow(
-                            leading: "\u{201C}\(snippet.trigger)\u{201D} \u{2192} \(snippet.expansion)",
+                            leading: SnippetService.normalizedTrigger(snippet.trigger) == nil
+                                ? "\u{201C}\(snippet.trigger)\u{201D} \u{2192} \(snippet.expansion) (never applies: the trigger is blank)"
+                                : "\u{201C}\(snippet.trigger)\u{201D} \u{2192} \(snippet.expansion)",
                             scope: snippet.scope
                         ) {
                             preferences.snippets.removeAll { $0.id == snippet.id }
@@ -50,25 +52,43 @@ struct SnippetsSettingsSection: View {
                 ScopePickerRow(isGlobal: $newGlobal, bundleID: $newBundleID)
                 Spacer()
                 Button {
-                    guard !newTrigger.isEmpty, !newExpansion.isEmpty else { return }
-                    let scope: Scope = newGlobal ? .global : .app(bundleID: newBundleID)
-                    let newSnippet = Snippet(trigger: newTrigger, expansion: newExpansion, scope: scope)
-                    if let existingIndex = preferences.snippets.firstIndex(where: { $0.trigger == newSnippet.trigger && $0.scope == newSnippet.scope }) {
-                        preferences.snippets[existingIndex] = newSnippet
-                    } else {
-                        preferences.snippets.append(newSnippet)
-                    }
-                    newTrigger = ""
-                    newExpansion = ""
-                    newBundleID = ""
-                    newGlobal = true
+                    addShortcut()
                 } label: {
                     Label("Add shortcut", systemImage: "plus")
                 }
                 .buttonStyle(.bordered)
                 .fixedSize()
-                .disabled(newTrigger.isEmpty || newExpansion.isEmpty)
+                .disabled(canAdd == false)
             }
         }
+    }
+
+    /// A trigger must have something other than spaces in it, and an app shortcut needs its app.
+    private var canAdd: Bool {
+        SnippetService.normalizedTrigger(newTrigger) != nil
+            && newExpansion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            && (newGlobal || newBundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+    }
+
+    private func addShortcut() {
+        guard canAdd, let trigger = SnippetService.normalizedTrigger(newTrigger) else { return }
+        let scope: Scope = newGlobal
+            ? .global
+            : .app(bundleID: newBundleID.trimmingCharacters(in: .whitespacesAndNewlines))
+        let newSnippet = Snippet(trigger: trigger, expansion: newExpansion, scope: scope)
+        let sameTrigger = { (snippet: Snippet) in
+            snippet.scope == scope
+                && snippet.trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .caseInsensitiveCompare(trigger) == .orderedSame
+        }
+        if let existingIndex = preferences.snippets.firstIndex(where: sameTrigger) {
+            preferences.snippets[existingIndex] = newSnippet
+        } else {
+            preferences.snippets.append(newSnippet)
+        }
+        newTrigger = ""
+        newExpansion = ""
+        newBundleID = ""
+        newGlobal = true
     }
 }
