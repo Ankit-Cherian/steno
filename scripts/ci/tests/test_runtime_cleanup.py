@@ -816,7 +816,8 @@ class GateDiagnosticTests(unittest.TestCase):
         git.write_text('#!/bin/sh\necho 764482c3175d9c3bc6089c1ec84df7d1b9537d83\n')
         git.chmod(0o755)
         swift = commands / "swift"
-        swift.write_text('#!/bin/sh\necho "swift-called audio=$STENO_TEST_WHISPER_AUDIO empty=$STENO_TEST_WHISPER_EXPECT_EMPTY"\n')
+        swift.write_text('#!/bin/sh\necho "swift-called audio=$STENO_TEST_WHISPER_AUDIO empty=$STENO_TEST_WHISPER_EXPECT_EMPTY"\n'
+                         'echo "swift-args: $*"\n')
         swift.chmod(0o755)
         self.environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
 
@@ -940,6 +941,15 @@ class GateDiagnosticTests(unittest.TestCase):
                 result = self.run_gate(0, 0, stage=stage)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("must be a new directory", result.stderr)
+
+    def test_retained_engine_check_uses_the_configured_shared_swift_build(self):
+        default = self.run_gate(0, 0, stage="fast")
+        self.assertIn(f"--scratch-path {self.root / 'output/swift-build'} ", default.stdout)
+        shutil.rmtree(self.root / "output")
+        shared = self.root / "shared-build"
+        self.environment["STENO_SWIFT_SCRATCH_PATH"] = str(shared)
+        configured = self.run_gate(0, 0, stage="fast")
+        self.assertIn(f"--scratch-path {shared} ", configured.stdout)
 
     def test_unknown_stage_is_rejected_before_work(self):
         result = self.run_gate(0, 0, stage="smoke")

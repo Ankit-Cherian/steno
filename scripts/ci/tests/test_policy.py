@@ -244,6 +244,9 @@ class WorkflowPolicyTests(unittest.TestCase):
             self.assertNotIn('if', steps[index])
             self.assertNotIn('continue-on-error', steps[index])
         self.assertEqual(sum('runtime-checks.sh' in run for run in runs), 2)
+        # One Swift build: the package default, which the preview's bundled-runtime test also uses.
+        self.assertEqual(workflow['jobs']['runtime']['env']['STENO_SWIFT_SCRATCH_PATH'],
+                         '${{ github.workspace }}/StenoKit/.build')
 
     def test_swift_analysis_resolves_packages_before_tracing_the_same_build(self):
         workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())

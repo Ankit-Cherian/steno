@@ -127,6 +127,9 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       GGML_METAL_DEVICES: '0'
+      # The package's default build directory, which the preview's bundled-runtime
+      # test also uses, so the job compiles the Swift package once.
+      STENO_SWIFT_SCRATCH_PATH: ${{ github.workspace }}/StenoKit/.build
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

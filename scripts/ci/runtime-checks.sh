@@ -119,6 +119,8 @@ export STENO_TEST_WHISPER_MODEL="$WHISPER_ROOT/models/ggml-small.en.bin"
 export STENO_TEST_WHISPER_VAD="$WHISPER_ROOT/models/ggml-silero-v6.2.0.bin"
 export STENO_TEST_WHISPER_AUDIO="$WHISPER_ROOT/samples/jfk.wav"
 export STENO_SKIP_HELPER_BUILD=1
+# CI shares one Swift build between these tests, the benchmark and packaging.
+SWIFT_SCRATCH="${STENO_SWIFT_SCRATCH_PATH:-$OUTPUT/swift-build}"
 
 run_check() {
   local name="$1"; shift
@@ -149,7 +151,7 @@ PY
   run_check retained-silence env STENO_TEST_WHISPER_AUDIO="$OUTPUT/silence.wav" \
     STENO_TEST_WHISPER_EXPECT_EMPTY=1 STENO_TEST_WHISPER_REPETITIONS=5 \
     swift test --package-path "$ROOT_DIR/StenoKit" \
-    --scratch-path "$OUTPUT/swift-build" --filter retainedProcessRuntimeMatchesCLIContract
+    --scratch-path "$SWIFT_SCRATCH" --filter retainedProcessRuntimeMatchesCLIContract
   echo fast > "$OUTPUT/completed-stages.txt"
 }
 
