@@ -70,6 +70,16 @@ The project already has extensive tests around capture integrity, no-speech gati
 
 ## Local reproduction
 
+Before pushing app or package changes, run the local check:
+
+```bash
+scripts/check.sh
+```
+
+It regenerates `Steno.xcodeproj` with the pinned XcodeGen and confirms every hosted test file is in it, so newly added tests cannot be skipped by a stale project. It then runs the package tests, builds the app and runs the hosted tests, with derived data under `/private/tmp`. Finally it fails if a test helper process started during the run is still running, such as the runtime helper, the command-line engine or a fake helper from a temporary `steno-*` directory; it reports those processes but does not stop them. Use `scripts/check.sh --clean` after a shared struct or enum changes shape, because an incremental build can then compile but crash when the tests run. The check does not run the native runtime suites, the benchmark or packaging; CI runs those.
+
+The individual commands are:
+
 The same scripts can run on an Apple silicon Mac with Xcode 26.3, Python 3.11 or later, CMake, Git and standard macOS tools. The CI image uses `DEVELOPER_DIR` to select Xcode without changing the machine's global developer directory.
 
 ```bash

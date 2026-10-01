@@ -31,7 +31,7 @@ jobs:
           python3 scripts/ci/check-doc-links.py
           python3 scripts/ci/check-policy.py
           python3 -m unittest discover -s scripts/ci/tests -p 'test_*.py' -v
-          for script in scripts/ci/*.sh scripts/release-dmg.sh; do bash -n "$script"; done
+          for script in scripts/ci/*.sh scripts/release-dmg.sh scripts/check.sh; do bash -n "$script"; done
           bash scripts/ci/tools.sh actionlint
           build/ci-tools/actionlint/actionlint -shellcheck= -pyflakes=
           git diff --check
