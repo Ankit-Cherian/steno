@@ -277,6 +277,17 @@ class WorkflowPolicyTests(unittest.TestCase):
         # Resolution must not compile the app; the traced build still does that.
         self.assertNotIn('xcodebuild build', steps[resolve]['run'])
 
+    def test_dependabot_checks_monthly_and_keeps_major_updates_separate(self):
+        config = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/dependabot.yml').read_text())
+        ecosystems = {update['package-ecosystem']: update for update in config['updates']}
+        self.assertEqual(set(ecosystems), {'github-actions', 'swift'})
+        for name, update in ecosystems.items():
+            with self.subTest(ecosystem=name):
+                self.assertEqual(update['schedule']['interval'], 'monthly')
+                groups = update['groups']
+                self.assertEqual(len(groups), 1)
+                self.assertEqual(next(iter(groups.values()))['update-types'], ['minor', 'patch'])
+
     def test_tab_indentation_and_document_indirection_rejected(self):
         self.assertTrue(POLICY.check_workflow(VALID.replace('  test:', '\ttest:')))
         self.assertTrue(POLICY.check_workflow('---\n' + VALID))
