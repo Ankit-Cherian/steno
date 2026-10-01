@@ -29,11 +29,11 @@ struct GeneralSettingsSection: View {
                 settingsToggle("Show Dock icon", isOn: $preferences.general.showDockIcon)
             }
             settingsCard("Welcome guide") {
-                settingsToggle("Show onboarding on next launch", isOn: $preferences.general.showOnboarding)
-                Button("Show guide on next launch") {
-                    preferences.general.showOnboarding = true
-                }
-                .buttonStyle(.bordered)
+                settingsToggle(
+                    "Open the setup guide",
+                    description: "The setup guide opens when you save.",
+                    isOn: $preferences.general.showOnboarding
+                )
             }
         }
     }

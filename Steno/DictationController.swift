@@ -689,8 +689,9 @@ final class DictationController: ObservableObject {
         launchAtLoginWarning = ""
         await refreshLaunchAtLoginStatus()
         refreshPermissionStatuses()
-        validateWhisperPaths()
         await rebuildRuntime()
+        // After the rebuild, whose own status would otherwise replace the warning.
+        validateWhisperPaths()
         await refreshHistory()
         await refreshUsageAnalytics()
         overlay.prepareWindow()
@@ -2439,15 +2440,21 @@ final class DictationController: ObservableObject {
     }
 
     private func validateWhisperPaths() {
-        let cliExists = FileManager.default.fileExists(atPath: preferences.dictation.whisperCLIPath)
-        let modelExists = FileManager.default.fileExists(atPath: preferences.dictation.modelPath)
+        if let warning = Self.startupPathWarning(
+            cliExists: FileManager.default.fileExists(atPath: preferences.dictation.whisperCLIPath),
+            modelExists: FileManager.default.fileExists(atPath: preferences.dictation.modelPath)
+        ) {
+            status = warning
+        }
+    }
 
-        if !cliExists && !modelExists {
-            status = "whisper-cli and model not found. Check Settings \u{2192} Engine."
-        } else if !cliExists {
-            status = "whisper-cli not found. Check Settings \u{2192} Engine."
-        } else if !modelExists {
-            status = "Model file not found. Check Settings \u{2192} Engine."
+    static func startupPathWarning(cliExists: Bool, modelExists: Bool) -> String? {
+        let location = "Check Settings \u{2192} Speech model."
+        switch (cliExists, modelExists) {
+        case (true, true): return nil
+        case (false, false): return "The transcription tool and speech model weren't found. \(location)"
+        case (false, true): return "The transcription tool wasn't found. \(location)"
+        case (true, false): return "The speech model file wasn't found. \(location)"
         }
     }
 

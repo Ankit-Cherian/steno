@@ -51,11 +51,22 @@ struct EngineSettingsSection: View {
                             .font(.system(.body, design: .monospaced))
                             .truncationMode(.middle)
                         if let error = vadModelPathError {
-                            HStack(spacing: StenoDesign.xs) {
+                            HStack(alignment: .firstTextBaseline, spacing: StenoDesign.xs) {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .font(StenoDesign.caption())
+                                    .accessibilityHidden(true)
                                 Text(error)
                                     .font(StenoDesign.caption())
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let includedVADPath {
+                                    Spacer(minLength: StenoDesign.sm)
+                                    Button("Use included model") {
+                                        preferences.dictation.vadModelPath = includedVADPath
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .fixedSize()
+                                }
                             }
                             .foregroundStyle(StenoDesign.warning)
                         }
@@ -180,6 +191,11 @@ struct EngineSettingsSection: View {
                         }
                         .buttonStyle(.bordered)
                         .fixedSize()
+                        .accessibilityLabel(
+                            controller.activeModelDownloadID == option.modelID
+                                ? "Downloading \(option.title)"
+                                : "\(buttonLabel(for: option)) \(option.title)"
+                        )
                         .disabled(hasUnsavedChanges || option.isActive || (controller.activeModelDownloadID != nil && controller.activeModelDownloadID != option.modelID))
                     }
                 }
@@ -287,12 +303,31 @@ struct EngineSettingsSection: View {
 
     private var vadModelPathError: String? {
         guard !controller.isIsolatedPreview else { return nil }
-        let path = preferences.dictation.vadModelPath
+        return Self.vadModelPathMessage(
+            path: preferences.dictation.vadModelPath,
+            fileExists: FileManager.default.fileExists(atPath:),
+            includedModelAvailable: includedVADPath != nil
+        )
+    }
+
+    private var includedVADPath: String? {
+        guard !controller.isIsolatedPreview else { return nil }
+        return BundledWhisperRuntime.resolvedPaths()?.vadModelPath
+    }
+
+    static func vadModelPathMessage(
+        path: String,
+        fileExists: (String) -> Bool,
+        includedModelAvailable: Bool
+    ) -> String? {
+        let fix = includedModelAvailable
+            ? "Enter the path to a voice-detection model file, or use the included one."
+            : "Enter the path to a voice-detection model file, or turn off voice activity detection."
         guard !path.isEmpty else {
-            return "VAD model path is empty. Download with: ./models/download-vad-model.sh silero-v6.2.0"
+            return "No voice-detection model is set. \(fix)"
         }
-        if FileManager.default.fileExists(atPath: path) { return nil }
-        return "VAD model not found. Dictation will work without it, but silence/noise suppression will be weaker. Download with: ./models/download-vad-model.sh silero-v6.2.0"
+        if fileExists(path) { return nil }
+        return "Voice-detection model not found. Dictation still works, but silence and background noise are filtered less. \(fix)"
     }
 
     private var compatibilityAssessment: WhisperCompatibilityAssessment? {

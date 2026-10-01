@@ -54,6 +54,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Review settings on the Dictate tab now opens the page that fixes the problem, such as Permissions for missing Accessibility or Input Monitoring access and Speech model for a model problem. Each Open Settings button opens the matching list in Privacy & Security.
 - Launch at login is now saved as On only after macOS accepts it. If registration fails, the setting stays Off and Settings says why. If macOS needs your approval, Settings says so and offers to open Login Items. Turning Steno off in Login Items is now reflected in Settings.
 - Test setup in Settings > Speech model now transcribes a short test clip with the main engine and the fallback tool and reports each step, instead of only checking that the tool starts. It doesn't affect a dictation in progress or add anything to History or Insights.
+- The General settings control for the setup guide now says that the guide opens when you save, rather than "on next launch".
+- A missing voice-detection model now shows a plain instruction, with a button to use the included model, instead of a developer command. A missing speech model or transcription tool at launch is now reported in Last activity instead of being replaced at once, and points to Settings > Speech model.
+- Model buttons in Settings now name their model for VoiceOver and Voice Control, and the setup guide's Back, Set up later and Open Steno buttons can be activated by their visible names.
 
 ## [1.0.0] - 2026-09-17
 

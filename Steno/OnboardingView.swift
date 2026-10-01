@@ -424,7 +424,6 @@ struct OnboardingView: View {
                 .buttonStyle(.bordered)
                 .keyboardShortcut("[", modifiers: .command)
                 .help("Previous step (Command-[)")
-                .accessibilityLabel("Go to previous step")
             }
 
             Spacer()
@@ -435,7 +434,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.bordered)
                 .help("Continue setup without completing this step")
-                .accessibilityLabel("Set up \(currentStep.name.lowercased()) later")
+                .accessibilityLabel("Set up later, skipping \(currentStep.name.lowercased())")
             }
 
             if currentStep == .featureTour {
@@ -448,7 +447,7 @@ struct OnboardingView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(StenoDesign.theme(for: controller.preferences).accent)
                 .keyboardShortcut(.defaultAction)
-                .accessibilityLabel("Finish onboarding and start using Steno")
+                .accessibilityLabel("Open Steno and finish setup")
             } else {
                 Button {
                     goForward()
