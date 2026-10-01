@@ -90,6 +90,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Transcript files the backup transcription path left in the temporary folder after a crash or a force quit are now deleted the next time Steno starts, as recordings already were.
 - Releasing Option after a dictation was refused, for example with microphone access off, or after a recording stopped by itself, such as at the length limit, no longer replaces the explanation with "No active Option recording."
 - Review settings on the Dictate tab now opens Text output after an insertion problem, Speech model after a transcription failure, and the page you were saving after a settings save fails, instead of Permissions or Recording.
+- "Settings saved." now stays visible after a save instead of being replaced at once by "Running local transcription + local cleanup." Switching or downloading a model, and a dictation's result, are no longer replaced by that line either.
 
 ## [1.0.0] - 2026-09-17
 

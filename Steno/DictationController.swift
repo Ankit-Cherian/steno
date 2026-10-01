@@ -2499,7 +2499,7 @@ final class DictationController: ObservableObject {
             // press during the rebuild is not dropped.
             applyPreferencesLocally(snapshot)
             coordinator = makeCoordinator(snapshot: snapshot, transcriptionEngine: reusableEngine)
-            status = "Running local transcription + local cleanup."
+            showRuntimeReady()
             await previousCoordinator?.shutdown()
             return
         }
@@ -2520,7 +2520,7 @@ final class DictationController: ObservableObject {
                 return
             }
             coordinator = replacement
-            status = "Running local transcription + local cleanup."
+            showRuntimeReady()
             return
         }
 
@@ -2531,6 +2531,21 @@ final class DictationController: ObservableObject {
         let engine = transcriptionEngineFactory(settings)
         retainedTranscriptionEngine = (engine, settings)
         coordinator = makeCoordinator(snapshot: snapshot, transcriptionEngine: engine)
+        showRuntimeReady()
+    }
+
+    /// Statuses that only say the runtime isn't ready yet, or nothing at all.
+    private static let statusesReplacedWhenRuntimeIsReady: Set<String> = [
+        "",
+        "Idle",
+        "Runtime not ready yet.",
+        "Runtime is releasing memory. Try again in a moment.",
+    ]
+
+    /// Says the runtime is ready, unless the status line holds a more recent,
+    /// more specific message, such as "Settings saved." or a dictation's result.
+    private func showRuntimeReady() {
+        guard Self.statusesReplacedWhenRuntimeIsReady.contains(status) else { return }
         status = "Running local transcription + local cleanup."
     }
 

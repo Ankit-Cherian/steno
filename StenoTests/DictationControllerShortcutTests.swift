@@ -14,16 +14,15 @@ func disabledHandsFreeKeyShowsNoError() async {
     let controller = makeTestDictationController(hotkey: hotkey, overlay: presenter)
     defer { controller.teardown() }
 
-    let rebuiltStatus = "Running local transcription + local cleanup."
     var draft = controller.preferences
     draft.hotkeys.handsFreeGlobalKeyCode = nil
-    controller.applySettingsDraft(preferences: draft)
-    #expect(await waitForShortcutCondition { controller.status == rebuiltStatus })
+    #expect(await controller.applySettingsDraft(preferences: draft).value)
     controller.status = ""
     // Launch and "Check again" restart the monitor and reassign the key.
     controller.refreshPermissionStatuses()
     controller.savePreferences()
-    #expect(await waitForShortcutCondition { controller.status == rebuiltStatus })
+    #expect(await waitForShortcutCondition { controller.status == "Settings saved." })
+    try? await Task.sleep(for: .milliseconds(100))
 
     #expect(controller.hotkeyRegistrationMessage.isEmpty)
     #expect(!presenter.hostedEvidenceShownStates().contains { $0.isFailure })

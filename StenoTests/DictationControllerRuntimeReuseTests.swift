@@ -44,6 +44,8 @@ struct DictationControllerRuntimeReuseTests {
         #expect(engines.built.count == 1)
         #expect(await engines.built[0].shutdowns == 0)
         #expect(await engines.built[0].unloads == 0)
+        // Applying the settings doesn't replace the save confirmation.
+        #expect(controller.status == "Settings saved.")
 
         // A change the engine depends on replaces it once.
         draft = controller.preferences
@@ -53,6 +55,7 @@ struct DictationControllerRuntimeReuseTests {
         #expect(await engines.built[0].shutdowns == 1)
         #expect(await engines.built[1].shutdowns == 0)
         #expect(engines.settings[1].threadCount == engines.settings[0].threadCount + 1)
+        #expect(controller.status == "Settings saved.")
 
         await controller.teardownAndWait()
         #expect(await engines.built[1].shutdowns == 1)
