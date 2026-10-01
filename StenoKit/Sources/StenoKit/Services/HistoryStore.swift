@@ -65,11 +65,16 @@ public actor HistoryStore: HistoryStoreProtocol {
 
     /// Removes one transcript. The previous-generation copy kept beside the
     /// file is rewritten to match, so the deleted text doesn't stay on disk.
+    /// Copies kept when the file couldn't be read in full lose the entry too;
+    /// one that can't be parsed is left as it is, and a notice says so.
     public func delete(entryID: UUID) async throws {
         try commit(previousCopy: .matchNewFile) { working in
             let countBefore = working.count
             working.removeAll { $0.id == entryID }
             return working.count != countBefore
+        }
+        StorageFileLock.withLock(for: storageURL) {
+            removeFromKeptCopies(entryID: entryID)
         }
     }
 
@@ -284,6 +289,126 @@ public actor HistoryStore: HistoryStoreProtocol {
         } catch {
             try FileManager.default.removeItem(at: previousURL)
         }
+    }
+
+    /// Removes `entryID` from each copy kept when the file couldn't be read in
+    /// full. A copy that can't be parsed or rewritten is left untouched, and
+    /// the user is told that it still holds older text.
+    private func removeFromKeptCopies(entryID: UUID) {
+        var untouched: [URL] = []
+        for copy in StorageFilePreservation.keptCopies(of: storageURL, labels: ["original", "unreadable"]) {
+            guard let data = try? Data(contentsOf: copy) else {
+                untouched.append(copy)
+                continue
+            }
+            let edited: Data
+            switch Self.removingEntry(entryID, fromKeptCopy: data) {
+            case .unparseable:
+                untouched.append(copy)
+                continue
+            case .noMatch:
+                continue
+            case .edited(let data):
+                edited = data
+            }
+            do {
+                try edited.write(to: copy, options: [.atomic])
+            } catch {
+                untouched.append(copy)
+            }
+        }
+        guard let first = untouched.first else { return }
+        let subject = untouched.count == 1
+            ? "a damaged copy of the History file that Steno kept earlier still holds"
+            : "\(untouched.count) damaged copies of the History file that Steno kept earlier still hold"
+        report(StorageRecoveryNotice(
+            message: "The transcript was deleted, but \(subject) older text. “Delete all history” removes \(untouched.count == 1 ? "it" : "them").",
+            fileURL: first
+        ))
+    }
+
+    enum KeptCopyEdit: Equatable {
+        case unparseable
+        case noMatch
+        case edited(Data)
+    }
+
+    /// Removes the entries whose `id` is `entryID` from `data`, a kept copy's
+    /// JSON array. Every other entry keeps its exact bytes.
+    static func removingEntry(_ entryID: UUID, fromKeptCopy data: Data) -> KeptCopyEdit {
+        guard (try? JSONSerialization.jsonObject(with: data)) is [Any] else { return .unparseable }
+        let bytes = [UInt8](data)
+        let whitespace: Set<UInt8> = [0x20, 0x0A, 0x0D, 0x09]
+        guard let open = bytes.firstIndex(where: { !whitespace.contains($0) }), bytes[open] == UInt8(ascii: "[") else {
+            return .unparseable
+        }
+
+        // The array is valid JSON, so tracking strings and nesting is enough
+        // to find where each top-level element starts and ends.
+        var elements: [Range<Int>] = []
+        var elementStart = open + 1
+        var close: Int?
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for index in (open + 1)..<bytes.count {
+            let byte = bytes[index]
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if byte == UInt8(ascii: "\\") {
+                    escaped = true
+                } else if byte == UInt8(ascii: "\"") {
+                    inString = false
+                }
+                continue
+            }
+            switch byte {
+            case UInt8(ascii: "\""):
+                inString = true
+            case UInt8(ascii: "{"), UInt8(ascii: "["):
+                depth += 1
+            case UInt8(ascii: "}"), UInt8(ascii: "]"):
+                if depth == 0 {
+                    elements.append(elementStart..<index)
+                    close = index
+                } else {
+                    depth -= 1
+                }
+            case UInt8(ascii: ",") where depth == 0:
+                elements.append(elementStart..<index)
+                elementStart = index + 1
+            default:
+                break
+            }
+            if close != nil { break }
+        }
+        guard let close else { return .unparseable }
+
+        var kept: [ArraySlice<UInt8>] = []
+        var removed = false
+        for range in elements {
+            guard let first = range.first(where: { !whitespace.contains(bytes[$0]) }),
+                  let last = range.last(where: { !whitespace.contains(bytes[$0]) })
+            else { continue }
+            let element = bytes[first...last]
+            if let object = try? JSONSerialization.jsonObject(with: Data(element)) as? [String: Any],
+               let id = object["id"] as? String,
+               UUID(uuidString: id) == entryID {
+                removed = true
+            } else {
+                kept.append(element)
+            }
+        }
+        guard removed else { return .noMatch }
+
+        var result = Array(bytes[...open])
+        for (index, element) in kept.enumerated() {
+            if index > 0 { result.append(UInt8(ascii: ",")) }
+            result.append(contentsOf: element)
+        }
+        result.append(contentsOf: bytes[close...])
+        return .edited(Data(result))
     }
 
     /// Reloads when the file changed since this store last read or wrote it.
