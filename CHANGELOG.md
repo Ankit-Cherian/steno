@@ -48,6 +48,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Aggressive filler removal no longer removes "kind of" or "sort of" where they mean "type of", as in "What kind of car is that?". They are still removed as hedges, as in "it's kind of unstable".
 - A text shortcut whose trigger is a space no longer deletes every space in a dictation. Triggers are trimmed, and Settings no longer accepts a blank trigger or an app shortcut without a bundle ID. Overlapping triggers now resolve the same way whatever order they were added in: the longer trigger wins, an app shortcut beats an all-apps one, and an expansion is never expanded again.
 - Settings no longer offers cleanup options that had no effect: Tone, and the Command and Email structures. A saved Command structure works as Natural and a saved Email structure as Paragraph, which is what they did; settings that use them still load.
+- "Run cleanup again" in History now treats VS Code, JetBrains IDEs and Warp the same way live dictation does, so it no longer gives different text. Apps are recognized by their bundle identifier: Microsoft's Windows App is now recognized as a remote-desktop client, and the WordPress app no longer is.
 
 ## [1.0.0] - 2026-09-17
 

@@ -2215,13 +2215,7 @@ final class DictationController: ObservableObject {
     }
 
     private func appContext(for bundleID: String) -> AppContext {
-        let name = StenoDesign.appDisplayName(for: bundleID)
-        return AppContext(
-            bundleIdentifier: bundleID,
-            appName: name,
-            isRemoteDesktop: bundleID.lowercased().contains("remote"),
-            isIDE: bundleID.contains("Xcode") || bundleID.contains("com.todesktop") || bundleID.contains("warp")
-        )
+        AppContext.classified(bundleIdentifier: bundleID, appName: StenoDesign.appDisplayName(for: bundleID))
     }
 
     private func copiedOnlyStatusMessage(for result: InsertResult) -> String {
