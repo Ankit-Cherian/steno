@@ -1,0 +1,141 @@
+name: Release rehearsal
+
+# Exercises release signing on main before a version tag exists. Permissions,
+# not intent, keep it from publishing anything: it cannot write repository
+# contents, tags or releases, cannot create attestations, and uploads only a
+# sanitized notary receipt and a hash summary, never the app or disk image.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable version the rehearsal checks, matching project.yml'
+        required: true
+        type: string
+      mode:
+        description: 'signing: credentials and a signed probe only. full: also build, sign, notarize once and staple'
+        required: true
+        default: signing
+        type: choice
+        options: [signing, full]
+
+permissions:
+  contents: read
+
+# Separate from the release lock, so a rehearsal never replaces a pending release.
+concurrency:
+  group: steno-release-rehearsal
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Check release facts
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check hand-edited release facts at this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/release-guard.py plan "$RELEASE_VERSION"
+
+  rehearse:
+    name: Rehearse release signing
+    needs: plan
+    runs-on: macos-15
+    timeout-minutes: 120
+    # The existing release environment: same approval, branch rule and secrets.
+    environment: release
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      GGML_METAL_DEVICES: '0'
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SHA: ${{ github.sha }}
+      REHEARSAL_MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify release environment setup
+        env:
+          RELEASE_ENABLED: ${{ vars.RELEASE_ENABLED }}
+        run: |
+          test "$RELEASE_ENABLED" = 'true' || { echo 'Release environment is not configured and enabled.' >&2; exit 1; }
+          test "$(uname -m)" = arm64
+          case "$REHEARSAL_MODE" in signing|full) ;; *) echo 'Unknown rehearsal mode.' >&2; exit 1 ;; esac
+      - name: Import the certificate, sign probes and query the notary service
+        if: inputs.mode == 'signing'
+        run: bash scripts/ci/release-rehearsal-signing.sh
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      - name: Prepare pinned build tools
+        if: inputs.mode == 'full'
+        run: |
+          bash scripts/ci/tools.sh xcodegen
+          echo "$GITHUB_WORKSPACE/build/ci-tools/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Prepare verified runtime source and models
+        if: inputs.mode == 'full'
+        run: bash scripts/ci/prepare-runtime.sh --root "$RUNNER_TEMP/steno-release-runtime"
+      - name: Build, sign, notarize once, staple and verify with the release scripts
+        if: inputs.mode == 'full'
+        run: bash scripts/ci/release-sign.sh
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      - name: Summarize rehearsal hashes and discard the signed build
+        if: always() && inputs.mode == 'full'
+        run: |
+          mkdir -p "$RUNNER_TEMP/steno-rehearsal-summary"
+          python3 - "$RUNNER_TEMP/steno-release-assets" "$RUNNER_TEMP/steno-rehearsal-summary/rehearsal-summary.json" <<'PY'
+          import hashlib, json, os, sys
+          from pathlib import Path
+          assets, output = Path(sys.argv[1]), Path(sys.argv[2])
+          files = sorted(path for path in assets.glob('*') if path.is_file()) if assets.is_dir() else []
+          summary = {'version': os.environ['RELEASE_VERSION'], 'source_sha': os.environ['RELEASE_SHA'],
+                     'mode': 'full', 'published': False,
+                     'files': {path.name: hashlib.file_digest(path.open('rb'), 'sha256').hexdigest() for path in files}}
+          output.write_text(json.dumps(summary, indent=2) + '\n')
+          print(json.dumps(summary, indent=2))
+          PY
+          cat "$RUNNER_TEMP/steno-rehearsal-summary/rehearsal-summary.json" >> "$GITHUB_STEP_SUMMARY"
+          # The signed, notarized build of an unreleased commit never leaves the runner.
+          rm -rf "$RUNNER_TEMP/steno-release-assets" "$RUNNER_TEMP/steno-release-distribution/Steno.app" \
+            "$RUNNER_TEMP"/steno-release-distribution/*.dmg
+      - name: Preserve sanitized notarization receipt
+        if: always() && inputs.mode == 'full'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: notary-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/steno-release-distribution/release-notary-receipt.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Preserve rehearsal hash summary
+        if: always() && inputs.mode == 'full'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rehearsal-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/steno-rehearsal-summary/rehearsal-summary.json
+          if-no-files-found: ignore
+          retention-days: 14

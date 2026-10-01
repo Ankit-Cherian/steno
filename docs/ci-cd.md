@@ -6,27 +6,29 @@ The workflow files define triggers after they are pushed to GitHub; execution al
 
 The runtime and distribution job has a 75-minute overall limit. It includes native tests, the public benchmark, app packaging and DMG verification. Individual inference and diagnostic deadlines remain separate.
 
+Within that job, the native build, the short native contract checks, the retained-engine checks, the benchmark and the preview DMG run first. The preview is uploaded before the 26-case protocol matrix and prompt-scoring suites start, so it is available for manual testing sooner. It can therefore appear before those suites have passed. The preview is ad-hoc signed and is not the shipped configuration; `CI Gate` still fails unless every step of the job succeeds.
+
 ## What runs
 
 | Stage | When | What it proves |
 | --- | --- | --- |
 | Workflow and release contracts | PRs, main, merge queue, manual dispatch, release | Workflow syntax/security policy; automation regression tests; generated-project hygiene |
-| Package and hosted tests | Non-documentation changes and every release or manual validation, macOS 15 and 26 | Swift package assertions, app compilation, hosted controller/state tests, production-view render assertions and coverage artifacts |
-| Native runtime | Same full-validation events, Apple silicon | Pinned native build with reviewed source corrections, allocation-failure regressions, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-process silence contract |
+| Package and hosted tests | Every main push, merge group, release or manual validation, and PRs that change more than documentation; macOS 15 and 26 | Swift package assertions, app compilation, hosted controller/state tests, production-view render assertions and coverage artifacts |
+| Native runtime | Same full-validation events, Apple silicon | Pinned native build with reviewed source corrections, allocation-failure regressions, prompt verification, VAD integrity, 26-case adversarial protocol matrix, scorer controls, retained-engine one-shot and streaming requests through the real helper |
 | Public audio benchmark | Same native lane | Actual inference on the pinned public JFK sample and zero WER/CER regression introduced by the cleanup pipeline |
 | Distribution preview | Same native lane | Self-contained ad-hoc app/DMG, bundled libraries and models, architecture, deployment target, code signature structure, relocatable dependencies, bundled inference |
-| Security | PRs, main, merge queue, weekly, release | Actions analysis and PR dependency review always run; Swift/C++ analysis skips only verified documentation-only diffs. Weekly scans and releases analyze all languages. |
+| Security | PRs, main, merge queue, weekly, release | Actions analysis and PR dependency review always run; Swift/C++ analysis skips only verified documentation-only PRs. Main pushes, weekly scans and releases analyze all languages. |
 | Release | Maintainer dispatch from main | Exact-source validation, protected signing/notarization, final-DMG provenance, verified draft, optional separately approved publication |
 
 `CI Gate` requires the policy job to succeed and checks the remaining jobs against the selected scope. `Security Gate` requires every applicable scan and its severity gate to succeed. Failed, cancelled or unexpectedly skipped jobs cannot satisfy those aggregate checks. Both workflows start for documentation PRs, so required checks are still reported. A feature-branch push updates its PR checks without launching a duplicate branch run. Before opening a PR, use the manual CI dispatch if a hosted preview is needed. Main retains its post-merge checks. A local commit runs no remote checks until it is pushed.
 
 ### Documentation-only changes
 
-A complete Git diff selects the shorter path only when every changed file is a recognized root documentation file, Markdown under `docs/`, or a supported documentation image. It checks both sides of renames and excludes symbolic links. Missing comparison commits, unknown paths, empty diffs, workflow changes, scripts, and app changes require full validation. No GitHub file-list limit can silently omit a changed source file.
+Only a pull request can select the shorter path. A complete Git diff selects it only when every changed file is a recognized root documentation file, Markdown under `docs/`, or a supported documentation image. It checks both sides of renames and excludes symbolic links. Missing comparison commits, unknown paths, empty diffs, workflow changes, scripts, and app changes require full validation. No GitHub file-list limit can silently omit a changed source file.
 
-Documentation-only PRs, main pushes, and merge groups run local Markdown link-target checks, workflow policy and automation tests, artifact upload/download compatibility, CodeQL Actions, and dependency review where applicable. They skip package/hosted tests, runtime inference and packaging, and native CodeQL. The gates accept those skips only after successful classification as documentation-only; failures and cancellations remain failures. The local link check covers inline Markdown file targets, not remote URLs, anchors, or the correctness of prose and command examples; reviewers still verify those.
+Documentation-only PRs run local Markdown link-target checks, workflow policy and automation tests, artifact upload/download compatibility, CodeQL Actions, and dependency review where applicable. They skip package/hosted tests, runtime inference and packaging, and native CodeQL. The gates accept those skips only after successful classification as documentation-only; failures and cancellations remain failures. The local link check covers inline Markdown file targets, not remote URLs, anchors, or the correctness of prose and command examples; reviewers still verify those.
 
-Release calls, manual dispatches, and weekly security scans always use full validation. This change avoids native jobs for documentation; it does not shorten the runtime suite for code changes or reuse results from a different source commit. Use GitHub check notifications instead of continuously polling a running job. Diagnose a failure before deciding whether a rerun is appropriate.
+Every other event uses full validation: pushes to main, merge groups, release calls, manual dispatches and weekly security scans. A documentation-only commit on main, such as a release's changelog commit, therefore still gets the complete tests and a preview. This change avoids native jobs for documentation PRs; it does not shorten the runtime suite for code changes or reuse results from a different source commit. Use GitHub check notifications instead of continuously polling a running job. Diagnose a failure before deciding whether a rerun is appropriate.
 
 ### Runtime and accuracy boundaries
 
@@ -52,7 +54,7 @@ If the protocol suite fails, the runtime lane keeps that failure and checks the 
 
 The public benchmark is a **single-fixture smoke regression**, not a general recognition-accuracy score or a comparison against the previous release. It compares raw recognition against Steno's cleanup pipeline on that fixture. The existing broader benchmark manifest and release evaluation remain separate requirements for relevant changes. Some historical fixtures are local-only and are deliberately not uploaded by CI.
 
-The normal package suite includes opt-in runtime integration tests. CI activates the retained-helper contract explicitly in the native lane. Ordinary package-test success alone is not proof that a real model or helper executed. Real microphone behavior, actual editor insertion, permissions, supported media applications, native Metal inference, and macOS 13 acceptance remain in the [release checklist](release/1.0-checklist.md).
+The normal package suite includes opt-in runtime integration tests. CI activates the retained-helper contract explicitly in the native lane, on generated silence and on the public speech sample, and also streams that sample through the Swift live-transcription client to one final transcript. There it sets `STENO_TEST_REQUIRE_RETAINED_HELPER=1`, so a request answered by the command-line fallback instead of the real helper fails the check. Ordinary package-test success alone is not proof that a real model or helper executed. Real microphone behavior, actual editor insertion, permissions, supported media applications, native Metal inference, and macOS 13 acceptance remain in the [release checklist](release/1.0-checklist.md).
 
 ## Contributor experience
 
@@ -60,13 +62,23 @@ The normal package suite includes opt-in runtime integration tests. CI activates
 2. GitHub may ask a maintainer to approve running workflows from an external contributor. This grants permission for that run, not permission to merge or publish.
 3. Open the PR's **Checks** tab. Start with the first failing job and its failing step. Independent jobs continue so one run can show multiple failures.
 4. Test logs, `.xcresult` bundles, coverage JSON and synthetic renders are available as artifacts. Preview artifacts are named `unsigned-preview-arm64-<SHA>` and retained for seven days; they contain a DMG named `Steno-<version>-<short-SHA>-preview.dmg`. Other test evidence is retained for fourteen days.
-5. Fix the issue and push again. A newer CI run cancels obsolete validation for the same branch or PR. The Release and Publish release workflows share a non-cancelling release lock; their reusable security checks have a separate cancellation policy.
+5. Fix the issue and push again. A newer push to the same PR cancels its obsolete CI and Security runs. Runs on main, scheduled scans, manual dispatches and release calls are never cancelled by a newer run; each completes and reports for its own commit. The Release and Publish release workflows share a non-cancelling release lock; their reusable security checks have a separate cancellation policy.
 
 Preview DMGs use ad-hoc signatures. They have no Developer ID identity or notarization, may be blocked by Gatekeeper, and are not official releases. An artifact from a fork or pull request is untrusted contributor code; only test contributions you have reviewed. Do not treat download availability as release approval.
 
 The project already has extensive tests around capture integrity, no-speech gating, cleanup, insertion target safety, media ownership, runtime lifecycle, settings drafts and synthetic rendering. Add tests that expose a changed behavior or a new failure case. Do not duplicate those assertions solely to raise test counts. Coverage is published for inspection without an arbitrary percentage gate.
 
 ## Local reproduction
+
+Before pushing app or package changes, run the local check:
+
+```bash
+scripts/check.sh
+```
+
+It regenerates `Steno.xcodeproj` with the pinned XcodeGen and confirms every hosted test file is in it, so newly added tests cannot be skipped by a stale project. It then runs the package tests, builds the app and runs the hosted tests, with derived data under `/private/tmp`. Finally it fails if a test helper process started during the run is still running, such as the runtime helper, the command-line engine or a fake helper from a temporary `steno-*` directory; it reports those processes but does not stop them. Use `scripts/check.sh --clean` after a shared struct or enum changes shape, because an incremental build can then compile but crash when the tests run. The check does not run the native runtime suites, the benchmark or packaging; CI runs those.
+
+The individual commands are:
 
 The same scripts can run on an Apple silicon Mac with Xcode 26.3, Python 3.11 or later, CMake, Git and standard macOS tools. The CI image uses `DEVELOPER_DIR` to select Xcode without changing the machine's global developer directory.
 
@@ -105,6 +117,8 @@ STENO_CI_BENCHMARK_OUTPUT="$PWD/build/benchmark-cpu" \
   bash scripts/ci/benchmark.sh
 ```
 
+`runtime-checks.sh` runs every check by default. `--stage fast` builds the runtime and runs the short checks into a new output directory; `--stage slow` then runs the protocol matrix and prompt scoring against that same directory, and refuses an output without a completed fast stage.
+
 For the production GPU path, use a new output directory and `--backend metal`. That mode explicitly removes inherited GPU suppression and requires observed Metal evidence. `prepare-runtime.sh --verify-only --root <path>` validates existing dependencies without downloading or modifying them.
 
 ## Security design
@@ -121,13 +135,34 @@ For the production GPU path, use a new output directory and `--backend metal`. T
 
 ## Release operation
 
+For 1.0.1, follow the step-by-step [1.0.1 release procedure](release/1.0.1-checklist.md). It adds the ordering rules that no workflow enforces: an unchanged main between merge and dispatch, the rehearsal and `plan` check before tagging, and what to do when a step fails after the tag exists.
+
 Complete the source checks, measured evaluation, and native-app acceptance in the [1.0 checklist](release/1.0-checklist.md), integrate the intended source into main, and create the approved version tag before dispatching a release. Distribution and publication receipts are completed later against the resulting signed artifact. Before approving the release tag, finalize the README candidate status and move the approved changelog entries from `[Unreleased]` to the selected version with its actual release date in that source. Keeping candidate wording and `[Unreleased]` during PR preparation is intentional; the tagged release must describe the released version. The `/releases/latest` download link needs no version-specific edit. Tag creation is deliberately not automatic. The selected source must be the dispatch's main commit, with matching `project.yml` version and existing `vX.Y.Z` tag. No metadata is bumped automatically.
+
+A version tag is permanent: a repository rule prevents moving or deleting it. Before creating one, check the hand-edited release facts at the intended commit:
+
+```bash
+python3 scripts/ci/release-guard.py plan X.Y.Z
+```
+
+`plan` needs no credentials. It reads `project.yml`, `CHANGELOG.md` and the distribution entitlements from the current commit, not the working tree, and compares them with the tag of the latest published release (read from GitHub, or given with `--previous-tag`). It requires the requested `MARKETING_VERSION`, a larger `CURRENT_PROJECT_VERSION`, one dated changelog heading for the version, no leftover `[Unreleased]` entries, a version tag that is absent or already at the current commit both locally and on `origin`, unchanged bundle identifiers, and unchanged distribution entitlements unless `--accept-entitlements-change` acknowledges a reviewed change. A changed bundle identifier would reset every user's microphone and accessibility permissions, which macOS ties to the app's identity. It reports a changelog date other than today as a note. Fetch tags first if the previous release tag is not available locally.
 
 **Steno 1.0 recovery exception:** the existing `v1.0.0` tag remains at `d25fcdf9d625eea6ee31bd0b03c5994302e8065e`, including its historical preparation wording. Final publication dates and receipts are recorded in the main-branch changelog and checklist after publication; the tag is not moved to include those documentation changes. The [reviewed signing recovery](release/signing-recovery.md) builds that exact app source using separately reviewed workflow code, reuses verified successful source checks, and retains signing, notarization, draft, and publication protections. Its authorization records the disclosed manual-coverage limits without asserting that untested cases passed.
 
 The 1.0 draft was ultimately verified and published manually by its existing release ID after the workflow’s draft lookup returned 404. The [publication record](release/signing-recovery.md#publication-record) documents that outcome and the temporary, restored CI exception used for PR #24. Neither is a standing exception for future releases.
 
 The steps below describe the standard **Release** workflow. For the 1.0 recovery, use its linked instructions; the original **Publish release** workflow cannot promote a recovery draft unchanged because it assumes one source SHA for both the app and workflow. Recovery also verifies its checked-in release notes before publication, so do not replace those notes during the protected approval step.
+
+### Release rehearsal
+
+**Actions → Release rehearsal → Run workflow** on main exercises signing before the version tag exists. It takes the version and a mode, runs the `plan` check above first in both modes, and then waits at the same protected **release** environment as a real release.
+
+- **`signing`** (about a minute after approval): imports the Developer ID certificate into a temporary keychain, sets the keychain search list, signs and verifies a small executable and a small library, and makes one read-only notary-service request to prove the notary credentials. Its credential steps repeat those in `release-sign.sh`, and a test keeps the two identical. Nothing is built, notarized or uploaded.
+- **`full`**: also prepares the pinned runtime and runs the unchanged `release-sign.sh` and `release-dmg.sh`: the app build, signing of the app and bundled runtime, the bundled-runtime smoke test, one notarization submission, stapling and Gatekeeper verification. Apple keeps a record of that submission. The signed app and disk image are deleted on the runner; only the sanitized notary receipt and a summary of file hashes are uploaded.
+
+Its permissions make publication impossible rather than merely unintended: every scope is read-only, so it cannot push a tag or create a release or draft, and it has no `id-token` or `attestations` permission, so it cannot create an attestation (attestations for a public repository are permanent public records). It has its own concurrency group and cannot replace a pending release.
+
+A rehearsal cannot exercise: creating the draft release and finding it again by listing and ID, verifying the new build's attestation against `release.yml`, publication and the latest-release check, handing the signed artifact between release jobs, the `release-draft` and `release-publish` approvals, or acceptance testing of the final signed download. Those first run in the real release.
 
 From **Actions → Release → Run workflow**, select main, enter the stable version and full 40-character commit SHA, and confirm manual acceptance only after completing the source and native-app checks for that exact source. Leave `publish_release` false to stop at a draft. Enable it only when public publication is intended.
 
@@ -182,6 +217,6 @@ The workflow favors ordinary GitHub Actions over a second external CI service: c
 
 The [CI change record](maintainers/ci-changes.md) records corrections made during hosted activation and the checks used to verify them. Update this guide when a correction changes contributor commands, limits, artifacts or merge requirements.
 
-Review Dependabot's weekly Action/Swift updates. Tool archive pins in `tools.sh`, Xcode image availability, and runtime/model pins in `runtime-lock.json` require manual maintenance and the same checks as other changes. A pinned Xcode removed from the hosted image should fail clearly; do not silently select a different toolchain. Tune timeouts and runner usage from actual workflow timings rather than estimated speedups.
+Review Dependabot's monthly Action/Swift updates. Minor and patch updates arrive grouped; each major update arrives as its own pull request. Tool archive pins in `tools.sh`, Xcode image availability, and runtime/model pins in `runtime-lock.json` require manual maintenance and the same checks as other changes. A pinned Xcode removed from the hosted image should fail clearly; do not silently select a different toolchain. Tune timeouts and runner usage from actual workflow timings rather than estimated speedups.
 
 The design follows [GitHub's secure workflow guidance](https://docs.github.com/en/actions/reference/security/secure-use), [compiled-language CodeQL guidance](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/manage-your-configuration/codeql-for-compiled-languages), [artifact attestation documentation](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations), and [Apple's notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow). [Rectangle's build workflow](https://github.com/rxhanson/Rectangle/blob/main/.github/workflows/build.yml) and [IINA's CI workflow](https://github.com/iina/iina/blob/develop/.github/workflows/ci.yml) provide useful examples of contributor build artifacts and macOS dependency provisioning. Their implementation details are not copied wholesale.

@@ -50,6 +50,33 @@ class InferenceBudgetTests(unittest.TestCase):
         self.assertEqual(deadlines["networkMonitorStop"], 6.0)
 
 
+class ThreadConfigurationTests(unittest.TestCase):
+    def test_unset_variable_keeps_each_default(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("STENO_TEST_WHISPER_THREADS", None)
+            self.assertEqual(harness.configured_thread_count(8), 8)
+            self.assertEqual(harness.configured_thread_count(4), 4)
+
+    def test_variable_overrides_every_default(self):
+        with patch.dict(os.environ, {"STENO_TEST_WHISPER_THREADS": "3"}):
+            self.assertEqual(harness.configured_thread_count(8), 3)
+            self.assertEqual(harness.configured_thread_count(4), 3)
+
+    def test_invalid_values_fail_instead_of_falling_back(self):
+        for value in ("", "0", "-1", "3.5", "three", "65", "007", " 3"):
+            with self.subTest(value=value), patch.dict(os.environ, {"STENO_TEST_WHISPER_THREADS": value}):
+                with self.assertRaises(SystemExit):
+                    harness.configured_thread_count(4)
+
+    def test_stream_request_and_receipt_use_the_same_count(self):
+        self.assertEqual(harness.declared_configuration()["streamRequest"]["threads"],
+                         harness.STREAM_THREAD_COUNT)
+        self.assertEqual(int.from_bytes(harness.stream_configuration()[:4], "big"),
+                         harness.STREAM_THREAD_COUNT)
+        self.assertEqual(int.from_bytes(harness.one_shot_configuration(Path("audio.wav"))[:4], "big"),
+                         harness.ONE_SHOT_THREAD_COUNT)
+
+
 class NetworkMonitorTests(unittest.TestCase):
     def setUp(self):
         self.process = Mock(pid=123, poll=Mock(return_value=None))
@@ -788,10 +815,15 @@ class GateDiagnosticTests(unittest.TestCase):
         git = commands / "git"
         git.write_text('#!/bin/sh\necho 764482c3175d9c3bc6089c1ec84df7d1b9537d83\n')
         git.chmod(0o755)
+        swift = commands / "swift"
+        swift.write_text('#!/bin/sh\necho "swift-called audio=$STENO_TEST_WHISPER_AUDIO empty=$STENO_TEST_WHISPER_EXPECT_EMPTY '
+                         'require=$STENO_TEST_REQUIRE_RETAINED_HELPER"\n'
+                         'echo "swift-args: $*"\n')
+        swift.chmod(0o755)
         self.environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
 
     def run_gate(self, protocol_status, diagnostic_status, allocation_status=0, vad_status=0,
-                 cancellation_status=0, backend_status=0):
+                 cancellation_status=0, backend_status=0, stage=None):
         (self.scripts / "ci/test-backend-discovery.py").write_text(
             "import json, sys\nprint('backend-check-called')\n"
             "print('backend-check-args: ' + json.dumps(sys.argv[1:]))\n"
@@ -800,14 +832,16 @@ class GateDiagnosticTests(unittest.TestCase):
             f"print('allocation-check-called')\nraise SystemExit({allocation_status})\n")
         (self.scripts / "ci/test-native-cancellation.py").write_text(
             f"print('cancellation-check-called')\nraise SystemExit({cancellation_status})\n")
-        (self.scripts / "test-whisper-runtime-helper-v2.sh").write_text(f"exit {protocol_status}\n")
         (self.scripts / "ci/diagnose-runtime-inference.py").write_text(
             "import sys\nprint('stream-called' if '--vad-model' in sys.argv else 'diagnostic-called')\n"
             f"raise SystemExit({diagnostic_status})\n")
         (self.scripts / "ci/diagnose-vad-runtime.py").write_text(
             f"print('vad-called')\nraise SystemExit({vad_status})\n")
+        (self.scripts / "test-whisper-runtime-helper-v2.sh").write_text(
+            f"echo \"protocol-called audio=$STENO_TEST_WHISPER_AUDIO\"\nexit {protocol_status}\n")
+        stage_arguments = [] if stage is None else ["--stage", stage]
         return subprocess.run(["bash", str(self.scripts / "ci/runtime-checks.sh"), "--root",
-                               str(self.runtime), "--output", str(self.root / "output")],
+                               str(self.runtime), "--output", str(self.root / "output"), *stage_arguments],
                               env=self.environment, capture_output=True, text=True)
 
     def test_backend_discovery_failure_stops_runtime_gate(self):
@@ -856,6 +890,78 @@ class GateDiagnosticTests(unittest.TestCase):
         result = self.run_gate(17, 23)
         self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
         self.assertEqual(result.stdout.count("diagnostic-called"), 1)
+
+    def test_default_mode_runs_fast_checks_before_the_slow_suites(self):
+        result = self.run_gate(0, 0)
+        self.assertLess(result.stdout.index("swift-called"), result.stdout.index("protocol-called"))
+        # Silence applies only to the retained-engine check; the protocol suite keeps the speech sample.
+        self.assertIn(f"swift-called audio={self.root / 'output/silence.wav'} empty=1 require=1", result.stdout)
+        # Speech through the real helper, including the stream test; neither may fall back.
+        jfk = self.runtime / "samples/jfk.wav"
+        self.assertIn(f"swift-called audio={jfk} empty= require=1", result.stdout)
+        self.assertIn("retainedProcessRuntimeMatchesCLIContract|retainedProcessRuntimeStreamsSpeechToOneFinal",
+                      result.stdout)
+        self.assertIn("protocol-called audio=" + str(self.runtime / "samples/jfk.wav"), result.stdout)
+
+    def test_fast_stage_stops_before_the_slow_suites(self):
+        result = self.run_gate(17, 0, stage="fast")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for check in ("backend-check-called", "allocation-check-called", "cancellation-check-called", "swift-called"):
+            self.assertIn(check, result.stdout)
+        self.assertNotIn("protocol-called", result.stdout)
+        self.assertNotIn("unexpected-later-check", result.stdout)
+        self.assertEqual((self.root / "output/completed-stages.txt").read_text(), "fast\n")
+
+    def test_slow_stage_reuses_fast_output_and_keeps_protocol_failure(self):
+        self.assertEqual(self.run_gate(0, 0, stage="fast").returncode, 0)
+        result = self.run_gate(17, 0, stage="slow")
+        self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
+        self.assertIn("protocol-called", result.stdout)
+        self.assertEqual(result.stdout.count("diagnostic-called"), 1)
+        self.assertNotIn("backend-check-called", result.stdout)
+        self.assertNotIn("swift-called", result.stdout)
+        self.assertNotIn("unexpected-later-check", result.stdout)
+
+    def test_slow_stage_still_verifies_the_receipt(self):
+        self.assertEqual(self.run_gate(0, 0, stage="fast").returncode, 0)
+        result = self.run_gate(0, 0, stage="slow")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid runtime receipt", result.stderr)
+        self.assertNotIn("unexpected-later-check", result.stdout)
+
+    def test_slow_stage_requires_a_completed_fast_stage(self):
+        missing = self.run_gate(0, 0, stage="slow")
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("completed fast stage", missing.stderr)
+        self.assertNotIn("protocol-called", missing.stdout)
+        failed_fast = self.run_gate(0, 0, allocation_status=29, stage="fast")
+        self.assertEqual(failed_fast.returncode, 29)
+        incomplete = self.run_gate(0, 0, stage="slow")
+        self.assertNotEqual(incomplete.returncode, 0)
+        self.assertNotIn("protocol-called", incomplete.stdout)
+
+    def test_fast_stage_and_default_mode_refuse_existing_output(self):
+        (self.root / "output").mkdir()
+        for stage in (None, "fast"):
+            with self.subTest(stage=stage):
+                result = self.run_gate(0, 0, stage=stage)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must be a new directory", result.stderr)
+
+    def test_retained_engine_check_uses_the_configured_shared_swift_build(self):
+        default = self.run_gate(0, 0, stage="fast")
+        self.assertIn(f"--scratch-path {self.root / 'output/swift-build'} ", default.stdout)
+        shutil.rmtree(self.root / "output")
+        shared = self.root / "shared-build"
+        self.environment["STENO_SWIFT_SCRATCH_PATH"] = str(shared)
+        configured = self.run_gate(0, 0, stage="fast")
+        self.assertIn(f"--scratch-path {shared} ", configured.stdout)
+
+    def test_unknown_stage_is_rejected_before_work(self):
+        result = self.run_gate(0, 0, stage="smoke")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--stage must be all, fast or slow", result.stderr)
+        self.assertFalse((self.root / "output").exists())
 
     def test_passing_protocol_does_not_run_diagnostic(self):
         result = self.run_gate(0, 0)

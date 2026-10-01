@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Skip native checks only for a complete, documentation-only Git diff."""
+"""Skip native checks only for a pull request with a complete, documentation-only Git diff."""
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -15,23 +15,16 @@ def documentation_path(path):
 
 
 def select(event_name, event, workflow):
-    # Dispatches, schedules and release callers always receive the full suite.
-    if workflow not in {'CI', 'Security'}:
+    # Only pull requests may skip checks. Every commit on main, merge groups,
+    # dispatches, schedules and release callers receive the full suite, so a
+    # documentation-only release commit is still fully tested.
+    if workflow not in {'CI', 'Security'} or event_name != 'pull_request':
         return 'full'
-    if event_name == 'pull_request':
-        base = event['pull_request']['base']['sha']
-        head = event['pull_request']['head']['sha']
-        merge_base = True
-    elif event_name == 'push':
-        base, head, merge_base = event['before'], event['after'], False
-    elif event_name == 'merge_group':
-        base, head, merge_base = event['merge_group']['base_sha'], event['merge_group']['head_sha'], False
-    else:
-        return 'full'
+    base = event['pull_request']['base']['sha']
+    head = event['pull_request']['head']['sha']
     if any(not re.fullmatch(r'[0-9a-f]{40}', sha) or sha == '0' * 40 for sha in (base, head)):
         return 'full'
-    if merge_base:
-        base = subprocess.check_output(['git', 'merge-base', base, head], text=True).strip()
+    base = subprocess.check_output(['git', 'merge-base', base, head], text=True).strip()
     # No API pagination or file limit; renames retain both source and destination.
     raw = subprocess.check_output(['git', 'diff', '--name-only', '--no-renames', '-z', base, head, '--'])
     paths = [p.decode('utf-8') for p in raw.split(b'\0') if p]
