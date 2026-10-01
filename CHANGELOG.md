@@ -45,6 +45,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A dictation can now be canceled while it is transcribing, with the X in the overlay or Cancel transcription on the Dictate tab. Nothing is inserted or saved to History, the recording is deleted, and the next dictation starts normally.
 - If the backup transcription path stops responding, it is now stopped after a time limit that grows with the recording length, and Steno reports that transcription took too long. Previously it could keep Steno transcribing until it was quit.
 - The live transcript no longer disappears partway through a recording. The final transcript was never affected.
+- Saving settings no longer unloads the speech model unless a transcription setting changed, so the next dictation after editing a snippet, a vocabulary correction or another unrelated setting starts at full speed. A dictation started while those settings are being applied is no longer dropped.
 
 ## [1.0.0] - 2026-09-17
 

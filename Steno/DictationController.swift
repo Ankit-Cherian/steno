@@ -274,6 +274,10 @@ final class DictationController: ObservableObject {
     private let preferencesStore: AppPreferencesStore
     private let launchAtLoginService: LaunchAtLoginService
     private let runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)?
+    private let transcriptionEngineFactory: @MainActor (TranscriptionEngineSettings) -> any TranscriptionEngine
+    /// Outlives coordinator rebuilds while its settings are unchanged, so a
+    /// settings save does not discard the loaded model.
+    private var retainedTranscriptionEngine: (engine: any TranscriptionEngine, settings: TranscriptionEngineSettings)?
     private let overlayDismissDelay: @Sendable () async -> Void
     private let overlayDismissAction: @MainActor @Sendable () -> Void
     private let modelDownloadService = WhisperModelDownloadService()
@@ -340,6 +344,7 @@ final class DictationController: ObservableObject {
         launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService(),
         coordinator: (any DictationSessionCoordinating)? = nil,
         runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)? = nil,
+        transcriptionEngineFactory: (@MainActor (TranscriptionEngineSettings) -> any TranscriptionEngine)? = nil,
         overlayDismissDelay: @escaping @Sendable () async -> Void = {
             try? await Task.sleep(for: .seconds(2))
         },
@@ -367,6 +372,7 @@ final class DictationController: ObservableObject {
         self.launchAtLoginService = launchAtLoginService
         self.coordinator = coordinator
         self.runtimeRebuildOverride = runtimeRebuildOverride
+        self.transcriptionEngineFactory = transcriptionEngineFactory ?? DictationRuntimeFactory.makeTranscriptionEngine(settings:)
         self.overlayDismissDelay = overlayDismissDelay
         self.overlayDismissAction = overlayDismissAction ?? { [weak overlay] in
             overlay?.hide()
@@ -546,6 +552,9 @@ final class DictationController: ObservableObject {
             }
             await waitForRuntimeRebuilds()
             await coordinator?.shutdown()
+            let engine = retainedTranscriptionEngine?.engine
+            retainedTranscriptionEngine = nil
+            await engine?.shutdown()
         }
     }
 
@@ -2051,8 +2060,32 @@ final class DictationController: ObservableObject {
         runtimeRebuildGeneration &+= 1
         let rebuildGeneration = runtimeRebuildGeneration
         let previousCoordinator = coordinator
+
+        var snapshot = preferences
+        snapshot.normalize()
+        let engineSettings = TranscriptionEngineSettings(snapshot: snapshot)
+        let reusableEngine = runtimeRebuildOverride == nil
+            && retainedTranscriptionEngine?.settings == engineSettings
+            ? retainedTranscriptionEngine?.engine
+            : nil
+
+        if let reusableEngine {
+            // Nothing the engine depends on changed. Keep it, with its loaded
+            // model, and replace only the coordinator's services. The old
+            // coordinator stays in place until the new one is ready, so a
+            // press during the rebuild is not dropped.
+            applyPreferencesLocally(snapshot)
+            coordinator = makeCoordinator(snapshot: snapshot, transcriptionEngine: reusableEngine)
+            status = "Running local transcription + local cleanup."
+            await previousCoordinator?.shutdown()
+            return
+        }
+
         coordinator = nil
         await previousCoordinator?.shutdown()
+        let previousEngine = retainedTranscriptionEngine?.engine
+        retainedTranscriptionEngine = nil
+        await previousEngine?.shutdown()
         guard !isTearingDown, runtimeRebuildGeneration == rebuildGeneration else {
             return
         }
@@ -2068,10 +2101,20 @@ final class DictationController: ObservableObject {
             return
         }
 
-        var snapshot = preferences
+        snapshot = preferences
         snapshot.normalize()
         applyPreferencesLocally(snapshot)
+        let settings = TranscriptionEngineSettings(snapshot: snapshot)
+        let engine = transcriptionEngineFactory(settings)
+        retainedTranscriptionEngine = (engine, settings)
+        coordinator = makeCoordinator(snapshot: snapshot, transcriptionEngine: engine)
+        status = "Running local transcription + local cleanup."
+    }
 
+    private func makeCoordinator(
+        snapshot: AppPreferences,
+        transcriptionEngine: any TranscriptionEngine
+    ) -> SessionCoordinator {
         let runtimeFactory = DictationRuntimeFactory(
             snapshot: snapshot,
             clipboardService: clipboardService
@@ -2080,13 +2123,12 @@ final class DictationController: ObservableObject {
         styleProfileService = runtimeFactory.makeStyleProfileService()
         snippetService = runtimeFactory.makeSnippetService()
 
-        let transcription = runtimeFactory.makeTranscriptionEngine()
         let cleanupEngine: any CleanupEngine = runtimeFactory.makeCleanupEngine()
         let insertion = InsertionService(transports: runtimeFactory.makeInsertionTransports())
 
-        coordinator = SessionCoordinator(
+        return SessionCoordinator(
             captureService: captureService,
-            transcriptionEngine: transcription,
+            transcriptionEngine: ControllerOwnedTranscriptionEngine(base: transcriptionEngine),
             cleanupEngine: cleanupEngine,
             insertionService: insertion,
             historyStore: historyStore,
@@ -2102,8 +2144,6 @@ final class DictationController: ObservableObject {
                 await self?.receiveLiveTranscriptUnavailable(sessionID: sessionID)
             }
         )
-
-        status = "Running local transcription + local cleanup."
     }
 
     private func waitForRuntimeRebuilds() async {
@@ -2471,18 +2511,15 @@ private struct DictationRuntimeFactory {
         SnippetService(snippets: snapshot.snippets)
     }
 
-    func makeTranscriptionEngine() -> any TranscriptionEngine {
-        let modelPath = URL(fileURLWithPath: snapshot.dictation.modelPath)
+    static func makeTranscriptionEngine(settings: TranscriptionEngineSettings) -> any TranscriptionEngine {
+        let modelPath = URL(fileURLWithPath: settings.modelPath)
         let extraArgs = WhisperRuntimeConfiguration.additionalArguments(
-            threadCount: snapshot.dictation.threadCount,
-            vadEnabled: snapshot.dictation.vadEnabled,
-            vadModelPath: snapshot.dictation.vadModelPath
+            threadCount: settings.threadCount,
+            vadEnabled: settings.vadEnabled,
+            vadModelPath: settings.vadModelPath
         )
 
-        let retainedPaths = WhisperRuntimeConfiguration.retainedRuntimePaths(
-            relativeTo: snapshot.dictation.whisperCLIPath
-        )
-        let fallbackCLIPath = retainedPaths?.whisperCLIPath ?? snapshot.dictation.whisperCLIPath
+        let fallbackCLIPath = settings.retainedCLIPath ?? settings.whisperCLIPath
         let fallback = WhisperCLITranscriptionEngine(
             config: .init(
                 whisperCLIPath: URL(fileURLWithPath: fallbackCLIPath),
@@ -2491,23 +2528,21 @@ private struct DictationRuntimeFactory {
             )
         )
 
-        guard let retainedPaths else {
+        guard let helperPath = settings.retainedHelperPath else {
             return fallback
         }
 
-        let configuredVADPath = snapshot.dictation.vadModelPath
-        let vadModelPath: URL? = if snapshot.dictation.vadEnabled,
-                                   FileManager.default.fileExists(atPath: configuredVADPath) {
-            URL(fileURLWithPath: configuredVADPath)
+        let vadModelPath: URL? = if settings.vadEnabled, settings.vadModelExists {
+            URL(fileURLWithPath: settings.vadModelPath)
         } else {
             nil
         }
 
         return RetainedWhisperTranscriptionEngine(
             configuration: RetainedWhisperTranscriptionConfiguration(
-                helperExecutableURL: URL(fileURLWithPath: retainedPaths.helperPath),
+                helperExecutableURL: URL(fileURLWithPath: helperPath),
                 modelPath: modelPath,
-                threadCount: snapshot.dictation.threadCount,
+                threadCount: settings.threadCount,
                 vadModelPath: vadModelPath,
                 suppressNonSpeechTokens: true,
                 suppressRegex: nil,
@@ -2527,5 +2562,125 @@ private struct DictationRuntimeFactory {
             orderedMethods: snapshot.insertion.orderedMethods,
             clipboard: clipboardService
         )
+    }
+}
+
+/// Every input that decides how the transcription engine is built. The
+/// engine, and the model it keeps loaded, is replaced only when one changes.
+struct TranscriptionEngineSettings: Equatable {
+    var modelPath: String
+    var threadCount: Int
+    var vadEnabled: Bool
+    var vadModelPath: String
+    var vadModelExists: Bool
+    var whisperCLIPath: String
+    var retainedHelperPath: String?
+    var retainedCLIPath: String?
+
+    init(
+        modelPath: String,
+        threadCount: Int,
+        vadEnabled: Bool,
+        vadModelPath: String,
+        vadModelExists: Bool,
+        whisperCLIPath: String,
+        retainedHelperPath: String?,
+        retainedCLIPath: String?
+    ) {
+        self.modelPath = modelPath
+        self.threadCount = threadCount
+        self.vadEnabled = vadEnabled
+        self.vadModelPath = vadModelPath
+        self.vadModelExists = vadModelExists
+        self.whisperCLIPath = whisperCLIPath
+        self.retainedHelperPath = retainedHelperPath
+        self.retainedCLIPath = retainedCLIPath
+    }
+
+    init(snapshot: AppPreferences) {
+        let dictation = snapshot.dictation
+        let retainedPaths = WhisperRuntimeConfiguration.retainedRuntimePaths(
+            relativeTo: dictation.whisperCLIPath
+        )
+        self.init(
+            modelPath: dictation.modelPath,
+            threadCount: dictation.threadCount,
+            vadEnabled: dictation.vadEnabled,
+            vadModelPath: dictation.vadModelPath,
+            vadModelExists: FileManager.default.fileExists(atPath: dictation.vadModelPath),
+            whisperCLIPath: dictation.whisperCLIPath,
+            retainedHelperPath: retainedPaths?.helperPath,
+            retainedCLIPath: retainedPaths?.whisperCLIPath
+        )
+    }
+}
+
+/// Lets coordinators use the controller's engine without ending it when a
+/// coordinator is replaced. The controller shuts the engine down itself.
+private struct ControllerOwnedTranscriptionEngine: LiveTranscriptionEngine {
+    let base: any TranscriptionEngine
+
+    private var live: (any LiveTranscriptionEngine)? {
+        base as? any LiveTranscriptionEngine
+    }
+
+    func transcribe(audioURL: URL, request: TranscriptionRequest) async throws -> RawTranscript {
+        try await base.transcribe(audioURL: audioURL, request: request)
+    }
+
+    func shutdown() async {}
+
+    func unloadRetainedResources() async {
+        await base.unloadRetainedResources()
+    }
+
+    func startLiveTranscription(
+        sessionID: SessionID,
+        controllerGeneration: UUID,
+        request: TranscriptionRequest
+    ) async throws -> LiveTranscriptionSession {
+        guard let live else { throw RetainedWhisperRuntimeError.unsupportedConfiguration }
+        return try await live.startLiveTranscription(
+            sessionID: sessionID,
+            controllerGeneration: controllerGeneration,
+            request: request
+        )
+    }
+
+    func appendLiveAudio(_ frame: LivePCMFrame, session: LiveTranscriptionSession) async throws {
+        guard let live else { throw RetainedWhisperRuntimeError.unsupportedConfiguration }
+        try await live.appendLiveAudio(frame, session: session)
+    }
+
+    func requestLiveHypothesis(
+        session: LiveTranscriptionSession,
+        revision: UInt64,
+        decodedAudioWatermark: UInt64
+    ) async throws -> LiveTranscriptionEvent {
+        guard let live else { throw RetainedWhisperRuntimeError.unsupportedConfiguration }
+        return try await live.requestLiveHypothesis(
+            session: session,
+            revision: revision,
+            decodedAudioWatermark: decodedAudioWatermark
+        )
+    }
+
+    func finishLiveTranscription(
+        session: LiveTranscriptionSession,
+        canonicalAudioURL: URL,
+        streamSummary: LivePCMStreamSummary,
+        request: TranscriptionRequest
+    ) async throws -> RawTranscript {
+        guard let live else { throw RetainedWhisperRuntimeError.unsupportedConfiguration }
+        return try await live.finishLiveTranscription(
+            session: session,
+            canonicalAudioURL: canonicalAudioURL,
+            streamSummary: streamSummary,
+            request: request
+        )
+    }
+
+    func cancelLiveTranscription(session: LiveTranscriptionSession) async {
+        await live?.cancelLiveTranscription(session: session)
     }
 }
