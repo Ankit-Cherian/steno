@@ -1458,6 +1458,49 @@ func idleHelperExitStartsNewHelper() async throws {
     #expect(launches() == 2)
     #expect(await fallbackState.count == 0)
 }
+
+@Test("Streaming v2 never frames an append after a finish requested while the append was being written")
+func streamingRuntimeAppendIsFramedBeforeConcurrentFinish() async throws {
+    let fixture = try StreamingRuntimeFixture(helperSource: fakeStreamingFrameOrderHelperSource)
+    defer { fixture.remove() }
+    // Hold each AudioAppend just before its write.
+    let session = try await fixture.makeSession(
+        extraEnvironment: ["STENO_TEST_APPEND_WRITE_DELAY_MS": "300"]
+    )
+    let streamID = UUID()
+    let configuration = streamingConfiguration()
+    _ = try await session.startStream(id: streamID, generation: 0, configuration: configuration)
+
+    let append = Task.detached {
+        try await session.append(
+            try WhisperStreamAudioChunk(
+                sequence: 0,
+                sampleOffset: 0,
+                sampleCount: 2,
+                samplesS16LE: Data([1, 0, 2, 0])
+            ),
+            streamID: streamID,
+            generation: 0
+        )
+    }
+    try await Task.sleep(for: .milliseconds(50))
+    _ = try? await session.finishStream(
+        id: streamID,
+        generation: 0,
+        request: .init(
+            canonicalAudioURL: fixture.directory.appendingPathComponent("capture.wav"),
+            expectedSampleCount: 2,
+            audioFNV1a64: 42,
+            configuration: configuration
+        )
+    )
+    _ = try? await append.value
+    await session.shutdown()
+
+    try await fixture.waitForMarker()
+    // 11 is AudioAppend and 15 is StreamFinish.
+    #expect(try String(contentsOf: fixture.markerURL, encoding: .utf8) == "11,15")
+}
 }
 
 private extension Data {
@@ -1528,11 +1571,13 @@ private struct StreamingRuntimeFixture {
     }
 
     func makeSession(
-        vadModelURL: URL? = nil
+        vadModelURL: URL? = nil,
+        extraEnvironment: [String: String] = [:]
     ) async throws -> any WhisperStreamingRuntimeSession {
         var environment = ProcessInfo.processInfo.environment
         environment["STENO_TEST_HELPER_PID_FILE"] = pidURL.path
         environment["STENO_TEST_HELPER_MARKER_FILE"] = markerURL.path
+        environment.merge(extraEnvironment) { _, new in new }
         return try await ProcessWhisperStreamingRuntimeSessionFactory().makeStreamingSession(
             configuration: .init(
                 helperExecutableURL: helperURL,
@@ -1922,4 +1967,20 @@ private func helperHasExited(_ pid: Int32) async -> Bool {
     }
     return false
 }
+private let fakeStreamingFrameOrderHelperSource = fakeStreamingProtocolPrelude + "\n" + #"""
+start = read_frame()
+write_frame(start, 10)
+first = read_frame()
+second = read_frame()
+with open(os.environ["STENO_TEST_HELPER_MARKER_FILE"], "w", encoding="utf-8") as handle:
+    handle.write("%d,%d" % (first[2], second[2]))
+for request in (first, second):
+    if request[2] == 11:
+        sequence, offset, count = struct.unpack(">QQI", request[5][:20])
+        write_frame(request, 12, struct.pack(">QQ", sequence, offset + count))
+    elif request[2] == 15:
+        write_frame(request, 16, b'{"text":"final"}')
+shutdown = read_frame()
+write_frame(shutdown, 7)
+"""#
 #endif
