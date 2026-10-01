@@ -112,6 +112,7 @@ private enum CaptureHandoffRequest: Equatable {
 
 private enum PromptCaptureStopResult: Sendable {
     case unavailable
+    case startFailed(message: String)
     case stopped(PressToTalkCaptureStopCapability)
     case failed(PressToTalkCaptureStopCapability, message: String)
 }
@@ -143,12 +144,20 @@ private final class CoordinatorStartSignal {
     }
 }
 
+/// Capture never started. A stop that arrived first reports this error
+/// instead of a missing session.
+private struct CaptureStartFailure: Error, LocalizedError, Sendable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 private final class CaptureStartHandoff: @unchecked Sendable {
     private let lock = NSLock()
     private var capability: PressToTalkCaptureStopCapability?
     private var pendingRequest: CaptureHandoffRequest?
     private var publicationFinished = false
     private var stopCapabilityClaimed = false
+    private var startFailureMessage: String?
     private var stopWaiters: [CheckedContinuation<PressToTalkCaptureStopCapability?, Never>] = []
 
     func publish(
@@ -217,6 +226,17 @@ private final class CaptureStartHandoff: @unchecked Sendable {
                 continuation.resume(returning: immediate)
             }
         }
+    }
+
+    /// Keeps the reason capture failed to start for a stop that is already
+    /// waiting on this handoff. Record it before `finishPublication`.
+    func recordStartFailure(_ error: Error) {
+        let message = error.localizedDescription
+        lock.withLock { startFailureMessage = message }
+    }
+
+    var startFailure: String? {
+        lock.withLock { startFailureMessage }
     }
 
     func finishPublication() {
@@ -318,6 +338,9 @@ final class DictationController: ObservableObject {
     /// finishing is only worth a cue once it proves to be a dictation.
     private var showsFinishingNoticeOnConfirmation = false
     var recordingDurationLimit = RecordingDurationLimit.standard
+    /// Replaces the microphone status read at the start of a session. Tests
+    /// set it; the app reads the status from macOS.
+    var microphoneAccessProvider: (@MainActor () -> PermissionDiagnostics.AccessStatus)?
     private var hasWarnedAboutRecordingLimit = false
     private var currentSessionID: SessionID?
     private var currentCaptureStopCapability: PressToTalkCaptureStopCapability?
@@ -670,6 +693,16 @@ final class DictationController: ObservableObject {
 
     func bootstrap() async {
         guard !isIsolatedPreview else { hasBootstrapped = true; return }
+        captureService.onRecorderStoppedEarly = { [weak self] sessionID in
+            self?.recorderStoppedEarly(sessionID: sessionID)
+        }
+        if systemIntegrationsEnabled {
+            // A crash or force quit leaves the recording in progress behind.
+            // It holds the user's speech, and no session can own it at launch.
+            Task.detached(priority: .utility) {
+                MacAudioCaptureService.removeStaleRecordings()
+            }
+        }
         await historyStore.setRecoveryNoticeHandler { [weak self] notice in
             Task { @MainActor [weak self] in self?.presentStorageNotice(notice) }
         }
@@ -1316,6 +1349,13 @@ final class DictationController: ObservableObject {
 
     private func startSession(mode: RecordingMode) {
         guard !isTearingDown else { return }
+        // A synchronous status read: it never delays capture when access is
+        // granted, and a denied microphone would record silence or fail with
+        // an unclear error.
+        guard currentMicrophoneAccess() != .denied else {
+            refuseSessionWithoutMicrophoneAccess(mode: mode)
+            return
+        }
         guard !isRuntimeUnloadingForSystemEvent else {
             recordingStateMachine.markTranscriptionFailed()
             status = "Runtime is releasing memory. Try again in a moment."
@@ -1403,9 +1443,12 @@ final class DictationController: ObservableObject {
 
                 // Capture always owns the opening words. Optional media detection
                 // and pausing runs only after the microphone is already recording.
-                // A press that turns out to be a keyboard shortcut never touches media.
-                if shouldPauseMedia, await pressConfirmation?.wait() ?? true {
-                    ownedMediaToken = await mediaInterruption.beginInterruption()
+                // A press that turns out to be a keyboard shortcut never touches media,
+                // and neither does one that has already ended.
+                if shouldPauseMedia,
+                   await pressConfirmation?.wait() ?? true,
+                   activeSessionGeneration == generation {
+                    ownedMediaToken = await beginMediaInterruption(whileHeld: pressConfirmation)
                 }
 
                 try Task.checkCancellation()
@@ -1454,6 +1497,7 @@ final class DictationController: ObservableObject {
                     )
                 }
             } catch {
+                captureHandoff.recordStartFailure(error)
                 if let sessionID = takeFailedStartSession(
                     returnedSessionID: returnedSessionID,
                     handoff: captureHandoff,
@@ -1475,6 +1519,53 @@ final class DictationController: ObservableObject {
             if activeSessionGeneration == generation {
                 activeStartTask = nil
             }
+        }
+    }
+
+    private func currentMicrophoneAccess() -> PermissionDiagnostics.AccessStatus {
+        if let microphoneAccessProvider { return microphoneAccessProvider() }
+        return systemIntegrationsEnabled ? PermissionDiagnostics.microphoneStatus() : .granted
+    }
+
+    /// Nothing is recorded. The overlay says why, and the Dictate tab's
+    /// Review settings opens Permissions, where access can be turned back on.
+    /// An Option press says so only once it proves to be a dictation, so
+    /// Option keyboard shortcuts stay silent.
+    private func refuseSessionWithoutMicrophoneAccess(mode: RecordingMode) {
+        recordingStateMachine.markTranscriptionFailed()
+        microphonePermissionStatus = .denied
+        let present: @MainActor () -> Void = { [weak self] in
+            guard let self, !self.isTearingDown else { return }
+            let message = "Microphone access is off. Turn it on for Steno in System Settings > Privacy & Security > Microphone."
+            self.status = "Microphone access is off."
+            self.lastError = message
+            self.overlay.show(state: .failure(message: message))
+            self.dismissOverlaySoon()
+        }
+        guard mode == .pressToTalk, let confirmation = pressToTalkConfirmation else {
+            present()
+            return
+        }
+        Task { @MainActor in
+            if await confirmation.wait() { present() }
+        }
+    }
+
+    /// Pauses media while the press is still held. A press that ends while
+    /// playing media is still being checked cancels the check, so a quick
+    /// press never pauses media only to resume it at once.
+    private func beginMediaInterruption(
+        whileHeld press: PressToTalkConfirmation?
+    ) async -> MediaInterruptionToken? {
+        guard let press else { return await mediaInterruption.beginInterruption() }
+        guard !press.hasEnded else { return nil }
+        let mediaInterruption = self.mediaInterruption
+        let begin = Task { @MainActor in await mediaInterruption.beginInterruption() }
+        press.onEnd { begin.cancel() }
+        return await withTaskCancellationHandler {
+            await begin.value
+        } onCancel: {
+            begin.cancel()
         }
     }
 
@@ -1634,7 +1725,12 @@ final class DictationController: ObservableObject {
             } else {
                 capability = await captureHandoff?.awaitStopCapability()
             }
-            guard let capability else { return .unavailable }
+            guard let capability else {
+                if let startFailure = captureHandoff?.startFailure {
+                    return .startFailed(message: startFailure)
+                }
+                return .unavailable
+            }
             capability.markStopRequested()
             do {
                 try await capability.stopCapture()
@@ -1720,6 +1816,8 @@ final class DictationController: ObservableObject {
                 switch captureStopResult {
                 case .unavailable:
                     break
+                case .startFailed(let message):
+                    throw CaptureStartFailure(message: message)
                 case .stopped(let capability):
                     if resolvedSessionID == nil {
                         resolvedSessionID = capability.sessionID
@@ -1793,11 +1891,17 @@ final class DictationController: ObservableObject {
                 case .noSpeech:
                     status = "No speech detected."
                     lastError = ""
-                    overlay.show(state: .noSpeechDetected)
+                    if result.captureWarning == nil {
+                        overlay.show(state: .noSpeechDetected)
+                    }
                 }
 
                 if let fallbackWarning = fallbackWarningText(from: result.cleanupOutcome) {
                     status = "\(status) \(fallbackWarning)"
+                }
+
+                if let captureWarning = result.captureWarning {
+                    presentCaptureWarning(captureWarning, for: result.status)
                 }
 
                 if let analyticsWarning = result.usageAnalyticsWarning {
@@ -1840,7 +1944,9 @@ final class DictationController: ObservableObject {
                    !isTearingDown,
                    completionTaskID == taskID
                 {
-                    status = "Transcription failed"
+                    let isRecordingFailure = error is CaptureStartFailure
+                        || error is PromptCaptureStopError
+                    status = isRecordingFailure ? "Recording failed" : "Transcription failed"
                     lastError = error.localizedDescription
                     overlay.show(state: .failure(message: error.localizedDescription))
                     dismissOverlaySoon()
@@ -1852,6 +1958,30 @@ final class DictationController: ObservableObject {
         }
         completionTask = task
         completionTasks[taskID] = task
+    }
+
+    /// The recording stopped before the user ended it. Say so where the user
+    /// is looking; "No speech detected" would blame them for the silence.
+    private func presentCaptureWarning(_ warning: String, for resultStatus: InsertionStatus) {
+        status = resultStatus == .noSpeech
+            ? "Microphone stopped."
+            : "\(status) Microphone stopped early."
+        lastError = lastError.isEmpty ? warning : "\(lastError) \(warning)"
+        switch resultStatus {
+        case .noSpeech, .inserted:
+            overlay.show(state: .failure(message: warning))
+        case .copiedOnly, .failed:
+            // Their own overlay already asks for attention and says what to do.
+            break
+        }
+    }
+
+    /// The recorder stopped by itself during this session, for example
+    /// because the microphone was disconnected. The session stops normally,
+    /// so what was recorded is transcribed rather than lost.
+    func recorderStoppedEarly(sessionID: SessionID) {
+        guard !isIsolatedPreview, !isTearingDown, currentSessionID == sessionID else { return }
+        stopRecording()
     }
 
     private func adoptCaptureStopCapability(
@@ -2446,15 +2576,34 @@ private extension CGRect {
 @MainActor
 private final class PressToTalkConfirmation {
     private(set) var isConfirmed = false
+    /// The press is over: the key was released, the press was discarded, or
+    /// its session was canceled.
+    private(set) var hasEnded = false
     private var isSettled = false
     private var waiters: [CheckedContinuation<Bool, Never>] = []
+    private var endHandlers: [() -> Void] = []
 
     func confirm() {
         settle(confirmed: true)
     }
 
+    /// Ends the press. An unconfirmed press settles as not a dictation.
     func release() {
         settle(confirmed: false)
+        guard !hasEnded else { return }
+        hasEnded = true
+        let handlers = endHandlers
+        endHandlers.removeAll()
+        handlers.forEach { $0() }
+    }
+
+    /// Runs `handler` when the press ends, or at once if it already has.
+    func onEnd(_ handler: @escaping () -> Void) {
+        if hasEnded {
+            handler()
+        } else {
+            endHandlers.append(handler)
+        }
     }
 
     /// Returns whether the press was confirmed.

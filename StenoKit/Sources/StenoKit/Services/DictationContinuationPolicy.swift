@@ -276,7 +276,7 @@ public struct DictationContinuationPolicy: Sendable {
 
     private func stronglyProvesMidSentence(_ leadingText: String) -> Bool {
         let trailingWhitespace = leadingText.reversed().prefix(while: \.isWhitespace)
-        if trailingWhitespace.contains(where: { $0 == "\n" || $0 == "\r" }) {
+        if trailingWhitespace.contains(where: \.isNewline) {
             return false
         }
 
@@ -308,7 +308,7 @@ public struct DictationContinuationPolicy: Sendable {
     private func endsAtListBoundary(_ text: String) -> Bool {
         let lastLine = text.split(
             omittingEmptySubsequences: false,
-            whereSeparator: { $0 == "\n" || $0 == "\r" }
+            whereSeparator: \.isNewline
         ).last ?? ""
         let marker = String(lastLine).trimmingCharacters(in: .whitespaces)
         if ["-", "*", "+", "•", ">", "- [ ]", "- [x]", "- [X]"].contains(marker) {
@@ -406,27 +406,72 @@ public struct DictationContinuationPolicy: Sendable {
               let right = insertion.first,
               !left.isWhitespace,
               !right.isWhitespace,
-              !Self.openingPunctuation.contains(left),
               !Self.closingPunctuation.contains(right),
-              left.isLetter || left.isNumber || Self.closingPunctuation.contains(left)
+              endsWithSpaceableCharacter(leadingText)
+        else {
+            return false
+        }
+        if right.isLetter || right.isNumber || Self.openingPunctuation.contains(right) {
+            return true
+        }
+        return (left.isLetter || left.isNumber) && Self.symbolLeadingCharacters.contains(right)
+    }
+
+    private func needsTrailingSpace(between insertion: String, and trailingText: String) -> Bool {
+        guard let right = trailingText.first,
+              !right.isWhitespace,
+              !Self.closingPunctuation.contains(right),
+              endsWithSpaceableCharacter(insertion)
         else {
             return false
         }
         return right.isLetter || right.isNumber || Self.openingPunctuation.contains(right)
     }
 
-    private func needsTrailingSpace(between insertion: String, and trailingText: String) -> Bool {
-        guard let left = insertion.last,
-              let right = trailingText.first,
-              !left.isWhitespace,
-              !right.isWhitespace,
-              !Self.closingPunctuation.contains(right),
-              !Self.openingPunctuation.contains(left)
+    /// Whether text ends in a letter, a number, or closing punctuation. A
+    /// straight quote counts only when it clearly closes a quotation.
+    private func endsWithSpaceableCharacter(_ text: String) -> Bool {
+        guard let last = text.last, !last.isWhitespace else { return false }
+        if Self.straightQuotes.contains(last) {
+            return endsWithClosingStraightQuote(text)
+        }
+        if Self.openingPunctuation.contains(last) { return false }
+        return last.isLetter || last.isNumber || Self.closingPunctuation.contains(last)
+    }
+
+    /// A straight quote closes a quotation only when it follows a visible
+    /// character and pairs with an opening quote on the same line. An odd
+    /// count, a quote after whitespace, or an apostrophe-like `'` with no
+    /// visible opening partner is ambiguous and never gets a space.
+    private func endsWithClosingStraightQuote(_ text: String) -> Bool {
+        guard let quote = text.last, Self.straightQuotes.contains(quote) else { return false }
+        let line = Array(text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).last ?? "")
+        var quoteIndices: [Int] = []
+        for (index, character) in line.enumerated() where character == quote {
+            let before: Character? = index > 0 ? line[index - 1] : nil
+            let after: Character? = index + 1 < line.count ? line[index + 1] : nil
+            // An apostrophe inside a word, as in "it's", is not a quote.
+            if quote == "'",
+               let before, let after,
+               before.isLetter || before.isNumber,
+               after.isLetter || after.isNumber {
+                continue
+            }
+            quoteIndices.append(index)
+        }
+        guard quoteIndices.count >= 2,
+              quoteIndices.count.isMultiple(of: 2),
+              let closing = quoteIndices.last,
+              closing > 0,
+              !line[closing - 1].isWhitespace
         else {
             return false
         }
-        return (left.isLetter || left.isNumber || Self.closingPunctuation.contains(left))
-            && (right.isLetter || right.isNumber || Self.openingPunctuation.contains(right))
+        let opening = quoteIndices[quoteIndices.count - 2]
+        guard opening + 1 < closing, !line[opening + 1].isWhitespace else { return false }
+        return opening == 0
+            || line[opening - 1].isWhitespace
+            || Self.openingPunctuation.contains(line[opening - 1])
     }
 
     private static let terminalOrBoundaryPunctuation: Set<Character> = [
@@ -441,6 +486,10 @@ public struct DictationContinuationPolicy: Sendable {
     private static let closingPunctuation: Set<Character> = [
         ")", "]", "}", ">", ".", ",", "?", "!", ";", ":", "%", "\"", "'", "”", "’", "…",
     ]
+    private static let straightQuotes: Set<Character> = ["\"", "'"]
+    /// Text that starts with one of these after a word takes a space, as in
+    /// "paid $5" or "ping @sam".
+    private static let symbolLeadingCharacters: Set<Character> = ["$", "@", "#", "&"]
     private static let sentenceClosingPunctuation: Set<Character> = [
         ")", "]", "}", "\"", "'", "”", "’",
     ]

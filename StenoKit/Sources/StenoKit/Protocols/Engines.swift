@@ -20,10 +20,19 @@ public protocol AudioCaptureService: Sendable {
     /// mutate, move, or delete the file and must treat `nil` as live preview
     /// being unavailable without affecting final capture.
     func canonicalCaptureURL(sessionID: SessionID) async -> URL?
+
+    /// Returns, once, how a recording returned by `endCapture` was cut short,
+    /// if it was. The audio that was captured is still valid to transcribe.
+    func takeCaptureInterruption(sessionID: SessionID) async -> CaptureInterruption?
 }
 
 public extension AudioCaptureService {
     func canonicalCaptureURL(sessionID: SessionID) async -> URL? {
+        _ = sessionID
+        return nil
+    }
+
+    func takeCaptureInterruption(sessionID: SessionID) async -> CaptureInterruption? {
         _ = sessionID
         return nil
     }

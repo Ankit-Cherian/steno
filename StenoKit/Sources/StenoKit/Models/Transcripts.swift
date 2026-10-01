@@ -140,6 +140,10 @@ public struct InsertResult: Sendable, Codable, Equatable {
     /// Set when the transcript couldn't be saved to History. The insertion
     /// outcome in `status` is unaffected.
     public var historyWarning: String? = nil
+    /// Set when the recording stopped before the user ended it, for example
+    /// because the microphone was disconnected. The text in `insertedText`
+    /// covers only what was recorded.
+    public var captureWarning: String? = nil
     /// True when a `.copiedOnly` clipboard insertion also sent the paste
     /// keystroke. Steno can't confirm the paste landed, so the status stays
     /// `.copiedOnly`; this flag lets the UI say it was pasted.
