@@ -4,6 +4,8 @@ public enum HistoryStoreError: Error, LocalizedError {
     case missingEntry
     case persistenceFailed
     case originalNotPreserved
+    case directiveCannotBeReplayed
+    case rerunLeftNoText
 
     public var errorDescription: String? {
         switch self {
@@ -13,6 +15,10 @@ public enum HistoryStoreError: Error, LocalizedError {
             return "Unable to persist transcript history"
         case .originalNotPreserved:
             return "History couldn't be saved because the existing History file couldn't be read or kept aside. The file was left unchanged."
+        case .directiveCannotBeReplayed:
+            return "This transcript starts with a spoken \u{201C}lowercase\u{201D} command that History can't replay, so its text was left unchanged."
+        case .rerunLeftNoText:
+            return "Cleanup with the current settings would leave no text, so this transcript was left unchanged."
         }
     }
 }
@@ -109,17 +115,71 @@ public actor HistoryStore: HistoryStoreProtocol {
         guard let entry = entries.first(where: { $0.id == entryID }) else {
             throw HistoryStoreError.missingEntry
         }
+        return try await retry(
+            entryID: entryID,
+            using: cleanupEngine,
+            profile: profile,
+            lexicon: lexicon,
+            appContext: AppContext.classified(bundleIdentifier: entry.appBundleID, appName: entry.appBundleID),
+            snippets: nil
+        )
+    }
 
-        let raw = RawTranscript(text: entry.rawText, durationMS: entry.durationMS)
-        let retried = try await cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
+    /// Re-runs live dictation's cleanup stages on an entry's recognized text and saves the result
+    /// as its clean text. The clean text live dictation produced is kept in `originalCleanText`
+    /// until it is restored, however many times cleanup is re-run. An entry whose spoken directive
+    /// can't be replayed, or whose re-run would leave no text, is left unchanged and the error says
+    /// why.
+    public func retry(
+        entryID: UUID,
+        using cleanupEngine: CleanupEngine,
+        profile: StyleProfile,
+        lexicon: PersonalLexicon,
+        appContext: AppContext,
+        snippets: SnippetService?
+    ) async throws -> CleanTranscript {
+        refreshFromDisk()
+        guard let entry = entries.first(where: { $0.id == entryID }) else {
+            throw HistoryStoreError.missingEntry
+        }
+
+        let retried = try await HistoryCleanupRerun.clean(
+            entry,
+            using: cleanupEngine,
+            profile: profile,
+            lexicon: lexicon,
+            appContext: appContext,
+            snippets: snippets
+        )
 
         try commit { working in
             guard let index = working.firstIndex(where: { $0.id == entryID }) else { return false }
+            let original = working[index].originalCleanText ?? working[index].cleanText
             working[index].cleanText = retried.text
+            working[index].originalCleanText = retried.text == original ? nil : original
             return true
         }
 
         return retried
+    }
+
+    /// Puts back the clean text live dictation produced before cleanup was re-run. Returns the
+    /// restored entry, or nil when there was nothing to restore.
+    @discardableResult
+    public func restoreOriginalCleanText(entryID: UUID) async throws -> TranscriptEntry? {
+        var restored: TranscriptEntry?
+        try commit { working in
+            guard let index = working.firstIndex(where: { $0.id == entryID }),
+                  let original = working[index].originalCleanText
+            else {
+                return false
+            }
+            working[index].cleanText = original
+            working[index].originalCleanText = nil
+            restored = working[index]
+            return true
+        }
+        return restored
     }
 
     @discardableResult

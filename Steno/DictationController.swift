@@ -1048,7 +1048,9 @@ final class DictationController: ObservableObject {
                     entryID: entry.id,
                     using: RuleBasedCleanupEngine(),
                     profile: profile,
-                    lexicon: lexicon
+                    lexicon: lexicon,
+                    appContext: context,
+                    snippets: snippetService
                 )
                 await refreshHistory()
                 await refreshUsageAnalytics(forceHistoryReconciliation: true)
@@ -1056,6 +1058,23 @@ final class DictationController: ObservableObject {
                 lastError = ""
             } catch {
                 status = "Cleanup re-run failed"
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Puts back the text live dictation produced before "Run cleanup again" replaced it.
+    func restoreOriginalCleanup(for entry: TranscriptEntry) {
+        guard !isIsolatedPreview else { return }
+        Task {
+            do {
+                try await historyStore.restoreOriginalCleanText(entryID: entry.id)
+                await refreshHistory()
+                await refreshUsageAnalytics(forceHistoryReconciliation: true)
+                status = "Original cleanup restored."
+                lastError = ""
+            } catch {
+                status = "Restoring the original cleanup failed"
                 lastError = error.localizedDescription
             }
         }

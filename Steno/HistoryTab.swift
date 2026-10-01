@@ -158,6 +158,9 @@ struct HistoryTab: View {
                         .contextMenu {
                             Button("Copy transcript") { controller.pasteEntry(entry) }
                             Button("Run cleanup again") { controller.retryCleanup(for: entry) }
+                            if entry.originalCleanText != nil {
+                                Button("Restore original cleanup") { controller.restoreOriginalCleanup(for: entry) }
+                            }
                             Divider()
                             Button("Delete…", role: .destructive) { entryToDelete = entry }
                         }
@@ -277,6 +280,9 @@ struct HistoryTab: View {
             .accessibilityIdentifier("history.copy")
         Menu {
             Button("Run cleanup again") { controller.retryCleanup(for: entry) }
+            if entry.originalCleanText != nil {
+                Button("Restore original cleanup") { controller.restoreOriginalCleanup(for: entry) }
+            }
             Divider()
             Button("Delete transcript…", role: .destructive) { entryToDelete = entry }
         } label: { Label("More", systemImage: "ellipsis") }

@@ -13,6 +13,10 @@ public struct TranscriptEntry: Sendable, Codable, Equatable, Identifiable {
     /// unknown keys but rejects unknown `insertionStatus` values. Set only
     /// when a `.copiedOnly` insertion also sent the paste keystroke.
     public var pasteAttempted: Bool?
+    /// The clean text live dictation produced, kept when "Run cleanup again" replaces `cleanText`
+    /// so it can be restored. Nil when the entry was never re-run or was restored. Optional for the
+    /// same reason as `pasteAttempted`.
+    public var originalCleanText: String?
 
     public init(
         id: UUID = UUID(),
@@ -23,7 +27,8 @@ public struct TranscriptEntry: Sendable, Codable, Equatable, Identifiable {
         durationMS: Int = 0,
         audioURL: URL?,
         insertionStatus: InsertionStatus,
-        pasteAttempted: Bool? = nil
+        pasteAttempted: Bool? = nil,
+        originalCleanText: String? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -34,6 +39,7 @@ public struct TranscriptEntry: Sendable, Codable, Equatable, Identifiable {
         self.audioURL = audioURL
         self.insertionStatus = insertionStatus
         self.pasteAttempted = pasteAttempted
+        self.originalCleanText = originalCleanText
     }
 
     /// A clipboard insertion whose paste keystroke was sent.

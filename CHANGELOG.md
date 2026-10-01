@@ -49,6 +49,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A text shortcut whose trigger is a space no longer deletes every space in a dictation. Triggers are trimmed, and Settings no longer accepts a blank trigger or an app shortcut without a bundle ID. Overlapping triggers now resolve the same way whatever order they were added in: the longer trigger wins, an app shortcut beats an all-apps one, and an expansion is never expanded again.
 - Settings no longer offers cleanup options that had no effect: Tone, and the Command and Email structures. A saved Command structure works as Natural and a saved Email structure as Paragraph, which is what they did; settings that use them still load.
 - "Run cleanup again" in History now treats VS Code, JetBrains IDEs and Warp the same way live dictation does, so it no longer gives different text. Apps are recognized by their bundle identifier: Microsoft's Windows App is now recognized as a remote-desktop client, and the WordPress app no longer is.
+- "Run cleanup again" in History no longer replaces a transcript's text for good. The text from the original dictation is kept, and "Restore original cleanup" puts it back. Re-running a dictation that began with a spoken "lowercase" command no longer adds the word "lowercase" to the text. An older entry whose command can't be replayed, or one that the current settings would empty, is left unchanged with a note saying why.
 
 ## [1.0.0] - 2026-09-17
 
