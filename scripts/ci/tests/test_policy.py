@@ -222,6 +222,17 @@ class WorkflowPolicyTests(unittest.TestCase):
                                          '--source-root', '.']
                         self.assertEqual(arguments.read_text().splitlines(), expected)
 
+    def test_only_pull_request_runs_can_be_cancelled_by_a_newer_run(self):
+        for path, prefix in (('ci.yml', 'ci-'), ('security.yml', 'security-')):
+            with self.subTest(workflow=path):
+                workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows' / path).read_text())
+                concurrency = workflow['concurrency']
+                self.assertEqual(concurrency['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}")
+                # Every non-PR run (main pushes, schedules, dispatches, release calls) gets a group of its own,
+                # so it can be neither cancelled nor replaced while pending.
+                self.assertEqual(concurrency['group'], prefix + "${{ github.event_name == 'pull_request' && "
+                                 "format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}")
+
     def test_runtime_job_uploads_preview_before_slow_suites_and_runs_both_stages(self):
         workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/validate.yml').read_text())
         steps = workflow['jobs']['runtime']['steps']

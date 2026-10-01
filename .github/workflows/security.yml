@@ -17,9 +17,12 @@ env:
   # The severity gate needs full results on PRs as well as main.
   CODEQL_ACTION_DIFF_INFORMED_QUERIES: 'false'
 
+# A newer push cancels only an obsolete pull request run. Pushes, schedules,
+# dispatches and release calls each have their own group and cannot cancel
+# one another.
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: security-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:

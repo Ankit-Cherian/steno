@@ -44,42 +44,78 @@ class SelectionTests(unittest.TestCase):
             head = git('rev-parse', 'HEAD')
             original = Path.cwd()
             os.chdir(root)
+            def pull_request(before, after):
+                return {'pull_request': {'base': {'sha': before}, 'head': {'sha': after}}}
             try:
-                self.assertEqual(SELECT.select('push', {'before': base, 'after': head}, 'CI'), 'docs')
-                self.assertEqual(SELECT.select('pull_request', {'pull_request': {'base': {'sha': base}, 'head': {'sha': head}}}, 'Security'), 'docs')
-                self.assertEqual(SELECT.select('merge_group', {'merge_group': {'base_sha': base, 'head_sha': head}}, 'CI'), 'docs')
-                self.assertEqual(SELECT.select('push', {'before': head, 'after': head}, 'CI'), 'full')
+                self.assertEqual(SELECT.select('pull_request', pull_request(base, head), 'CI'), 'docs')
+                self.assertEqual(SELECT.select('pull_request', pull_request(base, head), 'Security'), 'docs')
+                self.assertEqual(SELECT.select('pull_request', pull_request(head, head), 'CI'), 'full')
                 git('mv', 'program.py', 'CONTRIBUTING.md')
                 git('commit', '-qm', 'rename executable')
                 changed = git('rev-parse', 'HEAD')
-                self.assertEqual(SELECT.select('push', {'before': head, 'after': changed}, 'CI'), 'full')
+                self.assertEqual(SELECT.select('pull_request', pull_request(head, changed), 'CI'), 'full')
                 (root / 'README.md').unlink()
                 (root / 'README.md').symlink_to('CONTRIBUTING.md')
                 git('add', '.')
                 git('commit', '-qm', 'symlink')
-                self.assertEqual(SELECT.select('push', {'before': changed, 'after': git('rev-parse', 'HEAD')}, 'CI'), 'full')
+                self.assertEqual(SELECT.select('pull_request', pull_request(changed, git('rev-parse', 'HEAD')), 'CI'), 'full')
                 before_delete = git('rev-parse', 'HEAD')
                 (root / 'CONTRIBUTING.md').unlink()
                 git('commit', '-qam', 'delete documentation')
-                self.assertEqual(SELECT.select('push', {'before': before_delete, 'after': git('rev-parse', 'HEAD')}, 'CI'), 'docs')
+                self.assertEqual(SELECT.select('pull_request', pull_request(before_delete, git('rev-parse', 'HEAD')), 'CI'), 'docs')
+            finally:
+                os.chdir(original)
+
+    def test_documentation_only_main_pushes_and_merge_groups_require_full(self):
+        # A release commit is often documentation only; main must still be fully tested.
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*args):
+                return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
+            git('init', '-q')
+            git('config', 'user.name', 'Test')
+            git('config', 'user.email', 'test@example.invalid')
+            root = Path(directory)
+            (root / 'CHANGELOG.md').write_text('before\n')
+            git('add', '.')
+            git('commit', '-qm', 'baseline')
+            base = git('rev-parse', 'HEAD')
+            (root / 'CHANGELOG.md').write_text('after\n')
+            git('commit', '-qam', 'docs')
+            head = git('rev-parse', 'HEAD')
+            original = Path.cwd()
+            os.chdir(root)
+            try:
+                self.assertEqual(SELECT.select('pull_request', {'pull_request': {'base': {'sha': base}, 'head': {'sha': head}}}, 'CI'), 'docs')
+                for workflow in ('CI', 'Security'):
+                    self.assertEqual(SELECT.select('push', {'before': base, 'after': head}, workflow), 'full')
+                    self.assertEqual(SELECT.select('merge_group', {'merge_group': {'base_sha': base, 'head_sha': head}}, workflow), 'full')
             finally:
                 os.chdir(original)
 
     def test_release_schedule_dispatch_and_missing_base_require_full(self):
-        for event in ('schedule', 'workflow_dispatch', 'workflow_call', 'unknown'):
+        for event in ('push', 'merge_group', 'schedule', 'workflow_dispatch', 'workflow_call', 'unknown'):
             self.assertEqual(SELECT.select(event, {}, 'CI'), 'full')
-        self.assertEqual(SELECT.select('pull_request', {}, 'Release'), 'full')
-        self.assertEqual(SELECT.select('push', {'before': '0' * 40, 'after': 'a' * 40}, 'CI'), 'full')
+        # Both release callers reuse validation and security; each must get the full suite.
+        for workflow in ('Release', 'Publish release'):
+            for event in ('pull_request', 'push', 'workflow_dispatch'):
+                with self.subTest(workflow=workflow, event=event):
+                    self.assertEqual(SELECT.select(event, {}, workflow), 'full')
+        self.assertEqual(SELECT.select('pull_request', {'pull_request': {'base': {'sha': '0' * 40}, 'head': {'sha': 'a' * 40}}}, 'CI'), 'full')
+
+    def test_release_caller_names_match_the_release_workflows(self):
+        for path, name in (('release.yml', 'Release'), ('publish-release.yml', 'Publish release')):
+            workflow = POLICY.parse_workflow((ROOT / '.github/workflows' / path).read_text())
+            self.assertEqual(workflow['name'], name)
 
     def test_unavailable_comparison_falls_back_to_full(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             event = root / 'event.json'
             output = root / 'output'
-            for payload in ('{}', 'null', '[]', '{"before": null, "after": null}'):
+            for payload in ('{}', 'null', '[]', '{"pull_request": null}', '{"pull_request": {"base": {}, "head": {}}}'):
                 event.write_text(payload)
                 output.write_text('')
-                with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': 'push', 'GITHUB_WORKFLOW': 'CI', 'GITHUB_OUTPUT': str(output)}):
+                with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_WORKFLOW': 'CI', 'GITHUB_OUTPUT': str(output)}):
                     SELECT.main()
                 self.assertEqual(output.read_text(), 'scope=full\n')
 
