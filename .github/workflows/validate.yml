@@ -127,6 +127,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       GGML_METAL_DEVICES: '0'
+      STENO_TEST_WHISPER_THREADS: '3'
       # The package's default build directory, which the preview's bundled-runtime
       # test also uses, so the job compiles the Swift package once.
       STENO_SWIFT_SCRATCH_PATH: ${{ github.workspace }}/StenoKit/.build
@@ -144,48 +145,6 @@ jobs:
       # The gate still requires every step, including the slow suites, to pass.
       - name: Native runtime build and contracts
         run: bash scripts/ci/runtime-checks.sh --stage fast --backend cpu --root "$GITHUB_WORKSPACE/vendor/whisper.cpp" --output "$GITHUB_WORKSPACE/build/ci/runtime"
-      # Temporary: measures one recognition pass per thread count on this runner
-      # before the CI thread counts are changed. Remove after the measurement.
-      - name: Measure recognition time by thread count (temporary)
-        continue-on-error: true
-        timeout-minutes: 15
-        env:
-          HELPER: ${{ github.workspace }}/build/ci/runtime/build-steno/bin/steno-whisper-runtime
-          MODEL: ${{ github.workspace }}/vendor/whisper.cpp/models/ggml-small.en.bin
-          AUDIO: ${{ github.workspace }}/vendor/whisper.cpp/samples/jfk.wav
-        run: |
-          python3 - <<'PY'
-          import hashlib, importlib.util, json, os, sys, time, uuid
-          from pathlib import Path
-          spec = importlib.util.spec_from_file_location("thread_timing", "scripts/test-whisper-runtime-helper-v2.py")
-          harness = importlib.util.module_from_spec(spec)
-          sys.modules[spec.name] = harness
-          spec.loader.exec_module(harness)
-          helper_path, model, audio = (Path(os.environ[name]) for name in ("HELPER", "MODEL", "AUDIO"))
-          print(f"logical CPUs: {os.cpu_count()}", flush=True)
-          tokens = {}
-          for threads in (2, 3, 4):
-              helper = harness.Helper(helper_path, model, harness.VERSION_1)
-              try:
-                  request = uuid.uuid4().bytes
-                  started = time.monotonic()
-                  helper.send(harness.Frame(harness.TRANSCRIBE, request, 7,
-                                            harness.one_shot_configuration(audio, threads=threads)))
-                  response = helper.expect(harness.RESULT, request, 7, timeout=180)
-                  elapsed = time.monotonic() - started
-                  segments = harness.require_rich_result(response.payload)["transcription"]
-                  text = "".join(str(segment.get("text", "")) for segment in segments)
-                  tokens[threads] = [token for segment in segments for token in segment.get("tokens", [])]
-                  print(f"threads={threads} recognition={elapsed:.3f}s backend={helper.observed_backend} "
-                        f"text-sha256={hashlib.sha256(text.encode()).hexdigest()[:16]}", flush=True)
-                  helper.shutdown()
-              finally:
-                  helper.terminate()
-          for threads in (2, 3):
-              same = [token.get("id") for token in tokens[threads]] == [token.get("id") for token in tokens[4]]
-              drift = max((abs(a["p"] - b["p"]) for a, b in zip(tokens[threads], tokens[4]) if "p" in a and "p" in b), default=None)
-              print(f"threads={threads} versus 4: same tokens={same} max token probability difference={drift}")
-          PY
       - name: Public audio benchmark and zero cleanup regression
         env:
           STENO_WHISPER_BUILD_DIR: ${{ github.workspace }}/build/ci/runtime/build-steno

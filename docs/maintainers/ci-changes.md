@@ -4,6 +4,22 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Match test inference threads to the hosted CPU budget
+
+The [PR #29 measurement run](https://github.com/Ankit-Cherian/steno/actions/runs/36804958331/job/110187273962) reported three logical CPUs on `macos-15`. One public JFK recognition request through the real CPU helper was timed at each count:
+
+| Requested threads | Recognition time |
+| --- | --- |
+| 2 | 6.811 seconds |
+| 3 | 4.402 seconds |
+| 4 | 35.663 seconds |
+
+All three produced the same text digest, `5bd483773cd42fbc`, and identical token IDs. The maximum token probability differences from the four-thread result were 0.001201 at two threads and 0.002296 at three threads. Three threads was the fastest observed compatible count, taking 12.3% of the four-thread request time.
+
+The runtime job now sets `STENO_TEST_WHISPER_THREADS=3` for the protocol matrix, prompt scorer, public benchmark and retained-engine tests, including the retained-engine check during preview packaging. The helper and command-line engine use the same configured count in comparisons. Existing defaults remain available when the variable is absent. The temporary timing step has been removed. Test assertions, expected values, inference deadlines and job limits are unchanged.
+
+The first runtime job passed in 1 hour 9 minutes 44 seconds. Its combined protocol and prompt-scoring step took 54 minutes 46 seconds; the preview upload step completed 15 minutes 32 seconds after the workflow started. The complete first-run recognition values are available for comparison: prompted JFK reported 22 prompted words, 22 prompt-free words and country support of 5.2839. Prompt scoring reported JFK ordinary-word support of 3.62, spoken terms support of 8.45, repeated terms support of 7.64, language support of 8.40, Steno support of 16.48, and StenoKit/Turso support of 23.97/13.33. These values are recorded at the precision printed by the tests; subsequent hosted validation must retain the existing acceptance checks.
+
 ## Integration and release configuration verified
 
 PR #20 merged into `main` at `d25fcdf9d625eea6ee31bd0b03c5994302e8065e`. All jobs in the [post-merge CI run](https://github.com/Ankit-Cherian/steno/actions/runs/35026199709) and [Security run](https://github.com/Ankit-Cherian/steno/actions/runs/35026199375) passed. This includes both hosted macOS test jobs, the CPU runtime and distribution preview, artifact upload/download checks, and full-source security analysis. The earlier requests below for fresh hosted validation are satisfied for this integrated source. [PR #17](https://github.com/Ankit-Cherian/steno/pull/17) and [PR #18](https://github.com/Ankit-Cherian/steno/pull/18) were closed after their updates were included in PR #20.
