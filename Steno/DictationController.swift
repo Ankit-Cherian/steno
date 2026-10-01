@@ -1772,6 +1772,12 @@ final class DictationController: ObservableObject {
                 }
 
                 dismissOverlaySoon()
+                // The dictation is finished once its result is shown. History
+                // and Insights refresh afterwards, so a press during the
+                // refresh starts a new recording instead of being ignored.
+                if !acceptsCancelledCommit, recordingStateMachine.state == .transcribing {
+                    recordingStateMachine.markTranscriptionCompleted()
+                }
                 await refreshHistory()
                 if result.usageAnalyticsWarning == nil {
                     await refreshUsageAnalyticsSnapshot()
@@ -1780,18 +1786,9 @@ final class DictationController: ObservableObject {
                     // while keeping the exact-metrics warning visible.
                     await refreshUsageAnalytics(forceHistoryReconciliation: true)
                 }
-                let stillOwnsLifecycle = acceptsCancelledCommit
-                    ? recordingStateMachine.state == .idle
-                    : !Task.isCancelled && recordingStateMachine.state == .transcribing
-                guard !isTearingDown,
-                      completionTaskID == taskID,
-                      stillOwnsLifecycle
-                else {
+                guard !isTearingDown, completionTaskID == taskID else {
                     await finishCompletionTask(id: taskID)
                     return
-                }
-                if recordingStateMachine.state == .transcribing {
-                    recordingStateMachine.markTranscriptionCompleted()
                 }
                 await applyDeferredRebuildIfNeeded()
             } catch {
