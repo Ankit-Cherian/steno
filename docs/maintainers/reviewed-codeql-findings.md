@@ -7,9 +7,9 @@ These four reports are classified as not actionable under the inspected launch c
 | File input | Review |
 | --- | --- |
 | CLI response file | The upstream branch requires exactly one argument beginning with `@`. Steno passes several explicit arguments, so its invocation cannot enter that branch. A standalone CLI caller deliberately selects the response file. |
-| Helper WAV | Steno creates a recording path from its temporary directory and session UUID, then sends it to its child through a new anonymous pipe. Direct helper callers may intentionally choose their own WAV files. |
-| VAD model | The host selects the local VAD model and sends its path through the pipe. Custom absolute model paths are supported. |
-| Transcription model | The initial load request carries the selected local model path. This path is not derived from recognized text or a remote request. |
+| Helper WAV | Steno creates a recording path from its temporary directory and session UUID, then sends it to its child through a new anonymous pipe. The Speech model setup check instead sends a silent clip it writes into a new UUID-named temporary folder. Direct helper callers may intentionally choose their own WAV files. |
+| VAD model | The host selects the local VAD model and sends its path through the pipe. Custom absolute model paths are supported. The setup check uses the unsaved Settings draft. |
+| Transcription model | The initial load request carries the selected local model path, from saved preferences or, for the setup check, the unsaved Settings draft. This path is not derived from recognized text or a remote request. A helper that exits while idle is relaunched with the same configuration. |
 
 The inspected launcher performs no privilege elevation and exposes no shared request endpoint into the app-owned helper. Anonymous pipes describe that connection; they do not authenticate arbitrary programs that launch their own helper. The optional parent-process identifier is a lifecycle check, not authorization.
 
@@ -17,7 +17,7 @@ Same-user execution alone does not establish identical macOS file authority. TCC
 
 ## How the gate uses the review
 
-[`scripts/ci/reviewed-findings.json`](../../scripts/ci/reviewed-findings.json) records the four technical classifications. Each entry binds the exact rule, severity, full source range, message and source-to-sink trace. Full SHA-256 hashes cover the repository files in the trace and fourteen launch, permission, capture, native-build and release-packaging contracts. Generated vendor paths retain the upstream revision and patch digest. External toolchain header URIs remain part of trace identity; their contents are not hashed.
+[`scripts/ci/reviewed-findings.json`](../../scripts/ci/reviewed-findings.json) records the four technical classifications. Each entry binds the exact rule, severity, full source range, message and source-to-sink trace. Full SHA-256 hashes cover the repository files in the trace and fourteen launch, permission, capture, native-build and release-packaging contracts. The three helper findings also bind the retained engine that builds helper requests, and the source of their paths: preferences for the two models, and the setup check for the WAV. Generated vendor paths retain the upstream revision and patch digest. External toolchain header URIs remain part of trace identity; their contents are not hashed.
 
 The reviewed commit identifies the scanned source. File hashes enforce the review after unrelated commits. A new file outside those contracts can still change the trust boundary; ordinary code review and full-source security analysis remain necessary.
 
