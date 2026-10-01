@@ -1,9 +1,12 @@
 """Negative release guards run without Apple credentials or GitHub writes."""
+import datetime
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -397,6 +400,156 @@ class LatestReleaseTests(unittest.TestCase):
                     with self.assertRaises(subprocess.CalledProcessError):
                         publish.publish_existing('owner/repo', '1.0.0', SHA, assets)
                     write.assert_called_once()
+
+
+
+PROJECT = """targets:
+  Steno:
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.stenoapp.steno
+        MARKETING_VERSION: {version}
+        CURRENT_PROJECT_VERSION: {build}
+  StenoTests:
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: {tests_identifier}
+"""
+ENTITLEMENTS = '<plist><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>\n'
+
+
+class ReleasePlanTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='steno-release-plan-')
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.repo, self.remote = root / 'repo', root / 'remote.git'
+        subprocess.run(['git', 'init', '-q', '--bare', str(self.remote)], check=True)
+        self.repo.mkdir()
+        self.git('init', '-q')
+        self.git('config', 'user.name', 'Test')
+        self.git('config', 'user.email', 'test@example.invalid')
+        self.git('remote', 'add', 'origin', str(self.remote))
+        self.commit(version='1.0.0', build=3, changelog='## [1.0.0] - 2026-09-17\n\n- First release.\n')
+        self.git('tag', '-a', 'v1.0.0', '-m', 'v1.0.0')
+        self.previous = self.git('rev-parse', 'HEAD')
+        self.git('push', '-q', 'origin', 'HEAD:refs/heads/main', 'v1.0.0')
+        self.commit(version='1.0.1', build=4,
+                    changelog='## [Unreleased]\n\n## [1.0.1] - 2026-10-02\n\n- Fix.\n\n## [1.0.0] - 2026-09-17\n')
+
+    def git(self, *args):
+        return subprocess.check_output(['git', '-C', str(self.repo), *args], text=True).strip()
+
+    def commit(self, version, build, changelog, tests_identifier='io.stenoapp.steno.tests',
+               entitlements=ENTITLEMENTS):
+        (self.repo / 'Steno').mkdir(exist_ok=True)
+        (self.repo / 'project.yml').write_text(PROJECT.format(version=version, build=build,
+                                                              tests_identifier=tests_identifier))
+        (self.repo / 'CHANGELOG.md').write_text('# Changelog\n\n' + changelog)
+        (self.repo / guard.DISTRIBUTION_ENTITLEMENTS).write_text(entitlements)
+        self.git('add', '-A')
+        self.git('commit', '-qm', f'release {version}')
+
+    def plan(self, version='1.0.1', previous='v1.0.0', **options):
+        return guard.validate_plan(self.repo, version, previous, today=datetime.date(2026, 10, 2), **options)
+
+    def assert_fails(self, fragment, **options):
+        passed, errors = self.plan(**options)
+        self.assertTrue(any(fragment in error for error in errors), (fragment, errors))
+
+    def test_ready_release_passes_every_check(self):
+        passed, errors = self.plan()
+        self.assertEqual(errors, [])
+        self.assertEqual(len([line for line in passed if not line.startswith('note: ')]), 9, passed)
+
+    def test_wrong_marketing_version_or_unadvanced_version_fails(self):
+        self.assert_fails('MARKETING_VERSION is', version='1.0.2')
+        self.assert_fails('1.0.0 does not advance beyond v1.0.0', version='1.0.0')
+
+    def test_build_number_must_increase(self):
+        self.commit(version='1.0.1', build=3, changelog='## [1.0.1] - 2026-10-02\n')
+        self.assert_fails('CURRENT_PROJECT_VERSION 3 is not greater')
+
+    def test_changelog_needs_one_dated_heading_and_no_leftover_unreleased_entries(self):
+        for changelog, fragment in (
+            ('## [Unreleased]\n\n- Fix.\n', "'## [1.0.1] - YYYY-MM-DD' heading"),
+            ('## [1.0.1]\n\n- Fix.\n', "'## [1.0.1] - YYYY-MM-DD' heading"),
+            ('## [1.0.1] - 2026-13-45\n', "'## [1.0.1] - YYYY-MM-DD' heading"),
+            ('## [Unreleased]\n\n### Fixed\n- Late fix.\n\n## [1.0.1] - 2026-10-02\n', '[Unreleased] still has 1 entry'),
+        ):
+            with self.subTest(changelog=changelog):
+                self.commit(version='1.0.1', build=4, changelog=changelog)
+                self.assert_fails(fragment)
+
+    def test_heading_dated_other_than_today_is_reported_without_failing(self):
+        passed, errors = guard.validate_plan(self.repo, '1.0.1', 'v1.0.0', today=datetime.date(2026, 10, 3))
+        self.assertEqual(errors, [])
+        self.assertIn('note: the 1.0.1 heading is dated 2026-10-02, not today (UTC)', passed)
+
+    def test_tag_may_be_absent_or_at_head_but_never_elsewhere(self):
+        self.git('tag', 'v1.0.1')
+        self.git('push', '-q', 'origin', 'v1.0.1')
+        self.assertEqual(self.plan()[1], [])
+        self.git('tag', '-d', 'v1.0.1')
+        self.git('tag', '-a', 'v1.0.1', '-m', 'wrong', self.previous)
+        self.assert_fails('v1.0.1 already exists (local)')
+        self.git('tag', '-d', 'v1.0.1')
+        self.git('push', '-q', '--force', 'origin', f'{self.previous}:refs/tags/v1.0.1')
+        self.assert_fails('v1.0.1 already exists (remote)')
+
+    def test_bundle_identifier_change_fails(self):
+        self.commit(version='1.0.1', build=4, changelog='## [1.0.1] - 2026-10-02\n',
+                    tests_identifier='io.stenoapp.other.tests')
+        self.assert_fails('bundle identifiers changed')
+
+    def test_entitlement_change_requires_explicit_acknowledgement(self):
+        self.commit(version='1.0.1', build=4, changelog='## [1.0.1] - 2026-10-02\n',
+                    entitlements=ENTITLEMENTS.replace('<true/>', '<false/>'))
+        self.assert_fails('pass --accept-entitlements-change')
+        passed, errors = self.plan(accept_entitlements_change=True)
+        self.assertEqual(errors, [])
+        self.assertIn('note: distribution entitlements changed from v1.0.0; acknowledged', passed)
+
+    def test_checks_read_the_commit_not_the_working_tree(self):
+        (self.repo / 'project.yml').write_text(PROJECT.format(version='9.9.9', build=1, tests_identifier='x'))
+        (self.repo / 'CHANGELOG.md').write_text('## [Unreleased]\n\n- Uncommitted.\n')
+        self.assertEqual(self.plan()[1], [])
+
+    def test_missing_previous_tag_or_malformed_input_fails_before_checking(self):
+        for version, previous, fragment in (('1.0.1', 'v0.9.0', 'not available locally'),
+                                            ('v1.0.1', 'v1.0.0', 'stable X.Y.Z'),
+                                            ('1.0.1', '1.0.0', 'stable vX.Y.Z tag')):
+            with self.subTest(version=version, previous=previous), self.assertRaisesRegex(ValueError, fragment):
+                self.plan(version=version, previous=previous)
+
+    def test_command_lists_every_failure_and_exits_nonzero(self):
+        self.commit(version='1.0.1', build=3, changelog='## [Unreleased]\n\n- Fix.\n')
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/ci/release-guard.py'), 'plan', '1.0.1',
+                                 '--repo', str(self.repo), '--previous-tag', 'v1.0.0'],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('ok: MARKETING_VERSION is 1.0.1', result.stdout)
+        self.assertEqual(result.stdout.count('FAIL: '), 3, result.stdout)
+        self.assertIn('3 release plan check(s) failed', result.stderr)
+
+    def test_latest_release_lookup_is_unauthenticated_unless_a_token_is_present(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(json.dumps({'tag_name': 'v1.0.0'}))
+        with mock.patch.dict(guard.os.environ, {}, clear=True), \
+                mock.patch.object(guard.urllib.request, 'urlopen', return_value=response) as urlopen:
+            self.assertEqual(guard.latest_release_tag('owner/repo'), 'v1.0.0')
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, 'https://api.github.com/repos/owner/repo/releases/latest')
+        self.assertIsNone(request.get_header('Authorization'))
+        with mock.patch.object(guard.urllib.request, 'urlopen', side_effect=guard.urllib.error.URLError('offline')), \
+                self.assertRaisesRegex(ValueError, '--previous-tag'):
+            guard.latest_release_tag('owner/repo')
+        with self.assertRaises(ValueError):
+            guard.latest_release_tag('owner/repo; rm -rf /')
+
+    def test_checked_entitlements_are_the_ones_the_distribution_build_signs_with(self):
+        self.assertIn(f'DIST_ENTITLEMENTS="$REPO_ROOT/{guard.DISTRIBUTION_ENTITLEMENTS}"',
+                      (ROOT / 'scripts/release-dmg.sh').read_text())
 
 
 if __name__ == '__main__':
