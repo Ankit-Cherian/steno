@@ -86,6 +86,111 @@ func recorderStoppingEndsSession() async {
     #expect(await waitForShortcutCondition { controller.recordingLifecycleState == .idle })
 }
 
+// MARK: - Microphone access
+
+private let microphoneOffMessage = "Microphone access is off. Turn it on for Steno in System Settings > Privacy & Security > Microphone."
+
+@MainActor
+@Test("With microphone access denied, the hands-free key starts nothing and says why")
+func deniedMicrophoneBlocksHandsFree() async {
+    let presenter = makeShortcutTestPresenter()
+    let coordinator = CaptureTestCoordinator(
+        result: InsertResult(status: .inserted, method: .accessibility, insertedText: "unused")
+    )
+    let controller = makeTestDictationController(
+        hotkey: StatusReportingHotkeyService(),
+        overlay: presenter,
+        coordinator: coordinator
+    )
+    defer { controller.teardown() }
+    controller.microphoneAccessProvider = { .denied }
+
+    controller.toggleHandsFree()
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(await coordinator.events.isEmpty)
+    #expect(controller.recordingLifecycleState == .idle)
+    #expect(!controller.isRecording)
+    #expect(controller.status == "Microphone access is off.")
+    #expect(controller.lastError == microphoneOffMessage)
+    #expect(controller.microphonePermissionStatus == .denied)
+    #expect(presenter.hostedEvidenceShownStates() == [.failure(message: microphoneOffMessage)])
+
+    // Once access is back, the same key records.
+    controller.microphoneAccessProvider = { .granted }
+    controller.toggleHandsFree()
+    #expect(await waitForShortcutCondition { controller.isRecording })
+}
+
+@MainActor
+@Test("With microphone access denied, holding Option starts nothing and shows the microphone message")
+func deniedMicrophoneBlocksOptionHold() async {
+    let presenter = makeShortcutTestPresenter()
+    let hotkey = FilteringHotkeyService()
+    let coordinator = CaptureTestCoordinator(
+        result: InsertResult(status: .inserted, method: .accessibility, insertedText: "unused")
+    )
+    let controller = makeTestDictationController(hotkey: hotkey, overlay: presenter, coordinator: coordinator)
+    defer { controller.teardown() }
+    controller.microphoneAccessProvider = { .denied }
+
+    hotkey.press([.option])
+    try? await Task.sleep(for: .milliseconds(50))
+    // Until the press proves to be a dictation, nothing is shown.
+    #expect(presenter.hostedEvidenceShownStates().isEmpty)
+
+    hotkey.holdPastConfirmationWindow()
+    #expect(await waitForShortcutCondition {
+        presenter.hostedEvidenceShownStates() == [.failure(message: microphoneOffMessage)]
+    })
+    hotkey.press([], after: 1)
+
+    #expect(await coordinator.events.isEmpty)
+    #expect(controller.recordingLifecycleState == .idle)
+    #expect(controller.lastError == microphoneOffMessage)
+}
+
+@MainActor
+@Test("With microphone access denied, an Option keyboard shortcut still leaves no trace")
+func deniedMicrophoneKeepsOptionShortcutsSilent() async {
+    let presenter = makeShortcutTestPresenter()
+    let hotkey = FilteringHotkeyService()
+    let coordinator = CaptureTestCoordinator(
+        result: InsertResult(status: .inserted, method: .accessibility, insertedText: "unused")
+    )
+    let controller = makeTestDictationController(hotkey: hotkey, overlay: presenter, coordinator: coordinator)
+    defer { controller.teardown() }
+    controller.microphoneAccessProvider = { .denied }
+    controller.status = "Ready"
+
+    hotkey.press([.option])
+    hotkey.keyDown(after: 0.05)
+    hotkey.press([], after: 0.05)
+    try? await Task.sleep(for: .milliseconds(100))
+
+    #expect(await coordinator.events.isEmpty)
+    #expect(presenter.hostedEvidenceShownStates().isEmpty)
+    #expect(controller.status == "Ready")
+    #expect(controller.lastError.isEmpty)
+}
+
+@MainActor
+@Test("An undetermined microphone status still starts capture at once")
+func undeterminedMicrophoneStartsCapture() async {
+    let events = ShortcutEventLog()
+    let hotkey = FilteringHotkeyService()
+    let controller = makeTestDictationController(
+        hotkey: hotkey,
+        overlay: makeShortcutTestPresenter(),
+        coordinator: ShortcutTestCoordinator(events: events)
+    )
+    defer { controller.teardown() }
+    controller.microphoneAccessProvider = { .unknown }
+
+    hotkey.press([.option])
+    #expect(await waitForShortcutEvent("capture.start", in: events))
+}
+
 // MARK: - Test doubles
 
 actor CaptureTestCoordinator: DictationSessionCoordinating {

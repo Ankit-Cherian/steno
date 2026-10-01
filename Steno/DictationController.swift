@@ -292,6 +292,9 @@ final class DictationController: ObservableObject {
     /// finishing is only worth a cue once it proves to be a dictation.
     private var showsFinishingNoticeOnConfirmation = false
     var recordingDurationLimit = RecordingDurationLimit.standard
+    /// Replaces the microphone status read at the start of a session. Tests
+    /// set it; the app reads the status from macOS.
+    var microphoneAccessProvider: (@MainActor () -> PermissionDiagnostics.AccessStatus)?
     private var hasWarnedAboutRecordingLimit = false
     private var currentSessionID: SessionID?
     private var currentCaptureStopCapability: PressToTalkCaptureStopCapability?
@@ -1294,6 +1297,13 @@ final class DictationController: ObservableObject {
 
     private func startSession(mode: RecordingMode) {
         guard !isTearingDown else { return }
+        // A synchronous status read: it never delays capture when access is
+        // granted, and a denied microphone would record silence or fail with
+        // an unclear error.
+        guard currentMicrophoneAccess() != .denied else {
+            refuseSessionWithoutMicrophoneAccess(mode: mode)
+            return
+        }
         guard !isRuntimeUnloadingForSystemEvent else {
             recordingStateMachine.markTranscriptionFailed()
             status = "Runtime is releasing memory. Try again in a moment."
@@ -1447,6 +1457,35 @@ final class DictationController: ObservableObject {
             if activeSessionGeneration == generation {
                 activeStartTask = nil
             }
+        }
+    }
+
+    private func currentMicrophoneAccess() -> PermissionDiagnostics.AccessStatus {
+        if let microphoneAccessProvider { return microphoneAccessProvider() }
+        return systemIntegrationsEnabled ? PermissionDiagnostics.microphoneStatus() : .granted
+    }
+
+    /// Nothing is recorded. The overlay says why, and the Dictate tab's
+    /// Review settings opens Permissions, where access can be turned back on.
+    /// An Option press says so only once it proves to be a dictation, so
+    /// Option keyboard shortcuts stay silent.
+    private func refuseSessionWithoutMicrophoneAccess(mode: RecordingMode) {
+        recordingStateMachine.markTranscriptionFailed()
+        microphonePermissionStatus = .denied
+        let present: @MainActor () -> Void = { [weak self] in
+            guard let self, !self.isTearingDown else { return }
+            let message = "Microphone access is off. Turn it on for Steno in System Settings > Privacy & Security > Microphone."
+            self.status = "Microphone access is off."
+            self.lastError = message
+            self.overlay.show(state: .failure(message: message))
+            self.dismissOverlaySoon()
+        }
+        guard mode == .pressToTalk, let confirmation = pressToTalkConfirmation else {
+            present()
+            return
+        }
+        Task { @MainActor in
+            if await confirmation.wait() { present() }
         }
     }
 
