@@ -736,7 +736,17 @@ final class DictationController: ObservableObject {
         applyOverlayAppearance(for: snapshot.appearance)
 
         Task {
-            await preferencesStore.save(snapshot)
+            switch await preferencesStore.save(snapshot) {
+            case .success:
+                if !settingsSaveError.isEmpty, lastError == settingsSaveError {
+                    lastError = ""
+                }
+                settingsSaveError = ""
+            case .failure(let error):
+                settingsSaveError = error.localizedDescription
+                status = "Appearance couldn't be saved."
+                lastError = error.localizedDescription
+            }
         }
     }
 

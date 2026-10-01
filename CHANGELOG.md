@@ -47,6 +47,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A failed model download now shows the reason next to the Download button, in Settings and during setup.
 - Downloading a model no longer replaces a voice-detection model you chose yourself.
 - Choosing or downloading a model no longer reports that Steno switched to it when the change couldn't be saved. The current model stays in use and the reason is shown with the model controls.
+- Appearance changes that can't be saved are now reported on the Appearance page instead of failing silently.
+- When a model download finishes while Settings has unsaved edits, the locked Save now explains that the download changed the saved speech model.
 
 ## [1.0.0] - 2026-09-17
 

@@ -260,4 +260,61 @@ struct ModelSetupControllerTests {
         #expect(controller.preferences.dictation.modelPath == fixture.downloadedPath(.mediumEn))
         #expect(controller.lastError.isEmpty, "the earlier model error is cleared")
     }
+
+    @Test("An appearance change that can't be saved is reported, never shown as saved")
+    func appearanceWithUnwritableSettings() async throws {
+        let fixture = try ModelSetupFixture()
+        defer { fixture.tearDown() }
+        let controller = fixture.controller!
+        var appearance = controller.preferences.appearance
+        appearance.accent = appearance.accent == .rose ? .citron : .rose
+
+        fixture.setPreferencesWritable(false)
+        controller.saveAppearance(appearance)
+        #expect(await waitForModelSetupCondition { !controller.settingsSaveError.isEmpty })
+        #expect(controller.status == "Appearance couldn't be saved.")
+        #expect(controller.settingsSaveError == AppPreferencesStoreError.writeFailed.localizedDescription)
+
+        fixture.setPreferencesWritable(true)
+        controller.saveAppearance(appearance)
+        #expect(await waitForModelSetupCondition { controller.settingsSaveError.isEmpty })
+        #expect(controller.lastError.isEmpty)
+        #expect(await AppPreferencesStore(storageURL: fixture.preferencesURL).load().appearance.accent == appearance.accent)
+    }
+}
+
+@Suite("Settings draft after a model download")
+struct SettingsDraftModelConflictTests {
+    @Test("A download finishing during unsaved edits keeps Save locked and names the cause")
+    func modelDownloadConflictIsNamed() {
+        let saved = AppPreferences.default
+        var draft = saved
+        draft.snippets = [Snippet(trigger: "sig", expansion: "Best regards")]
+        var state = SettingsDraftState(saved: saved)
+        state.edit(draft)
+
+        var downloaded = saved
+        downloaded.dictation.updateModelPath("/Models/ggml-medium.en.bin")
+        state.reconcile(downloaded)
+
+        #expect(state.hasConflictingUpdate)
+        #expect(state.conflictCause == .modelChange)
+        #expect(state.preferences == draft)
+    }
+
+    @Test("Any other external change is reported as a general conflict")
+    func otherConflictStaysGeneral() {
+        let saved = AppPreferences.default
+        var draft = saved
+        draft.snippets = [Snippet(trigger: "sig", expansion: "Best regards")]
+        var state = SettingsDraftState(saved: saved)
+        state.edit(draft)
+
+        var external = saved
+        external.dictation.updateModelPath("/Models/ggml-medium.en.bin")
+        external.media.pauseDuringHandsFree.toggle()
+        state.reconcile(external)
+
+        #expect(state.conflictCause == .externalChange)
+    }
 }
