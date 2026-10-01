@@ -31,7 +31,7 @@ struct PermissionsSettingsSection: View {
 
                 PermissionStatusCard(
                     title: "Input Monitoring",
-                    description: "Lets Steno detect global hotkeys while other apps are focused.",
+                    description: "Lets Steno detect its shortcuts while other apps are focused. For Hold Option to talk, Steno notices each key press and mouse click, never which key or button.",
                     status: controller.inputMonitoringPermissionStatus,
                     onRequest: { controller.requestInputMonitoringPermission() },
                     onOpenSettings: { controller.openInputMonitoringSettings() }

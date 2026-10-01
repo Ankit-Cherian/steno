@@ -136,7 +136,7 @@ struct OnboardingView: View {
                 Divider().overlay(StenoDesign.border)
                 featureRow(icon: "waveform", title: "Speech model", detail: "Choose the recognition model that fits your Mac.")
                 Divider().overlay(StenoDesign.border)
-                featureRow(icon: "text.cursor", title: "Text insertion", detail: "Click a text field before you start. Completed dictation is inserted there.")
+                featureRow(icon: "text.cursor", title: "Text insertion", detail: "Click a text field before you start. Completed dictation is inserted there, or copied if the field is a password field or you moved to another one.")
             }
         }
     }
@@ -203,7 +203,7 @@ struct OnboardingView: View {
 
                 PermissionStatusCard(
                     title: "Input monitoring",
-                    description: "Lets Steno detect global hotkeys while other apps are focused.",
+                    description: "Lets Steno detect its shortcuts while other apps are focused. For Hold Option to talk, Steno notices each key press and mouse click, never which key or button.",
                     status: controller.inputMonitoringPermissionStatus,
                     onRequest: { controller.requestInputMonitoringPermission() },
                     onOpenSettings: { controller.openInputMonitoringSettings() }

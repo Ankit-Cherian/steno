@@ -12,7 +12,7 @@ struct RecordingSettingsSection: View {
                     Toggle("Hold Option to talk", isOn: $preferences.hotkeys.optionPressToTalkEnabled)
                         .font(.system(size: 13))
                         .accessibilityIdentifier("settings.recording.option")
-                    Text("Press and hold to record. Release to finish.")
+                    Text("Press and hold to record. Release to finish. Shortcuts that use Option, such as Option+Arrow, don\u{2019}t start a recording. To tell them apart, Steno notices each key press and mouse click in any app, never which key or button.")
                         .font(StenoDesign.caption())
                         .foregroundStyle(StenoDesign.textSecondary)
                         .padding(.leading, 20)
@@ -50,7 +50,7 @@ struct RecordingSettingsSection: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: StenoDesign.pickerWidth, alignment: .leading)
 
-                    Text("Works from any app. F13–F20 work without extra setup. F1–F12 need standard function key mode in System Settings.")
+                    Text("Works from any app. F13–F20 work without extra setup. F1–F12 need standard function key mode in System Settings. Choose Disabled to turn the key off; Hold Option and the Dictate button still work. A recording stops after one hour and is transcribed.")
                         .font(StenoDesign.caption())
                         .foregroundStyle(StenoDesign.textSecondary)
                         .padding(.leading, StenoDesign.xxs)
