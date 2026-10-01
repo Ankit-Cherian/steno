@@ -47,6 +47,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - The live transcript no longer disappears partway through a recording. The final transcript was never affected.
 - Saving settings no longer unloads the speech model unless a transcription setting changed, so the next dictation after editing a snippet, a vocabulary correction or another unrelated setting starts at full speed. A dictation started while those settings are being applied is no longer dropped.
 - If the speech engine's background process ends between dictations, Steno now starts a new one instead of sending the next dictation down the slower backup path. Canceling a dictation as it starts no longer unloads the speech model.
+- When the backup transcription path fails, the overlay and VoiceOver now give a one-line message instead of the tool's full log, which included file paths.
 
 ## [1.0.0] - 2026-09-17
 

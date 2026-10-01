@@ -10,8 +10,11 @@ public enum WhisperCLITranscriptionError: Error, LocalizedError, Equatable {
         switch self {
         case .cliNotFound(let path):
             return "whisper-cli not found at: \(path)"
-        case .failedToRun(let status, let stderr):
-            return "whisper-cli failed with status \(status): \(stderr)"
+        case .failedToRun(let status, _):
+            // The full output names model and recording paths and can run to
+            // dozens of lines. It stays in the associated value and the
+            // diagnostic log; the overlay and VoiceOver get one short line.
+            return "Transcription failed. The speech engine stopped with error \(status)."
         case .outputMissing:
             return "whisper-cli completed but transcript output was missing"
         case .timedOut:
@@ -118,6 +121,9 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         let stderrText = String(data: result.standardError, encoding: .utf8) ?? ""
 
         guard result.terminationStatus == 0 else {
+            StenoKitDiagnostics.logger.error(
+                "whisper-cli exited with status \(result.terminationStatus, privacy: .public): \(stderrText, privacy: .private)"
+            )
             throw WhisperCLITranscriptionError.failedToRun(status: result.terminationStatus, stderr: stderrText)
         }
 
