@@ -604,20 +604,16 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             self.capitalizedSentence(sentence, preservedSpellings: preservedSpellings)
         }
 
-        switch mode {
+        switch mode.effective {
         case .natural, .command:
             return (text, [])
-        case .paragraph:
+        case .paragraph, .email:
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return (capitalizedSentence(trimmed), [TranscriptEdit(kind: .structureRewrite, from: "raw", to: "paragraph")])
         case .bullets:
             let clauses = splitIntoClauses(text, capitalizedSentence: capitalizedSentence)
             let bulletText = clauses.map { "- \($0)" }.joined(separator: "\n")
             return (bulletText, [TranscriptEdit(kind: .structureRewrite, from: "raw", to: "bullets")])
-        case .email:
-            let body = capitalizedSentence(text.trimmingCharacters(in: .whitespacesAndNewlines))
-            let email = "Hi,\n\n\(body)\n\nThanks,"
-            return (email, [TranscriptEdit(kind: .structureRewrite, from: "raw", to: "email")])
         }
     }
 
