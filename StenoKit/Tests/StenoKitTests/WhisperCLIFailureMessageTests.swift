@@ -90,3 +90,13 @@ func retainedFallbackFailureMessageIsShort() async throws {
     }
     await engine.shutdown()
 }
+
+@Test("A dictation whose backup transcription also failed says so in plain words")
+func exhaustedFallbackMessageIsPlain() {
+    let message = LiveTranscriptionFinalizationError.authoritativeFallbackExhausted.localizedDescription
+    #expect(message.hasPrefix("This dictation couldn't be transcribed."))
+    #expect(message.contains("Test setup"))
+    for jargon in ["authoritative", "fallback", "canonical"] {
+        #expect(!message.localizedCaseInsensitiveContains(jargon), "\(message)")
+    }
+}

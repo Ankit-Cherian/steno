@@ -36,7 +36,7 @@ public enum LiveTranscriptionFinalizationError: Error, LocalizedError, Equatable
     case authoritativeFallbackExhausted
 
     public var errorDescription: String? {
-        "The authoritative transcription failed after its final local fallback was attempted."
+        "This dictation couldn't be transcribed. Try again, and if it keeps failing, use Test setup in Settings > Speech model."
     }
 }
 
@@ -533,6 +533,9 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
             throw RetainedWhisperRuntimeError.vadIntegrityFailure
         }
         guard !exhaustedCanonicalFinals.contains(canonicalAudioKey(audioURL)) else {
+            StenoKitDiagnostics.logger.error(
+                "Refused to transcribe a recording again after its final transcription and backup transcription both failed."
+            )
             throw LiveTranscriptionFinalizationError.authoritativeFallbackExhausted
         }
         let id = UUID()
@@ -970,6 +973,9 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
             // Do not expose the fallback's implementation error as a retryable
             // live-stream failure. The canonical final has exhausted its one
             // allowed fallback and is now terminal.
+            StenoKitDiagnostics.logger.error(
+                "Live final transcription failed, and its one backup transcription also failed: \(String(describing: error), privacy: .private)"
+            )
             throw LiveTranscriptionFinalizationError.authoritativeFallbackExhausted
         }
     }

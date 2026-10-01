@@ -86,6 +86,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - "Run cleanup again" in History no longer replaces a transcript's text for good. The text from the original dictation is kept, and "Restore original cleanup" puts it back. Re-running a dictation that began with a spoken "lowercase" command no longer adds the word "lowercase" to the text. An older entry whose command can't be replayed, or one that the current settings would empty, is left unchanged with a note saying why.
 - Deleting a transcript from History now also removes its text from the backup copy Steno keeps of the History file. Previously the text stayed in that copy until the next save.
 - Delete all history now also removes the copies Steno kept when the History file couldn't be read in full, which could still hold deleted transcripts. The confirmation says so.
+- When both the live transcript path and its backup fail to transcribe a dictation, Steno now says the dictation couldn't be transcribed and suggests trying again or running Test setup, instead of a technical message.
 
 ## [1.0.0] - 2026-09-17
 
