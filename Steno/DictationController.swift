@@ -631,8 +631,16 @@ final class DictationController: ObservableObject {
     }
     #endif
 
+    #if DEBUG
+    /// Model rows shown by an isolated preview instead of the default sample rows.
+    var previewWhisperModelOptions: [WhisperModelOption]?
+    #endif
+
     var whisperModelOptions: [WhisperModelOption] {
         if isIsolatedPreview {
+            #if DEBUG
+            if let previewWhisperModelOptions { return previewWhisperModelOptions }
+            #endif
             return WhisperModelLibrary.managedModelIDs.map {
                 WhisperModelOption(modelID: $0, source: $0 == .smallEn ? .bundled : nil,
                     path: nil, isInstalled: $0 == .smallEn, isActive: $0 == .smallEn,

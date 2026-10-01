@@ -7,12 +7,31 @@ struct EngineSettingsSection: View {
     var hasUnsavedChanges = false
     @State private var setupCheckStages: [WhisperSetupCheckStage] = []
     @State private var isTesting = false
+    @State private var showsAdvanced = false
     private let compatibilityService = try? WhisperCompatibilityService.bundled()
+
+    init(preferences: Binding<AppPreferences>, controller: DictationController, hasUnsavedChanges: Bool = false) {
+        _preferences = preferences
+        self.controller = controller
+        self.hasUnsavedChanges = hasUnsavedChanges
+    }
+
+    #if DEBUG
+    init(
+        preferences: Binding<AppPreferences>,
+        controller: DictationController,
+        previewSetupCheckStages: [WhisperSetupCheckStage]
+    ) {
+        self.init(preferences: preferences, controller: controller)
+        _setupCheckStages = State(initialValue: previewSetupCheckStages)
+        _showsAdvanced = State(initialValue: true)
+    }
+    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             settingsCard("Available models") { modelLibraryPanel }
-            DisclosureGroup("Advanced setup and diagnostics") {
+            DisclosureGroup("Advanced setup and diagnostics", isExpanded: $showsAdvanced) {
                 VStack(alignment: .leading, spacing: 14) {
                     TextField("whisper-cli path", text: $preferences.dictation.whisperCLIPath)
                         .textFieldStyle(.roundedBorder)

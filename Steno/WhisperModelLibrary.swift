@@ -37,8 +37,8 @@ enum WhisperModelDownloadError: LocalizedError, Equatable {
             return "The downloaded model file could not be saved."
         case .applicationSupportUnavailable:
             return "Application Support is unavailable on this Mac."
-        case .verificationFailed(let modelID):
-            return "The downloaded \(WhisperModelCatalog.title(for: modelID)) model didn't match the published file, so it wasn't installed. A network filter or proxy may have changed the download."
+        case .verificationFailed:
+            return "The download didn't match the published file, so it wasn't installed. A network filter or proxy may have changed it."
         }
     }
 }
