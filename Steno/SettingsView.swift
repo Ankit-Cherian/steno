@@ -177,6 +177,7 @@ struct SettingsView: View {
 
         }
         .onAppear {
+            Task { await controller.refreshLaunchAtLoginStatus() }
             guard !didLoad else { return }
             draftState.reload(controller.preferences)
             didLoad = true
@@ -288,7 +289,9 @@ struct SettingsView: View {
         case .general:
             GeneralSettingsSection(
                 preferences: preferencesBinding,
-                launchAtLoginWarning: controller.launchAtLoginWarning
+                launchAtLoginWarning: controller.launchAtLoginWarning,
+                launchAtLoginNeedsApproval: controller.launchAtLoginNeedsApproval,
+                onOpenLoginItems: { controller.openLoginItemsSettings() }
             )
         }
     }

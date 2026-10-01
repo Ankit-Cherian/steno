@@ -247,6 +247,8 @@ final class DictationController: ObservableObject {
     @Published var recentEntries: [TranscriptEntry] = []
     @Published var hotkeyRegistrationMessage: String = ""
     @Published var launchAtLoginWarning: String = ""
+    /// macOS registered the login item but shows it as off until the user allows it.
+    @Published var launchAtLoginNeedsApproval = false
     @Published var preferences: AppPreferences = .default
     @Published var microphonePermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var accessibilityPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
@@ -276,7 +278,7 @@ final class DictationController: ObservableObject {
     private let overlay: WaveformOverlayPresenter
     private let mediaInterruption: MediaInterruptionService
     private let preferencesStore: AppPreferencesStore
-    private let launchAtLoginService: LaunchAtLoginService
+    private let launchAtLoginService: (any LaunchAtLoginServicing)?
     private let runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)?
     private let overlayDismissDelay: @Sendable () async -> Void
     private let overlayDismissAction: @MainActor @Sendable () -> Void
@@ -323,7 +325,8 @@ final class DictationController: ObservableObject {
     private var runtimeRebuildGeneration: UInt64 = 0
     private var activeRuntimeRebuilds = 0
     private var runtimeRebuildWaiters: [CheckedContinuation<Void, Never>] = []
-    private var launchAtLoginServicePreference = AppPreferences.default.general.launchAtLoginEnabled
+    /// The launch-at-login value last written to the settings file.
+    private var savedLaunchAtLoginPreference = AppPreferences.default.general.launchAtLoginEnabled
     /// The model failure currently shown in `lastError`, cleared once a model change succeeds.
     private var lastModelError = ""
     private let menuBar = MenuBarController()
@@ -346,7 +349,7 @@ final class DictationController: ObservableObject {
         overlay: WaveformOverlayPresenter = WaveformOverlayPresenter(),
         mediaInterruption: MediaInterruptionService = MacMediaInterruptionService(),
         preferencesStore: AppPreferencesStore = AppPreferencesStore(),
-        launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService(),
+        launchAtLoginService: (any LaunchAtLoginServicing)? = nil,
         modelDownloadService: WhisperModelDownloadService = WhisperModelDownloadService(),
         coordinator: (any DictationSessionCoordinating)? = nil,
         runtimeRebuildOverride: (@MainActor () async -> (any DictationSessionCoordinating)?)? = nil,
@@ -380,6 +383,7 @@ final class DictationController: ObservableObject {
         self.mediaInterruption = mediaInterruption
         self.preferencesStore = preferencesStore
         self.launchAtLoginService = launchAtLoginService
+            ?? (systemIntegrationsEnabled && !isIsolatedPreview ? LaunchAtLoginService() : nil)
         self.modelDownloadService = modelDownloadService
         self.coordinator = coordinator
         self.runtimeRebuildOverride = runtimeRebuildOverride
@@ -681,8 +685,9 @@ final class DictationController: ObservableObject {
         loaded.normalize()
 
         applyPreferencesLocally(loaded)
-        launchAtLoginServicePreference = loaded.general.launchAtLoginEnabled
+        savedLaunchAtLoginPreference = loaded.general.launchAtLoginEnabled
         launchAtLoginWarning = ""
+        await refreshLaunchAtLoginStatus()
         refreshPermissionStatuses()
         validateWhisperPaths()
         await rebuildRuntime()
@@ -696,6 +701,10 @@ final class DictationController: ObservableObject {
         guard !isIsolatedPreview else { status = "Preview settings updated."; return }
         var snapshot = preferences
         snapshot.normalize()
+        snapshot.general.launchAtLoginEnabled = applyLaunchAtLoginChange(
+            requestedPreference: snapshot.general.launchAtLoginEnabled,
+            previousPreference: savedLaunchAtLoginPreference
+        )
         applyPreferencesLocally(snapshot)
 
         Task {
@@ -717,6 +726,10 @@ final class DictationController: ObservableObject {
         let previous = preferences
         var snapshot = draft
         snapshot.normalize()
+        snapshot.general.launchAtLoginEnabled = applyLaunchAtLoginChange(
+            requestedPreference: snapshot.general.launchAtLoginEnabled,
+            previousPreference: previous.general.launchAtLoginEnabled
+        )
         applyPreferencesLocally(snapshot)
 
         return Task {
@@ -739,10 +752,7 @@ final class DictationController: ObservableObject {
                 lastError = ""
             }
             settingsSaveError = ""
-            applyLaunchAtLoginPreference(
-                requestedPreference: snapshot.general.launchAtLoginEnabled,
-                userInitiated: true
-            )
+            savedLaunchAtLoginPreference = snapshot.general.launchAtLoginEnabled
             status = "Settings saved."
             return true
         case .failure(let error):
@@ -2322,29 +2332,73 @@ final class DictationController: ObservableObject {
         await unloadRetainedRuntimeForSystemEvent()
     }
 
-    private func applyLaunchAtLoginPreference(requestedPreference: Bool, userInitiated: Bool) {
-        guard systemIntegrationsEnabled else { return }
+    /// Registers or unregisters the login item when the user changed the
+    /// setting, and returns what macOS reports, so On is saved only after
+    /// registration succeeds.
+    private func applyLaunchAtLoginChange(requestedPreference: Bool, previousPreference: Bool) -> Bool {
+        guard let launchAtLoginService else { return requestedPreference }
         let decision = LaunchAtLoginMutationPolicy.decision(
-            currentPreference: launchAtLoginServicePreference,
+            systemStatus: launchAtLoginService.status,
             requestedPreference: requestedPreference,
-            userInitiated: userInitiated
+            previousPreference: previousPreference
         )
+        guard case .setEnabled(let enabled) = decision else {
+            return requestedPreference
+        }
 
-        switch decision {
-        case .skip:
+        var errorDescription: String?
+        do {
+            try launchAtLoginService.setEnabled(enabled)
+        } catch {
+            errorDescription = error.localizedDescription
+        }
+        let outcome = LaunchAtLoginMutationPolicy.outcome(
+            requestedPreference: requestedPreference,
+            statusAfter: launchAtLoginService.status,
+            errorDescription: errorDescription
+        )
+        showLaunchAtLoginNotice(outcome.notice, requestedPreference: requestedPreference)
+        return outcome.preference
+    }
+
+    /// Reads the login item from macOS, which the user can change in System
+    /// Settings at any time, and saves the setting when it no longer matches.
+    func refreshLaunchAtLoginStatus() async {
+        guard !isIsolatedPreview, let launchAtLoginService else { return }
+        let status = launchAtLoginService.status
+        launchAtLoginNeedsApproval = status == .requiresApproval
+        if !launchAtLoginNeedsApproval, launchAtLoginWarning == Self.launchAtLoginApprovalMessage {
             launchAtLoginWarning = ""
-        case .setEnabled(let enabled):
-            do {
-                try launchAtLoginService.setEnabled(enabled)
-                launchAtLoginServicePreference = enabled
-                launchAtLoginWarning = ""
-            } catch {
-                launchAtLoginWarning = LaunchAtLoginMutationPolicy.warningMessage(
-                    requestedPreference: requestedPreference,
-                    userInitiated: userInitiated,
-                    errorDescription: error.localizedDescription
-                ) ?? ""
-            }
+        }
+        guard preferences.general.launchAtLoginEnabled != status.isRegistered else { return }
+
+        var snapshot = preferences
+        snapshot.general.launchAtLoginEnabled = status.isRegistered
+        preferences = snapshot
+        if case .success = await preferencesStore.save(snapshot) {
+            savedLaunchAtLoginPreference = status.isRegistered
+        }
+    }
+
+    func openLoginItemsSettings() {
+        guard !isIsolatedPreview else { return }
+        launchAtLoginService?.openLoginItemsSettings()
+    }
+
+    static let launchAtLoginApprovalMessage =
+        "macOS needs your approval before Steno can open at login. Turn on Steno in Login Items."
+
+    private func showLaunchAtLoginNotice(_ notice: LaunchAtLoginNotice?, requestedPreference: Bool) {
+        launchAtLoginNeedsApproval = notice == .needsApproval
+        switch notice {
+        case nil:
+            launchAtLoginWarning = ""
+        case .needsApproval:
+            launchAtLoginWarning = Self.launchAtLoginApprovalMessage
+        case .failed(let reason):
+            let action = requestedPreference ? "turn on" : "turn off"
+            launchAtLoginWarning = "Steno couldn't \(action) launch at login."
+                + (reason.map { " \($0)" } ?? " macOS didn't accept the change.")
         }
     }
 
