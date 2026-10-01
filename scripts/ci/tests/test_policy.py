@@ -222,6 +222,24 @@ class WorkflowPolicyTests(unittest.TestCase):
                                          '--source-root', '.']
                         self.assertEqual(arguments.read_text().splitlines(), expected)
 
+    def test_swift_analysis_resolves_packages_before_tracing_the_same_build(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
+        steps = workflow['jobs']['native']['steps']
+        def index(predicate):
+            matches = [position for position, step in enumerate(steps) if predicate(step)]
+            self.assertEqual(len(matches), 1)
+            return matches[0]
+        resolve = index(lambda step: '-resolvePackageDependencies' in step.get('run', ''))
+        init = index(lambda step: str(step.get('uses', '')).startswith('github/codeql-action/init@'))
+        build = index(lambda step: step.get('name') == 'Build Swift app for analysis')
+        self.assertLess(resolve, init)
+        self.assertLess(init, build)
+        self.assertEqual(steps[resolve].get('if'), "matrix.language == 'swift'")
+        self.assertIn('-derivedDataPath build/codeql-swift', steps[resolve]['run'])
+        self.assertIn('-derivedDataPath build/codeql-swift', steps[build]['run'])
+        # Resolution must not compile the app; the traced build still does that.
+        self.assertNotIn('xcodebuild build', steps[resolve]['run'])
+
     def test_tab_indentation_and_document_indirection_rejected(self):
         self.assertTrue(POLICY.check_workflow(VALID.replace('  test:', '\ttest:')))
         self.assertTrue(POLICY.check_workflow('---\n' + VALID))
