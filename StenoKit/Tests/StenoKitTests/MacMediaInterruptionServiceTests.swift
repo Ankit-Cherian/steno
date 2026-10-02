@@ -26,9 +26,11 @@ private func makeSnapshot(
     sessions: [String: MediaSessionPlayback] = [:]
 ) -> MediaInterruptionSnapshot {
     // Unless a test says otherwise, an application is playing exactly while its
-    // output stream is open. Tests about a stream that outlives playback, which
-    // is what a real player's stream does, name the playing applications
-    // themselves; `.some(nil)` models unreadable playback activity.
+    // output stream is open, so a snapshot with the stream gone describes an
+    // application that has also stopped playing. Tests about a stream that
+    // outlives playback, which is what a real player's stream does, or about a
+    // stream that closes while an assertion is still held, name the playing
+    // applications themselves; `.some(nil)` models unreadable playback activity.
     let playbackAssertions: Set<MediaPlaybackAssertion>?
     switch playingApplications {
     case .none:
@@ -53,8 +55,13 @@ private func makeSnapshot(
                 unresolvedProcessCount: unresolvedAudioOutputCount
             )
         },
+        // The scripted state of the world. The fake driver decides which
+        // applications a reading of it covers.
         playbackActivityObservation: playbackAssertions.map {
-            MediaPlaybackActivityObservation(assertions: $0)
+            MediaPlaybackActivityObservation(
+                observedApplications: Set($0.map(\.applicationBundleIdentifier)),
+                assertions: $0
+            )
         },
         sessionPlaybackByApplication: sessions
     )
@@ -126,16 +133,58 @@ private final class FakeMediaInterruptionDriver: MediaInterruptionDriving {
         self.sendResults = sendResults
     }
 
+    private(set) var observedApplicationsBySnapshot: [Set<String>] = []
+
     func snapshot() async -> MediaInterruptionSnapshot {
+        await snapshot(observing: [])
+    }
+
+    func snapshot(
+        observing applicationBundleIdentifiers: Set<String>
+    ) async -> MediaInterruptionSnapshot {
         snapshotCallCount += 1
+        observedApplicationsBySnapshot.append(applicationBundleIdentifiers)
         if let gate = snapshotGates[snapshotCallCount] {
             await gate.wait()
         }
         if snapshotDelayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: snapshotDelayNanoseconds)
         }
-        guard !snapshots.isEmpty else { return fallbackSnapshot }
-        return snapshots.removeFirst()
+        let scripted = snapshots.isEmpty ? fallbackSnapshot : snapshots.removeFirst()
+        return readableByDriver(scripted, observing: applicationBundleIdentifiers)
+    }
+
+    /// A scripted snapshot states which applications are playing. Like the
+    /// production driver, a reading covers only the applications with an open
+    /// output stream plus those it was asked to observe, and nothing at all
+    /// when output streams cannot be read.
+    private func readableByDriver(
+        _ snapshot: MediaInterruptionSnapshot,
+        observing applicationBundleIdentifiers: Set<String>
+    ) -> MediaInterruptionSnapshot {
+        let readable = snapshot.audioOutputObservation.map {
+            $0.applicationBundleIdentifiers.union(applicationBundleIdentifiers)
+        }
+        return MediaInterruptionSnapshot(
+            target: snapshot.target,
+            contentIdentifier: snapshot.contentIdentifier,
+            detection: snapshot.detection,
+            nowPlayingIsPlaying: snapshot.nowPlayingIsPlaying,
+            playbackState: snapshot.playbackState,
+            audioOutputObservation: snapshot.audioOutputObservation,
+            playbackActivityObservation: readable.flatMap { readable in
+                snapshot.playbackActivityObservation.map { scripted in
+                    MediaPlaybackActivityObservation(
+                        observedApplications: readable,
+                        assertions: scripted.assertions.filter {
+                            readable.contains($0.applicationBundleIdentifier)
+                        }
+                    )
+                }
+            },
+            sessionPlaybackByApplication: snapshot.sessionPlaybackByApplication
+                .filter { readable?.contains($0.key) == true }
+        )
     }
 
     func sendPause(
@@ -224,6 +273,7 @@ private final class FakePlaybackActivityMonitor: PlaybackActivityMonitoring {
         requestedApplications.append(applicationBundleIdentifiers)
         if let observation { return observation }
         return MediaPlaybackActivityObservation(
+            observedApplications: applicationBundleIdentifiers,
             assertions: Set(
                 applicationBundleIdentifiers.map(playbackAssertion(forApplication:))
             )
@@ -6196,7 +6246,7 @@ func contentDriftUnderPreservedProducerKeepsCustody() async {
 }
 
 @MainActor
-@Test("Teardown observed after the ladder but before release verifies custody")
+@Test("Playback seen stopped only at release, with the stream already closed, verifies custody")
 func teardownAfterLadderBeforeReleaseVerifiesCustody() async {
     let podcastsOutput = MediaAudioOutputTarget(
         processID: 63_508,
@@ -6210,15 +6260,18 @@ func teardownAfterLadderBeforeReleaseVerifiesCustody() async {
         playbackState: 2,
         activeAudioOutputs: [podcastsOutput]
     )
-    // Core Audio teardown outlasts the whole verification ladder but lands
-    // before capture release, so pending custody upgrades to verified.
+    // The Pause takes effect after the whole verification ladder. By release
+    // playback has stopped and the stream has closed as well. The stop is what
+    // verifies custody: the application is still read once its stream is gone,
+    // and it no longer holds the assertion it held before the Pause.
     let tornDown = makeSnapshot(
         target: nil,
         contentIdentifier: nil,
         detection: .likelyPlaying,
         isPlaying: false,
         playbackState: 2,
-        activeAudioOutputs: []
+        activeAudioOutputs: [],
+        playingApplications: []
     )
     let driver = FakeMediaInterruptionDriver(
         snapshots: [openStream, openStream, openStream, tornDown]
@@ -6237,6 +6290,10 @@ func teardownAfterLadderBeforeReleaseVerifiesCustody() async {
     #expect(driver.commands.filter { $0 == .play }.count == 1)
     #expect(
         driver.verifiedDestinations.last?.expectedProcessTargets == [podcastsOutput]
+    )
+    #expect(
+        driver.observedApplicationsBySnapshot.last == ["com.apple.podcasts"],
+        "The release reading must cover the application whose stream has closed."
     )
 }
 
@@ -6715,8 +6772,9 @@ func acceptedPauseThatStopsNothingNeverEarnsPlay(
 @Test("An output stream closing during the dictation does not earn a Play by itself")
 func outputStreamClosingAloneNeverEarnsPlay() async {
     // Media the listener paused shortly before dictating, in an application
-    // that holds an unrelated assertion. Its stream closes mid-dictation, as
-    // every paused stream eventually does.
+    // that holds an unrelated assertion and keeps holding it. Its stream closes
+    // mid-dictation, as every paused stream eventually does. The application is
+    // still read after that, so the closed stream is not mistaken for a stop.
     let driver = FakeMediaInterruptionDriver(
         snapshots: Array(repeating: podcastsSnapshot(playing: true), count: 6)
             + Array(
@@ -6972,7 +7030,10 @@ func playbackActivityKeepsOnlyOwnedSleepPreventingAssertions() {
 
 @Test("A released assertion is seen even when the application has taken a new one")
 func releasedAssertionIsSeenDespiteNewAssertion() {
-    func snapshot(assertionIdentifiers: Set<UInt64>?) -> MediaInterruptionSnapshot {
+    func snapshot(
+        assertionIdentifiers: Set<UInt64>?,
+        observed: Bool = true
+    ) -> MediaInterruptionSnapshot {
         MediaInterruptionSnapshot(
             target: nil,
             contentIdentifier: nil,
@@ -6985,6 +7046,7 @@ func releasedAssertionIsSeenDespiteNewAssertion() {
             ),
             playbackActivityObservation: assertionIdentifiers.map { identifiers in
                 MediaPlaybackActivityObservation(
+                    observedApplications: observed ? ["com.apple.podcasts"] : [],
                     assertions: Set(identifiers.map {
                         MediaPlaybackAssertion(
                             applicationBundleIdentifier: "com.apple.podcasts",
@@ -7009,6 +7071,11 @@ func releasedAssertionIsSeenDespiteNewAssertion() {
     #expect(stopped([]))
     #expect(!stopped(nil))
     #expect(
+        !snapshot(assertionIdentifiers: [], observed: false)
+            .observesPlaybackStopped(since: before, forApplication: "com.apple.podcasts"),
+        "A reading that does not cover the application says nothing about it."
+    )
+    #expect(
         !before.observesPlaybackStopped(
             since: snapshot(assertionIdentifiers: []),
             forApplication: "com.apple.podcasts"
@@ -7018,7 +7085,7 @@ func releasedAssertionIsSeenDespiteNewAssertion() {
 }
 
 @MainActor
-@Test("The driver reads playback activity for exactly the applications with open output streams")
+@Test("The driver reads playback activity for applications with open output streams and those it is asked to observe")
 func driverReadsPlaybackActivityForApplicationsWithOpenStreams() async {
     let audioOutputMonitor = FakeAudioOutputMonitor()
     audioOutputMonitor.observation = MediaAudioOutputObservation(
@@ -7038,14 +7105,31 @@ func driverReadsPlaybackActivityForApplicationsWithOpenStreams() async {
     #expect(playbackActivityMonitor.requestedApplications == [["com.apple.podcasts"]])
     #expect(playing.pauseDestination == .observedApplications(["com.apple.podcasts"]))
 
-    playbackActivityMonitor.observation = .some(MediaPlaybackActivityObservation(assertions: []))
+    playbackActivityMonitor.observation = .some(
+        MediaPlaybackActivityObservation(
+            observedApplications: ["com.apple.podcasts"],
+            assertions: []
+        )
+    )
     let paused = await driver.snapshot()
     #expect(paused.pauseDestination == nil)
 
+    // An application being tracked is read even after its stream has closed.
+    audioOutputMonitor.observation = MediaAudioOutputObservation(
+        targets: [],
+        unresolvedProcessCount: 0
+    )
+    playbackActivityMonitor.observation = nil
+    let tracked = await driver.snapshot(observing: ["com.apple.podcasts"])
+    #expect(playbackActivityMonitor.requestedApplications.last == ["com.apple.podcasts"])
+    #expect(
+        tracked.playbackActivityObservation?.observedApplications == ["com.apple.podcasts"]
+    )
+
     audioOutputMonitor.observation = nil
-    let withoutOutputs = await driver.snapshot()
+    let withoutOutputs = await driver.snapshot(observing: ["com.apple.podcasts"])
     #expect(withoutOutputs.playbackActivityObservation == nil)
-    #expect(playbackActivityMonitor.requestedApplications.count == 2)
+    #expect(playbackActivityMonitor.requestedApplications.count == 3)
 }
 // MARK: - Per-application media sessions
 

@@ -305,7 +305,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         for (index, delay) in verificationDelays.enumerated() {
             await ladderSleep(delay)
             guard pauseTransition?.id == id else { return .noOwnership }
-            let after = await driver.snapshot()
+            let after = await driver.snapshot(
+                observing: acceptedReceipt.acceptedApplications
+            )
             guard pauseTransition?.id == id else { return .noOwnership }
             Self.logger.info(
                 "Media Pause verification pass \(index + 1, privacy: .public): \(after.logValue, privacy: .private)"
@@ -376,7 +378,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
               pauseTransition?.tokenIDs.isEmpty == false
         else { return .noOwnership }
 
-        let lineageSnapshot = await driver.snapshot()
+        let lineageSnapshot = await driver.snapshot(
+            observing: Set(receipt.resumeDestination.applicationBundleIdentifiers)
+        )
         guard pauseTransition?.id == id,
               pauseTransition?.tokenIDs.isEmpty == false,
               lineageSnapshot.detection == .playing
@@ -425,7 +429,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             await ladderSleep(delay)
             guard pauseTransition?.id == id else { return .noOwnership }
 
-            let snapshot = await driver.snapshot()
+            let snapshot = await driver.snapshot(observing: acceptedApplications)
             guard pauseTransition?.id == id else { return .noOwnership }
             let hasOwner = pauseTransitionHasOwner(id: id)
             let releasing = releaseControl.releaseRequested && !hasOwner
@@ -657,7 +661,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         interruptionID: UUID,
         pendingReceipt: PendingPauseReceipt
     ) async {
-        let releaseSnapshot = await driver.snapshot()
+        let releaseSnapshot = await driver.snapshot(
+            observing: pendingReceipt.acceptedApplications
+        )
         guard var currentInterruption = activeInterruption,
               currentInterruption.id == interruptionID,
               case .pending = currentInterruption.custody
@@ -823,7 +829,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 return await retainInterruptionDuringResumeJoin(id: id, receipt: receipt)
             }
 
-            let snapshot = await driver.snapshot()
+            let snapshot = await driver.snapshot(observing: expectedApplications)
             if hasJoiningResumeTokens(id: id) {
                 return await retainInterruptionDuringResumeJoin(id: id, receipt: receipt)
             }
@@ -895,7 +901,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         let applications = receipt.resumeDestination.applicationBundleIdentifiers
         let expectedApplications = Set(applications)
         guard hasJoiningResumeTokens(id: id) else { return .resumed }
-        let lineageSnapshot = await driver.snapshot()
+        let lineageSnapshot = await driver.snapshot(observing: expectedApplications)
         guard hasJoiningResumeTokens(id: id),
               lineageSnapshot.detection == .playing
                 || lineageSnapshot.detection == .likelyPlaying,
@@ -934,7 +940,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         )
         for (index, delay) in verificationDelays.enumerated() {
             await sleepAfterAcceptedPause(delay)
-            let snapshot = await driver.snapshot()
+            let snapshot = await driver.snapshot(observing: expectedApplications)
             let acceptedReceipt = MediaPauseReceipt(
                 resumeDestination: receipt.resumeDestination.narrowed(
                     to: acceptedPauseApplications
@@ -1465,6 +1471,10 @@ struct MediaPlaybackAssertion: Sendable, Equatable, Hashable {
 /// assertions therefore separate an application that is playing from one that
 /// was paused earlier, which the output stream alone cannot do.
 struct MediaPlaybackActivityObservation: Sendable, Equatable {
+    /// The applications this reading covers. An application outside it was not
+    /// read, so nothing is known about it: its absence from `assertions` is
+    /// neither "holds nothing" nor "released".
+    let observedApplications: Set<String>
     let assertions: Set<MediaPlaybackAssertion>
 
     var applicationBundleIdentifiers: Set<String> {
@@ -1481,6 +1491,8 @@ struct MediaPlaybackActivityObservation: Sendable, Equatable {
 
     func narrowed(to applicationBundleIdentifiers: Set<String>) -> Self {
         Self(
+            observedApplications: observedApplications
+                .intersection(applicationBundleIdentifiers),
             assertions: assertions.filter {
                 applicationBundleIdentifiers.contains($0.applicationBundleIdentifier)
             }
@@ -1586,8 +1598,11 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
         {
             return true
         }
+        // An application this reading does not cover is unknown. Reading it as
+        // "holds nothing" would turn a stream that merely closed into a stop.
         guard let beforeActivity = before.playbackActivityObservation,
-              let currentActivity = playbackActivityObservation
+              let currentActivity = playbackActivityObservation,
+              currentActivity.observedApplications.contains(applicationBundleIdentifier)
         else { return false }
         let heldBefore = beforeActivity.assertions(
             forApplication: applicationBundleIdentifier
@@ -1825,11 +1840,26 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
 @MainActor
 protocol MediaInterruptionDriving: AnyObject {
     func snapshot() async -> MediaInterruptionSnapshot
+    /// A snapshot whose playback evidence also covers the given applications,
+    /// whether or not they still have an open output stream. Verification uses
+    /// it so that an application whose stream has closed is still read instead
+    /// of dropping out of the evidence.
+    func snapshot(
+        observing applicationBundleIdentifiers: Set<String>
+    ) async -> MediaInterruptionSnapshot
     func sendPause(to destination: MediaPauseDestination) async -> MediaCommandDispatchResult
     func sendPause(
         to destination: VerifiedMediaResumeDestination
     ) async -> MediaCommandDispatchResult
     func sendPlay(to destination: VerifiedMediaResumeDestination) async -> MediaCommandDispatchResult
+}
+
+extension MediaInterruptionDriving {
+    func snapshot(
+        observing applicationBundleIdentifiers: Set<String>
+    ) async -> MediaInterruptionSnapshot {
+        await snapshot()
+    }
 }
 
 enum PlaybackDetectionResult: Sendable, Equatable {
@@ -2359,7 +2389,10 @@ struct PlaybackActivityObservationBuilder {
                 )
             )
         }
-        return MediaPlaybackActivityObservation(assertions: assertions)
+        return MediaPlaybackActivityObservation(
+            observedApplications: applicationBundleIdentifiers,
+            assertions: assertions
+        )
     }
 }
 
@@ -2376,7 +2409,7 @@ final class PowerAssertionPlaybackActivityMonitor: PlaybackActivityMonitoring {
         forApplications applicationBundleIdentifiers: Set<String>
     ) -> MediaPlaybackActivityObservation? {
         guard !applicationBundleIdentifiers.isEmpty else {
-            return MediaPlaybackActivityObservation(assertions: [])
+            return MediaPlaybackActivityObservation(observedApplications: [], assertions: [])
         }
         var assertionsByProcess: Unmanaged<CFDictionary>?
         let status = IOPMCopyAssertionsByProcess(&assertionsByProcess)
@@ -2446,6 +2479,12 @@ final class MacMediaInterruptionDriver: MediaInterruptionDriving {
     }
 
     func snapshot() async -> MediaInterruptionSnapshot {
+        await snapshot(observing: [])
+    }
+
+    func snapshot(
+        observing applicationBundleIdentifiers: Set<String>
+    ) async -> MediaInterruptionSnapshot {
         bridge.activate()
         defer { bridge.deactivate() }
 
@@ -2464,15 +2503,20 @@ final class MacMediaInterruptionDriver: MediaInterruptionDriving {
         let audioOutputObservation = audioOutputMonitor.observeActiveAudioOutputs(
             excludingProcessID: getpid()
         )
+        // Playback evidence is read for every application with an open output
+        // stream and for the applications the caller is tracking. A tracked
+        // application whose stream has closed must still be read: leaving it
+        // out would make the closed stream look like a stop.
+        let evidenceApplications = audioOutputObservation.map {
+            $0.applicationBundleIdentifiers.union(applicationBundleIdentifiers)
+        }
         let sessionPlaybackByApplication = await sessionPlayback(
-            forApplications: audioOutputObservation?.applicationBundleIdentifiers ?? []
+            forApplications: evidenceApplications ?? []
         )
         // Read last, after the slower probes, so it describes the moment just
         // before any command is sent.
-        let playbackActivityObservation = audioOutputObservation.flatMap {
-            playbackActivityMonitor.observePlaybackActivity(
-                forApplications: $0.applicationBundleIdentifiers
-            )
+        let playbackActivityObservation = evidenceApplications.flatMap {
+            playbackActivityMonitor.observePlaybackActivity(forApplications: $0)
         }
 
         return MediaInterruptionSnapshot(

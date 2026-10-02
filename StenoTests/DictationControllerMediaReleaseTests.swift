@@ -407,9 +407,11 @@ let podcastsOutput = MediaAudioOutputTarget(
 /// it; the stream itself stays open either way, as a real player's does.
 func productionSnapshot(
     _ outputs: [MediaAudioOutputTarget],
-    pausedApplications: Set<String> = []
+    pausedApplications: Set<String> = [],
+    observing observedApplications: Set<String> = []
 ) -> MediaInterruptionSnapshot {
-    MediaInterruptionSnapshot(
+    let applicationsWithOpenStreams = Set(outputs.map(\.applicationBundleIdentifier))
+    return MediaInterruptionSnapshot(
         target: nil,
         contentIdentifier: nil,
         detection: .likelyPlaying,
@@ -420,9 +422,9 @@ func productionSnapshot(
             unresolvedProcessCount: 0
         ),
         playbackActivityObservation: MediaPlaybackActivityObservation(
+            observedApplications: applicationsWithOpenStreams.union(observedApplications),
             assertions: Set(
-                outputs
-                    .map(\.applicationBundleIdentifier)
+                applicationsWithOpenStreams
                     .filter { !pausedApplications.contains($0) }
                     .map { MediaPlaybackAssertion(applicationBundleIdentifier: $0, identifier: 1) }
             )
@@ -517,6 +519,12 @@ final class ScriptedMediaDriver: MediaInterruptionDriving {
     }
 
     func snapshot() async -> MediaInterruptionSnapshot {
+        await snapshot(observing: [])
+    }
+
+    func snapshot(
+        observing applicationBundleIdentifiers: Set<String>
+    ) async -> MediaInterruptionSnapshot {
         snapshotCallCount += 1
         if snapshotDelayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: snapshotDelayNanoseconds)
@@ -524,7 +532,8 @@ final class ScriptedMediaDriver: MediaInterruptionDriving {
         let scripted = snapshots.isEmpty ? fallback : snapshots.removeFirst()
         return productionSnapshot(
             scripted.audioOutputObservation?.targets ?? [],
-            pausedApplications: pausedApplications
+            pausedApplications: pausedApplications,
+            observing: applicationBundleIdentifiers
         )
     }
 
