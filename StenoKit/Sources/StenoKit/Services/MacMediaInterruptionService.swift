@@ -768,7 +768,13 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         activeSnapshot: MediaInterruptionSnapshot
     ) async {
         let destination = pendingReceipt.makeVerifiedReceipt().resumeDestination
-        guard activeSnapshot.preservesExactProcessLineage(destination),
+        // Only these applications' own producers matter here. An unrelated
+        // output process that cannot be resolved must not cost them custody
+        // and leave their media paused.
+        guard activeSnapshot.preservesExactProcessLineage(
+                destination,
+                requiringEveryOutputProcessResolved: false
+              ),
               let refreshedReceipt = pendingReceipt.refreshedForRePause(
                 before: activeSnapshot
               )
@@ -1196,7 +1202,10 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         ) -> Self? {
             let expectedDestination = makeVerifiedReceipt().resumeDestination
             guard snapshot.detection == .playing || snapshot.detection == .likelyPlaying,
-                  snapshot.preservesExactProcessLineage(expectedDestination)
+                  snapshot.preservesExactProcessLineage(
+                    expectedDestination,
+                    requiringEveryOutputProcessResolved: false
+                  )
             else { return nil }
 
             // The output lineage is refreshed, but playback is still measured
@@ -1743,15 +1752,21 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
         )
     }
 
+    /// Whether the destination's applications are still produced by exactly
+    /// the processes recorded for them. By default every active output process
+    /// must also be resolved to an application. A caller that only needs these
+    /// applications' own lineage can waive that: an output process that cannot
+    /// be tied to any application says nothing about them.
     func preservesExactProcessLineage(
-        _ destination: VerifiedMediaResumeDestination
+        _ destination: VerifiedMediaResumeDestination,
+        requiringEveryOutputProcessResolved: Bool = true
     ) -> Bool {
         let expectedApplications = Set(destination.applicationBundleIdentifiers)
         let expectedTargets = Set(destination.expectedProcessTargets)
         guard !expectedApplications.isEmpty,
               !expectedTargets.isEmpty,
               let observation = audioOutputObservation,
-              observation.unresolvedProcessCount == 0
+              !requiringEveryOutputProcessResolved || observation.unresolvedProcessCount == 0
         else { return false }
 
         let observedTargets = Set(observation.targets)
