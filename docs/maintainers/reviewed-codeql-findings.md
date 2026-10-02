@@ -23,6 +23,23 @@ The reviewed commit identifies the scanned source. File hashes enforce the revie
 
 The gate prints each disposition with its original severity and rationale. It leaves SARIF and GitHub alerts unchanged. Scanner suppression flags do not authorize a disposition. Missing or changed findings, stale hashes, duplicate matches, malformed receipts and ambiguous source references fail. Every unmatched high-severity finding still blocks. Review receipts are never refreshed automatically.
 
+## Early source check on every event
+
+The C/C++ scan does not run on most pull requests; see [what a pull request runs](../ci-cd.md#what-a-pull-request-runs). The Security workflow's **Reviewed findings sources** job checks the receipt on every event instead, including every pull request. It applies the same receipt validation and source-hash comparison as the full gate, through the same code, without scan output. It fails `Security Gate` within a few minutes if any bound file differs from its recorded hash.
+
+The generated vendor source in a trace does not exist in a fresh checkout. When it is absent, the check requires its directory name to carry the whisper.cpp revision pinned in `scripts/ci/runtime-lock.json` and the SHA-256 of the current `scripts/ci/patches/whisper-security.patch`, which must also be the patch hash recorded in the same entry. The staged file is generated deterministically from that revision and patch. When a local native build has created the file, the check hashes it like any other bound source.
+
+This check proves only that the bound files have the reviewed content. It cannot show that the scanner still reports exactly the reviewed findings, that a fix removed one, or that a new finding appeared. A pull request that changes a bound file therefore does not run the compiled scans because of that file: it passes `Security Gate` once the receipt records the new hashes, and the compiled C/C++ scan first checks the updated receipt on main after merge. If the scan disagrees, main's `Security Gate` fails. The Release workflow repeats the scan on the tagged commit before signing, so a release cannot ship with a receipt the scanner rejects.
+
+To run the early check locally:
+
+```bash
+python3 scripts/ci/check-sarif.py --check-reviewed-sources scripts/ci/reviewed-findings.json \
+  --source-root . --runtime-lock scripts/ci/runtime-lock.json
+```
+
+## Full gate after a scan
+
 The workflow passes this receipt only to the C++ gate. Swift and Actions scans retain the ordinary severity gate. To check the C++ evidence locally after generating the exact native sources:
 
 ```bash
