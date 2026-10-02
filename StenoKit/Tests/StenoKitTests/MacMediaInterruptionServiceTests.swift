@@ -6808,6 +6808,74 @@ func onlyThePlayingApplicationIsPausedAndResumed() async {
     )
 }
 
+// A second dictation can begin while the first is being released. Custody is
+// then re-paused for the new owner, and an application the first Pause already
+// stopped must still be resumed when that owner finishes.
+@MainActor
+@Test("An application the first Pause stopped is still resumed after a re-Pause for a new owner")
+func applicationStoppedByFirstPauseIsResumedAfterRePause() async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(playing: Set<String>) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: playing
+        )
+    }
+    // Podcasts stops at the first Pause. Music keeps playing until the re-Pause.
+    let onlyMusicPlaying = snapshot(playing: ["com.apple.Music"])
+    let releaseGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(playing: ["com.apple.Music", "com.apple.podcasts"]),
+            onlyMusicPlaying,
+            onlyMusicPlaying,
+            onlyMusicPlaying,
+            snapshot(playing: []),
+        ]
+    )
+    driver.snapshotGates[4] = releaseGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0]
+    )
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected custody for the first capture.")
+        return
+    }
+
+    let firstEnd = Task { @MainActor in
+        await service.endInterruption(token: firstToken)
+    }
+    await waitUntil { releaseGate.waitCount == 1 }
+    let secondToken = await service.beginInterruption()
+    releaseGate.open()
+    await firstEnd.value
+
+    guard let secondToken else {
+        Issue.record("Expected the new capture to inherit custody.")
+        return
+    }
+    #expect(!driver.commands.contains(.play))
+
+    await service.endInterruption(token: secondToken)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.commands.last == .play)
+    #expect(
+        driver.destinations.last
+            == .observedApplications(["com.apple.Music", "com.apple.podcasts"])
+    )
+}
+
 @MainActor
 @Test("Unreadable playback activity leaves every application alone")
 func unreadablePlaybackActivityLeavesEveryApplicationAlone() async {

@@ -1140,11 +1140,15 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                   snapshot.preservesExactProcessLineage(expectedDestination)
             else { return nil }
 
+            // The output lineage is refreshed, but playback is still measured
+            // against what was seen before the first Pause. An application that
+            // Pause already stopped would otherwise have nothing left to show.
             return Self(
                 before: Self.narrowedSnapshot(
                     snapshot,
                     applications: acceptedApplications,
-                    targets: observedTargets
+                    targets: observedTargets,
+                    playbackEvidence: before
                 ),
                 acceptedApplications: acceptedApplications,
                 observedTargets: observedTargets,
@@ -1254,8 +1258,10 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         private static func narrowedSnapshot(
             _ snapshot: MediaInterruptionSnapshot,
             applications: Set<String>,
-            targets: Set<MediaAudioOutputTarget>
+            targets: Set<MediaAudioOutputTarget>,
+            playbackEvidence: MediaInterruptionSnapshot? = nil
         ) -> MediaInterruptionSnapshot {
+            let playbackEvidence = playbackEvidence ?? snapshot
             let target = snapshot.target.flatMap { target in
                 applications.contains(target.bundleIdentifier) ? target : nil
             }
@@ -1269,9 +1275,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     targets: targets.sorted { $0.processID < $1.processID },
                     unresolvedProcessCount: 0
                 ),
-                playbackActivityObservation: snapshot.playbackActivityObservation?
+                playbackActivityObservation: playbackEvidence.playbackActivityObservation?
                     .narrowed(to: applications),
-                sessionPlaybackByApplication: snapshot.sessionPlaybackByApplication
+                sessionPlaybackByApplication: playbackEvidence.sessionPlaybackByApplication
                     .filter { applications.contains($0.key) }
             )
         }
