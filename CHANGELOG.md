@@ -64,6 +64,7 @@ If you are upgrading from 1.0.0, three changes are the most noticeable. Saved co
 - After pasting into Terminal, iTerm2 or Warp, Steno now says the transcript was pasted instead of asking you to press Command-V, which pasted it twice. History shows these entries as Pasted.
 - A recording recognized as punctuation only, such as a lone period, or one that cleanup empties entirely, such as fillers under Aggressive cleanup, is now reported as no speech. Nothing is inserted or saved, and the clipboard is left alone.
 - The Insertion order setting now explains when Steno changes the order, and an app that is too slow to answer Accessibility is reported as a timeout instead of "Target changed".
+- Dictating from Steno's own window with no text field selected no longer plays the alert sound and reports "Inserted" when nothing was inserted. Steno now leaves the transcript on the clipboard and says it was copied.
 
 #### Media pausing
 - When media pausing is on, transcription no longer waits for the paused app to resume or for a slow player to confirm the pause, so text appears up to three seconds sooner. A new recording started right after Cancel no longer waits for the previous resume either.
