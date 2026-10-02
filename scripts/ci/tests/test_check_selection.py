@@ -360,6 +360,36 @@ class GateTests(unittest.TestCase):
                             and runtime == {'true': 'success', 'false': 'skipped'}[flag])
         self.assertEqual(gate_passes(gate_command('validate.yml'), cases), expected)
 
+    def security_case(self, **values):
+        case = dict(SCOPE='full', SWIFT_REQUIRED='true', CPP_REQUIRED='true', EVENT_NAME='push',
+                    SCOPE_RESULT='success', ACTIONS_RESULT='success', REVIEW_SOURCES_RESULT='success',
+                    DEPENDENCY_RESULT='skipped', SWIFT_RESULT='success', CPP_RESULT='success')
+        case.update(values)
+        return case
+
+    def test_security_gate_matches_an_independent_oracle(self):
+        def allowed(event, scope, swift, cpp):
+            if event != 'pull_request':
+                return (scope, swift, cpp) == ('full', 'true', 'true')
+            if scope == 'docs':
+                return (swift, cpp) == ('false', 'false')
+            return scope == 'full' and swift in ('true', 'false') and cpp in ('true', 'false')
+        expect = {'true': 'success', 'false': 'skipped'}
+        cases, expected = [], []
+        for scope, swift, cpp, event, swift_result, cpp_result in itertools.product(
+                ('docs', 'full', '', 'other'), ('true', 'false', ''), ('true', 'false', 'other'), EVENTS, RESULTS, RESULTS):
+            cases.append(self.security_case(SCOPE=scope, SWIFT_REQUIRED=swift, CPP_REQUIRED=cpp, EVENT_NAME=event,
+                                            DEPENDENCY_RESULT='success' if event == 'pull_request' else 'skipped',
+                                            SWIFT_RESULT=swift_result, CPP_RESULT=cpp_result))
+            expected.append(allowed(event, scope, swift, cpp) and swift_result == expect.get(swift)
+                            and cpp_result == expect.get(cpp))
+        for event, classify, actions, review, dependency in itertools.product(EVENTS, RESULTS, RESULTS, RESULTS, RESULTS):
+            cases.append(self.security_case(EVENT_NAME=event, SCOPE_RESULT=classify, ACTIONS_RESULT=actions,
+                                            REVIEW_SOURCES_RESULT=review, DEPENDENCY_RESULT=dependency))
+            expected.append(classify == actions == review == 'success'
+                            and dependency == ('success' if event == 'pull_request' else 'skipped'))
+        self.assertEqual(gate_passes(gate_command('security.yml'), cases), expected)
+
     def test_named_failures(self):
         ci = gate_command('validate.yml')
         base = dict(SCOPE='full', RUNTIME_REQUIRED='true', EVENT_NAME='pull_request', POLICY_RESULT='success',
@@ -369,14 +399,16 @@ class GateTests(unittest.TestCase):
                     dict(base, EVENT_NAME='push', RUNTIME_REQUIRED='false', RUNTIME_RESULT='skipped'),
                     dict(base, SCOPE='docs', MACOS_RESULT='skipped')]
         self.assertEqual(gate_passes(ci, [base] + failing), [True] + [False] * len(failing))
-    def test_security_gate_rejects_failed_classification_or_unexpected_skip(self):
-        workflow = POLICY.parse_workflow((ROOT / '.github/workflows/security.yml').read_text())
-        command = workflow['jobs']['gate']['steps'][0]['run']
-        for scope, classification, native, review in itertools.product(('docs', 'full', ''), ('success', 'failure', 'skipped'), ('success', 'failure', 'skipped', 'cancelled'), ('success', 'failure', 'skipped')):
-            env = dict(os.environ, SCOPE=scope, SCOPE_RESULT=classification, NATIVE_RESULT=native, REVIEW_SOURCES_RESULT=review, ACTIONS_RESULT='success', DEPENDENCY_RESULT='success', EVENT_NAME='pull_request')
-            result = subprocess.run(['bash', '-e', '-c', command], env=env, capture_output=True)
-            expected = classification == review == 'success' and ((scope == 'docs' and native == 'skipped') or (scope == 'full' and native == 'success'))
-            self.assertEqual(result.returncode == 0, expected)
+        security = gate_command('security.yml')
+        failing = [self.security_case(EVENT_NAME='workflow_dispatch', CPP_REQUIRED='false', CPP_RESULT='skipped'),
+                   self.security_case(EVENT_NAME='pull_request', DEPENDENCY_RESULT='success', SCOPE='docs',
+                                      SWIFT_REQUIRED='false', SWIFT_RESULT='skipped'),
+                   self.security_case(REVIEW_SOURCES_RESULT='failure'),
+                   self.security_case(REVIEW_SOURCES_RESULT='skipped'),
+                   self.security_case(CPP_RESULT='cancelled'),
+                   self.security_case(EVENT_NAME='pull_request', DEPENDENCY_RESULT='success', SWIFT_REQUIRED='false',
+                                      SWIFT_RESULT='success')]
+        self.assertEqual(gate_passes(security, [self.security_case()] + failing), [True] + [False] * len(failing))
 
     def evaluate(self, condition, outputs, classifier, event):
         if condition is None:
@@ -421,6 +453,17 @@ GATES = {'validate.yml': 'policy', 'security.yml': 'changes'}
 REFERENCE = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+')
 
 
+def strings(value):
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from strings(child)
+    elif isinstance(value, str):
+        yield value
+
+
 def gate_wiring_errors(workflow, classifier):
     errors = []
     jobs = workflow['jobs']
@@ -454,7 +497,20 @@ def gate_wiring_errors(workflow, classifier):
     if 'if' in jobs.get(classifier, {}):
         errors.append('the classifier itself must always run')
     for name in others:
-        condition = jobs[name].get('if')
+        job = jobs[name]
+        condition = job.get('if')
+        # A job can also skip its work inside itself: a step condition, a value
+        # read from another job, or an allowed failure would let it report
+        # success without doing what the gate assumes.
+        if 'continue-on-error' in job:
+            errors.append(f'{name} must not be allowed to fail')
+        for index, step in enumerate(job.get('steps', [])):
+            if step.get('if', 'always()') != 'always()':
+                errors.append(f'{name} step {index + 1} has a condition other than always()')
+            if 'continue-on-error' in step:
+                errors.append(f'{name} step {index + 1} must not be allowed to fail')
+        if any('needs.' in value for value in strings({key: value for key, value in job.items() if key not in ('if', 'needs')})):
+            errors.append(f'{name} reads another job outside its job condition')
         if condition is None:
             continue
         for reference in REFERENCE.findall(condition):
@@ -493,14 +549,15 @@ class GateWiringTests(unittest.TestCase):
     def test_job_missing_from_gate_needs_is_rejected(self):
         validate = self.workflow('validate.yml', [('needs: [policy, macos, runtime]', 'needs: [policy, runtime]')])
         self.assertTrue(any('gate needs' in error for error in gate_wiring_errors(validate, 'policy')))
-        security = self.workflow('security.yml', [('needs: [changes, dependency-review, actions, review-sources, native]', 'needs: [changes, dependency-review, actions, review-sources]')])
+        security = self.workflow('security.yml', [('needs: [changes, dependency-review, actions, review-sources, native-swift, native-cpp]',
+                                                   'needs: [changes, dependency-review, actions, review-sources, native-swift]')])
         self.assertTrue(any('gate needs' in error for error in gate_wiring_errors(security, 'changes')))
 
     def test_result_variable_pointing_at_the_wrong_job_is_rejected(self):
         validate = self.workflow('validate.yml', [('MACOS_RESULT: ${{ needs.macos.result }}', 'MACOS_RESULT: ${{ needs.runtime.result }}')])
         self.assertTrue(any('macos result' in error for error in gate_wiring_errors(validate, 'policy')))
-        security = self.workflow('security.yml', [('NATIVE_RESULT: ${{ needs.native.result }}', 'NATIVE_RESULT: ${{ needs.actions.result }}')])
-        self.assertTrue(any('native result' in error for error in gate_wiring_errors(security, 'changes')))
+        security = self.workflow('security.yml', [('CPP_RESULT: ${{ needs.native-cpp.result }}', 'CPP_RESULT: ${{ needs.native-swift.result }}')])
+        self.assertTrue(any('native-cpp result' in error for error in gate_wiring_errors(security, 'changes')))
 
     def test_job_conditions_outside_the_classifier_are_rejected(self):
         validate = self.workflow('validate.yml', [("    if: needs.policy.outputs.runtime_required == 'true'\n    name: Runtime",
@@ -513,6 +570,25 @@ class GateWiringTests(unittest.TestCase):
         validate = self.workflow('validate.yml', [('      - name: Require every validation job to succeed\n',
                                                    '      - name: Require every validation job to succeed\n        if: false\n')])
         self.assertIn('gate steps must not be conditional or allowed to fail', gate_wiring_errors(validate, 'policy'))
+
+    def test_step_that_skips_work_inside_a_gated_job_is_rejected(self):
+        # A job whose analysis step is skipped still concludes success.
+        mutations = [
+            ('security.yml', 'changes', '      - name: Build Swift app for analysis\n',
+             "      - name: Build Swift app for analysis\n        if: needs.changes.outputs.swift_scan_required == 'true'\n"),
+            ('security.yml', 'changes', '      - name: Build C++ runtime for analysis\n',
+             "      - name: Build C++ runtime for analysis\n        if: github.event_name != 'pull_request'\n"),
+            ('validate.yml', 'policy', '      - name: Native protocol matrix and prompt scoring\n',
+             "      - name: Native protocol matrix and prompt scoring\n        if: needs.policy.outputs.scope == 'full'\n"),
+            ('validate.yml', 'policy', '      - name: Native protocol matrix and prompt scoring\n',
+             '      - name: Native protocol matrix and prompt scoring\n        continue-on-error: true\n'),
+            ('validate.yml', 'policy', '      - name: Native protocol matrix and prompt scoring\n',
+             '      - name: Native protocol matrix and prompt scoring\n        env:\n          SKIP: ${{ needs.policy.outputs.runtime_required }}\n'),
+            ('security.yml', 'changes', '    name: CodeQL (c-cpp)\n', '    name: CodeQL (c-cpp)\n    continue-on-error: true\n'),
+        ]
+        for path, classifier, old, new in mutations:
+            with self.subTest(change=new.strip()):
+                self.assertTrue(gate_wiring_errors(self.workflow(path, [(old, new)]), classifier))
 
 
 if __name__ == '__main__':
