@@ -266,10 +266,11 @@ public struct LocalCleanupRanker: Sendable {
         RepairMarkerMatcher.containsRepairMarker(in: text)
     }
 
+    /// Confidence gates only the corrections Steno infers by itself (phonetic recovery). Saved
+    /// vocabulary and spoken corrections are explicit instructions and are never penalized here.
     private func confidenceAdjustment(raw: RawTranscript, candidate: CleanupCandidate) -> Double {
-        let relevantEdits = candidate.appliedEdits.filter {
-            $0.kind == .repairResolution || $0.kind == .lexiconCorrection
-        }
+        guard isPhoneticRecovery(candidate) else { return 0 }
+        let relevantEdits = candidate.appliedEdits.filter { $0.kind == .lexiconCorrection }
         guard relevantEdits.isEmpty == false else { return 0 }
 
         let segmentConfidences = raw.segments.compactMap { segment -> Double? in
@@ -302,32 +303,95 @@ public struct LocalCleanupRanker: Sendable {
     }
 
     private func phoneticPenalty(candidate: CleanupCandidate) -> Double {
-        candidate.rulePathID.contains("/phonetic-") ? 0.02 : 0
+        isPhoneticRecovery(candidate) ? 0.02 : 0
     }
 
-    private func levenshteinDistance<Element: Equatable>(
-        _ lhs: [Element],
-        _ rhs: [Element]
-    ) -> Int {
+    private func isPhoneticRecovery(_ candidate: CleanupCandidate) -> Bool {
+        candidate.rulePathID.contains("/phonetic-")
+    }
+
+    /// Word-level Levenshtein distance. Words are compared as integer IDs, the shared prefix and
+    /// suffix are skipped, a pure deletion is counted directly, and otherwise only a diagonal band
+    /// as wide as the distance is filled (widened until the result fits inside it), so a long
+    /// dictation with scattered edits stays fast. The result is the same as the full table's.
+    private func levenshteinDistance(_ lhs: [String], _ rhs: [String]) -> Int {
         if lhs == rhs { return 0 }
-        if lhs.isEmpty { return rhs.count }
-        if rhs.isEmpty { return lhs.count }
-
-        var previous = Array(0...rhs.count)
-        var current = Array(repeating: 0, count: rhs.count + 1)
-
-        for (i, left) in lhs.enumerated() {
-            current[0] = i + 1
-            for (j, right) in rhs.enumerated() {
-                let substitutionCost = left == right ? 0 : 1
-                let deletion = previous[j + 1] + 1
-                let insertion = current[j] + 1
-                let substitution = previous[j] + substitutionCost
-                current[j + 1] = min(deletion, insertion, substitution)
-            }
-            swap(&previous, &current)
+        var ids: [String: Int] = [:]
+        let intern = { (word: String) -> Int in
+            if let id = ids[word] { return id }
+            let id = ids.count
+            ids[word] = id
+            return id
         }
+        var left = lhs.map(intern)[...]
+        var right = rhs.map(intern)[...]
+        while let l = left.first, let r = right.first, l == r {
+            left = left.dropFirst()
+            right = right.dropFirst()
+        }
+        while let l = left.last, let r = right.last, l == r {
+            left = left.dropLast()
+            right = right.dropLast()
+        }
+        if left.isEmpty { return right.count }
+        if right.isEmpty { return left.count }
 
-        return previous[rhs.count]
+        let a = Array(left)
+        let b = Array(right)
+        // When one side only deletes words from the other (filler removal, a resolved spoken
+        // correction), the distance is exactly the difference in length.
+        if a.count >= b.count, isSubsequence(b, of: a) { return a.count - b.count }
+        if b.count > a.count, isSubsequence(a, of: b) { return b.count - a.count }
+        var band = max(abs(a.count - b.count), 16)
+        while true {
+            if let distance = bandedDistance(a, b, band: band) {
+                return distance
+            }
+            band *= 2
+        }
+    }
+
+    private func isSubsequence(_ shorter: [Int], of longer: [Int]) -> Bool {
+        var index = 0
+        for word in longer where index < shorter.count && word == shorter[index] {
+            index += 1
+        }
+        return index == shorter.count
+    }
+
+    /// The edit distance if it is at most `band`, otherwise nil. Once the band covers the whole
+    /// table the distance is always returned.
+    private func bandedDistance(_ a: [Int], _ b: [Int], band: Int) -> Int? {
+        let n = a.count
+        let m = b.count
+        let exhaustive = band >= max(n, m)
+        let outside = band + 1
+        let width = m + 1
+        var rows = [Int](repeating: outside, count: 2 * width)
+        let distance = rows.withUnsafeMutableBufferPointer { rows -> Int in
+            for j in 0...m {
+                rows[j] = j <= band ? j : outside
+            }
+            for i in 1...n {
+                let low = max(1, i - band)
+                let high = min(m, i + band)
+                guard low <= high else { return outside }
+                let previous = ((i - 1) & 1) * width
+                let current = (i & 1) * width
+                rows[current + low - 1] = low == 1 && i <= band ? i : outside
+                let word = a[i - 1]
+                for j in low...high {
+                    let substitution = rows[previous + j - 1] + (word == b[j - 1] ? 0 : 1)
+                    let deletion = rows[previous + j] + 1
+                    let insertion = rows[current + j - 1] + 1
+                    rows[current + j] = min(substitution, deletion, insertion, outside)
+                }
+                if high < m {
+                    rows[current + high + 1] = outside
+                }
+            }
+            return rows[(n & 1) * width + m]
+        }
+        return distance <= band || exhaustive ? distance : nil
     }
 }

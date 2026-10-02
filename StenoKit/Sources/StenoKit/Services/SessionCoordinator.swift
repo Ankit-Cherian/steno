@@ -190,6 +190,7 @@ public actor SessionCoordinator {
     private struct CaptureStopReceipt: Sendable {
         var audioURL: URL
         var monotonicEndedAt: ContinuousClock.Instant
+        var interruption: CaptureInterruption?
     }
 
     private enum CaptureStopOutcome: Sendable {
@@ -234,10 +235,14 @@ public actor SessionCoordinator {
                 let sessionID = self.sessionID
                 let created = Task<CaptureStopOutcome, Never> {
                     do {
+                        let audioURL = try await captureService.endCapture(sessionID: sessionID)
                         return CaptureStopOutcome.captured(
                             CaptureStopReceipt(
-                                audioURL: try await captureService.endCapture(sessionID: sessionID),
-                                monotonicEndedAt: monotonicEndedAt
+                                audioURL: audioURL,
+                                monotonicEndedAt: monotonicEndedAt,
+                                interruption: await captureService.takeCaptureInterruption(
+                                    sessionID: sessionID
+                                )
                             )
                         )
                     } catch {
@@ -383,6 +388,7 @@ public actor SessionCoordinator {
         var setupTasks: [Task<Void, Never>]
         #if os(macOS)
         var editorTarget: EditorTargetHandle?
+        var insertionGuard: InsertionTargetGuard?
         var continuationContext: ContinuationContextState
         #endif
     }
@@ -391,6 +397,7 @@ public actor SessionCoordinator {
         var active: ActiveSession
         var audioURL: URL
         var captureDurationMS: Int
+        var captureInterruption: CaptureInterruption?
     }
 
     private struct CleanupExecutionResult: Sendable {
@@ -547,6 +554,7 @@ public actor SessionCoordinator {
             livePipeline: nil,
             setupTasks: [],
             editorTarget: nil,
+            insertionGuard: nil,
             continuationContext: .unavailable
         )
         commitAuthorizations[sessionID] = commitAuthorization
@@ -568,10 +576,17 @@ public actor SessionCoordinator {
             }
         ))
 
-        // Audio is already running. Bind the exact focused field synchronously
-        // before start returns; only bounded context reads are deferred.
+        // Audio is already running. Look up the focused field synchronously
+        // before start returns; only bounded context reads are deferred. Every
+        // session keeps the lookup as a refusal-only guard against a secure
+        // field or a focus change before insertion. Only nearby text also uses
+        // it as the exact target.
+        let result = editorTargetCapture(appContext)
+        activeSessions[sessionID]?.insertionGuard = InsertionTargetGuard(
+            startCapture: result,
+            lookup: editorTargetCapture
+        )
         if options.nearbyContextEnabled {
-            let result = editorTargetCapture(appContext)
             if case .success(let handle) = result {
                 activeSessions[sessionID]?.editorTarget = handle
             }
@@ -633,6 +648,21 @@ public actor SessionCoordinator {
     func setLiveAppendWaitObserver(_ observer: (@Sendable () async -> Void)?) {
         liveAppendWaitObserver = observer
     }
+
+    private var livePumpPollObserver: (@Sendable () async -> Void)?
+
+    /// Runs on the pump after a poll returns and before its frames are appended.
+    func setLivePumpPollObserver(_ observer: (@Sendable () async -> Void)?) {
+        livePumpPollObserver = observer
+    }
+
+    private var completionCheckpointObserver: (@Sendable (SessionID) -> Void)?
+
+    /// Runs synchronously on the completion task at every ownership check, so
+    /// tests can cancel a completion at each of its suspension points.
+    func setCompletionCheckpointObserver(_ observer: (@Sendable (SessionID) -> Void)?) {
+        completionCheckpointObserver = observer
+    }
     #endif
 
     func liveHypothesisSchedulingEvaluationWatermark(
@@ -681,12 +711,27 @@ public actor SessionCoordinator {
             #endif
         }
 
-        let captureStopReceipt = try await active.captureStopGate.stop()
-        let audioURL = captureStopReceipt.audioURL
-        if cancelledEndingSessionIDs.contains(sessionID) {
-            await active.captureStopGate.cancel()
-            throw CancellationError()
+        let captureStopReceipt: CaptureStopReceipt
+        do {
+            captureStopReceipt = try await active.captureStopGate.stop()
+            if cancelledEndingSessionIDs.contains(sessionID) {
+                await active.captureStopGate.cancel()
+                throw CancellationError()
+            }
+        } catch {
+            // No registry owns this session now, so release its live stream
+            // here or the engine refuses every later session.
+            if let live = active.livePipeline {
+                live.pumpTask?.cancel()
+                live.hypothesisTask?.cancel()
+                if let engine = transcriptionEngine as? any LiveTranscriptionEngine {
+                    _ = await live.streamer.cancel(sessionID: sessionID)
+                    await engine.cancelLiveTranscription(session: live.identity)
+                }
+            }
+            throw error
         }
+        let audioURL = captureStopReceipt.audioURL
         let captureDurationMS = Self.durationMilliseconds(
             from: active.monotonicStartedAt,
             to: captureStopReceipt.monotonicEndedAt
@@ -701,7 +746,8 @@ public actor SessionCoordinator {
         capturedSessions[sessionID] = CapturedSession(
             active: capturedActive,
             audioURL: audioURL,
-            captureDurationMS: captureDurationMS
+            captureDurationMS: captureDurationMS,
+            captureInterruption: captureStopReceipt.interruption
         )
         transferredCapture = true
     }
@@ -710,6 +756,21 @@ public actor SessionCoordinator {
     public func completePressToTalk(
         sessionID: SessionID,
         languageHints: [String] = ["en-US"]
+    ) async throws -> InsertResult {
+        // A recording the recorder cut short is still transcribed; the result
+        // says so, including when nothing in it was recognized as speech.
+        let captureInterruption = capturedSessions[sessionID]?.captureInterruption
+        var result = try await completeCapturedPressToTalk(
+            sessionID: sessionID,
+            languageHints: languageHints
+        )
+        result.captureWarning = captureInterruption?.message
+        return result
+    }
+
+    private func completeCapturedPressToTalk(
+        sessionID: SessionID,
+        languageHints: [String]
     ) async throws -> InsertResult {
         guard let pendingCaptured = capturedSessions[sessionID] else {
             throw SessionCoordinatorError.sessionNotFound
@@ -733,26 +794,45 @@ public actor SessionCoordinator {
             cancelledCompletingSessionIDs.remove(sessionID)
             commitAuthorizations.removeValue(forKey: sessionID)
         }
-        try checkCompletionOwnership(sessionID: sessionID)
+        // The session is no longer registered, so cancel(sessionID:) cannot
+        // reach its live stream. Until the engine owns finalization, any throw
+        // must release that stream here, or the engine refuses every later
+        // session.
+        var liveFinishInvoked = false
         let request: TranscriptionRequest
-        if let frozenLiveRequest = active.livePipeline?.request {
-            request = frozenLiveRequest
-        } else {
-            request = TranscriptionRequest(
-                languageHints: languageHints,
-                appContext: active.appContext,
-                hotTerms: await lexiconService.hotTerms(for: active.appContext, limit: 8)
+        var rawTranscript: RawTranscript
+        do {
+            try checkCompletionOwnership(sessionID: sessionID)
+            if let frozenLiveRequest = active.livePipeline?.request {
+                request = frozenLiveRequest
+            } else {
+                request = TranscriptionRequest(
+                    languageHints: languageHints,
+                    appContext: active.appContext,
+                    hotTerms: await lexiconService.hotTerms(for: active.appContext, limit: 8)
+                )
+            }
+            try checkCompletionOwnership(sessionID: sessionID)
+            rawTranscript = try await authoritativeTranscript(
+                captured: captured,
+                request: request,
+                sessionID: sessionID,
+                liveFinishInvoked: &liveFinishInvoked
             )
+        } catch {
+            if !liveFinishInvoked,
+               let live = active.livePipeline,
+               let liveEngine = transcriptionEngine as? any LiveTranscriptionEngine {
+                await liveEngine.cancelLiveTranscription(session: live.identity)
+            }
+            throw error
         }
         try checkCompletionOwnership(sessionID: sessionID)
-        var rawTranscript = try await authoritativeTranscript(
-            captured: captured,
-            request: request,
-            sessionID: sessionID
-        )
-        try checkCompletionOwnership(sessionID: sessionID)
 
-        if rawTranscript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Recognized text with no letter or digit, such as a lone "." from a
+        // cough, is not speech. Spoken commands like "period" or "new line"
+        // arrive as words and become symbols only in cleanup.
+        if !Self.containsLetterOrDigit(rawTranscript.text) {
             return noSpeechResult()
         }
 
@@ -760,7 +840,7 @@ public actor SessionCoordinator {
             rawTranscript,
             request: request
         ) {
-            if sanitizedPromptContamination.isEmpty {
+            if !Self.containsLetterOrDigit(sanitizedPromptContamination) {
                 return noSpeechResult()
             }
             rawTranscript.text = sanitizedPromptContamination
@@ -800,6 +880,11 @@ public actor SessionCoordinator {
             directivePlan,
             toCleanedText: cleanedTranscript.text
         )
+        // Cleanup can remove everything, for example fillers under the
+        // aggressive policy. Nothing is left to insert or record.
+        if cleanedTranscript.text.trimmingCharacters(in: .whitespaces).isEmpty {
+            return noSpeechResult()
+        }
         if directivePlan.kind != .none {
             cleanedTranscript.edits.append(TranscriptEdit(
                 kind: .commandTransform,
@@ -824,6 +909,7 @@ public actor SessionCoordinator {
                 text: insertionPayload,
                 target: active.appContext,
                 editorTarget: active.editorTarget,
+                insertionGuard: active.insertionGuard,
                 clipboardRecoveryText: cleanedTranscript.text,
                 commitAuthorization: insertionCommitAuthorization
             )
@@ -855,9 +941,18 @@ public actor SessionCoordinator {
             durationMS: rawTranscript.durationMS,
             // Audio artifacts are ephemeral; do not persist paths that are deleted on return.
             audioURL: nil,
-            insertionStatus: insertResult.status
+            insertionStatus: insertResult.status,
+            pasteAttempted: insertResult.pasteAttempted
         )
-        try await historyStore.append(entry: entry)
+        do {
+            try await historyStore.append(entry: entry)
+        } catch {
+            // Delivery already happened (or was attempted) exactly once. A
+            // History write failure is reported alongside that outcome and
+            // never turns it into a failed transcription.
+            StenoKitDiagnostics.logger.error("Transcript history write failed after insertion.")
+            insertResult.historyWarning = error.localizedDescription
+        }
         if !insertionCommitted {
             try checkCompletionOwnership(sessionID: sessionID)
         }
@@ -882,6 +977,10 @@ public actor SessionCoordinator {
 
     private func noSpeechResult() -> InsertResult {
         InsertResult(status: .noSpeech, method: .none, insertedText: "")
+    }
+
+    private static func containsLetterOrDigit(_ text: String) -> Bool {
+        text.contains { $0.isLetter || $0.isNumber }
     }
 
     private func prepareLivePipeline(
@@ -959,14 +1058,29 @@ public actor SessionCoordinator {
     private func runLivePump(sessionID: SessionID) async {
         while !Task.isCancelled {
             guard !captureStopWasRequested(sessionID: sessionID),
-                  let streamer = activeSessions[sessionID]?.livePipeline?.streamer else {
+                  let pipeline = activeSessions[sessionID]?.livePipeline else {
                 return
             }
-            guard activeSessions[sessionID]?.livePipeline?.failed == false else { return }
+            guard !pipeline.failed else { return }
 
+            // Busy from poll through append. A polled frame has left the
+            // canonical stream, so finalization must wait for it to reach the
+            // runtime; otherwise the tail drain resumes after a missing frame
+            // and the runtime rejects the gap.
+            let appendActivity = pipeline.appendActivity
+            appendActivity.begin()
             do {
-                let poll = try await streamer.poll(sessionID: sessionID)
-                try await processLiveFrames(poll.frames, sessionID: sessionID)
+                do {
+                    defer { appendActivity.end() }
+                    let poll = try await pipeline.streamer.poll(sessionID: sessionID)
+                    #if DEBUG
+                    if !poll.frames.isEmpty, let livePumpPollObserver {
+                        await livePumpPollObserver()
+                    }
+                    #endif
+                    try await processLiveFrames(poll.frames, sessionID: sessionID, identity: pipeline.identity)
+                }
+                launchPendingLiveHypothesisFromPump(sessionID: sessionID)
             } catch is CancellationError {
                 return
             } catch {
@@ -982,35 +1096,27 @@ public actor SessionCoordinator {
         }
     }
 
+    /// Appends frames the pump has already polled. They are appended even if
+    /// capture stopped meanwhile, because the final's tail drain continues
+    /// after them; only a cancelled session discards them.
     private func processLiveFrames(
         _ frames: [LivePCMFrame],
-        sessionID: SessionID
+        sessionID: SessionID,
+        identity: LiveTranscriptionSession
     ) async throws {
         guard !frames.isEmpty,
-              !captureStopWasRequested(sessionID: sessionID),
               let liveEngine = transcriptionEngine as? any LiveTranscriptionEngine else {
             return
         }
-        guard activeSessions[sessionID]?.livePipeline?.failed == false else { return }
 
         for frame in frames {
             try Task.checkCancellation()
-            guard !captureStopWasRequested(sessionID: sessionID),
-                  let pipeline = activeSessions[sessionID]?.livePipeline else {
-                throw CancellationError()
-            }
-            let identity = pipeline.identity
-            let appendActivity = pipeline.appendActivity
-            appendActivity.begin()
-            defer { appendActivity.end() }
             try await liveEngine.appendLiveAudio(frame, session: identity)
             try Task.checkCancellation()
-            guard !captureStopWasRequested(sessionID: sessionID),
-                  activeSessions[sessionID]?.livePipeline?.identity == identity else {
-                throw CancellationError()
+            if activeSessions[sessionID]?.livePipeline?.identity == identity {
+                activeSessions[sessionID]?.livePipeline?.decodedAudioWatermark =
+                    frame.sampleOffset + UInt64(frame.sampleCount)
             }
-            activeSessions[sessionID]?.livePipeline?.decodedAudioWatermark =
-                frame.sampleOffset + UInt64(frame.sampleCount)
         }
 
         guard !captureStopWasRequested(sessionID: sessionID),
@@ -1118,7 +1224,6 @@ public actor SessionCoordinator {
                 }
 
                 activeSessions[sessionID]?.livePipeline = current
-                resumePendingLiveHypothesis(sessionID: sessionID, identity: identity)
                 return
             }
 
@@ -1166,10 +1271,9 @@ public actor SessionCoordinator {
                !captureStopWasRequested(sessionID: sessionID) {
                 await liveSnapshotHandler(reduction.snapshot)
             }
-            // Read pending state after the callback suspension so any newer
-            // watermark replaces the older descriptor. Active ownership is
-            // required here, so ordinary stop never launches queued preview.
-            resumePendingLiveHypothesis(sessionID: sessionID, identity: identity)
+            // A queued preview is launched only by the pump, between its own
+            // appends. Launching it here could reach the runtime while an
+            // append is awaiting acknowledgement, which the runtime rejects.
         } catch is CancellationError {
             if activeSessions[sessionID]?.livePipeline?.identity == identity {
                 activeSessions[sessionID]?.livePipeline?.hypothesisTask = nil
@@ -1182,12 +1286,12 @@ public actor SessionCoordinator {
         }
     }
 
-    private func resumePendingLiveHypothesis(
-        sessionID: SessionID,
-        identity: LiveTranscriptionSession
-    ) {
+    /// Runs only on the pump, whose appends have all been acknowledged at
+    /// this point. Active ownership is required, so ordinary stop never
+    /// launches queued preview.
+    private func launchPendingLiveHypothesisFromPump(sessionID: SessionID) {
         guard let latest = activeSessions[sessionID]?.livePipeline,
-              latest.identity == identity,
+              latest.hypothesisTask == nil,
               let pending = latest.pendingHypothesis else {
             return
         }
@@ -1227,7 +1331,8 @@ public actor SessionCoordinator {
     private func authoritativeTranscript(
         captured: CapturedSession,
         request: TranscriptionRequest,
-        sessionID: SessionID
+        sessionID: SessionID,
+        liveFinishInvoked: inout Bool
     ) async throws -> RawTranscript {
         guard let live = captured.active.livePipeline,
               let liveEngine = transcriptionEngine as? any LiveTranscriptionEngine else {
@@ -1300,6 +1405,7 @@ public actor SessionCoordinator {
         // From this ownership transfer onward, no coordinator fallback is
         // legal: the live engine either returns its authoritative result or its
         // single internal canonical fallback error propagates to the caller.
+        liveFinishInvoked = true
         return try await liveEngine.finishLiveTranscription(
             session: live.identity,
             canonicalAudioURL: captured.audioURL,
@@ -1691,6 +1797,9 @@ public actor SessionCoordinator {
     }
 
     private func checkCompletionOwnership(sessionID: SessionID) throws {
+        #if DEBUG
+        completionCheckpointObserver?(sessionID)
+        #endif
         try Task.checkCancellation()
         guard completingSessionIDs.contains(sessionID),
               !cancelledCompletingSessionIDs.contains(sessionID)

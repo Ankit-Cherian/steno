@@ -45,27 +45,38 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 navigation(theme: theme)
                 Divider()
-                ZStack {
-                    if selectedTab != .settings {
-                        Group {
-                            switch selectedTab {
-                            case .record:
-                                RecordTab(onOpenSettings: openSettings, onOpenHistory: { selectedTab = .history })
-                            case .history: HistoryTab()
-                            case .insights: InsightsTab()
-                            case .settings: EmptyView()
-                            }
-                        }
-                        .id(selectedTab)
-                        .transition(.opacity)
+                VStack(spacing: 0) {
+                    if let notice = controller.storageNotice {
+                        StorageNoticeBanner(
+                            notice: notice,
+                            theme: theme,
+                            onReveal: controller.revealStorageNoticeFile,
+                            onCopy: controller.copyStorageNoticeText,
+                            onDismiss: controller.dismissStorageNotice
+                        )
                     }
-                    SettingsView(selectedSection: $selectedSettingsSection, showsSidebar: true)
-                        .opacity(selectedTab == .settings ? 1 : 0)
-                        .allowsHitTesting(selectedTab == .settings)
-                        .disabled(selectedTab != .settings)
-                        .accessibilityHidden(selectedTab != .settings)
+                    ZStack {
+                        if selectedTab != .settings {
+                            Group {
+                                switch selectedTab {
+                                case .record:
+                                    RecordTab(onOpenSettings: openSettings, onOpenHistory: { selectedTab = .history })
+                                case .history: HistoryTab()
+                                case .insights: InsightsTab()
+                                case .settings: EmptyView()
+                                }
+                            }
+                            .id(selectedTab)
+                            .transition(.opacity)
+                        }
+                        SettingsView(selectedSection: $selectedSettingsSection, showsSidebar: true)
+                            .opacity(selectedTab == .settings ? 1 : 0)
+                            .allowsHitTesting(selectedTab == .settings)
+                            .disabled(selectedTab != .settings)
+                            .accessibilityHidden(selectedTab != .settings)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .foregroundStyle(theme.text)

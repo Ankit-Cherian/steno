@@ -93,3 +93,14 @@ func recordingStateMachineIgnoresInvalidCancel() {
     #expect(machine.handleCancel() == .cancelTranscription)
     #expect(machine.state == .idle)
 }
+
+@Test("Recording length is capped at an hour with a one-minute warning")
+func recordingDurationLimitWarnsThenStops() {
+    let limit = RecordingDurationLimit.standard
+    #expect(limit.action(forElapsed: 0) == .none)
+    #expect(limit.action(forElapsed: 58 * 60 + 59) == .none)
+    #expect(limit.action(forElapsed: 59 * 60) == .warn(remainingSeconds: 60))
+    #expect(limit.action(forElapsed: 59 * 60 + 30.5) == .warn(remainingSeconds: 30))
+    #expect(limit.action(forElapsed: 60 * 60) == .stop)
+    #expect(limit.action(forElapsed: 3 * 60 * 60) == .stop)
+}

@@ -1,18 +1,24 @@
 import Foundation
 
-public enum WhisperCLITranscriptionError: Error, LocalizedError {
+public enum WhisperCLITranscriptionError: Error, LocalizedError, Equatable {
     case cliNotFound(path: String)
     case failedToRun(status: Int32, stderr: String)
     case outputMissing
+    case timedOut
 
     public var errorDescription: String? {
         switch self {
         case .cliNotFound(let path):
             return "whisper-cli not found at: \(path)"
-        case .failedToRun(let status, let stderr):
-            return "whisper-cli failed with status \(status): \(stderr)"
+        case .failedToRun(let status, _):
+            // The full output names model and recording paths and can run to
+            // dozens of lines. It stays in the associated value and the
+            // diagnostic log; the overlay and VoiceOver get one short line.
+            return "Transcription failed. The speech engine stopped with error \(status)."
         case .outputMissing:
             return "whisper-cli completed but transcript output was missing"
+        case .timedOut:
+            return "Transcription took too long and was stopped."
         }
     }
 }
@@ -22,15 +28,27 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         public var whisperCLIPath: URL
         public var modelPath: URL
         public var additionalArguments: [String]
+        /// The shortest time a run may take before it is stopped. Each run
+        /// loads the model from scratch, so this covers the retained helper's
+        /// model-load allowance as well as its minimum inference allowance.
+        public var minimumTimeout: Duration
 
         public init(
             whisperCLIPath: URL,
             modelPath: URL,
-            additionalArguments: [String] = []
+            additionalArguments: [String] = [],
+            minimumTimeout: Duration = .seconds(300)
         ) {
             self.whisperCLIPath = whisperCLIPath
             self.modelPath = modelPath
             self.additionalArguments = additionalArguments
+            self.minimumTimeout = minimumTimeout
+        }
+
+        /// Longer recordings get the retained helper's allowance of twice
+        /// their length plus a minute.
+        func timeout(for audioURL: URL) -> Duration {
+            WhisperRuntimeWatchdog.inferenceTimeout(minimum: minimumTimeout, audioURL: audioURL)
         }
     }
 
@@ -56,7 +74,7 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         }
 
         let outputBase = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("steno-out-\(UUID().uuidString)")
+            .appendingPathComponent("\(Self.outputFilePrefix)\(UUID().uuidString)")
 
         let txtURL = outputBase.appendingPathExtension("txt")
         let jsonURL = outputBase.appendingPathExtension("json")
@@ -86,16 +104,26 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
             args.append(contentsOf: ["--prompt", prompt])
         }
 
-        let result = try await ProcessRunner.run(
-            executableURL: config.whisperCLIPath,
-            arguments: args,
-            environment: cachedEnvironment,
-            standardOutput: FileHandle.nullDevice
-        )
+        let result: ProcessExecutionResult
+        do {
+            result = try await ProcessRunner.run(
+                executableURL: config.whisperCLIPath,
+                arguments: args,
+                environment: cachedEnvironment,
+                standardOutput: FileHandle.nullDevice,
+                timeout: config.timeout(for: audioURL)
+            )
+        } catch ProcessRunnerError.timedOut {
+            StenoKitDiagnostics.logger.error("whisper-cli ran past its deadline and was stopped.")
+            throw WhisperCLITranscriptionError.timedOut
+        }
 
         let stderrText = String(data: result.standardError, encoding: .utf8) ?? ""
 
         guard result.terminationStatus == 0 else {
+            StenoKitDiagnostics.logger.error(
+                "whisper-cli exited with status \(result.terminationStatus, privacy: .public): \(stderrText, privacy: .private)"
+            )
             throw WhisperCLITranscriptionError.failedToRun(status: result.terminationStatus, stderr: stderrText)
         }
 
@@ -111,6 +139,28 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         }
 
         return try parsePlainTranscript(at: txtURL)
+    }
+
+    private static let outputFilePrefix = "steno-out-"
+
+    /// Deletes transcript files a run left in the temporary folder when Steno
+    /// quit before it could remove them, for example after a crash. They hold
+    /// dictated text. Every normal run deletes its own files, so only files
+    /// named exactly as this engine names them, and older than `minimumAge`,
+    /// are removed. Returns the removed files.
+    @discardableResult
+    public static func removeStaleOutputFiles(
+        in directory: URL = URL(fileURLWithPath: NSTemporaryDirectory()),
+        olderThan minimumAge: TimeInterval = 5 * 60,
+        now: Date = Date()
+    ) -> [URL] {
+        StaleTemporaryFileSweep.remove(
+            in: directory,
+            prefix: outputFilePrefix,
+            extensions: ["txt", "json"],
+            olderThan: minimumAge,
+            now: now
+        )
     }
 
     private func normalizeLanguage(from hint: String) -> String? {

@@ -13,7 +13,7 @@ func cleanupResolvesScratchThatRepair() async throws {
     )
 
     let cleaned = try await engine.cleanup(
-        raw: RawTranscript(text: "Send it to John, scratch that, Jane."),
+        raw: dictatedTranscript("Send it to John, scratch that, Jane."),
         profile: profile,
         lexicon: PersonalLexicon(entries: [])
     )
@@ -34,7 +34,7 @@ func cleanupPreservesAmbiguousSingleTokenPrefixRepair() async throws {
     )
 
     let cleaned = try await engine.cleanup(
-        raw: RawTranscript(text: "Bob scratch that Jane"),
+        raw: dictatedTranscript("Bob scratch that Jane"),
         profile: profile,
         lexicon: PersonalLexicon(entries: [])
     )
@@ -55,7 +55,7 @@ func cleanupResolvesPunctuatedSingleTokenPrefixRepair() async throws {
     )
 
     let cleaned = try await engine.cleanup(
-        raw: RawTranscript(text: "Bob, scratch that, Jane."),
+        raw: dictatedTranscript("Bob, scratch that, Jane."),
         profile: profile,
         lexicon: PersonalLexicon(entries: [])
     )
@@ -91,7 +91,7 @@ func cleanupPreservesAmbiguousTwoTokenPrefixRepair() async throws {
     )
 
     let cleaned = try await engine.cleanup(
-        raw: RawTranscript(text: "Call Bob scratch that Jane"),
+        raw: dictatedTranscript("Call Bob scratch that Jane"),
         profile: profile,
         lexicon: PersonalLexicon(entries: [])
     )
@@ -112,7 +112,7 @@ func cleanupPreservesLiteralRepairPhrase() async throws {
     )
 
     let cleaned = try await engine.cleanup(
-        raw: RawTranscript(text: "Please type scratch that literally."),
+        raw: dictatedTranscript("Please type scratch that literally."),
         profile: profile,
         lexicon: PersonalLexicon(entries: [])
     )
@@ -473,12 +473,12 @@ func candidateGeneratorEmitsRepairAndPhoneticRecoveryCandidates() async throws {
     ])
 
     let repairCandidates = try await generator.generateCandidates(
-        raw: RawTranscript(text: "send it to John, scratch that, Jane"),
+        raw: dictatedTranscript("send it to John, scratch that, Jane"),
         profile: profile,
         lexicon: lexicon
     )
     let phoneticCandidates = try await generator.generateCandidates(
-        raw: RawTranscript(text: "ping terso"),
+        raw: dictatedTranscript("ping terso"),
         profile: profile,
         lexicon: lexicon
     )
@@ -502,7 +502,7 @@ func candidateGeneratorRequiresPhoneticOptIn() async throws {
     ])
 
     let candidates = try await generator.generateCandidates(
-        raw: RawTranscript(text: "ping terso"),
+        raw: dictatedTranscript("ping terso"),
         profile: profile,
         lexicon: lexicon
     )
@@ -525,7 +525,7 @@ func candidateGeneratorSkipsShortAllCapsPhonetics() async throws {
     ])
 
     let candidates = try await generator.generateCandidates(
-        raw: RawTranscript(text: "the rate should stay literal"),
+        raw: dictatedTranscript("the rate should stay literal"),
         profile: profile,
         lexicon: lexicon
     )
@@ -544,7 +544,7 @@ private func runRepairCleanup(_ text: String) async throws -> CleanTranscript {
     )
 
     return try await engine.cleanup(
-        raw: RawTranscript(text: text),
+        raw: dictatedTranscript(text),
         profile: profile,
         lexicon: PersonalLexicon(entries: [])
     )

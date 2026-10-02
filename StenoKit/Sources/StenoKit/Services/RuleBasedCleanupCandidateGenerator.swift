@@ -11,7 +11,8 @@ enum RepairMarkerMatcher {
             ("scratch that", #"\bscratch\s+that\b"#),
             ("delete that", #"\bdelete\s+that\b"#),
             ("erase that", #"\berase\s+that\b"#),
-            ("never mind", #"\bnever\s+mind\b"#),
+            // The recognizer also writes the one-word spelling "Nevermind".
+            ("never mind", #"\bnever\s*mind\b"#),
             ("i mean", #"\bi\s+mean\b"#),
             ("actually", #"\bactually\b"#),
             ("no", #"^\s*no\b"#),
@@ -87,20 +88,42 @@ enum RepairMarkerMatcher {
             return startsWithStrongRepairSeparator(suffix)
                 && startsWithImperativeCommand(suffix)
         }
-        return hasPairedDiscourseBoundary(prefix: prefix, suffix: suffix)
+        // The recognizer often ends the replaced command with a full stop ("Call Bob. Never mind.
+        // Call Jane."), so a sentence boundary counts on the left when both sides are commands.
+        let hasBoundary = hasPairedDiscourseBoundary(prefix: prefix, suffix: suffix)
+            || (endsWithSentenceBoundary(prefix) && startsWithStrongRepairSeparator(suffix))
+        return hasBoundary
             && isTargetBearingCommandFrame(prefix)
             && startsWithImperativeCommand(suffix)
     }
 
     private static func shouldInterpretActionMarkerAsRepair(prefix: String, suffix: String) -> Bool {
         guard prefix.isEmpty == false else { return false }
-        return hasPairedDiscourseBoundary(prefix: prefix, suffix: suffix)
+        // The recognizer often drops the comma after the marker ("scratch that Jane."). A single
+        // proper name directly after the marker still has an explicit boundary on the left.
+        let hasBoundary = hasPairedDiscourseBoundary(prefix: prefix, suffix: suffix)
+            || (hasLeftDiscourseBoundary(prefix) && startsWithLetter(suffix))
+        return hasBoundary
             && (isSingleProperName(prefix) || isTargetBearingCommandFrame(prefix))
             && isSingleProperName(suffix)
     }
 
     private static let leftDiscourseBoundaryCharacters: Set<Character> = [",", ";", ":", "-", "–", "—"]
     private static let rightDiscourseBoundaryCharacters = leftDiscourseBoundaryCharacters.union([".", "!", "?"])
+
+    private static func hasLeftDiscourseBoundary(_ prefix: String) -> Bool {
+        guard let left = prefix.trimmingCharacters(in: .whitespacesAndNewlines).last else { return false }
+        return leftDiscourseBoundaryCharacters.contains(left)
+    }
+
+    private static func endsWithSentenceBoundary(_ prefix: String) -> Bool {
+        guard let left = prefix.trimmingCharacters(in: .whitespacesAndNewlines).last else { return false }
+        return left == "." || left == "!" || left == "?"
+    }
+
+    private static func startsWithLetter(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).first?.isLetter == true
+    }
 
     private static func hasPairedDiscourseBoundary(prefix: String, suffix: String) -> Bool {
         guard let left = prefix.trimmingCharacters(in: .whitespacesAndNewlines).last,

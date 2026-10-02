@@ -360,6 +360,76 @@ struct SystemMacAccessibilityClient: MacAccessibilityClient, @unchecked Sendable
     }
 }
 
+/// A refusal-only check for insertions that run without an exact editor
+/// target, which is every session unless nearby text is on.
+///
+/// It can only stop an insertion, never reorder or require anything: the
+/// insertion is refused when the field was secure at the start, when the
+/// focused field is now secure, or when focus has provably moved to another
+/// field or app. Any other lookup result, including a timeout or a missing
+/// start target, lets the insertion proceed as before, so slow Accessibility
+/// apps keep inserting.
+public struct InsertionTargetGuard: Sendable {
+    public enum Decision: Sendable, Equatable {
+        case proceed
+        case refuse(EditorTargetUnavailableReason)
+    }
+
+    private let startTarget: EditorTargetHandle?
+    private let refusedAtStart: EditorTargetUnavailableReason?
+    private let lookup: @Sendable (AppContext) -> Result<EditorTargetHandle, EditorTargetUnavailableReason>
+
+    public init(
+        startCapture: Result<EditorTargetHandle, EditorTargetUnavailableReason>,
+        lookup: @escaping @Sendable (AppContext) -> Result<EditorTargetHandle, EditorTargetUnavailableReason>
+    ) {
+        switch startCapture {
+        case .success(let handle):
+            startTarget = handle
+            refusedAtStart = nil
+        case .failure(.secureOrProtectedElement):
+            startTarget = nil
+            refusedAtStart = .secureOrProtectedElement
+        case .failure:
+            startTarget = nil
+            refusedAtStart = nil
+        }
+        self.lookup = lookup
+    }
+
+    /// Call after the target app is frontmost and before the first side
+    /// effect that could land in the focused field.
+    public func evaluate(for target: AppContext) -> Decision {
+        if let refusedAtStart {
+            return .refuse(refusedAtStart)
+        }
+        switch lookup(target) {
+        case .failure(.secureOrProtectedElement):
+            return .refuse(.secureOrProtectedElement)
+        case .failure(.bundleIdentifierMismatch) where startTarget != nil:
+            // The start field belonged to the target app; the focused element
+            // now belongs to another one.
+            return .refuse(.targetChanged)
+        case .failure:
+            return .proceed
+        case .success(let current):
+            guard let startTarget, !startTarget.hasSameTargetIdentity(as: current) else {
+                return .proceed
+            }
+            return .refuse(.targetChanged)
+        }
+    }
+
+    public static func refusalMessage(for reason: EditorTargetUnavailableReason) -> String {
+        switch reason {
+        case .secureOrProtectedElement:
+            return "Secure text field—final text copied instead of typed."
+        default:
+            return "The focused field changed—final text copied."
+        }
+    }
+}
+
 /// A process-local, exact reference to the editor that was focused when the
 /// handle was captured. Every read and write revalidates that exact identity.
 public actor EditorTargetHandle {
@@ -398,6 +468,12 @@ public actor EditorTargetHandle {
         self.client = client
         expectedSelection = snapshot.selection
         expectedCharacterCount = snapshot.characterCount
+    }
+
+    /// True when both handles captured the same process, window and element.
+    /// Selection and length are ignored: typing in the same field is not drift.
+    nonisolated func hasSameTargetIdentity(as other: EditorTargetHandle) -> Bool {
+        capturedTarget.isSameTargetIdentity(as: other.capturedTarget)
     }
 
     public static func capture(target: AppContext) -> Result<EditorTargetHandle, EditorTargetUnavailableReason> {

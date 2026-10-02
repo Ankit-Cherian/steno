@@ -3,6 +3,8 @@ import Foundation
 /// Result of attempting to register a global hotkey.
 public enum HotkeyRegistrationStatus: Sendable, Equatable {
     case registered
+    /// The user turned the hands-free key off. This is a normal state, not a failure.
+    case disabled
     case unavailable(reason: String)
 }
 
@@ -44,6 +46,29 @@ public protocol HotkeyService: AnyObject {
 
     /// Stops all hotkey monitoring.
     func stop()
+
+    /// Whether this service reports, after each press-to-talk start, if the
+    /// press is a dictation or part of a keyboard shortcut. When it does,
+    /// `onPressToTalkConfirmed` always comes before `onPressToTalkStop`, and
+    /// `onPressToTalkDiscarded` replaces the stop and can follow a confirmation.
+    /// A service that does not treats every start as confirmed.
+    var confirmsPressToTalk: Bool { get }
+    var onPressToTalkConfirmed: (() -> Void)? { get set }
+    var onPressToTalkDiscarded: (() -> Void)? { get set }
+}
+
+extension HotkeyService {
+    public var confirmsPressToTalk: Bool { false }
+
+    public var onPressToTalkConfirmed: (() -> Void)? {
+        get { nil }
+        set {}
+    }
+
+    public var onPressToTalkDiscarded: (() -> Void)? {
+        get { nil }
+        set {}
+    }
 }
 
 /// Displays and hides a floating status overlay during dictation.
@@ -92,14 +117,15 @@ public extension OverlayPresenter {
 @MainActor
 public protocol MediaInterruptionService: AnyObject {
     /// Sends targeted Pause requests and returns a custody token when an
-    /// application that was verifiably producing audio accepts the pause.
+    /// application that was confirmed playing accepts the pause.
     ///
-    /// Custody is tracked per application and defaults to deferred: observed
-    /// silence upgrades it to verified whenever that becomes observable, but
-    /// output teardown routinely lags an accepted pause by longer than any
-    /// bounded verification window. Deferred custody is dropped without a Play
-    /// if the application's process lineage breaks or fresh evidence shows it
-    /// producing audio again. Returns `nil` if no media pause can be tracked.
+    /// Custody is tracked per application and starts provisional. It becomes
+    /// resume ownership only once the application is observed to stop playing
+    /// in response. An output stream that stays open, or closes later, proves
+    /// nothing either way: media the listener paused earlier looks the same.
+    /// Provisional custody that is never confirmed is dropped without a Play,
+    /// as is custody whose process lineage breaks. Returns `nil` if no media
+    /// pause can be tracked.
     func beginInterruption() async -> MediaInterruptionToken?
 
     /// Releases an interruption token and, after the final valid token, resumes

@@ -322,7 +322,7 @@ func sessionCoordinatorLocalFallbackOnPrimaryFailure() async throws {
 
     let capture = StubAudioCaptureService(queuedAudioURLs: [audioURL])
     let transcription = StaticTranscriptionEngine { _, _ in
-        RawTranscript(text: "um stenoh can you clean this up")
+        dictatedTranscript("um stenoh can you clean this up")
     }
 
     let recorder = InsertRecorder()
@@ -377,7 +377,7 @@ func sessionCoordinatorLocalFallbackOnPrimaryFailure() async throws {
     #expect(recent.count == 1)
     #expect(recent[0].cleanText == inserted)
     #expect(recent[0].audioURL == nil)
-    #expect(recent[0].durationMS == 0)
+    #expect(recent[0].durationMS == 2_000)
 }
 
 @Test("SessionCoordinator keeps slash commands raw for IDE passthrough profile")
@@ -387,7 +387,7 @@ func sessionCoordinatorCommandPassthroughStaysLocalOnly() async throws {
 
     let capture = StubAudioCaptureService(queuedAudioURLs: [audioURL])
     let transcription = StaticTranscriptionEngine { _, _ in
-        RawTranscript(text: "/build target")
+        dictatedTranscript("/build target")
     }
 
     let recorder = InsertRecorder()

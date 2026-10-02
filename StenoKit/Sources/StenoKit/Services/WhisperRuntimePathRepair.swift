@@ -33,69 +33,72 @@ public struct WhisperRuntimePathCandidates: Equatable, Sendable {
 }
 
 public enum WhisperRuntimePathRepair {
+    /// Repairs the tool path and the model path independently, so a stale tool
+    /// path never discards a model that still exists. A derived or stale bundled
+    /// voice-detection path is recomputed when needed; a custom one is kept.
     public static func repairedSelection(
         current: WhisperRuntimePathSelection,
         bundled: WhisperRuntimePathCandidates?,
         vendor: WhisperRuntimePathCandidates?,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) -> WhisperRuntimePathSelection {
-        guard !fileExists(current.whisperCLIPath) || !fileExists(current.modelPath) else {
+        let cliExists = fileExists(current.whisperCLIPath)
+        let modelExists = fileExists(current.modelPath)
+        guard !cliExists || !modelExists else {
             return current
         }
 
-        if let bundled, fileExists(bundled.whisperCLIPath), fileExists(bundled.modelPath) {
-            return .init(
-                whisperCLIPath: bundled.whisperCLIPath,
-                modelPath: bundled.modelPath,
-                vadModelPath: repairedVADModelPath(
-                    currentVADModelPath: current.vadModelPath,
-                    candidateVADModelPath: bundled.vadModelPath,
-                    repairedModelPath: bundled.modelPath,
-                    fileExists: fileExists
-                )
-            )
-        }
-
-        guard let vendor else {
-            return current
-        }
-
+        let sources = [bundled, vendor].compactMap { $0 }
         var repaired = current
 
-        if fileExists(vendor.whisperCLIPath) {
-            repaired.whisperCLIPath = vendor.whisperCLIPath
+        if !cliExists,
+           let source = sources.first(where: { fileExists($0.whisperCLIPath) }) {
+            repaired.whisperCLIPath = source.whisperCLIPath
         }
 
-        if fileExists(vendor.modelPath) {
-            repaired.modelPath = vendor.modelPath
+        var modelSource: WhisperRuntimePathCandidates?
+        if !modelExists,
+           let source = sources.first(where: { fileExists($0.modelPath) }) {
+            repaired.modelPath = source.modelPath
+            modelSource = source
         }
 
-        if !fileExists(repaired.vadModelPath) {
-            repaired.vadModelPath = repairedVADModelPath(
-                currentVADModelPath: current.vadModelPath,
-                candidateVADModelPath: vendor.vadModelPath,
-                repairedModelPath: repaired.modelPath,
-                fileExists: fileExists
-            )
+        if vadModelPathNeedsRepair(current: current, repairedModelPath: repaired.modelPath, fileExists: fileExists) {
+            let candidates = [
+                WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: repaired.modelPath),
+                modelSource?.vadModelPath
+            ] + sources.map(\.vadModelPath)
+            repaired.vadModelPath = candidates.compactMap { $0 }.first(where: fileExists)
+                ?? WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: repaired.modelPath)
         }
 
         return repaired
     }
 
-    private static func repairedVADModelPath(
-        currentVADModelPath: String,
-        candidateVADModelPath: String?,
+    private static func vadModelPathNeedsRepair(
+        current: WhisperRuntimePathSelection,
         repairedModelPath: String,
         fileExists: (String) -> Bool
-    ) -> String {
-        if fileExists(currentVADModelPath) {
-            return currentVADModelPath
+    ) -> Bool {
+        let vadPath = current.vadModelPath
+        let isDerived = vadPath.isEmpty
+            || vadPath == WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: current.modelPath)
+        if isDerived {
+            return repairedModelPath != current.modelPath || !fileExists(vadPath)
         }
-
-        if let candidateVADModelPath, fileExists(candidateVADModelPath) {
-            return candidateVADModelPath
+        // A path inside the app bundle the stale tool path pointed into is the
+        // app's own file, left behind when the app moved, not a user's choice.
+        guard !fileExists(vadPath),
+              !fileExists(current.whisperCLIPath),
+              let staleBundle = appBundlePath(containing: current.whisperCLIPath)
+        else {
+            return false
         }
+        return vadPath.hasPrefix(staleBundle + "/")
+    }
 
-        return WhisperRuntimeConfiguration.defaultVADModelPath(relativeTo: repairedModelPath)
+    private static func appBundlePath(containing path: String) -> String? {
+        guard let range = path.range(of: ".app/Contents/") else { return nil }
+        return String(path[..<range.lowerBound]) + ".app"
     }
 }

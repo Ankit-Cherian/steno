@@ -24,14 +24,13 @@ func saveAndApplyUpdatesLiveHandsFreeHotkey() async throws {
     var draft = controller.preferences
     draft.hotkeys.handsFreeGlobalKeyCode = 107
 
-    controller.applySettingsDraft(preferences: draft)
+    let save = controller.applySettingsDraft(preferences: draft)
 
     #expect(controller.preferences.hotkeys.handsFreeGlobalKeyCode == 107)
     #expect(hotkey.globalToggleKeyCode == 107)
-    #expect(await waitForCondition {
-        FileManager.default.fileExists(atPath: preferencesURL.path)
-            && controller.status == "Running local transcription + local cleanup."
-    })
+    #expect(await save.value)
+    #expect(FileManager.default.fileExists(atPath: preferencesURL.path))
+    #expect(controller.status == "Settings saved.")
     let savedPreferences = try JSONDecoder().decode(
         AppPreferences.self,
         from: Data(contentsOf: preferencesURL)

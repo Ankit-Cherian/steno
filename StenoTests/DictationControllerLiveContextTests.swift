@@ -239,7 +239,7 @@ func controllerStopsCaptureBeforeBlockedStartReturns() async {
 }
 
 @MainActor
-@Test("Key-up closes capture before blocked media begin settles")
+@Test("Key-up closes capture and transcribes without waiting for a blocked media begin")
 func controllerStopsCaptureBeforeBlockedMediaBeginSettles() async {
     let mediaGate = LiveContextLifecycleGate()
     let capture = ControllerCaptureProbe()
@@ -259,22 +259,24 @@ func controllerStopsCaptureBeforeBlockedMediaBeginSettles() async {
     #expect(await waitForLiveContextCondition { await mediaGate.isWaiting })
     controller.pressToTalkStop()
     #expect(await waitForLiveContextCondition { capture.stopCalls == 1 })
-    #expect(await coordinator.endCalls == 0)
-    #expect(await coordinator.completeCalls == 0)
-
-    await mediaGate.open()
+    // An unanswered Pause does not hold up transcription.
     #expect(await waitForLiveContextCondition { await coordinator.completeCalls == 1 })
-    #expect(await media.endCalls == 1)
+    #expect(await mediaGate.isWaiting)
+    #expect(await media.endCalls == 0)
+
+    // Once the Pause is answered, its token is released, after capture closed.
+    await mediaGate.open()
+    #expect(await waitForLiveContextCondition { media.endCalls == 1 })
     let events = capture.events
     guard let stopIndex = events.firstIndex(of: "capture.stop"),
-          let releaseIndex = events.firstIndex(of: "media.end"),
-          let completeIndex = events.firstIndex(of: "coordinator.complete") else {
+          let tokenIndex = events.firstIndex(of: "media.token"),
+          let releaseIndex = events.firstIndex(of: "media.end") else {
         Issue.record("Missing lifecycle events: \(events)")
         await controller.teardownAndWait()
         return
     }
     #expect(stopIndex < releaseIndex)
-    #expect(releaseIndex < completeIndex)
+    #expect(tokenIndex < releaseIndex)
     #expect(capture.cancelCalls == 0)
     await controller.teardownAndWait()
 }

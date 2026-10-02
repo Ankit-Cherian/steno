@@ -55,6 +55,23 @@ public struct RecordingStateMachine: Sendable, Equatable {
         }
     }
 
+    /// An Option press turned out to be part of a keyboard shortcut. Only an
+    /// Option recording is canceled; hands-free recording and a transcription
+    /// already in progress are left alone.
+    public mutating func handleOptionShortcut() -> RecordingTransition {
+        switch state {
+        case .recordingPressToTalk:
+            state = .idle
+            return .cancel(mode: .pressToTalk)
+        case .idle:
+            return .ignore(reason: "No active Option recording.")
+        case .recordingHandsFree:
+            return .ignore(reason: "Hands-free recording is active.")
+        case .transcribing:
+            return .ignore(reason: "Still transcribing the previous session.")
+        }
+    }
+
     public mutating func handleHandsFreeToggle() -> RecordingTransition {
         switch state {
         case .idle:
@@ -92,5 +109,35 @@ public struct RecordingStateMachine: Sendable, Equatable {
 
     public mutating func markTranscriptionFailed() {
         state = .idle
+    }
+}
+
+/// The longest a single recording may run. Reaching it stops the recording
+/// normally, so the audio is still transcribed; it is never discarded.
+public struct RecordingDurationLimit: Sendable, Equatable {
+    public enum Action: Sendable, Equatable {
+        case none
+        case warn(remainingSeconds: Int)
+        case stop
+    }
+
+    public var maximumSeconds: Int
+    public var warningLeadSeconds: Int
+
+    /// One hour stays well within what final transcription can process.
+    public static let standard = RecordingDurationLimit(maximumSeconds: 60 * 60, warningLeadSeconds: 60)
+
+    public init(maximumSeconds: Int, warningLeadSeconds: Int) {
+        self.maximumSeconds = maximumSeconds
+        self.warningLeadSeconds = warningLeadSeconds
+    }
+
+    public func action(forElapsed elapsed: TimeInterval) -> Action {
+        let remaining = TimeInterval(maximumSeconds) - elapsed
+        if remaining <= 0 { return .stop }
+        if remaining <= TimeInterval(warningLeadSeconds) {
+            return .warn(remainingSeconds: Int(remaining.rounded(.up)))
+        }
+        return .none
     }
 }

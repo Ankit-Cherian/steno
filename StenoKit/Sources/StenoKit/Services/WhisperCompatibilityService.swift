@@ -173,6 +173,7 @@ public struct WhisperCompatibilityService: Sendable {
             ("apple m2 max", .m2Max),
             ("apple m2 pro", .m2Pro),
             ("apple m2", .m2),
+            ("apple m3 ultra", .m3Ultra),
             ("apple m3 max", .m3Max),
             ("apple m3 pro", .m3Pro),
             ("apple m3", .m3),
@@ -185,6 +186,11 @@ public struct WhisperCompatibilityService: Sendable {
         ]
 
         for (needle, chipClass) in mappings where normalized.contains(needle) {
+            // An Ultra without its own class must not fall through to the
+            // base chip of the same generation.
+            if normalized.contains(" ultra"), !chipClass.rawValue.hasSuffix("-ultra") {
+                return nil
+            }
             return chipClass
         }
 

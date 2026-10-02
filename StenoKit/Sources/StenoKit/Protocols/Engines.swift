@@ -20,10 +20,19 @@ public protocol AudioCaptureService: Sendable {
     /// mutate, move, or delete the file and must treat `nil` as live preview
     /// being unavailable without affecting final capture.
     func canonicalCaptureURL(sessionID: SessionID) async -> URL?
+
+    /// Returns, once, how a recording returned by `endCapture` was cut short,
+    /// if it was. The audio that was captured is still valid to transcribe.
+    func takeCaptureInterruption(sessionID: SessionID) async -> CaptureInterruption?
 }
 
 public extension AudioCaptureService {
     func canonicalCaptureURL(sessionID: SessionID) async -> URL? {
+        _ = sessionID
+        return nil
+    }
+
+    func takeCaptureInterruption(sessionID: SessionID) async -> CaptureInterruption? {
         _ = sessionID
         return nil
     }
@@ -135,6 +144,19 @@ public protocol CleanupEngine: Sendable {
 public protocol ClipboardService: Sendable {
     /// Copies the given text to the system clipboard.
     func setString(_ text: String) async throws
+
+    /// Copies text that was meant for a password or other secure field. The
+    /// user can still paste it, but the item is marked so clipboard managers
+    /// and clipboard history leave it out.
+    func setConcealedString(_ text: String) async throws
+}
+
+extension ClipboardService {
+    /// Clipboards without a system clipboard history, such as in-memory ones,
+    /// have nothing to mark.
+    public func setConcealedString(_ text: String) async throws {
+        try await setString(text)
+    }
 }
 
 /// A strategy for inserting transcribed text into target applications.

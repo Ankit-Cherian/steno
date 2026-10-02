@@ -9,24 +9,7 @@ public enum AppContextProvider {
         let bundleID = app?.bundleIdentifier ?? "unknown"
         let appName = app?.localizedName ?? "Unknown"
 
-        let lowered = "\(bundleID) \(appName)".lowercased()
-        let isIDE = lowered.contains("cursor")
-            || lowered.contains("vscode")
-            || lowered.contains("xcode")
-            || lowered.contains("jetbrains")
-        let isRemoteDesktop = lowered.contains("citrix")
-            || lowered.contains("remote desktop")
-            || lowered.contains("vmware")
-            || lowered.contains("parallels")
-            || lowered.contains("rdp")
-
-        return AppContext(
-            bundleIdentifier: bundleID,
-            appName: appName,
-            inputFieldDescription: nil,
-            isRemoteDesktop: isRemoteDesktop,
-            isIDE: isIDE
-        )
+        return AppContext.classified(bundleIdentifier: bundleID, appName: appName)
     }
 }
 #endif

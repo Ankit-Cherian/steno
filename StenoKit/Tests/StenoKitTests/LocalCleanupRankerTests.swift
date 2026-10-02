@@ -309,7 +309,7 @@ func candidateGeneratorDeterministicDeduped() async throws {
     #expect(uniquePaths.count == first.count)
 }
 
-@Test("Ranker boosts recovery on low-confidence spans and penalizes it on high-confidence spans")
+@Test("Ranker gates inferred phonetic recovery by confidence but never penalizes explicit corrections")
 func rankerUsesConfidenceForRecoveryEdits() {
     let profile = StyleProfile(
         name: "Ranker",
@@ -318,29 +318,25 @@ func rankerUsesConfidenceForRecoveryEdits() {
         fillerPolicy: .balanced,
         commandPolicy: .passthrough
     )
-    let lowConfidenceRaw = RawTranscript(
-        text: "ping terso",
-        segments: [.init(startMS: 0, endMS: 1_000, text: "ping terso", confidence: 0.55)],
-        avgConfidence: 0.55,
-        durationMS: 1_000
-    )
-    let highConfidenceRaw = RawTranscript(
-        text: "ping terso",
-        segments: [.init(startMS: 0, endMS: 1_000, text: "ping terso", confidence: 0.96)],
-        avgConfidence: 0.96,
-        durationMS: 1_000
-    )
+    let lowConfidenceRaw = dictatedTranscript("ping terso", confidence: 0.55)
+    let highConfidenceRaw = dictatedTranscript("ping terso", confidence: 0.96)
     let literal = CleanupCandidate(
         text: "ping terso",
         appliedEdits: [],
         removedFillers: [],
-        rulePathID: "literal"
+        rulePathID: "literal/profile-balanced"
     )
     let recovered = CleanupCandidate(
         text: "ping TURSO",
         appliedEdits: [.init(kind: .lexiconCorrection, from: "terso", to: "TURSO")],
         removedFillers: [],
-        rulePathID: "recovered"
+        rulePathID: "literal/phonetic-turso-1/profile-balanced"
+    )
+    let explicit = CleanupCandidate(
+        text: "ping TURSO",
+        appliedEdits: [.init(kind: .lexiconCorrection, from: "terso", to: "TURSO")],
+        removedFillers: [],
+        rulePathID: "vocabulary/profile-balanced"
     )
 
     let ranker = LocalCleanupRanker()
@@ -354,7 +350,13 @@ func rankerUsesConfidenceForRecoveryEdits() {
         candidates: [literal, recovered],
         profile: profile
     )
+    let highConfidenceExplicit = ranker.bestCandidate(
+        raw: highConfidenceRaw,
+        candidates: [literal, explicit],
+        profile: profile
+    )
 
-    #expect(lowConfidenceBest.rulePathID == "recovered")
-    #expect(highConfidenceBest.rulePathID == "literal")
+    #expect(lowConfidenceBest.rulePathID == recovered.rulePathID)
+    #expect(highConfidenceBest.rulePathID == literal.rulePathID)
+    #expect(highConfidenceExplicit.rulePathID == explicit.rulePathID)
 }

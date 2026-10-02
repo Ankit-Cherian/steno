@@ -113,8 +113,10 @@ func whisperCLITranscriptionEngineCancellationEscalation() async throws {
         """
         #!/bin/sh
         trap '' TERM
-        while :; do
+        i=0
+        while [ "$i" -lt 30 ]; do
           sleep 1
+          i=$((i + 1))
         done
         """
     )
@@ -201,4 +203,45 @@ private func makeExecutableScript(_ body: String) throws -> URL {
     try body.write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o755))], ofItemAtPath: url.path)
     return url
+}
+
+@Test("The launch sweep removes only stale transcript files the backup engine left behind")
+func launchSweepRemovesOnlyStaleCLIOutput() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StenoCLIOutputSweep-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let now = Date()
+    let old = now.addingTimeInterval(-60 * 60)
+    func file(_ name: String, modified: Date) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        try Data("Fictional dictated text".utf8).write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+        return url
+    }
+
+    let base = "steno-out-\(UUID().uuidString)"
+    let staleText = try file("\(base).txt", modified: old)
+    let staleJSON = try file("\(base).json", modified: old)
+    let fresh = try file("steno-out-\(UUID().uuidString).json", modified: now.addingTimeInterval(-30))
+    let notUUID = try file("steno-out-notes.txt", modified: old)
+    let otherExtension = try file("steno-out-\(UUID().uuidString).wav", modified: old)
+    let otherPrefix = try file("other-out-\(UUID().uuidString).txt", modified: old)
+    let recording = try file("steno-audio-\(UUID().uuidString).wav", modified: old)
+    let linkTarget = try file("keep-target.txt", modified: old)
+    let staleLink = directory.appendingPathComponent("steno-out-\(UUID().uuidString).txt")
+    try FileManager.default.createSymbolicLink(at: staleLink, withDestinationURL: linkTarget)
+
+    let removed = WhisperCLITranscriptionEngine.removeStaleOutputFiles(
+        in: directory,
+        olderThan: 5 * 60,
+        now: now
+    )
+
+    #expect(Set(removed.map(\.lastPathComponent)) == [staleText.lastPathComponent, staleJSON.lastPathComponent])
+    for kept in [fresh, notUUID, otherExtension, otherPrefix, recording, linkTarget] {
+        #expect(FileManager.default.fileExists(atPath: kept.path), "\(kept.lastPathComponent)")
+    }
+    #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: staleLink.path)) != nil)
 }

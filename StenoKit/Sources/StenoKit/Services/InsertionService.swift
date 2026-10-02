@@ -18,16 +18,31 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
     ]
 
     private let transports: [any InsertionTransport]
+    #if os(macOS)
+    private let ownAppTextFocus: OwnAppTextFocus
+    #endif
 
     public init(transports: [any InsertionTransport]) {
+        #if os(macOS)
+        self.init(transports: transports, ownAppTextFocus: .live)
+        #else
         self.transports = transports
+        #endif
     }
+
+    #if os(macOS)
+    init(transports: [any InsertionTransport], ownAppTextFocus: OwnAppTextFocus) {
+        self.transports = transports
+        self.ownAppTextFocus = ownAppTextFocus
+    }
+    #endif
 
     public func insert(text: String, target: AppContext) async -> InsertResult {
         await insertUsingAvailableTarget(
             text: text,
             target: target,
             editorTarget: nil,
+            insertionGuard: nil,
             clipboardRecoveryText: text,
             commitAuthorization: nil
         )
@@ -43,6 +58,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             text: text,
             target: target,
             editorTarget: editorTarget,
+            insertionGuard: nil,
             clipboardRecoveryText: text,
             commitAuthorization: nil
         )
@@ -58,6 +74,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             text: text,
             target: target,
             editorTarget: editorTarget,
+            insertionGuard: nil,
             clipboardRecoveryText: clipboardRecoveryText,
             commitAuthorization: nil
         )
@@ -74,6 +91,28 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             text: text,
             target: target,
             editorTarget: editorTarget,
+            insertionGuard: nil,
+            clipboardRecoveryText: clipboardRecoveryText,
+            commitAuthorization: commitAuthorization
+        )
+    }
+
+    /// Without an exact editor target, `insertionGuard` may refuse the
+    /// insertion before any side effect; a refusal copies the recovery text.
+    /// It never changes the transport order.
+    public func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?,
+        insertionGuard: InsertionTargetGuard?,
+        clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization
+    ) async -> InsertResult {
+        await insertUsingAvailableTarget(
+            text: text,
+            target: target,
+            editorTarget: editorTarget,
+            insertionGuard: editorTarget == nil ? insertionGuard : nil,
             clipboardRecoveryText: clipboardRecoveryText,
             commitAuthorization: commitAuthorization
         )
@@ -84,9 +123,25 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         text: String,
         target: AppContext,
         editorTarget: EditorTargetHandle?,
+        insertionGuard: InsertionTargetGuard?,
         clipboardRecoveryText: String,
         commitAuthorization: InsertionCommitAuthorization?
     ) async -> InsertResult {
+        #if os(macOS)
+        // Started from Steno's own window with no text field focused, typing or
+        // pasting would only sound the alert. Copy before any transport runs.
+        // This is an ordinary copy, not a problem, so a success carries no message.
+        if await ownAppTextFocus.refusesInsertion(into: target) {
+            return await refusedResult(
+                message: "No text field was selected.",
+                reportsMessageWhenCopied: false,
+                text: text,
+                clipboardRecoveryText: clipboardRecoveryText,
+                commitAuthorization: commitAuthorization
+            )
+        }
+        #endif
+
         var failures: [String] = []
 
         for transport in prioritizedTransports(
@@ -112,6 +167,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                         text: clipboardRecoveryText,
                         target: target,
                         editorTarget: editorTarget,
+                        insertionGuard: insertionGuard,
                         exactTargetText: text,
                         commitAuthorization: commitAuthorization,
                         commitLease: commitLease
@@ -121,7 +177,8 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                         status: .copiedOnly,
                         method: .clipboardPaste,
                         insertedText: committedText,
-                        errorMessage: outcome.skippedReason
+                        errorMessage: outcome.skippedReason,
+                        pasteAttempted: outcome == .attempted ? true : nil
                     )
                 } catch is CancellationError {
                     return Self.cancelledResult(text: text)
@@ -168,6 +225,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                     try await accessibility.insert(
                         text: text,
                         target: target,
+                        insertionGuard: insertionGuard,
                         commitAuthorization: commitAuthorization,
                         commitLease: commitLease
                     )
@@ -175,10 +233,15 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                     try await direct.insert(
                         text: text,
                         target: target,
+                        insertionGuard: insertionGuard,
                         commitAuthorization: commitAuthorization,
                         commitLease: commitLease
                     )
                 } else {
+                    if let insertionGuard,
+                       case .refuse(let reason) = insertionGuard.evaluate(for: target) {
+                        throw MacInsertionError.insertionRefused(reason)
+                    }
                     try await transport.insert(text: text, target: target)
                 }
                 #else
@@ -192,6 +255,18 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                 guard !Task.isCancelled else {
                     return Self.cancelledResult(text: text)
                 }
+                #if os(macOS)
+                if let macError = error as? MacInsertionError,
+                   case .insertionRefused(let reason) = macError {
+                    return await refusedResult(
+                        message: InsertionTargetGuard.refusalMessage(for: reason),
+                        concealsCopy: reason == .secureOrProtectedElement,
+                        text: text,
+                        clipboardRecoveryText: clipboardRecoveryText,
+                        commitAuthorization: commitAuthorization
+                    )
+                }
+                #endif
                 #if os(macOS)
                 if let macError = error as? MacInsertionError,
                    case .attributeUpdateIndeterminate = macError {
@@ -228,6 +303,55 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         )
     }
 
+    #if os(macOS)
+    /// A refusal happens before any side effect, so no other transport may
+    /// try. The final text goes to the clipboard, where the user recovers it.
+    /// `message` explains a failure; a successful copy carries it only when
+    /// `reportsMessageWhenCopied` is true. Text refused at a secure field is
+    /// copied as concealed, since it is most likely a password.
+    private func refusedResult(
+        message: String,
+        reportsMessageWhenCopied: Bool = true,
+        concealsCopy: Bool = false,
+        text: String,
+        clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization?
+    ) async -> InsertResult {
+        guard let clipboardTransport = transports.lazy
+            .compactMap({ $0 as? ClipboardInsertionTransport }).first else {
+            return InsertResult(
+                status: .failed,
+                method: .none,
+                insertedText: text,
+                errorMessage: message
+            )
+        }
+        do {
+            try await clipboardTransport.copyForRecovery(
+                clipboardRecoveryText,
+                concealed: concealsCopy,
+                commitAuthorization: commitAuthorization,
+                commitLease: commitAuthorization.map { _ in InsertionCommitLease() }
+            )
+        } catch is CancellationError {
+            return Self.cancelledResult(text: text)
+        } catch {
+            return InsertResult(
+                status: .failed,
+                method: .clipboardPaste,
+                insertedText: text,
+                errorMessage: "\(message) \(error.localizedDescription)"
+            )
+        }
+        return InsertResult(
+            status: .copiedOnly,
+            method: .clipboardPaste,
+            insertedText: clipboardRecoveryText,
+            errorMessage: reportsMessageWhenCopied ? message : nil
+        )
+    }
+    #endif
+
     private static func cancelledResult(text: String) -> InsertResult {
         InsertResult(
             status: .failed,
@@ -253,7 +377,11 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         for target: AppContext,
         prefersExactSelection: Bool
     ) -> [any InsertionTransport] {
-        guard Self.terminalClipboardFirstBundleIDs.contains(target.bundleIdentifier.lowercased()) else {
+        // Terminals mishandle synthetic typing, and remote-desktop clients may
+        // forward only the key code of a Unicode typing event, so both paste.
+        let pastesFirst = target.isRemoteDesktop
+            || Self.terminalClipboardFirstBundleIDs.contains(target.bundleIdentifier.lowercased())
+        guard pastesFirst else {
             guard prefersExactSelection else { return transports }
             return transports.sorted { lhs, rhs in
                 Self.exactTargetPriority(lhs.method) < Self.exactTargetPriority(rhs.method)
@@ -295,8 +423,85 @@ public actor MemoryClipboardService: ClipboardService {
     }
 }
 
+/// A copy of every item on the clipboard, taken before an auto-paste write so
+/// the user's own content can be put back afterwards.
+public struct ClipboardRestorePoint: Sendable, Equatable {
+    public struct Representation: Sendable, Equatable {
+        public var type: String
+        public var data: Data
+
+        public init(type: String, data: Data) {
+            self.type = type
+            self.data = data
+        }
+    }
+
+    public struct Item: Sendable, Equatable {
+        public var representations: [Representation]
+
+        public init(representations: [Representation]) {
+            self.representations = representations
+        }
+    }
+
+    public var items: [Item]
+
+    public init(items: [Item]) {
+        self.items = items
+    }
+
+    /// Markers (see nspasteboard.org) for content that must not outlive its
+    /// owner's control: a password, a short-lived item, or one generated for
+    /// the moment. A password manager clears such content itself, but only
+    /// while the clipboard still holds its own write.
+    public static let privateContentTypes: Set<String> = [
+        "org.nspasteboard.ConcealedType",
+        "org.nspasteboard.TransientType",
+        "org.nspasteboard.AutoGeneratedType"
+    ]
+
+    /// True when any item carries one of `privateContentTypes`. Such content
+    /// is never put back after an auto-paste.
+    public var holdsPrivateContent: Bool {
+        items.contains { item in
+            item.representations.contains { Self.privateContentTypes.contains($0.type) }
+        }
+    }
+}
+
+/// A clipboard that auto-paste can borrow: it snapshots the user's content,
+/// writes the dictation marked as transient, exposes the change count for the
+/// check right before the paste keystroke, and restores the snapshot only if
+/// nothing else has written since.
+public protocol RestorableClipboardService: ClipboardService {
+    func makeRestorePoint() async -> ClipboardRestorePoint
+    /// Returns the change count produced by this write.
+    func setTransientString(_ text: String) async throws -> Int
+    func currentChangeCount() -> Int
+    @discardableResult
+    func restore(_ point: ClipboardRestorePoint, ifChangeCountIs changeCount: Int) async -> Bool
+}
+
+/// What an auto-paste action needs from the clipboard transport.
+struct AutoPasteRequest: Sendable {
+    let target: AppContext
+    #if os(macOS)
+    let editorTarget: EditorTargetHandle?
+    /// Checked after activation, before the keystroke, when there is no
+    /// exact editor target.
+    let insertionGuard: InsertionTargetGuard?
+    #endif
+    let commitPermit: InsertionCommitPermit?
+    /// Checked immediately before the paste keystroke. False means another
+    /// write replaced the dictation, so pasting would insert something else.
+    let clipboardStillHoldsText: @Sendable () -> Bool
+}
+
 public struct ClipboardInsertionTransport: InsertionTransport {
     public let method: InsertionMethod = .clipboardPaste
+    static let defaultRestoreDelay: Duration = .milliseconds(1_500)
+    static let clipboardChangedReason = "Clipboard changed before auto-paste; nothing was pasted."
+
     private let clipboard: ClipboardService
     private let autoPaste: (@Sendable (
         _ target: AppContext,
@@ -309,6 +514,8 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         _ commitPermit: InsertionCommitPermit?
     ) async -> AutoPasteOutcome)?
     #endif
+    private let pasteAction: (@Sendable (AutoPasteRequest) async -> AutoPasteOutcome)?
+    private let restoreDelay: Duration
 
     /// Auto-paste callbacks must forward `commitPermit` unchanged to the
     /// synchronous paste side-effect boundary. A non-`nil` permit represents
@@ -331,6 +538,24 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         #if os(macOS)
         self.exactTargetAutoPaste = exactTargetAutoPaste
         #endif
+        pasteAction = nil
+        restoreDelay = Self.defaultRestoreDelay
+    }
+
+    /// Uses one paste action for both generic and exact-target pastes, so the
+    /// action can check the clipboard right before the keystroke.
+    init(
+        clipboard: ClipboardService,
+        restoreDelay: Duration = Self.defaultRestoreDelay,
+        pasteAction: @escaping @Sendable (AutoPasteRequest) async -> AutoPasteOutcome
+    ) {
+        self.clipboard = clipboard
+        autoPaste = nil
+        #if os(macOS)
+        exactTargetAutoPaste = nil
+        #endif
+        self.pasteAction = pasteAction
+        self.restoreDelay = restoreDelay
     }
 
     public func insert(text: String, target: AppContext) async throws {
@@ -355,6 +580,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             text: text,
             target: target,
             editorTarget: editorTarget,
+            insertionGuard: nil,
             exactTargetText: text,
             commitAuthorization: nil,
             commitLease: nil
@@ -373,6 +599,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             text: text,
             target: target,
             editorTarget: editorTarget,
+            insertionGuard: nil,
             exactTargetText: exactTargetText,
             commitAuthorization: nil,
             commitLease: nil
@@ -383,6 +610,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         text: String,
         target: AppContext,
         editorTarget: EditorTargetHandle?,
+        insertionGuard: InsertionTargetGuard?,
         exactTargetText: String,
         commitAuthorization: InsertionCommitAuthorization?,
         commitLease: InsertionCommitLease?
@@ -392,18 +620,21 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             throw CancellationError()
         }
 
-        if let editorTarget, let exactTargetAutoPaste {
-            guard case .success = await editorTarget.revalidate() else {
-                try await commitClipboard(
+        let supportsExactPaste = pasteAction != nil || exactTargetAutoPaste != nil
+        if let editorTarget, supportsExactPaste {
+            if case .failure(let reason) = await editorTarget.revalidate() {
+                _ = try await commitClipboard(
                     text,
+                    concealed: reason == .secureOrProtectedElement,
                     authorization: commitAuthorization,
                     lease: commitLease
                 )
-                return .skipped(reason: "Target changed—final text copied.")
+                return .skipped(reason: Self.exactTargetSkipReason(reason))
             }
 
-            try await commitClipboard(
+            let pasteWrite = try await commitClipboardForAutoPaste(
                 exactTargetText,
+                restoresPreviousClipboard: !target.isRemoteDesktop,
                 authorization: commitAuthorization,
                 lease: commitLease
             )
@@ -423,13 +654,27 @@ public struct ClipboardInsertionTransport: InsertionTransport {
                 try await restoreCanonicalClipboard(text, afterAttempting: exactTargetText)
                 return .skipped(reason: "Auto-paste canceled after copying.")
             }
-            let outcome = await exactTargetAutoPaste(
-                target,
-                editorTarget,
-                makeCommitPermit(commitAuthorization, lease: commitLease)
-            )
-            if outcome.skippedReason != nil, text != exactTargetText {
+            let permit = makeCommitPermit(commitAuthorization, lease: commitLease)
+            let outcome: AutoPasteOutcome
+            if let pasteAction {
+                outcome = await pasteAction(AutoPasteRequest(
+                    target: target,
+                    editorTarget: editorTarget,
+                    insertionGuard: nil,
+                    commitPermit: permit,
+                    clipboardStillHoldsText: pasteWrite.stillHoldsText
+                ))
+            } else if let exactTargetAutoPaste {
+                outcome = await exactTargetAutoPaste(target, editorTarget, permit)
+            } else {
+                outcome = .skipped(reason: "Exact-target auto-paste is unavailable; final text was copied.")
+            }
+            if outcome.skippedReason != nil, text != exactTargetText,
+               outcome.skippedReason != Self.clipboardChangedReason {
                 try await restoreCanonicalClipboard(text, afterAttempting: exactTargetText)
+            }
+            if outcome == .attempted {
+                scheduleRestore(after: pasteWrite)
             }
             return outcome
         }
@@ -440,7 +685,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         // route it through the legacy callback when exact paste support is not
         // configured.
         if editorTarget != nil {
-            try await commitClipboard(
+            _ = try await commitClipboard(
                 text,
                 authorization: commitAuthorization,
                 lease: commitLease
@@ -448,15 +693,21 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             return .skipped(reason: "Exact-target auto-paste is unavailable; final text was copied.")
         }
 
-        try await commitClipboard(
+        guard pasteAction != nil || autoPaste != nil else {
+            _ = try await commitClipboard(
+                text,
+                authorization: commitAuthorization,
+                lease: commitLease
+            )
+            return .skipped(reason: "Auto-paste callback not configured.")
+        }
+
+        let pasteWrite = try await commitClipboardForAutoPaste(
             text,
+            restoresPreviousClipboard: !target.isRemoteDesktop,
             authorization: commitAuthorization,
             lease: commitLease
         )
-
-        guard let autoPaste else {
-            return .skipped(reason: "Auto-paste callback not configured.")
-        }
 
         guard !Task.isCancelled,
               ownerMayContinue(commitAuthorization, lease: commitLease) else {
@@ -472,11 +723,87 @@ public struct ClipboardInsertionTransport: InsertionTransport {
               ownerMayContinue(commitAuthorization, lease: commitLease) else {
             return .skipped(reason: "Auto-paste canceled after copying.")
         }
-        let outcome = await autoPaste(
-            target,
-            makeCommitPermit(commitAuthorization, lease: commitLease)
-        )
+        let permit = makeCommitPermit(commitAuthorization, lease: commitLease)
+        let outcome: AutoPasteOutcome
+        if let pasteAction {
+            outcome = await pasteAction(AutoPasteRequest(
+                target: target,
+                editorTarget: nil,
+                insertionGuard: insertionGuard,
+                commitPermit: permit,
+                clipboardStillHoldsText: pasteWrite.stillHoldsText
+            ))
+        } else if let autoPaste {
+            // A callback can't check after activating, so check before it.
+            if let insertionGuard, case .refuse(let reason) = insertionGuard.evaluate(for: target) {
+                return .skipped(reason: InsertionTargetGuard.refusalMessage(for: reason))
+            }
+            guard pasteWrite.stillHoldsText() else {
+                return .skipped(reason: Self.clipboardChangedReason)
+            }
+            outcome = await autoPaste(target, permit)
+        } else {
+            outcome = .skipped(reason: "Auto-paste callback not configured.")
+        }
+        if outcome == .attempted {
+            scheduleRestore(after: pasteWrite)
+        }
         return outcome
+    }
+
+    static func exactTargetSkipReason(_ reason: EditorTargetUnavailableReason) -> String {
+        reason == .timedOut
+            ? "The app didn't respond in time—final text copied."
+            : "Target changed—final text copied."
+    }
+
+    /// Copies the final text without pasting, for an insertion that was
+    /// refused before any side effect. `concealed` marks the copy so
+    /// clipboard managers leave it out.
+    func copyForRecovery(
+        _ text: String,
+        concealed: Bool = false,
+        commitAuthorization: InsertionCommitAuthorization?,
+        commitLease: InsertionCommitLease?
+    ) async throws {
+        try Task.checkCancellation()
+        guard commitAuthorization?.canStartNewCommit != false else {
+            throw CancellationError()
+        }
+        try await commitClipboard(
+            text,
+            concealed: concealed,
+            authorization: commitAuthorization,
+            lease: commitLease
+        )
+    }
+
+    /// The dictation written for an auto-paste, plus what is needed to put the
+    /// user's previous clipboard back once the paste has been sent.
+    private struct AutoPasteClipboardWrite: Sendable {
+        let clipboard: (any RestorableClipboardService)?
+        let restorePoint: ClipboardRestorePoint?
+        let changeCount: Int?
+
+        var stillHoldsText: @Sendable () -> Bool {
+            guard let clipboard, let changeCount else { return { true } }
+            return { clipboard.currentChangeCount() == changeCount }
+        }
+    }
+
+    /// Restores only after a sent paste, and only while the clipboard still
+    /// holds Steno's write. A copy-only result keeps the dictation there,
+    /// because that is how the user recovers it.
+    private func scheduleRestore(after write: AutoPasteClipboardWrite) {
+        guard let clipboard = write.clipboard,
+              let restorePoint = write.restorePoint,
+              !restorePoint.items.isEmpty,
+              let changeCount = write.changeCount else { return }
+        let delay = restoreDelay
+        Task.detached(priority: .utility) {
+            try? await Task.sleep(for: delay)
+            await clipboard.restore(restorePoint, ifChangeCountIs: changeCount)
+        }
     }
 
     private func makeCommitPermit(
@@ -497,21 +824,67 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             && !authorization.cancellationRequested(for: lease)
     }
 
+    @discardableResult
     private func commitClipboard(
         _ text: String,
+        concealed: Bool = false,
         authorization: InsertionCommitAuthorization?,
         lease: InsertionCommitLease?
-    ) async throws {
+    ) async throws -> Int? {
+        let clipboard = self.clipboard
+        return try await commitClipboardWrite(authorization: authorization, lease: lease) {
+            if concealed {
+                try await clipboard.setConcealedString(text)
+            } else {
+                try await clipboard.setString(text)
+            }
+            return nil
+        }
+    }
+
+    /// `restoresPreviousClipboard` is false for remote-desktop and virtual
+    /// machine clients: they read the clipboard only when the remote side
+    /// pastes, which can happen after a restore, so the transcript stays.
+    private func commitClipboardForAutoPaste(
+        _ text: String,
+        restoresPreviousClipboard: Bool,
+        authorization: InsertionCommitAuthorization?,
+        lease: InsertionCommitLease?
+    ) async throws -> AutoPasteClipboardWrite {
+        guard let restorable = clipboard as? any RestorableClipboardService else {
+            try await commitClipboard(text, authorization: authorization, lease: lease)
+            return AutoPasteClipboardWrite(clipboard: nil, restorePoint: nil, changeCount: nil)
+        }
+        // Private content, such as a password a manager will clear itself, is
+        // not put back: restoring it would outlive that clear. The dictation
+        // stays on the clipboard instead.
+        let snapshot = restoresPreviousClipboard ? await restorable.makeRestorePoint() : nil
+        let restorePoint = snapshot?.holdsPrivateContent == false ? snapshot : nil
+        let changeCount = try await commitClipboardWrite(authorization: authorization, lease: lease) {
+            try await restorable.setTransientString(text)
+        }
+        return AutoPasteClipboardWrite(
+            clipboard: restorable,
+            restorePoint: restorePoint,
+            changeCount: changeCount
+        )
+    }
+
+    private func commitClipboardWrite<Value>(
+        authorization: InsertionCommitAuthorization?,
+        lease: InsertionCommitLease?,
+        _ write: () async throws -> Value
+    ) async throws -> Value {
         guard let authorization else {
-            try await clipboard.setString(text)
-            return
+            return try await write()
         }
         guard let lease, authorization.acquire(lease) else {
             throw CancellationError()
         }
         do {
-            try await clipboard.setString(text)
+            let value = try await write()
             authorization.seal(lease)
+            return value
         } catch {
             // An asynchronous clipboard error cannot prove that the write had
             // no side effect, so this owner is terminal and must not fall back.
@@ -539,13 +912,97 @@ public struct ClipboardInsertionTransport: InsertionTransport {
 #if os(macOS)
 import AppKit
 
-public actor MacClipboardService: ClipboardService {
+public enum MacClipboardError: Error, LocalizedError {
+    case writeFailed
+
+    public var errorDescription: String? {
+        "The clipboard did not accept the transcript."
+    }
+}
+
+public actor MacClipboardService: RestorableClipboardService {
+    /// Clipboard managers skip items carrying this marker
+    /// (see nspasteboard.org).
+    private static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+    /// Marks content such as a password that clipboard managers must not
+    /// record or show (see nspasteboard.org).
+    private static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+
     public init() {}
 
     public func setString(_ text: String) async throws {
         try Task.checkCancellation()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    public func setConcealedString(_ text: String) async throws {
+        try Task.checkCancellation()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setData(Data(), forType: Self.concealedType)
+        guard pasteboard.writeObjects([item]) else {
+            throw MacClipboardError.writeFailed
+        }
+    }
+
+    public func makeRestorePoint() -> ClipboardRestorePoint {
+        let items = NSPasteboard.general.pasteboardItems ?? []
+        return ClipboardRestorePoint(items: items.map { item in
+            // A private item is never restored, so only its marker is kept;
+            // its content is not copied.
+            let markers = item.types.filter {
+                ClipboardRestorePoint.privateContentTypes.contains($0.rawValue)
+            }
+            if !markers.isEmpty {
+                return ClipboardRestorePoint.Item(representations: markers.map {
+                    ClipboardRestorePoint.Representation(type: $0.rawValue, data: Data())
+                })
+            }
+            return ClipboardRestorePoint.Item(representations: item.types.compactMap { type in
+                item.data(forType: type).map {
+                    ClipboardRestorePoint.Representation(type: type.rawValue, data: $0)
+                }
+            })
+        })
+    }
+
+    public func setTransientString(_ text: String) async throws -> Int {
+        try Task.checkCancellation()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setData(Data(), forType: Self.transientType)
+        guard pasteboard.writeObjects([item]) else {
+            throw MacClipboardError.writeFailed
+        }
+        return pasteboard.changeCount
+    }
+
+    public nonisolated func currentChangeCount() -> Int {
+        NSPasteboard.general.changeCount
+    }
+
+    @discardableResult
+    public func restore(_ point: ClipboardRestorePoint, ifChangeCountIs changeCount: Int) -> Bool {
+        let pasteboard = NSPasteboard.general
+        guard pasteboard.changeCount == changeCount else { return false }
+        pasteboard.clearContents()
+        let items = point.items.compactMap { snapshot -> NSPasteboardItem? in
+            guard !snapshot.representations.isEmpty else { return nil }
+            let item = NSPasteboardItem()
+            for representation in snapshot.representations {
+                item.setData(
+                    representation.data,
+                    forType: NSPasteboard.PasteboardType(representation.type)
+                )
+            }
+            return item
+        }
+        return pasteboard.writeObjects(items)
     }
 }
 #endif

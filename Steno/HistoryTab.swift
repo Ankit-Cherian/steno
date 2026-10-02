@@ -1,7 +1,7 @@
 import SwiftUI
 import StenoKit
 
-private enum HistoryFilter: String, CaseIterable, Identifiable {
+enum HistoryFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case inserted = "Inserted"
     case copied = "Copied"
@@ -16,6 +16,7 @@ struct HistoryTab: View {
     @State private var selectedFilter: HistoryFilter = .all
     @State private var selectedEntryID: UUID?
     @State private var entryToDelete: TranscriptEntry?
+    @State private var isConfirmingDeleteAll = false
     @FocusState private var searchFocused: Bool
 
     init(initialSelectedEntryID: UUID? = nil) {
@@ -28,6 +29,14 @@ struct HistoryTab: View {
             HStack(alignment: .firstTextBaseline) {
                 StenoPageTitle("History")
                 Spacer()
+                Button { isConfirmingDeleteAll = true } label: {
+                    Label("Delete all history…", systemImage: "trash")
+                }
+                .buttonStyle(StenoActionButtonStyle(theme: theme, tone: .soft))
+                // Always available: an empty list doesn't mean nothing is on
+                // disk, for example when the History file couldn't be read.
+                .help("Delete every saved transcript from this Mac")
+                .accessibilityIdentifier("history.deleteAll")
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 24)
@@ -58,6 +67,17 @@ struct HistoryTab: View {
         } message: {
             Text("This removes the saved transcript from this Mac. It does not remove text already inserted into another app.")
         }
+        .confirmationDialog(
+            Self.deleteAllConfirmationTitle(listedCount: controller.recentEntries.count),
+            isPresented: $isConfirmingDeleteAll
+        ) {
+            Button("Delete all history", role: .destructive) {
+                Task { await Self.deleteAllHistory(using: controller) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes every saved transcript from this Mac, including backup copies Steno kept of the History file and any copies kept when it couldn't be read. Insights totals are kept, and text already inserted into other apps isn't affected.")
+        }
     }
 
     @ViewBuilder
@@ -70,16 +90,48 @@ struct HistoryTab: View {
         )
     }
 
+    /// Deletes every saved transcript, then lets go of deleted text the app
+    /// still holds: the last transcript, and a notice that offers a transcript
+    /// for copying or points at a kept History copy that is now gone.
+    @MainActor
+    static func deleteAllHistory(using controller: DictationController) async {
+        await controller.deleteAllHistory()
+        guard controller.status == "History deleted." else { return }
+        controller.lastTranscript = ""
+        if let notice = controller.storageNotice,
+           notice.recoverableText != nil
+            || notice.fileURL.map({ !FileManager.default.fileExists(atPath: $0.path) }) == true {
+            controller.dismissStorageNotice()
+        }
+    }
+
+    /// Names the listed transcripts. With none listed, files may still be on
+    /// disk, so the title names History instead of "0 transcripts".
+    static func deleteAllConfirmationTitle(listedCount: Int) -> String {
+        guard listedCount > 0 else { return "Delete all history?" }
+        return "Delete all \(InsightsFormatting.count(listedCount, "transcript"))?"
+    }
+
     private var filteredEntries: [TranscriptEntry] {
-        controller.recentEntries.filter { entry in
+        Self.entries(controller.recentEntries, matching: searchQuery, filter: selectedFilter)
+    }
+
+    /// The History list: every kept entry with the chosen status whose text or
+    /// app name contains `query`.
+    static func entries(
+        _ entries: [TranscriptEntry],
+        matching query: String,
+        filter: HistoryFilter
+    ) -> [TranscriptEntry] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return entries.filter { entry in
             let matchesFilter: Bool
-            switch selectedFilter {
+            switch filter {
             case .all: matchesFilter = true
-            case .inserted: matchesFilter = entry.insertionStatus == .inserted
-            case .copied: matchesFilter = entry.insertionStatus == .copiedOnly
+            case .inserted: matchesFilter = entry.insertionStatus == .inserted || entry.wasPasted
+            case .copied: matchesFilter = entry.insertionStatus == .copiedOnly && !entry.wasPasted
             case .needsAttention: matchesFilter = entry.insertionStatus == .failed
             }
-            let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             return matchesFilter && (query.isEmpty || entry.cleanText.localizedCaseInsensitiveContains(query)
                 || entry.rawText.localizedCaseInsensitiveContains(query)
                 || StenoDesign.appDisplayName(for: entry.appBundleID).localizedCaseInsensitiveContains(query))
@@ -116,7 +168,7 @@ struct HistoryTab: View {
                 ForEach(HistoryFilter.allCases) { filter in Text(filter.rawValue).tag(filter) }
             }
             .padding(.horizontal, 16)
-            Text("\(filteredEntries.count) \(filteredEntries.count == 1 ? "transcript" : "transcripts") · newest first")
+            Text("\(InsightsFormatting.count(filteredEntries.count, "transcript")) · newest first")
                 .font(.system(size: 12)).foregroundStyle(theme.textDim)
                 .padding(.horizontal, 16)
 
@@ -142,7 +194,7 @@ struct HistoryTab: View {
                                 .lineSpacing(3)
                                 .lineLimit(2)
                             HStack(spacing: 6) {
-                                Image(systemName: statusSymbol(entry.insertionStatus))
+                                Image(systemName: statusSymbol(entry))
                                 Text(StenoDesign.appDisplayName(for: entry.appBundleID)).lineLimit(1)
                                 Spacer(minLength: 0)
                                 Text(entry.createdAt.formatted(date: .abbreviated, time: .omitted))
@@ -154,10 +206,13 @@ struct HistoryTab: View {
                         .tag(entry.id)
                         .accessibilityIdentifier("history.row.\(entry.id.uuidString)")
                         .accessibilityElement(children: .combine)
-                        .accessibilityLabel("\(StenoDesign.appDisplayName(for: entry.appBundleID)), \(entry.createdAt.formatted(date: .long, time: .shortened)). \(statusLabel(entry.insertionStatus)). \(transcriptText(entry))")
+                        .accessibilityLabel("\(StenoDesign.appDisplayName(for: entry.appBundleID)), \(entry.createdAt.formatted(date: .long, time: .shortened)). \(statusLabel(entry)). \(transcriptText(entry))")
                         .contextMenu {
                             Button("Copy transcript") { controller.pasteEntry(entry) }
                             Button("Run cleanup again") { controller.retryCleanup(for: entry) }
+                            if entry.originalCleanText != nil {
+                                Button("Restore original cleanup") { controller.restoreOriginalCleanup(for: entry) }
+                            }
                             Divider()
                             Button("Delete…", role: .destructive) { entryToDelete = entry }
                         }
@@ -179,7 +234,7 @@ struct HistoryTab: View {
             if let entry = selectedEntry {
                 VStack(alignment: .leading, spacing: 18) {
                     detailHeader(entry, theme: theme)
-                    if entry.insertionStatus == .failed || entry.insertionStatus == .copiedOnly {
+                    if entry.insertionStatus == .failed || (entry.insertionStatus == .copiedOnly && !entry.wasPasted) {
                         Text("Copy your transcript, then paste it into the app where you need it.")
                             .font(.system(size: 13)).foregroundStyle(theme.textDim)
                     }
@@ -256,14 +311,14 @@ struct HistoryTab: View {
     }
 
     private func detailStatus(_ entry: TranscriptEntry, theme: StenoTheme) -> some View {
-        Label(statusLabel(entry.insertionStatus), systemImage: statusSymbol(entry.insertionStatus))
+        Label(statusLabel(entry), systemImage: statusSymbol(entry))
             .font(.system(size: 12, weight: .medium))
             .foregroundStyle(entry.insertionStatus == .failed ? theme.danger : theme.textDim)
             .fixedSize()
     }
 
     private func detailMetadata(_ entry: TranscriptEntry, theme: StenoTheme) -> some View {
-        Text("\(entry.createdAt.formatted(date: .long, time: .shortened)) · \(transcriptText(entry).split(whereSeparator: \.isWhitespace).count) words · \(durationText(entry.durationMS))")
+        Text("\(entry.createdAt.formatted(date: .long, time: .shortened)) · \(InsightsFormatting.count(transcriptText(entry).split(whereSeparator: \.isWhitespace).count, "word")) in final text · \(durationText(entry.durationMS))")
             .font(.system(size: 11))
             .foregroundStyle(theme.textDim)
             .fixedSize(horizontal: false, vertical: true)
@@ -277,6 +332,9 @@ struct HistoryTab: View {
             .accessibilityIdentifier("history.copy")
         Menu {
             Button("Run cleanup again") { controller.retryCleanup(for: entry) }
+            if entry.originalCleanText != nil {
+                Button("Restore original cleanup") { controller.restoreOriginalCleanup(for: entry) }
+            }
             Divider()
             Button("Delete transcript…", role: .destructive) { entryToDelete = entry }
         } label: { Label("More", systemImage: "ellipsis") }
@@ -294,16 +352,18 @@ struct HistoryTab: View {
         let seconds = max(0, duration / 1000)
         return seconds >= 60 ? "\(seconds / 60)m \(seconds % 60)s" : "\(seconds)s"
     }
-    private func statusLabel(_ status: InsertionStatus) -> String {
-        switch status {
+    private func statusLabel(_ entry: TranscriptEntry) -> String {
+        if entry.wasPasted { return "Pasted" }
+        switch entry.insertionStatus {
         case .inserted: return "Inserted"
         case .copiedOnly: return "Copied to clipboard"
         case .failed: return "Insertion failed"
         case .noSpeech: return "No speech detected"
         }
     }
-    private func statusSymbol(_ status: InsertionStatus) -> String {
-        switch status {
+    private func statusSymbol(_ entry: TranscriptEntry) -> String {
+        if entry.wasPasted { return "checkmark.circle" }
+        switch entry.insertionStatus {
         case .inserted: return "checkmark.circle"
         case .copiedOnly: return "doc.on.clipboard"
         case .failed: return "exclamationmark.circle"

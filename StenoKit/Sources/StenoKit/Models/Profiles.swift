@@ -47,6 +47,29 @@ public struct StyleProfile: Sendable, Codable, Equatable {
         self.fillerPolicy = fillerPolicy
         self.commandPolicy = commandPolicy
     }
+
+    /// A style value written by a newer version falls back to the least
+    /// transforming choice instead of discarding the profile.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        tone = try container.decodeLenientlyIfPresent(StyleTone.self, forKey: .tone, fallback: .natural) ?? .natural
+        structureMode = try container.decodeLenientlyIfPresent(
+            StructureMode.self,
+            forKey: .structureMode,
+            fallback: .natural
+        ) ?? .natural
+        fillerPolicy = try container.decodeLenientlyIfPresent(
+            FillerPolicy.self,
+            forKey: .fillerPolicy,
+            fallback: .balanced
+        ) ?? .balanced
+        commandPolicy = try container.decodeLenientlyIfPresent(
+            CommandPolicy.self,
+            forKey: .commandPolicy,
+            fallback: .transform
+        ) ?? .transform
+    }
 }
 
 public enum Scope: Sendable, Codable, Equatable {
@@ -104,7 +127,11 @@ public struct LexiconEntry: Sendable, Codable, Equatable {
         preferred = try container.decode(String.self, forKey: .preferred)
         scope = try container.decode(Scope.self, forKey: .scope)
         aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
-        phoneticRecovery = try container.decodeIfPresent(PhoneticRecoveryPolicy.self, forKey: .phoneticRecovery) ?? .off
+        phoneticRecovery = try container.decodeLenientlyIfPresent(
+            PhoneticRecoveryPolicy.self,
+            forKey: .phoneticRecovery,
+            fallback: .off
+        ) ?? .off
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -124,16 +151,26 @@ public struct LexiconEntry: Sendable, Codable, Equatable {
 public struct PersonalLexicon: Sendable, Codable, Equatable {
     public var entries: [LexiconEntry]
 
-    /// Entries are sorted longest-term-first so longer multi-word phrases
-    /// match before shorter substrings during lexicon application.
+    /// Entries are sorted longest-term-first; entries of equal length keep their saved order,
+    /// which decides between duplicate terms.
     public init(entries: [LexiconEntry] = []) {
-        self.entries = entries.sorted {
-            Self.sortKey(for: $0) > Self.sortKey(for: $1)
-        }
+        self.entries = Self.longestFirst(entries)
+    }
+
+    static func longestFirst(_ entries: [LexiconEntry]) -> [LexiconEntry] {
+        entries.enumerated()
+            .sorted { lhs, rhs in
+                let lhsKey = sortKey(for: lhs.element)
+                let rhsKey = sortKey(for: rhs.element)
+                return lhsKey != rhsKey ? lhsKey > rhsKey : lhs.offset < rhs.offset
+            }
+            .map(\.element)
     }
 
     private static func sortKey(for entry: LexiconEntry) -> Int {
-        ([entry.term] + entry.aliases).map(\.count).max() ?? entry.term.count
+        ([entry.term] + entry.aliases)
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ").count }
+            .max() ?? 0
     }
 }
 
@@ -148,5 +185,13 @@ public struct Snippet: Sendable, Codable, Equatable, Identifiable {
         self.trigger = trigger
         self.expansion = expansion
         self.scope = scope
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        trigger = try container.decode(String.self, forKey: .trigger)
+        expansion = try container.decode(String.self, forKey: .expansion)
+        scope = try container.decodeIfPresent(Scope.self, forKey: .scope) ?? .global
     }
 }

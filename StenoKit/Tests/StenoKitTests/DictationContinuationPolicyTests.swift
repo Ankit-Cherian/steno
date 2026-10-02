@@ -266,6 +266,87 @@ func continuationBoundarySpacing() {
     #expect(!ambiguousEmojiBoundary.insertedLeadingSpace)
 }
 
+@Test("Every Unicode line break before the insertion point marks a sentence start")
+func continuationRecognizesAllLineBreaks() {
+    let policy = DictationContinuationPolicy()
+    let lineBreaks = ["\n", "\r", "\r\n", "\u{2028}", "\u{2029}", "\u{0085}"]
+
+    for lineBreak in lineBreaks {
+        let leading = "Hello there" + lineBreak
+        let result = policy.shapeInsertionPayload(
+            cleanedText: "The meeting is at noon.",
+            context: .validated(context(leading: leading))
+        )
+        let scalars = lineBreak.unicodeScalars.map { String($0.value, radix: 16) }
+        #expect(result.text == "The meeting is at noon.", "Line break: \(scalars)")
+        #expect(result.caseDecision == .preservedSentenceStart, "Line break: \(scalars)")
+    }
+
+    for lineBreak in lineBreaks {
+        let result = policy.shapeInsertionPayload(
+            cleanedText: "We should retry",
+            context: .validated(context(leading: "Notes" + lineBreak + "2) "))
+        )
+        let scalars = lineBreak.unicodeScalars.map { String($0.value, radix: 16) }
+        #expect(result.text == "We should retry", "Line break: \(scalars)")
+        #expect(result.caseDecision == .preservedSentenceStart, "Line break: \(scalars)")
+    }
+}
+
+@Test("Boundary spacing follows a closing straight quote and precedes symbol-led text")
+func continuationSpacingAroundQuotesAndSymbols() {
+    let policy = DictationContinuationPolicy()
+    let joined: [(leading: String, insertion: String, expected: String)] = [
+        ("She said \"yes\"", "and left", "She said \"yes\" and left"),
+        ("She said “yes”", "and left", "She said “yes” and left"),
+        ("He said 'no'", "and left", "He said 'no' and left"),
+        ("I paid", "$5 today", "I paid $5 today"),
+        ("Ping", "@sam now", "Ping @sam now"),
+        ("Tag it", "#urgent please", "Tag it #urgent please"),
+        ("Research", "& development", "Research & development"),
+        ("Room 4", "#2 is free", "Room 4 #2 is free"),
+        ("it's Tom's", "and more", "it's Tom's and more"),
+    ]
+    for (leading, insertion, expected) in joined {
+        let result = policy.shapeInsertionPayload(
+            cleanedText: insertion,
+            context: .validated(context(leading: leading))
+        )
+        #expect(leading + result.text == expected)
+    }
+
+    // A straight quote that could be opening, or whose pairing can't be
+    // seen, is left without a space.
+    let unchanged: [(leading: String, insertion: String)] = [
+        ("She said \"", "yes"),
+        ("He wrote yes\"", "and left"),
+        ("the students'", "work"),
+        ("She said \"a\" and \"", "b"),
+        ("(see above)", "$5"),
+        ("Total:", "$5"),
+    ]
+    for (leading, insertion) in unchanged {
+        let result = policy.shapeInsertionPayload(
+            cleanedText: insertion,
+            context: .validated(context(leading: leading))
+        )
+        #expect(result.text == insertion, "Leading: \(leading)")
+        #expect(!result.insertedLeadingSpace, "Leading: \(leading)")
+    }
+
+    let closingInsertion = policy.shapeInsertionPayload(
+        cleanedText: "he said \"yes\"",
+        context: .validated(context(leading: "Then ", trailing: "and left."))
+    )
+    #expect(closingInsertion.text == "he said \"yes\" ")
+
+    let openInsertion = policy.shapeInsertionPayload(
+        cleanedText: "he said \"",
+        context: .validated(context(leading: "Then ", trailing: "yes"))
+    )
+    #expect(openInsertion.text == "he said \"")
+}
+
 @Test("Unavailable, drifted, ineligible, and unbounded context never shapes text")
 func continuationFailsClosedForContext() {
     let policy = DictationContinuationPolicy()

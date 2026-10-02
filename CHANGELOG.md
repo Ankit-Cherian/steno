@@ -5,6 +5,147 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.0.1] - 2026-10-01
+
+A maintenance release that fixes bugs across recording, text cleanup, insertion, saved data, media pausing and setup. It needs no new permissions.
+
+If you are upgrading from 1.0.0, three changes are the most noticeable. Saved corrections and spoken corrections now apply to clearly spoken dictation, so text may be corrected where it previously wasn't. Keyboard shortcuts that use Option no longer start a dictation. And Steno copies the transcript instead of typing it when the cursor is in a password field or focus has moved. The details are under Changed and Security.
+
+### Added
+- A dictation can now be canceled while it is transcribing, with the X in the overlay or Cancel transcription on the Dictate tab. Nothing is inserted or saved to History, the recording is deleted, and the next dictation starts normally.
+- Delete all history removes every saved transcript after confirming how many will be deleted, including the backup copies Steno keeps of the History file and any copies kept when it couldn't be read. Insights totals are kept.
+- "Restore original cleanup" in History puts back a transcript's original text after "Run cleanup again" changed it.
+- Downloaded models can be removed or downloaded again from Settings > Speech model. Removing the model in use switches to the included Small model first.
+- Test setup in Settings > Speech model now transcribes a short test clip with the main engine and the fallback tool and reports each step, instead of only checking that the tool starts. It doesn't affect a dictation in progress or add anything to History or Insights.
+- Settings now shows whether each correction is active, never applies (a common word Steno keeps as spoken, or an app scope with no bundle ID), or is overridden by another correction. Saving a correction for a common word such as "won" asks for confirmation, and an app scope without a bundle ID or a near-duplicate entry is rejected.
+
+### Changed
+- Saved vocabulary corrections, paragraph capitalization and spoken corrections such as "scratch that" and "never mind" now apply to clearly spoken dictation. Before, they were skipped whenever the recognizer was confident, which is most of the time, so text may now be corrected where it previously wasn't. Corrections that join words, such as "steno kit" to "StenoKit", also apply to short dictations, and corrections that only change capitalization, such as "github" to "GitHub", now apply.
+- Keyboard shortcuts that use Option, such as Option+Arrow, Option+Delete or Cmd+Option+I, and quick taps of Option no longer start a dictation: the overlay doesn't flash, media keeps playing, and nothing is inserted or added to History. Recording still starts the instant Option goes down, so opening words are not clipped, and the overlay appears once Steno can tell Option is being held. To tell the two apart, Steno now notices key presses and mouse clicks in any app while Hold Option to talk is on. It uses only the fact that a key or button was pressed, never which one.
+- Steno now copies the transcript instead of inserting it when focus moved to a different field or app while it was transcribing, or when the original app can't be brought back to the front. Before, the text could be typed into the wrong field or app. This works with default settings; nearby-text continuation is not required. Apps that answer Accessibility slowly keep inserting as before.
+- Auto-paste now puts your previous clipboard contents back shortly after pasting, unless they were a password or other item marked private or the paste went to a remote-desktop app, and marks the transcript it places on the clipboard as transient so clipboard managers skip it. If another app changes the clipboard before the paste, Steno no longer pastes. When Steno only copies the transcript, it stays on the clipboard.
+- Remote-desktop and virtual-machine apps now receive dictation by clipboard paste first, like terminals, because they may not pass typed characters through correctly. The transcript stays on the clipboard afterwards, because these apps may read the clipboard only when the remote side pastes, which can be later than Steno would put your previous clipboard back.
+- History now shows and searches every transcript it keeps, up to 1,000, instead of only the last 30 days, so older transcripts can be found and deleted.
+- Recordings now stop automatically after one hour, with a countdown in the overlay during the last minute, and the audio is transcribed rather than lost.
+- On macOS 13 and 14, the media pausing settings are now shown as unavailable with the reason, instead of appearing on while doing nothing. Media pausing requires macOS 15 or later; the saved choice is kept for after an update.
+
+### Removed
+- Settings no longer offers cleanup options that had no effect: Tone, and the Command and Email structures. A saved Command structure works as Natural and a saved Email structure as Paragraph, which is what they already did, and settings that use them still load.
+
+### Fixed
+
+#### Saved History and settings
+- History is no longer erased when its file can't be read in full. Entries that can't be read are skipped and kept in a copy of the original file, a file that can't be read at all is moved aside instead of overwritten, and the previous version of the file is kept after each save. Steno says so once and can show the kept file in Finder.
+- Settings, word corrections, text shortcuts and app style profiles are no longer reset when the settings file contains something Steno can't read. Each setting that can't be read falls back on its own, the rest load, and Steno keeps a copy of the original file. Settings files from Steno 0.1 now load with their vocabulary and shortcuts intact.
+- Settings no longer report "Settings saved" when the file couldn't be written. The changes stay unsaved in Settings, with Save changes and Discard still available. Appearance changes that can't be saved are now reported on the Appearance page.
+- A History change that can't be written to disk, such as a delete, is now undone in the app instead of appearing to have worked.
+- Two copies of Steno running at the same time, such as a development build next to the installed app, no longer remove each other's History entries.
+- Insights no longer resets lifetime totals when its data contains a value written by a newer version of Steno.
+
+#### Shortcuts and recording
+- Choosing Disabled for the hands-free key is now saved instead of coming back as F18 after a relaunch, and no longer shows an error at launch, after saving settings or after changing models. A resolved shortcut problem no longer leaves a warning on the Dictate tab, and a shortcut problem reported during a recording no longer hides the overlay's Stop and Cancel controls.
+- The hands-free key is now set up only after saved settings have loaded. Before, F18 was registered briefly at every launch, even when the key was set to Disabled or to another key.
+- Holding the hands-free key no longer sends repeated key presses to the app in front, and its key release is no longer passed through. A quick double press of the key no longer starts and immediately stops a recording.
+- F3 and F4 now work as the hands-free key in standard function-key mode. Keys chosen in earlier versions keep working.
+- If macOS pauses the hands-free key's listener, Steno now always turns it back on, and saving settings also recovers it.
+- If the release of Option is missed, for example around a password field or a screen lock, the recording now ends within about a second and is transcribed.
+- Turning off Hold Option to talk while holding Option to dictate now ends that recording and transcribes it, instead of letting it run until Stop, Cancel or the time limit.
+- Pressing a dictation shortcut while the previous dictation is still finishing now shows a brief notice in the overlay instead of silently doing nothing. A dictation started right after the previous one was inserted is no longer ignored while History and Insights update.
+- With microphone access turned off, the dictation shortcuts now start nothing and say that microphone access is off, instead of recording silence or showing an unclear error. Option keyboard shortcuts still show nothing.
+- If the microphone stops during a recording, for example because a USB or Bluetooth microphone is disconnected, the recording now ends at once and what was said before it stopped is still transcribed. Steno says the microphone stopped, naming it when it can, instead of reporting "No speech detected". A recording much shorter than the time it ran is reported the same way.
+- When recording fails to start and the key has already been released, Steno now shows the actual recording error, labeled as a recording failure, instead of "Session not found".
+- Releasing Option after a dictation was refused, for example with microphone access off, or after a recording stopped by itself, no longer replaces the explanation with "No active Option recording."
+
+#### Inserting text
+- A transcript that was inserted but couldn't be saved to History is no longer reported as a failed transcription. Steno says the text was inserted, or pasted, offers it for copying, and never inserts it again.
+- Auto-paste now sends the Command-V shortcut for the current keyboard layout. On Dvorak it previously sent Command-K, which clears the terminal.
+- After pasting into Terminal, iTerm2 or Warp, Steno now says the transcript was pasted instead of asking you to press Command-V, which pasted it twice. History shows these entries as Pasted.
+- A recording recognized as punctuation only, such as a lone period, or one that cleanup empties entirely, such as fillers under Aggressive cleanup, is now reported as no speech. Nothing is inserted or saved, and the clipboard is left alone.
+- The Insertion order setting now explains when Steno changes the order, and an app that is too slow to answer Accessibility is reported as a timeout instead of "Target changed".
+- Dictating from Steno's own window with no text field selected no longer plays the alert sound and reports "Inserted" when nothing was inserted. Steno now leaves the transcript on the clipboard and says it was copied.
+
+#### Media pausing
+- When media pausing is on, transcription no longer waits for the paused app to resume or for a slow player to confirm the pause, so text appears up to three seconds sooner. A new recording started right after Cancel no longer waits for the previous resume either.
+- A media player that was slow to confirm a pause is now resumed after dictation instead of being left paused.
+- A short Option press that ends while Steno is still checking for playing media no longer pauses the media and immediately resumes it.
+- Quitting Steno immediately after releasing the dictation key no longer leaves media that Steno paused still paused.
+- Media you paused yourself no longer starts playing when a dictation ends. Steno now pauses an app only when it is actually playing and resumes it only after seeing that pause take effect, so an app that was paused earlier, even a moment earlier, is left alone.
+- With an app open that keeps its audio output running without being a media player, such as a video editor, a dictation no longer ends by starting the last media app you used.
+- Media paused for a short press resumes as soon as the press ends, instead of about two seconds later.
+- The media settings caption now says what media pausing does: apps that are playing are paused and resumed, and media you paused yourself stays paused.
+
+#### Cleanup and corrections
+- "Never mind" and "scratch that" are now recognized when the recognizer writes them as "Nevermind.", after a full stop, or without a comma before the corrected name.
+- Paragraph formatting no longer capitalizes deliberately lowercase spellings at the start of a dictation: "iPhone", "eBay" and "macOS" stay as spoken, and a saved spelling such as "npm" is kept.
+- Vocabulary corrections no longer chain into each other, and an app-specific correction always takes precedence over an all-apps correction for the same word.
+- A correction no longer rewrites text that already has its preferred spelling, so "Visual Studio" does not become "Visual Studio Studio". Terms such as C++, C# and .NET can now be corrected.
+- A text shortcut whose trigger is a space no longer deletes every space in a dictation. Triggers are trimmed, and Settings no longer accepts a blank trigger or an app shortcut without a bundle ID. Overlapping triggers now resolve the same way whatever order they were added in: the longer trigger wins, an app shortcut beats an all-apps one, and an expansion is never expanded again.
+- Bullet formatting no longer splits decimals, thousands separators, email addresses, web addresses or abbreviations such as "Dr." and "e.g." into separate bullets.
+- Aggressive filler removal now removes fillers the way the recognizer writes them, such as "Um," at the start of a sentence, and gives the sentence's capital to the next word. A dictation of only fillers, such as "Um, uh.", is now treated as no speech. It no longer removes "kind of" or "sort of" where they mean "type of", as in "What kind of car is that?", and no longer slows down on long dictations. Minimal and Balanced still keep fillers.
+- "Run cleanup again" in History now treats VS Code, JetBrains IDEs and Warp the same way live dictation does, so it no longer gives different text, and it no longer replaces a transcript's text for good. Re-running a dictation that began with a spoken "lowercase" command no longer adds the word "lowercase" to the text. An older entry whose command can't be replayed, or one that the current settings would empty, is left unchanged with a note saying why. Apps are recognized by their bundle identifier: Microsoft's Windows App is now recognized as a remote-desktop client, and the WordPress app no longer is.
+- With nearby-text continuation on, a dictation that follows a Windows-style or Unicode line break now keeps its capital letter, and Steno adds the missing space after a closing straight quote and before text that starts with $, @, # or &.
+
+#### Transcription and speech models
+- If the backup transcription path stops responding, it is now stopped after a time limit that grows with the recording length, and Steno reports that transcription took too long. Previously it could keep Steno transcribing until it was quit.
+- The live transcript no longer disappears partway through a recording. The final transcript was never affected.
+- Canceling a dictation just as it finishes recording no longer leaves the speech engine holding the canceled session, which could stall the dictations that followed. A canceled dictation also tells the engine to drop its audio stream, so the next dictation's live transcript starts normally.
+- Live audio that was being sent at the moment a recording stopped is no longer dropped. Dropping it sent the final transcription down the slower backup path. Live audio is also always written to the engine before the request to finish, so a late piece can't interrupt the final transcription.
+- Saving settings no longer unloads the speech model unless a transcription setting changed, so the next dictation after editing a snippet, a vocabulary correction or another unrelated setting starts at full speed. A dictation started while those settings are being applied is no longer dropped.
+- Downloading the model in use again now loads the new file right away, instead of keeping the copy already loaded, such as a damaged download, until Steno is relaunched. Replacing the voice-detection model file works the same way.
+- If the speech engine's background process ends between dictations, Steno now starts a new one instead of sending the next dictation down the slower backup path. Canceling a dictation as it starts no longer unloads the speech model.
+- When both the live transcript path and its backup fail, Steno now says the dictation couldn't be transcribed and suggests trying again or running Test setup, instead of showing an internal error.
+- Moving Steno after its first launch, for example from Downloads to Applications, no longer switches a downloaded speech model back to the included Small model. Only the path that stopped working is repaired, and a custom voice-detection model is kept.
+- Downloading a model no longer replaces a voice-detection model you chose yourself.
+- A failed model download now shows the reason next to the Download button, in Settings and during setup.
+- Choosing or downloading a model no longer reports that Steno switched to it when the change couldn't be saved. The current model stays in use and the reason is shown with the model controls.
+- When a model download finishes while Settings has unsaved edits, the locked Save now explains that the download changed the saved speech model.
+- A missing voice-detection model now shows a plain instruction, with a button to use the included model, instead of a developer command. A missing speech model or transcription tool at launch is now reported in Last activity instead of being replaced at once, and points to Settings > Speech model.
+- Macs with an M1, M2 or M3 Ultra chip now get a speech model recommendation, and an M3 Ultra is no longer shown as a base M3.
+
+#### Setup, permissions and Settings
+- Permission status now updates when you return to Steno after changing access in System Settings, and a hands-free key that failed for missing access is set up again without Check again or a relaunch.
+- Review settings on the Dictate tab now opens the page that fixes the problem: Permissions for missing access, Speech model for a model or transcription problem, Text output for an insertion problem, and the page you were saving when a save fails. Each Open Settings button opens the matching list in Privacy & Security.
+- Launch at login is now saved as On only after macOS accepts it. If registration fails, the setting stays Off and Settings says why. If macOS needs your approval, Settings says so and offers to open Login Items. Turning Steno off in Login Items is now reflected in Settings.
+- "Settings saved." now stays visible after a save instead of being replaced at once by "Running local transcription + local cleanup." Switching or downloading a model, and a dictation's result, are no longer replaced by that line either.
+- The General settings control for the setup guide now says that the guide opens when you save, rather than "on next launch".
+- Model buttons in Settings now name their model for VoiceOver and Voice Control, and the setup guide's Back, Set up later and Open Steno buttons can be activated by their visible names.
+
+#### History and Insights
+- In time zones where daylight saving skips midnight, such as Cairo, Havana and Santiago, the Insights calendar no longer shows empty days or drops today, and the current streak and active days are counted correctly.
+- Insights and History now use the system's number and plural formatting, so counts read "1 session" instead of "1 sessions", large totals read "1M" instead of "1000K", and long totals show thousands separators. Insights labels its word count as words spoken, counted before cleanup, and History labels its count as words in the final text.
+
+### Security
+- Steno no longer types a dictation into a password or other secure field. It copies the transcript instead and says why. Before, this check applied only with nearby-text continuation on, which is off by default.
+- A transcript Steno copies instead of typing into a password or other secure field is marked as concealed, so clipboard managers and clipboard history apps leave it out. It can still be pasted with Command-V.
+- Auto-paste never puts a password back on the clipboard. When the clipboard held an item marked concealed, transient or auto-generated, such as a password copied from a password manager, the pasted transcript stays on the clipboard instead, so the password manager's own clearing isn't undone.
+- Model downloads are now checked against the published file before they are installed. A download that doesn't match, such as a page returned by a network filter, is deleted, the current model stays in use, and Steno says what happened.
+- Deleting a transcript from History now also removes it from the backup copy Steno keeps of the History file and from copies kept when the file couldn't be read in full. A kept copy too damaged to edit is left as it is, and Steno says that it still holds older text and that Delete all history removes it.
+- Delete all history replaces the History file without first copying it into the backup copy, so a crash during the delete can't leave your transcripts on disk. If one kept copy can't be removed, Steno still removes the others before reporting the problem. The button is available even when no transcripts are listed, for example when the History file couldn't be read, and after deleting, Steno also clears the last transcript and dismisses a notice that offered one for copying.
+- Recordings and transcript files left in the temporary folder after a crash or a force quit are now deleted the next time Steno starts.
+- When transcription fails, the overlay and VoiceOver now give a short, plain message instead of the transcription tool's full log, which included file paths from your Mac. The full log goes to the diagnostic log, marked private.
+
+### Tests
+- Added tests that drive the Swift speech-engine client against the real helper. One fails if the command-line fallback answers instead of the helper, and one streams speech through the live client to a single final transcript. Before, only scripted stand-ins exercised this client.
+- Cleanup tests now run at the confidence the recognizer typically reports, vocabulary tests use the same matcher as the app, and storage tests read the files back from disk after a failed load. The benchmark's cleanup stage now receives the recognizer's confidence and segments, as dictation does.
+- Added structural tests for how both required CI gates are wired, and a check that security analysis uses the same pinned whisper.cpp revision as the runtime lock.
+- Hosted recognition tests now use a thread count measured on the hosted runner, which cut CI validation from about 70 minutes to about 13 with identical recognized text. The preview build is uploaded before the slow native suites.
+- Runs on `main` are no longer canceled by a newer push and always get full validation, including documentation-only commits. Dependency updates are checked monthly.
+- Added a release rehearsal workflow that signs and notarizes without being able to publish, a pre-tag check of the version, build number, changelog date, bundle identifier and entitlements, and `scripts/check.sh` for running the package tests, app build and hosted tests locally.
+- Stand-in helper processes used by tests now exit when orphaned, so an interrupted test run no longer leaves one running.
+- Media pausing tests now state whether playback actually stopped, instead of treating an open audio output as playback. New tests cover media that was already paused, an app that keeps its audio output open without being a media player, a player that reports playback only through its media session, and a second dictation that begins while the first is still being released.
+
+### Compatibility
+- Steno 1.0.1 targets Apple silicon Macs running macOS 13 or later, as 1.0 did. Media pausing requires macOS 15 or later.
+- History, settings and Insights data written by 1.0.1 are tested to remain readable by Steno 1.0.0. A hands-free key saved as Disabled reads as F18 there.
+
+### Known issues
+- Changing a transcription setting, such as the model or thread count, reloads the speech model. A dictation key pressed during that short reload is ignored.
+- Media playing in Safari is not paused during dictation. Safari plays audio through a system helper process that Steno cannot yet tie to the app.
+- If you resume media and then pause it again yourself during a single dictation, it may start playing when the dictation ends.
+- Where macOS doesn't report each app's playback state reliably, which was seen on macOS 15 in testing, Steno relies on a weaker signal. There, a browser video paused less than about two seconds before dictating may resume when the dictation ends.
+
 ## [1.0.0] - 2026-09-17
 
 [Download Steno 1.0.0](https://github.com/Ankit-Cherian/steno/releases/tag/v1.0.0). The Developer ID signed installer is notarized and includes the local speech model.

@@ -5,9 +5,9 @@ import Testing
 func disabledColdLaunchDoesNotMutateServiceManagement() {
     #expect(
         LaunchAtLoginMutationPolicy.decision(
-            currentPreference: false,
+            systemStatus: .notRegistered,
             requestedPreference: false,
-            userInitiated: false
+            previousPreference: false
         ) == .skip
     )
 }
@@ -16,27 +16,61 @@ func disabledColdLaunchDoesNotMutateServiceManagement() {
 func userToggleRequestsSelectedLaunchAtLoginState() {
     #expect(
         LaunchAtLoginMutationPolicy.decision(
-            currentPreference: false,
+            systemStatus: .notRegistered,
             requestedPreference: true,
-            userInitiated: true
+            previousPreference: false
         ) == .setEnabled(true)
     )
     #expect(
         LaunchAtLoginMutationPolicy.decision(
-            currentPreference: true,
+            systemStatus: .enabled,
             requestedPreference: false,
-            userInitiated: true
+            previousPreference: true
         ) == .setEnabled(false)
     )
 }
 
-@Test("non-user disabled failures do not produce warnings")
-func nonUserDisabledFailuresDoNotProduceWarnings() {
+@Test("A save that doesn't change the toggle never registers or unregisters")
+func unchangedToggleSkips() {
     #expect(
-        LaunchAtLoginMutationPolicy.warningMessage(
-            requestedPreference: false,
-            userInitiated: false,
-            errorDescription: "Unable to update launch at login"
-        ) == nil
+        LaunchAtLoginMutationPolicy.decision(
+            systemStatus: .notRegistered,
+            requestedPreference: true,
+            previousPreference: true
+        ) == .skip
     )
+}
+
+@Test("Turning on an item macOS already holds for approval doesn't register it again")
+func requiresApprovalCountsAsRegistered() {
+    #expect(
+        LaunchAtLoginMutationPolicy.decision(
+            systemStatus: .requiresApproval,
+            requestedPreference: true,
+            previousPreference: false
+        ) == .skip
+    )
+    #expect(
+        LaunchAtLoginMutationPolicy.decision(
+            systemStatus: .requiresApproval,
+            requestedPreference: false,
+            previousPreference: true
+        ) == .setEnabled(false)
+    )
+}
+
+@Test("On is kept only when macOS reports Steno registered")
+func outcomeFollowsSystemStatus() {
+    #expect(LaunchAtLoginMutationPolicy.outcome(requestedPreference: true, statusAfter: .enabled, errorDescription: nil)
+        == .init(preference: true, notice: nil))
+    #expect(LaunchAtLoginMutationPolicy.outcome(requestedPreference: true, statusAfter: .requiresApproval, errorDescription: nil)
+        == .init(preference: true, notice: .needsApproval))
+    #expect(LaunchAtLoginMutationPolicy.outcome(requestedPreference: true, statusAfter: .notRegistered, errorDescription: "Operation not permitted")
+        == .init(preference: false, notice: .failed("Operation not permitted")))
+    #expect(LaunchAtLoginMutationPolicy.outcome(requestedPreference: true, statusAfter: .notFound, errorDescription: nil)
+        == .init(preference: false, notice: .failed(nil)))
+    #expect(LaunchAtLoginMutationPolicy.outcome(requestedPreference: false, statusAfter: .notRegistered, errorDescription: nil)
+        == .init(preference: false, notice: nil))
+    #expect(LaunchAtLoginMutationPolicy.outcome(requestedPreference: false, statusAfter: .enabled, errorDescription: "Busy")
+        == .init(preference: true, notice: .failed("Busy")))
 }

@@ -36,7 +36,7 @@ public enum LiveTranscriptionFinalizationError: Error, LocalizedError, Equatable
     case authoritativeFallbackExhausted
 
     public var errorDescription: String? {
-        "The authoritative transcription failed after its final local fallback was attempted."
+        "This dictation couldn't be transcribed. Try again, and if it keeps failing, use Test setup in Settings > Speech model."
     }
 }
 
@@ -126,6 +126,13 @@ struct WhisperRuntimeRequest: Sendable {
 protocol WhisperRuntimeSession: Sendable {
     func transcribe(_ request: WhisperRuntimeRequest) async throws -> Data
     func shutdown() async
+    /// False once the helper process has exited, for example after the
+    /// system ended it while idle. A session that cannot tell reports true.
+    var isRunning: Bool { get }
+}
+
+extension WhisperRuntimeSession {
+    var isRunning: Bool { true }
 }
 
 protocol WhisperRuntimeSessionFactory: Sendable {
@@ -285,7 +292,9 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
                 isLiveHypothesisInFlight = false
             }
 
-            if !isUnsupportedStreamingCapability(error) {
+            // A cancelled start already withdrew its stream request, so the
+            // warm helper and its loaded model stay usable.
+            if !(error is CancellationError), !isUnsupportedStreamingCapability(error) {
                 await invalidateSession()
             }
             if stillOwned {
@@ -524,6 +533,9 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
             throw RetainedWhisperRuntimeError.vadIntegrityFailure
         }
         guard !exhaustedCanonicalFinals.contains(canonicalAudioKey(audioURL)) else {
+            StenoKitDiagnostics.logger.error(
+                "Refused to transcribe a recording again after its final transcription and backup transcription both failed."
+            )
             throw LiveTranscriptionFinalizationError.authoritativeFallbackExhausted
         }
         let id = UUID()
@@ -781,7 +793,11 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
     ) async throws -> any WhisperRuntimeSession {
         let identity = configuration.loadIdentity
         if let session, sessionIdentity == identity {
-            return session
+            if session.isRunning {
+                return session
+            }
+            // The helper exited while idle. Start a new one instead of
+            // sending this request to a dead process and falling back.
         }
 
         if session != nil {
@@ -790,18 +806,15 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
         await waitForSessionShutdown()
 
         let created = try await sessionFactory.makeSession(configuration: configuration)
-        do {
-            try Task.checkCancellation()
-        } catch {
-            await created.shutdown()
-            throw error
-        }
         guard !isShutDown else {
             await created.shutdown()
             throw RetainedWhisperRuntimeError.shutDown
         }
+        // A load that finished stays retained even if its requester was
+        // cancelled meanwhile; the next dictation uses it.
         session = created
         sessionIdentity = identity
+        try Task.checkCancellation()
         return created
     }
 
@@ -960,6 +973,9 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
             // Do not expose the fallback's implementation error as a retryable
             // live-stream failure. The canonical final has exhausted its one
             // allowed fallback and is now terminal.
+            StenoKitDiagnostics.logger.error(
+                "Live final transcription failed, and its one backup transcription also failed: \(String(describing: error), privacy: .private)"
+            )
             throw LiveTranscriptionFinalizationError.authoritativeFallbackExhausted
         }
     }

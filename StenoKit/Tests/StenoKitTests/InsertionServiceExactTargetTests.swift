@@ -747,6 +747,7 @@ func precommitAccessibilityRejectionFallsThroughSafely() async throws {
     #expect(result.status == .copiedOnly)
     #expect(result.method == .clipboardPaste)
     #expect(result.errorMessage == nil)
+    #expect(result.pasteAttempted == true)
     #expect(client.writes == ["fallback once"])
     #expect(await clipboard.copyCount == 1)
     #expect(await commits.snapshot() == ["paste"])

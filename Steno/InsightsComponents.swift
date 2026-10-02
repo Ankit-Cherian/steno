@@ -231,7 +231,7 @@ private struct AppUsageRow: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Number \(rank), \(appName), \(durationDescription), \(app.wordCount) words, \(app.sessionCount) sessions")
+        .accessibilityLabel("Number \(rank), \(appName), \(durationDescription), \(InsightsFormatting.count(app.wordCount, "word")) spoken, \(InsightsFormatting.count(app.sessionCount, "session"))")
     }
 
     private var appNameLabel: some View {
@@ -257,7 +257,7 @@ private struct AppUsageRow: View {
     }
 
     private var summaryText: String {
-        "\(durationDescription) · \(app.sessionCount) \(app.sessionCount == 1 ? "session" : "sessions")"
+        "\(durationDescription) · \(InsightsFormatting.count(app.sessionCount, "session"))"
     }
 
     private var durationDescription: String {
@@ -380,10 +380,10 @@ struct CleanupCoverageView: View {
 
     private var headlineText: String {
         if summary.exactSessionCount > 0 {
-            return "\(InsightsFormatting.compactCount(summary.exactActions)) cleanup actions"
+            return InsightsFormatting.count(summary.exactActions, "cleanup action")
         }
         if summary.estimatedSessionCount > 0 {
-            return "≈\(InsightsFormatting.compactCount(summary.estimatedChanges)) historical cleanup edits"
+            return "≈\(InsightsFormatting.count(summary.estimatedChanges, "historical cleanup edit"))"
         }
         return "0 cleanup actions"
     }
@@ -391,28 +391,30 @@ struct CleanupCoverageView: View {
     private var cleanupProvenanceText: String {
         let retention = "Insights history is retained separately from transcript history. Deleting a transcript does not remove its aggregate usage totals; transcript text is not copied into Insights."
         if summary.estimatedSessionCount > 0, summary.exactSessionCount > 0 {
-            return "Exact actions and \(summary.estimatedSessionCount) imported-session estimates are shown separately. \(retention)"
+            return "Exact actions and estimates from \(InsightsFormatting.count(summary.estimatedSessionCount, "imported session")) are shown separately. \(retention)"
         }
         if summary.estimatedSessionCount > 0 {
-            return "Historical cleanup edits reconstructed from \(summary.estimatedSessionCount) imported sessions are estimates. \(retention)"
+            return "Historical cleanup edits reconstructed from \(InsightsFormatting.count(summary.estimatedSessionCount, "imported session")) are estimates. \(retention)"
         }
         return "Cleanup actions are recorded as exact aggregate counts. \(retention)"
     }
 }
 
 enum InsightsFormatting {
-    static func compactCount(_ value: Int) -> String {
-        let absolute = abs(value)
-        if absolute >= 1_000_000 {
-            return compact(value: Double(value) / 1_000_000, suffix: "M")
-        }
-        if absolute >= 1_000 {
-            return compact(value: Double(value) / 1_000, suffix: "K")
-        }
-        return value.formatted()
+    /// A short count for metric values, such as "1.2K" or "1M".
+    static func compactCount(_ value: Int, locale: Locale = .autoupdatingCurrent) -> String {
+        value.formatted(
+            .number.notation(.compactName).precision(.fractionLength(0...1)).locale(locale)
+        )
     }
 
-    static func compactDuration(milliseconds: Int) -> String {
+    /// A count with its noun in the matching singular or plural form, such as
+    /// "1 session" or "1,234 sessions".
+    static func count(_ value: Int, _ noun: String, locale: Locale = .autoupdatingCurrent) -> String {
+        String(AttributedString(localized: "^[\(value) \(noun)](inflect: true)", locale: locale).characters)
+    }
+
+    static func compactDuration(milliseconds: Int, locale: Locale = .autoupdatingCurrent) -> String {
         guard milliseconds > 0 else { return "0m" }
         let totalMinutes = max(1, Int((Double(milliseconds) / 60_000.0).rounded()))
         if totalMinutes < 60 {
@@ -424,14 +426,24 @@ enum InsightsFormatting {
         if hours < 100 {
             return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
         }
-        return compact(value: Double(hours), suffix: "h")
+        return "\(hours.formatted(.number.locale(locale)))h"
     }
 
-    private static func compact(value: Double, suffix: String) -> String {
-        let rounded = value.rounded()
-        if abs(value - rounded) < 0.05 {
-            return "\(Int(rounded))\(suffix)"
+    /// Explains which sessions' times are estimated or missing from the total.
+    static func durationDetail(
+        estimatedSessions: Int,
+        unavailableSessions: Int,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String {
+        if estimatedSessions > 0, unavailableSessions > 0 {
+            return "\(count(estimatedSessions, "session", locale: locale)) estimated · \(count(unavailableSessions, "session", locale: locale)) unavailable"
         }
-        return String(format: "%.1f%@", value, suffix)
+        if unavailableSessions > 0 {
+            return "\(count(unavailableSessions, "session", locale: locale)) without a saved time"
+        }
+        if estimatedSessions > 0 {
+            return "\(count(estimatedSessions, "imported duration", locale: locale)) estimated"
+        }
+        return "Measured capture time"
     }
 }

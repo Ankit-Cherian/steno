@@ -19,15 +19,10 @@ struct CleanupStyleSettingsSection: View {
         ) {
             VStack(alignment: .leading, spacing: 0) {
                 pickerRow(
-                    "Tone",
-                    description: "How formal the cleaned text sounds",
-                    selection: $preferences.globalStyleProfile.tone
-                )
-                Divider()
-                pickerRow(
                     "Structure",
                     description: "How the output text is formatted",
-                    selection: $preferences.globalStyleProfile.structureMode
+                    selection: effectiveStructure($preferences.globalStyleProfile.structureMode),
+                    options: StructureMode.selectableCases
                 )
                 Divider()
                 pickerRow(
@@ -67,8 +62,12 @@ struct CleanupStyleSettingsSection: View {
                         .textFieldStyle(.roundedBorder)
 
                     HStack(spacing: StenoDesign.sm) {
-                        enumPicker("Tone", selection: $newStyleProfile.tone)
-                        enumPicker("Structure", selection: $newStyleProfile.structureMode)
+                        Picker("Structure", selection: $newStyleProfile.structureMode) {
+                            ForEach(StructureMode.selectableCases, id: \.self) { mode in
+                                Text(mode.rawValue.capitalized).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.menu)
                     }
                     HStack(spacing: StenoDesign.sm) {
                         enumPicker("Filler", selection: $newStyleProfile.fillerPolicy)
@@ -100,8 +99,17 @@ struct CleanupStyleSettingsSection: View {
         }
     }
 
-    private func longestOption<T: CaseIterable & RawRepresentable>(for type: T.Type) -> String where T.RawValue == String {
-        T.allCases
+    /// Shows a saved Email or Command structure as the structure it behaves like. The saved value
+    /// changes only when another structure is picked.
+    private func effectiveStructure(_ binding: Binding<StructureMode>) -> Binding<StructureMode> {
+        Binding(
+            get: { binding.wrappedValue.effective },
+            set: { binding.wrappedValue = $0 }
+        )
+    }
+
+    private func longestOption<T: RawRepresentable>(in options: [T]) -> String where T.RawValue == String {
+        options
             .map { $0.rawValue.capitalized }
             .max(by: { $0.count < $1.count }) ?? ""
     }
@@ -110,7 +118,8 @@ struct CleanupStyleSettingsSection: View {
     private func pickerRow<T: Hashable & CaseIterable & RawRepresentable>(
         _ label: String,
         description: String,
-        selection: Binding<T>
+        selection: Binding<T>,
+        options: [T] = Array(T.allCases)
     ) -> some View where T.RawValue == String {
         VStack(alignment: .leading, spacing: StenoDesign.xxs) {
             HStack(spacing: StenoDesign.sm) {
@@ -118,12 +127,12 @@ struct CleanupStyleSettingsSection: View {
                     .frame(width: 100, alignment: .leading)
                 ZStack(alignment: .leading) {
                     // Invisible sizing text — widest option sets minimum width
-                    Text(longestOption(for: T.self))
+                    Text(longestOption(in: options))
                         .padding(.horizontal, 28)
                         .opacity(0)
                         .accessibilityHidden(true)
                     Picker(label, selection: selection) {
-                        ForEach(Array(T.allCases), id: \.self) { value in
+                        ForEach(options, id: \.self) { value in
                             Text(value.rawValue.capitalized).tag(value)
                         }
                     }

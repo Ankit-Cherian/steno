@@ -92,8 +92,10 @@ struct RecordTab: View {
             .disabled(isProcessing)
             .keyboardShortcut(.space, modifiers: [])
             .accessibilityIdentifier("record.primary")
-            if controller.isRecording {
-                Button("Cancel recording", role: .cancel) { controller.cancelActiveRecording() }
+            if controller.isRecording || isProcessing {
+                Button(isProcessing ? "Cancel transcription" : "Cancel recording", role: .cancel) {
+                    controller.cancelActiveRecording()
+                }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(theme.textDim)
@@ -228,14 +230,14 @@ struct RecordTab: View {
                 )
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
-                    Label(outcomeLabel(entry.insertionStatus), systemImage: outcomeSymbol(entry.insertionStatus))
+                    Label(outcomeLabel(entry), systemImage: outcomeSymbol(entry))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(entry.insertionStatus == .failed ? theme.danger : theme.text)
                     Text("\(StenoDesign.appDisplayName(for: entry.appBundleID)) · \(entry.createdAt.formatted(date: .abbreviated, time: .shortened))")
                         .font(.system(size: 11))
                         .foregroundStyle(theme.textDim)
                         .fixedSize(horizontal: false, vertical: true)
-                    if entry.insertionStatus == .failed || entry.insertionStatus == .copiedOnly {
+                    if entry.insertionStatus == .failed || (entry.insertionStatus == .copiedOnly && !entry.wasPasted) {
                         Text("Copy and paste these words where you need them.")
                             .font(.system(size: 12))
                             .foregroundStyle(theme.textDim)
@@ -291,7 +293,7 @@ struct RecordTab: View {
     }
 
     private var recoveryAction: some View {
-        Button("Review settings") { onOpenSettings(needsMicrophone ? .permissions : .recording) }
+        Button("Review settings") { onOpenSettings(controller.recoverySection) }
             .buttonStyle(.bordered)
             .fixedSize()
     }
@@ -302,8 +304,9 @@ struct RecordTab: View {
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 
-    private func outcomeLabel(_ status: InsertionStatus) -> String {
-        switch status {
+    private func outcomeLabel(_ entry: TranscriptEntry) -> String {
+        if entry.wasPasted { return "Pasted" }
+        switch entry.insertionStatus {
         case .inserted: return "Inserted"
         case .copiedOnly: return "Copied to clipboard"
         case .failed: return "Insertion failed"
@@ -311,8 +314,9 @@ struct RecordTab: View {
         }
     }
 
-    private func outcomeSymbol(_ status: InsertionStatus) -> String {
-        switch status {
+    private func outcomeSymbol(_ entry: TranscriptEntry) -> String {
+        if entry.wasPasted { return "checkmark.circle" }
+        switch entry.insertionStatus {
         case .inserted: return "checkmark.circle"
         case .copiedOnly: return "doc.on.clipboard"
         case .failed: return "exclamationmark.circle"
@@ -321,8 +325,7 @@ struct RecordTab: View {
     }
 
     private func keyLabel(for keyCode: UInt16) -> String? {
-        let codes: [UInt16] = [122, 120, 160, 131, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90]
-        return codes.firstIndex(of: keyCode).map { "F\($0 + 1)" }
+        HandsFreeKey.displayName(for: keyCode)
     }
 }
 

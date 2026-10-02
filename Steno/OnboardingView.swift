@@ -136,7 +136,7 @@ struct OnboardingView: View {
                 Divider().overlay(StenoDesign.border)
                 featureRow(icon: "waveform", title: "Speech model", detail: "Choose the recognition model that fits your Mac.")
                 Divider().overlay(StenoDesign.border)
-                featureRow(icon: "text.cursor", title: "Text insertion", detail: "Click a text field before you start. Completed dictation is inserted there.")
+                featureRow(icon: "text.cursor", title: "Text insertion", detail: "Click a text field before you start. Completed dictation is inserted there, or copied if the field is a password field or you moved to another one.")
             }
         }
     }
@@ -203,7 +203,7 @@ struct OnboardingView: View {
 
                 PermissionStatusCard(
                     title: "Input monitoring",
-                    description: "Lets Steno detect global hotkeys while other apps are focused.",
+                    description: "Lets Steno detect its shortcuts while other apps are focused. For Hold Option to talk, Steno notices each key press and mouse click, never which key or button.",
                     status: controller.inputMonitoringPermissionStatus,
                     onRequest: { controller.requestInputMonitoringPermission() },
                     onOpenSettings: { controller.openInputMonitoringSettings() }
@@ -216,10 +216,6 @@ struct OnboardingView: View {
                     .foregroundStyle(StenoDesign.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            guard !controller.isIsolatedPreview else { return }
-            controller.refreshPermissionStatuses()
         }
     }
 
@@ -373,9 +369,10 @@ struct OnboardingView: View {
             }
 
             if !controller.modelDownloadMessage.isEmpty {
-                Text(controller.modelDownloadMessage)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.textSecondary)
+                ModelActionMessage(
+                    message: controller.modelDownloadMessage,
+                    isError: controller.modelDownloadMessageIsError
+                )
             }
         }
         .cardStyle()
@@ -427,7 +424,6 @@ struct OnboardingView: View {
                 .buttonStyle(.bordered)
                 .keyboardShortcut("[", modifiers: .command)
                 .help("Previous step (Command-[)")
-                .accessibilityLabel("Go to previous step")
             }
 
             Spacer()
@@ -438,7 +434,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.bordered)
                 .help("Continue setup without completing this step")
-                .accessibilityLabel("Set up \(currentStep.name.lowercased()) later")
+                .accessibilityLabel("Set up later, skipping \(currentStep.name.lowercased())")
             }
 
             if currentStep == .featureTour {
@@ -451,7 +447,7 @@ struct OnboardingView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(StenoDesign.theme(for: controller.preferences).accent)
                 .keyboardShortcut(.defaultAction)
-                .accessibilityLabel("Finish onboarding and start using Steno")
+                .accessibilityLabel("Open Steno and finish setup")
             } else {
                 Button {
                     goForward()

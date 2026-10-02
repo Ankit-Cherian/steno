@@ -12,7 +12,7 @@ struct RecordingSettingsSection: View {
                     Toggle("Hold Option to talk", isOn: $preferences.hotkeys.optionPressToTalkEnabled)
                         .font(.system(size: 13))
                         .accessibilityIdentifier("settings.recording.option")
-                    Text("Press and hold to record. Release to finish.")
+                    Text("Press and hold to record. Release to finish. Shortcuts that use Option, such as Option+Arrow, don\u{2019}t start a recording. To tell them apart, Steno notices each key press and mouse click in any app, never which key or button.")
                         .font(StenoDesign.caption())
                         .foregroundStyle(StenoDesign.textSecondary)
                         .padding(.leading, 20)
@@ -25,8 +25,8 @@ struct RecordingSettingsSection: View {
                         Section("F1–F12 (built-in keyboard)") {
                             Text("F1").tag(122 as UInt16?)
                             Text("F2").tag(120 as UInt16?)
-                            Text("F3").tag(160 as UInt16?)
-                            Text("F4").tag(131 as UInt16?)
+                            Text("F3").tag(99 as UInt16?)
+                            Text("F4").tag(118 as UInt16?)
                             Text("F5").tag(96 as UInt16?)
                             Text("F6").tag(97 as UInt16?)
                             Text("F7").tag(98 as UInt16?)
@@ -50,7 +50,7 @@ struct RecordingSettingsSection: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: StenoDesign.pickerWidth, alignment: .leading)
 
-                    Text("Works from any app. F13–F20 work without extra setup. F1–F12 need standard function key mode in System Settings.")
+                    Text("Works from any app. F13–F20 work without extra setup. F1–F12 need standard function key mode in System Settings. Choose Disabled to turn the key off; Hold Option and the Dictate button still work. A recording stops after one hour and is transcribed.")
                         .font(StenoDesign.caption())
                         .foregroundStyle(StenoDesign.textSecondary)
                         .padding(.leading, StenoDesign.xxs)
@@ -86,7 +86,7 @@ struct RecordingSettingsSection: View {
 
     private var handsFreeKeyBinding: Binding<UInt16?> {
         Binding(
-            get: { preferences.hotkeys.handsFreeGlobalKeyCode },
+            get: { HandsFreeKey.pickerKeyCode(for: preferences.hotkeys.handsFreeGlobalKeyCode) },
             set: { preferences.hotkeys.handsFreeGlobalKeyCode = $0 }
         )
     }
