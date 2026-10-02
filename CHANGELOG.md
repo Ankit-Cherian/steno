@@ -130,6 +130,7 @@ If you are upgrading from 1.0.0, three changes are the most noticeable. Saved co
 - Runs on `main` are no longer canceled by a newer push and always get full validation, including documentation-only commits. Dependency updates are checked monthly.
 - Added a release rehearsal workflow that signs and notarizes without being able to publish, a pre-tag check of the version, build number, changelog date, bundle identifier and entitlements, and `scripts/check.sh` for running the package tests, app build and hosted tests locally.
 - Stand-in helper processes used by tests now exit when orphaned, so an interrupted test run no longer leaves one running.
+- Media pausing tests now state whether playback actually stopped, instead of treating an open audio output as playback. New tests cover media that was already paused, an app that keeps its audio output open without being a media player, a player that reports playback only through its media session, and a second dictation that begins while the first is still being released.
 
 ### Compatibility
 - Steno 1.0.1 targets Apple silicon Macs running macOS 13 or later, as 1.0 did. Media pausing requires macOS 15 or later.
@@ -138,6 +139,7 @@ If you are upgrading from 1.0.0, three changes are the most noticeable. Saved co
 ### Known issues
 - Changing a transcription setting, such as the model or thread count, reloads the speech model. A dictation key pressed during that short reload is ignored.
 - Media playing in Safari is not paused during dictation. Safari plays audio through a system helper process that Steno cannot yet tie to the app.
+- If you resume media and then pause it again yourself during a single dictation, it may start playing when the dictation ends.
 
 ## [1.0.0] - 2026-09-17
 
