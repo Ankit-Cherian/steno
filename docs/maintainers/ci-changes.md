@@ -20,7 +20,9 @@ Other parts of the same change:
 - The Release workflow's `draft` and `publish` jobs now allow 30 minutes, and their signed-artifact downloads have a 10-minute step limit, so a stalled download fails before anything is written.
 - A pull request whose base is not main, a symbolic link or submodule in the diff, or two names differing only by case or Unicode normalization run everything. Classification writes path names only to the escaped step summary.
 
-The local checks were the workflow policy check, the workflow regression suite and actionlint. Hosted timings for each kind of change, the first post-merge main run and the first weekly CI run are to be recorded here once observed.
+The local checks were the workflow policy check, the workflow regression suite and actionlint.
+
+Measured on hosted runners. The implementing pull request, [#33](https://github.com/Ankit-Cherian/steno/pull/33), changed the workflows and therefore ran everything: package and hosted tests 5.5 minutes on macOS 15 and 7 on macOS 26, runtime and distribution preview 13.5 minutes, C/C++ scan 16.5 minutes, Swift scan 22.5 minutes, the reviewed-findings sources check 5 seconds. The first run on main after the merge (`042795c`) passed: CI in 14 minutes, Security in 27. Timings for the first ordinary pull request under the new rules and for the first weekly CI run are to be added here once observed.
 
 ## Match test inference threads to the hosted CPU budget
 

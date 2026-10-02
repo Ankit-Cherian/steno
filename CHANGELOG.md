@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Tests
+- Pull requests now run only the checks their changes need. App and test changes run the package and hosted tests on macOS 15 and 26; code the runtime job executes adds that job; changes to the C++ helper add the C/C++ scan; changes to the workflows, CI scripts or `project.yml`, and any unrecognized path, run everything. Every push to `main`, the weekly schedules and every release still run everything, and both required gates fail if a run reports less than it should.
+- The Swift CodeQL scan no longer blocks pull requests. It runs on `main` after every merge, weekly, and in the release before anything is signed.
+- A seconds-long check on every run confirms that each file bound by the reviewed C/C++ findings still has its reviewed content, so a change to one of those files without an updated record fails within minutes instead of after a full scan.
+- The release workflow's draft and publish jobs allow 30 minutes instead of 10, with a 10-minute limit on their artifact download, after a stalled download cancelled the 1.0.1 draft job before it had written anything.
+
 ## [1.0.1] - 2026-10-02
 
 A maintenance release that fixes bugs across recording, text cleanup, insertion, saved data, media pausing and setup. It needs no new permissions.
