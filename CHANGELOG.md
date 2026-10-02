@@ -144,6 +144,7 @@ If you are upgrading from 1.0.0, three changes are the most noticeable. Saved co
 - Changing a transcription setting, such as the model or thread count, reloads the speech model. A dictation key pressed during that short reload is ignored.
 - Media playing in Safari is not paused during dictation. Safari plays audio through a system helper process that Steno cannot yet tie to the app.
 - If you resume media and then pause it again yourself during a single dictation, it may start playing when the dictation ends.
+- Where macOS doesn't report each app's playback state reliably, which was seen on macOS 15 in testing, Steno relies on a weaker signal. There, a browser video paused less than about two seconds before dictating may resume when the dictation ends.
 
 ## [1.0.0] - 2026-09-17
 

@@ -7951,6 +7951,91 @@ func driverReadsSessionStateForApplicationsWithOpenStreams() async {
 }
 
 @MainActor
+private final class SessionReadScript {
+    var absentAnswers: [MediaSessionPlayback?]
+    var playerAnswer: MediaSessionPlayback?
+    private(set) var absentReads = 0
+
+    init(absentAnswers: [MediaSessionPlayback?], playerAnswer: MediaSessionPlayback?) {
+        self.absentAnswers = absentAnswers
+        self.playerAnswer = playerAnswer
+    }
+
+    func makeBridge() -> MediaRemoteBridge {
+        MediaRemoteBridge(
+            frameworkPath: "/does/not/exist",
+            sessionReadOverride: { [self] applicationBundleIdentifier in
+                guard applicationBundleIdentifier == MediaRemoteBridge.absentApplicationBundleIdentifier else {
+                    return playerAnswer
+                }
+                absentReads += 1
+                return absentAnswers.count > 1 ? absentAnswers.removeFirst() : absentAnswers.first ?? nil
+            }
+        )
+    }
+}
+
+@MainActor
+@Test("Session state is used where the registry reports no session for an application that cannot exist")
+func sessionStateIsUsedWhereRegistryIdentifiesMissingSession() async {
+    let script = SessionReadScript(absentAnswers: [.noSession], playerAnswer: .playing)
+    let bridge = script.makeBridge()
+
+    let first = await bridge.applicationSessionPlayback(
+        forApplicationBundleIdentifier: "com.example.player"
+    )
+    let second = await bridge.applicationSessionPlayback(
+        forApplicationBundleIdentifier: "com.example.player"
+    )
+
+    #expect(first == .playing)
+    #expect(second == .playing)
+    // Settled once, then kept.
+    #expect(script.absentReads == 1)
+}
+
+@MainActor
+@Test(
+    "Session state is unknown where the registry answers for an application that cannot exist",
+    arguments: [MediaSessionPlayback.playing, .stopped(at: Date(timeIntervalSince1970: 0))]
+)
+func sessionStateIsUnknownWhereRegistryAnswersForMissingApplication(
+    absentAnswer: MediaSessionPlayback
+) async {
+    let script = SessionReadScript(absentAnswers: [absentAnswer], playerAnswer: .playing)
+    let bridge = script.makeBridge()
+
+    let first = await bridge.applicationSessionPlayback(
+        forApplicationBundleIdentifier: "com.example.player"
+    )
+    let second = await bridge.applicationSessionPlayback(
+        forApplicationBundleIdentifier: "com.example.player"
+    )
+
+    #expect(first == nil)
+    #expect(second == nil)
+    #expect(script.absentReads == 1)
+}
+
+@MainActor
+@Test("A registry that could not be read is asked again instead of being written off")
+func unreadableRegistryIsAskedAgain() async {
+    let script = SessionReadScript(absentAnswers: [nil, .noSession], playerAnswer: .playing)
+    let bridge = script.makeBridge()
+
+    let first = await bridge.applicationSessionPlayback(
+        forApplicationBundleIdentifier: "com.example.player"
+    )
+    let second = await bridge.applicationSessionPlayback(
+        forApplicationBundleIdentifier: "com.example.player"
+    )
+
+    #expect(first == nil)
+    #expect(second == .playing)
+    #expect(script.absentReads == 2)
+}
+
+@MainActor
 @Test("The session registry never reports playback for an application that is not running")
 func sessionRegistryReportsNoPlaybackForMissingApplication() async {
     let bridge = MediaRemoteBridge()

@@ -2886,6 +2886,10 @@ final class MediaRemoteBridge: MediaRemoteBridging {
     private let getLocalOriginFn: GetLocalOriginFn?
     private let sendCommandToAppFn: SendCommandToAppFn?
     private let sendCommandOverride: TargetedCommandDispatch?
+    private let sessionReadOverride: SessionPlaybackRead?
+    /// Whether this system's registry is seen to identify an application that
+    /// has no session. Unset until a reading has settled it either way.
+    private var registryIdentifiesMissingSessions: Bool?
     private let playbackRateInfoKey: String?
     private let contentIdentifierInfoKeys: [String]
     private let disableImplicitAppLaunchOptionKey: String?
@@ -2899,6 +2903,9 @@ final class MediaRemoteBridge: MediaRemoteBridging {
         String,
         @escaping @Sendable (UInt32) -> Void
     ) -> Bool
+
+    /// Stands in for the registry's per-application read in tests.
+    typealias SessionPlaybackRead = @MainActor (String) async -> MediaSessionPlayback?
 
     /// Stands in for a callback that can never arrive because the command was
     /// refused synchronously.
@@ -2915,7 +2922,8 @@ final class MediaRemoteBridge: MediaRemoteBridging {
         callbackQueue: DispatchQueue = DispatchQueue(label: "Steno.MediaRemote.Callback", qos: .userInitiated),
         probeRunner: MediaRemoteAsyncProbeRunner = MediaRemoteAsyncProbeRunner(),
         pauseAcknowledgementTimeout: DispatchTimeInterval = MediaRemoteBridge.defaultPauseAcknowledgementTimeout,
-        sendCommandOverride: TargetedCommandDispatch? = nil
+        sendCommandOverride: TargetedCommandDispatch? = nil,
+        sessionReadOverride: SessionPlaybackRead? = nil
     ) {
         self.callbackQueue = callbackQueue
         self.probeRunner = probeRunner
@@ -2924,6 +2932,7 @@ final class MediaRemoteBridge: MediaRemoteBridging {
             timeoutQueue: probeRunner.timeoutQueue
         )
         self.sendCommandOverride = sendCommandOverride
+        self.sessionReadOverride = sessionReadOverride
 
         let handle = dlopen(frameworkPath, RTLD_LAZY)
         self.handle = handle
@@ -3157,11 +3166,55 @@ final class MediaRemoteBridge: MediaRemoteBridging {
     /// for callers without special entitlements. A missing-client error is a
     /// definite answer that the application has no session; any other failure,
     /// a timeout, or an unavailable interface is unknown.
+    ///
+    /// The interface is private and its answers differ between macOS versions,
+    /// so they are used only on a system where the registry is first seen to
+    /// report "no session" for an application that cannot exist. Anywhere else
+    /// every answer is unknown, and the playback assertions decide alone.
     func applicationSessionPlayback(
         forApplicationBundleIdentifier applicationBundleIdentifier: String
     ) async -> MediaSessionPlayback? {
         guard !applicationBundleIdentifier.isEmpty,
-              let request = sessionRequest(
+              await registryIdentifiesMissingSession()
+        else { return nil }
+        return await readSessionPlayback(
+            forApplicationBundleIdentifier: applicationBundleIdentifier
+        )
+    }
+
+    /// A bundle identifier no application can have (`.invalid` is reserved).
+    static let absentApplicationBundleIdentifier = "invalid.steno.absent-application"
+
+    /// A settled answer is kept for the life of the process. An unreadable one
+    /// is not, so it is asked again with the next reading.
+    private func registryIdentifiesMissingSession() async -> Bool {
+        if let registryIdentifiesMissingSessions {
+            return registryIdentifiesMissingSessions
+        }
+        switch await readSessionPlayback(
+            forApplicationBundleIdentifier: Self.absentApplicationBundleIdentifier
+        ) {
+        case .noSession:
+            registryIdentifiesMissingSessions = true
+            return true
+        case .playing, .stopped:
+            registryIdentifiesMissingSessions = false
+            Self.logger.info(
+                "Media session registry answered for an application that does not exist; per-application session state is not used on this system."
+            )
+            return false
+        case nil:
+            return false
+        }
+    }
+
+    private func readSessionPlayback(
+        forApplicationBundleIdentifier applicationBundleIdentifier: String
+    ) async -> MediaSessionPlayback? {
+        if let sessionReadOverride {
+            return await sessionReadOverride(applicationBundleIdentifier)
+        }
+        guard let request = sessionRequest(
                 forApplicationBundleIdentifier: applicationBundleIdentifier
               )
         else { return nil }
