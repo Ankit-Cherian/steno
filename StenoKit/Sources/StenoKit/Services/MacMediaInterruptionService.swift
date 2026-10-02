@@ -3,6 +3,7 @@ import CoreAudio
 import Darwin
 import Dispatch
 import Foundation
+import IOKit.pwr_mgt
 
 @MainActor
 public final class MacMediaInterruptionService: MediaInterruptionService {
@@ -58,7 +59,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         self.driver = MacMediaInterruptionDriver(
             bridge: bridge,
             playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
-            audioOutputMonitor: CoreAudioOutputMonitor()
+            audioOutputMonitor: CoreAudioOutputMonitor(),
+            playbackActivityMonitor: PowerAssertionPlaybackActivityMonitor()
         )
         self.systemSupportsMediaPausing = Self.isSupportedOnCurrentSystem
         self.verificationDelays = Self.defaultVerificationDelays
@@ -276,10 +278,11 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         )
         guard !acceptedApplications.isEmpty else { return .noOwnership }
 
-        // An accepted, application-targeted Pause of a Core Audio verified-active
-        // application takes pending custody immediately. The delay ladder below is
-        // an opportunistic early verification, not a gate: Core Audio teardown
-        // regularly lags an audible pause by longer than the whole ladder.
+        // An accepted, application-targeted Pause of an application that was
+        // confirmed playing takes provisional custody immediately, so the caller
+        // is not held up. That custody authorizes nothing by itself: a Play is
+        // owed only once the Pause is observed to have stopped playback, by the
+        // ladder below or at release.
         guard let acceptedReceipt = PendingPauseReceipt.make(
             before: before,
             acceptedApplications: acceptedApplications
@@ -297,6 +300,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
 
         let acceptedDestination = acceptedReceipt.makeVerifiedReceipt().resumeDestination
         var pendingReceipt: PendingPauseReceipt? = acceptedReceipt
+        var lastVerifiedApplications: Set<String> = []
         for (index, delay) in verificationDelays.enumerated() {
             await ladderSleep(delay)
             guard pauseTransition?.id == id else { return .noOwnership }
@@ -307,6 +311,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             )
             let verifiedApplications = acceptedReceipt
                 .verifiedApplicationBundleIdentifiers(atRelease: after)
+            lastVerifiedApplications = verifiedApplications
             if verifiedApplications == acceptedReceipt.acceptedApplications {
                 return .verified(acceptedReceipt.makeVerifiedReceipt())
             }
@@ -337,18 +342,20 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
 
         if let pendingReceipt {
             Self.logger.info(
-                "Semantic media Pause remains app-bound while Core Audio teardown lags; resume authorization is deferred to release."
+                "Semantic media Pause has not yet been observed to stop playback; resume authorization is deferred to release."
             )
             return .pending(pendingReceipt)
         }
 
         // A release adjudicates contradicted custody itself and never plays into
         // fresh contrary evidence; only a cancelled or abandoned transition
-        // compensates here so the accepted Pause is not silently stranded.
+        // compensates here, and only for playback this Pause verifiably stopped.
         let hasOwner = pauseTransitionHasOwner(id: id)
         let releasing = releaseControl.releaseRequested && !hasOwner
-        if !hasOwner && !releasing {
-            _ = await driver.sendPlay(to: acceptedDestination)
+        if !lastVerifiedApplications.isEmpty, !hasOwner, !releasing {
+            _ = await driver.sendPlay(
+                to: acceptedDestination.narrowed(to: lastVerifiedApplications)
+            )
             Self.logger.info(
                 "Cancelled media Pause transition was compensated with exact-lineage Play."
             )
@@ -695,13 +702,15 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             return
         }
 
-        // Release with no owner left: the applications were verified active before
-        // Steno's accepted Pause, and nothing since has contradicted that custody.
-        // A semantic Play to an application that is already playing is a no-op, so
-        // exact-app resume is authorized without waiting for observable teardown.
+        // Release with no owner left. Custody that continues a pause Steno already
+        // verified stays resumable while nothing contradicts it: the application is
+        // paused because of Steno. Custody from a first Pause that was never seen
+        // to stop playback authorizes nothing beyond what this snapshot verifies.
         activeInterruption = nil
         let resumableApplications = verifiedApplications.union(
-            retainedReceipt?.acceptedApplications ?? []
+            pendingReceipt.continuesVerifiedPause
+                ? retainedReceipt?.acceptedApplications ?? []
+                : []
         )
         guard !resumableApplications.isEmpty else {
             Self.logger.info(
@@ -1057,9 +1066,13 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         let before: MediaInterruptionSnapshot
         let acceptedApplications: Set<String>
         let observedTargets: Set<MediaAudioOutputTarget>
+        /// Whether this custody re-pauses applications Steno had already verifiably
+        /// paused and was resuming. A first Pause starts without it, and earns
+        /// resume ownership only by being observed to stop playback.
+        let continuesVerifiedPause: Bool
 
-        /// Pending custody rests on what can actually be observed: the application
-        /// was producing Core Audio output, and an application-targeted Pause was
+        /// Provisional custody rests on what can actually be observed: the
+        /// application was confirmed playing, and an application-targeted Pause was
         /// accepted for it. Elected-session state is not required, because it
         /// describes at most one application and is routinely degraded. Output
         /// processes that could not be resolved narrow the receipt instead of
@@ -1089,7 +1102,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     targets: observedTargets
                 ),
                 acceptedApplications: verifiedActiveApplications,
-                observedTargets: observedTargets
+                observedTargets: observedTargets,
+                continuesVerifiedPause: false
             )
         }
 
@@ -1112,7 +1126,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     targets: observedTargets
                 ),
                 acceptedApplications: acceptedApplications,
-                observedTargets: observedTargets
+                observedTargets: observedTargets,
+                continuesVerifiedPause: true
             )
         }
 
@@ -1131,7 +1146,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     targets: observedTargets
                 ),
                 acceptedApplications: acceptedApplications,
-                observedTargets: observedTargets
+                observedTargets: observedTargets,
+                continuesVerifiedPause: continuesVerifiedPause
             )
         }
 
@@ -1202,7 +1218,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     targets: targets
                 ),
                 acceptedApplications: applications,
-                observedTargets: targets
+                observedTargets: targets,
+                continuesVerifiedPause: continuesVerifiedPause
             )
         }
 
@@ -1250,7 +1267,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 audioOutputObservation: MediaAudioOutputObservation(
                     targets: targets.sorted { $0.processID < $1.processID },
                     unresolvedProcessCount: 0
-                )
+                ),
+                playbackActivityObservation: snapshot.playbackActivityObservation?
+                    .narrowed(to: applications)
             )
         }
     }
@@ -1422,6 +1441,44 @@ struct MediaAudioOutputObservation: Sendable, Equatable {
     }
 }
 
+/// A sleep-preventing power assertion held by one of an application's own
+/// processes.
+struct MediaPlaybackAssertion: Sendable, Equatable, Hashable {
+    let applicationBundleIdentifier: String
+    let identifier: UInt64
+}
+
+/// Which applications are keeping the system awake for playback right now.
+///
+/// A player holds a sleep-preventing power assertion while it is actually
+/// playing and releases it when playback pauses, usually at once. Its Core
+/// Audio output stream, by contrast, stays open for seconds after a pause. The
+/// assertions therefore separate an application that is playing from one that
+/// was paused earlier, which the output stream alone cannot do.
+struct MediaPlaybackActivityObservation: Sendable, Equatable {
+    let assertions: Set<MediaPlaybackAssertion>
+
+    var applicationBundleIdentifiers: Set<String> {
+        Set(assertions.map(\.applicationBundleIdentifier))
+    }
+
+    func assertions(
+        forApplication applicationBundleIdentifier: String
+    ) -> Set<MediaPlaybackAssertion> {
+        assertions.filter {
+            $0.applicationBundleIdentifier == applicationBundleIdentifier
+        }
+    }
+
+    func narrowed(to applicationBundleIdentifiers: Set<String>) -> Self {
+        Self(
+            assertions: assertions.filter {
+                applicationBundleIdentifiers.contains($0.applicationBundleIdentifier)
+            }
+        )
+    }
+}
+
 struct MediaPauseReceipt: Sendable, Equatable {
     let resumeDestination: VerifiedMediaResumeDestination
 }
@@ -1443,19 +1500,30 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
     let nowPlayingIsPlaying: Bool?
     let playbackState: Int?
     let audioOutputObservation: MediaAudioOutputObservation?
+    let playbackActivityObservation: MediaPlaybackActivityObservation?
 
-    /// Active Core Audio output is the primary ownership signal: it is the only
-    /// reliable per-application evidence available.
+    /// An application is paused only when it is confirmed playing: it has an
+    /// active Core Audio output stream and it is holding a playback assertion.
+    ///
+    /// The output stream identifies the exact producer process, but it stays
+    /// open for seconds after a pause, so by itself it cannot tell playing media
+    /// from media the listener just paused. The playback assertion is released
+    /// the moment playback stops. An application with an open stream and no
+    /// assertion is left alone, and so is every application when the assertions
+    /// cannot be read: Steno only touches playback it can later restore.
     ///
     /// The elected now-playing session reports at most one application and is
     /// frequently degraded, so it may only veto the single application it is
     /// actually about. It never vetoes other applications with independent active
-    /// output, and `unknown` detection never blocks a Core Audio confirmed target.
+    /// output, and `unknown` detection never blocks a confirmed target.
     /// Output processes that cannot be resolved to an application narrow the
     /// destination instead of cancelling it; they are simply never paused.
     var pauseDestination: MediaPauseDestination? {
-        guard let audioOutputObservation else { return nil }
+        guard let audioOutputObservation, let playbackActivityObservation else {
+            return nil
+        }
         var observedApplications = audioOutputObservation.applicationBundleIdentifiers
+            .intersection(playbackActivityObservation.applicationBundleIdentifiers)
         if detection == .notPlaying, let target {
             observedApplications.remove(target.bundleIdentifier)
         }
@@ -1465,6 +1533,25 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
 
     var observedActiveApplicationBundleIdentifiers: Set<String>? {
         audioOutputObservation.map(\.applicationBundleIdentifiers)
+    }
+
+    /// Whether a playback assertion the application held in `before` has been
+    /// released by this snapshot. Assertions are compared by identity, so one
+    /// the application takes later for new playback never hides the release.
+    func observesPlaybackStopped(
+        since before: MediaInterruptionSnapshot,
+        forApplication applicationBundleIdentifier: String
+    ) -> Bool {
+        guard let beforeActivity = before.playbackActivityObservation,
+              let currentActivity = playbackActivityObservation
+        else { return false }
+        let heldBefore = beforeActivity.assertions(
+            forApplication: applicationBundleIdentifier
+        )
+        guard !heldBefore.isEmpty else { return false }
+        return !heldBefore.isSubset(
+            of: currentActivity.assertions(forApplication: applicationBundleIdentifier)
+        )
     }
 
     func preservesExactProcessLineage(
@@ -1611,6 +1698,19 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
                   currentTargets.isSubset(of: originalTargets)
             else { continue }
 
+            // The application releasing the playback assertion it held before
+            // the Pause is what shows the Pause stopped it. A closed output
+            // stream alone does not: the stream of media the listener paused
+            // earlier closes the same way. This is judged on the application's
+            // own evidence, so the elected session can contradict it only with
+            // strong evidence that this application is playing.
+            if observesPlaybackStopped(since: before, forApplication: candidate) {
+                if detection != .playing || target?.bundleIdentifier != candidate {
+                    confirmedApplications.insert(candidate)
+                }
+                continue
+            }
+
             let beforeCandidateTarget = before.target.flatMap { target in
                 target.bundleIdentifier == candidate ? target : nil
             }
@@ -1626,7 +1726,7 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
             }
             // Content drift only vetoes while the same elected session is still
             // reported. A vanished elected session says nothing about this
-            // application, and must not override observed Core Audio teardown.
+            // application.
             if let beforeCandidateTarget,
                currentCandidateTarget == beforeCandidateTarget,
                before.contentIdentifier != nil,
@@ -1635,17 +1735,10 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
                 continue
             }
 
-            if currentTargets.isEmpty,
-               (currentCandidateTarget == nil
-                    || (detection != .playing
-                        && detection != .likelyPlaying
-                        && nowPlayingIsPlaying != true))
-            {
-                confirmedApplications.insert(candidate)
-                continue
-            }
-
-            if detection == .notPlaying,
+            // Where the elected session is trustworthy, the same session going
+            // from confirmed playing to confirmed not playing shows the stop too.
+            if before.detection == .playing,
+               detection == .notPlaying,
                nowPlayingIsPlaying != true,
                let beforeTarget = before.target,
                target == beforeTarget,
@@ -1673,7 +1766,10 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
         } ?? "unavailable"
         let playingValue = nowPlayingIsPlaying.map(String.init) ?? "nil"
         let stateValue = playbackState.map(String.init) ?? "nil"
-        return "target=\(targetValue) detection=\(detection.logValue) electedPlaying=\(playingValue) state=\(stateValue) activeOutput=\(outputValue)"
+        let activityValue = playbackActivityObservation.map { observation in
+            "[\(observation.applicationBundleIdentifiers.sorted().joined(separator: ","))]"
+        } ?? "unavailable"
+        return "target=\(targetValue) detection=\(detection.logValue) electedPlaying=\(playingValue) state=\(stateValue) activeOutput=\(outputValue) playbackActivity=\(activityValue)"
     }
 
 }
@@ -2149,22 +2245,150 @@ final class CoreAudioOutputMonitor: AudioOutputMonitoring {
 }
 
 @MainActor
+protocol PlaybackActivityMonitoring: AnyObject {
+    /// Returns the playback assertions held by the given applications, or `nil`
+    /// when the system's assertions cannot be read.
+    func observePlaybackActivity(
+        forApplications applicationBundleIdentifiers: Set<String>
+    ) -> MediaPlaybackActivityObservation?
+}
+
+struct PowerAssertionRecord: Sendable, Equatable {
+    let ownerProcessID: Int32
+    let type: String
+    let level: Int
+    let identifier: UInt64
+}
+
+struct PlaybackActivityObservationBuilder {
+    /// The assertion types a player takes to keep the system or display awake
+    /// while it plays, under both their current and their legacy names.
+    static let sleepPreventingAssertionTypes: Set<String> = [
+        "PreventUserIdleSystemSleep",
+        "PreventUserIdleDisplaySleep",
+        "PreventSystemSleep",
+        "NoIdleSleepAssertion",
+        "NoDisplaySleepAssertion",
+    ]
+
+    let applicationResolver: AudioProcessApplicationResolver
+
+    /// Keeps only active sleep-preventing assertions owned by a process of one
+    /// of the given applications. Assertions the audio server holds on an
+    /// application's behalf are owned by the audio server, so they are left
+    /// out: they follow the output stream and lag a pause the same way it does.
+    func makeObservation(
+        from records: [PowerAssertionRecord],
+        forApplications applicationBundleIdentifiers: Set<String>
+    ) -> MediaPlaybackActivityObservation {
+        var applicationsByProcessID: [Int32: String?] = [:]
+        var assertions: Set<MediaPlaybackAssertion> = []
+        for record in records {
+            guard record.level != 0,
+                  Self.sleepPreventingAssertionTypes.contains(record.type)
+            else { continue }
+            let application: String?
+            if let resolved = applicationsByProcessID[record.ownerProcessID] {
+                application = resolved
+            } else {
+                application = applicationResolver.applicationBundleIdentifier(
+                    for: record.ownerProcessID
+                )
+                applicationsByProcessID[record.ownerProcessID] = application
+            }
+            guard let application,
+                  applicationBundleIdentifiers.contains(application)
+            else { continue }
+            assertions.insert(
+                MediaPlaybackAssertion(
+                    applicationBundleIdentifier: application,
+                    identifier: record.identifier
+                )
+            )
+        }
+        return MediaPlaybackActivityObservation(assertions: assertions)
+    }
+}
+
+@MainActor
+final class PowerAssertionPlaybackActivityMonitor: PlaybackActivityMonitoring {
+    private static let logger = StenoKitDiagnostics.logger
+    private let applicationResolver: AudioProcessApplicationResolver
+
+    init(applicationResolver: AudioProcessApplicationResolver = AudioProcessApplicationResolver()) {
+        self.applicationResolver = applicationResolver
+    }
+
+    func observePlaybackActivity(
+        forApplications applicationBundleIdentifiers: Set<String>
+    ) -> MediaPlaybackActivityObservation? {
+        guard !applicationBundleIdentifiers.isEmpty else {
+            return MediaPlaybackActivityObservation(assertions: [])
+        }
+        var assertionsByProcess: Unmanaged<CFDictionary>?
+        let status = IOPMCopyAssertionsByProcess(&assertionsByProcess)
+        guard status == kIOReturnSuccess else {
+            Self.logger.debug(
+                "Power assertion discovery unavailable: \(status, privacy: .public)"
+            )
+            return nil
+        }
+        // Success without a dictionary means no process holds an assertion.
+        let assertions = assertionsByProcess?.takeRetainedValue()
+            as? [NSNumber: [[String: Any]]] ?? [:]
+
+        var records: [PowerAssertionRecord] = []
+        for (processID, processAssertions) in assertions {
+            for assertion in processAssertions {
+                guard let type = assertion[kIOPMAssertionTypeKey as String] as? String,
+                      let identifier = (assertion["GlobalUniqueID"] as? NSNumber)
+                        ?? (assertion["AssertionId"] as? NSNumber)
+                else { continue }
+                let level = (assertion[kIOPMAssertionLevelKey as String] as? NSNumber)?
+                    .intValue ?? Int(kIOPMAssertionLevelOn)
+                records.append(
+                    PowerAssertionRecord(
+                        ownerProcessID: processID.int32Value,
+                        type: type,
+                        level: level,
+                        identifier: identifier.uint64Value
+                    )
+                )
+            }
+        }
+        let observation = PlaybackActivityObservationBuilder(
+            applicationResolver: applicationResolver
+        ).makeObservation(
+            from: records,
+            forApplications: applicationBundleIdentifiers
+        )
+        Self.logger.debug(
+            "Power assertion discovery assertions=\(records.count, privacy: .public) playback=\(observation.assertions.count, privacy: .public)"
+        )
+        return observation
+    }
+}
+
+@MainActor
 final class MacMediaInterruptionDriver: MediaInterruptionDriving {
     private static let logger = StenoKitDiagnostics.logger
     private let bridge: any MediaRemoteBridging
     private let playbackDetector: MultiSignalMediaPlaybackStateDetector
     private let audioOutputMonitor: any AudioOutputMonitoring
+    private let playbackActivityMonitor: any PlaybackActivityMonitoring
     private let applicationResolver: AudioProcessApplicationResolver
 
     init(
         bridge: any MediaRemoteBridging,
         playbackDetector: MultiSignalMediaPlaybackStateDetector,
         audioOutputMonitor: any AudioOutputMonitoring,
+        playbackActivityMonitor: any PlaybackActivityMonitoring,
         applicationResolver: AudioProcessApplicationResolver = AudioProcessApplicationResolver()
     ) {
         self.bridge = bridge
         self.playbackDetector = playbackDetector
         self.audioOutputMonitor = audioOutputMonitor
+        self.playbackActivityMonitor = playbackActivityMonitor
         self.applicationResolver = applicationResolver
     }
 
@@ -2187,6 +2411,13 @@ final class MacMediaInterruptionDriver: MediaInterruptionDriving {
         let audioOutputObservation = audioOutputMonitor.observeActiveAudioOutputs(
             excludingProcessID: getpid()
         )
+        // Read together with the output streams, after the slower probes, so
+        // both describe the same instant.
+        let playbackActivityObservation = audioOutputObservation.flatMap {
+            playbackActivityMonitor.observePlaybackActivity(
+                forApplications: $0.applicationBundleIdentifiers
+            )
+        }
 
         return MediaInterruptionSnapshot(
             target: target,
@@ -2194,7 +2425,8 @@ final class MacMediaInterruptionDriver: MediaInterruptionDriving {
             detection: resolvedEvidence.result,
             nowPlayingIsPlaying: resolvedEvidence.nowPlayingIsPlaying,
             playbackState: resolvedEvidence.playbackState,
-            audioOutputObservation: audioOutputObservation
+            audioOutputObservation: audioOutputObservation,
+            playbackActivityObservation: playbackActivityObservation
         )
     }
 
