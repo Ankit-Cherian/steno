@@ -13,7 +13,7 @@ gh api --paginate repos/Ankit-Cherian/steno/commits/main/check-runs \
   --jq '.check_runs[] | {name,conclusion,app:.app.slug,details_url}'
 ```
 
-Select the checks corresponding to `CI Gate` and `Security Gate`, produced by **GitHub Actions**. The reusable validation workflow currently reports `validate / CI Gate`; the security workflow reports `Security Gate`. Verify these names from a real run before applying them. Do not substitute a similarly named check from another integration. Confirm branch protection against an actual test PR; configuration presence alone is not enforcement proof.
+Select the checks corresponding to `CI Gate` and `Security Gate`, produced by **GitHub Actions**. The reusable validation workflow currently reports `validate / CI Gate`; the security workflow reports `Security Gate`. These names stay the same whichever jobs a pull request runs. Verify them from a real run before applying them. Do not substitute a similarly named check from another integration. Confirm branch protection against an actual test PR; configuration presence alone is not enforcement proof.
 
 ## 2. Enforce main's checks
 
@@ -42,6 +42,8 @@ In **Settings → Actions → General**:
 - Require full-length SHA pins for Actions.
 - Allow only the reviewed Action owners/actions used by this repository: `actions/checkout`, `actions/upload-artifact`, `actions/download-artifact`, `actions/dependency-review-action`, `actions/attest`, and `github/codeql-action/*`. Recheck the list when workflows change.
 - Use GitHub-hosted runners. Do not connect the maintainer's personal Mac as a runner for untrusted PRs.
+
+In each maintainer's personal **Settings → Notifications**, enable notifications for failed Actions workflows. Pull requests can skip the compiled scans and the runtime job, so a failed run on main or a weekly schedule may be the first report of a problem. Releases still repeat every check before signing.
 
 In **Settings → Code security**:
 

@@ -14,7 +14,8 @@ permissions:
   contents: read
 
 env:
-  # The severity gate needs full results on PRs as well as main.
+  # The severity gate needs full results from every CodeQL analysis that runs,
+  # on pull requests as well as main.
   CODEQL_ACTION_DIFF_INFORMED_QUERIES: 'false'
 
 # A newer push cancels only an obsolete pull request run. Pushes, schedules,
@@ -31,6 +32,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       scope: ${{ steps.changes.outputs.scope }}
+      swift_scan_required: ${{ steps.changes.outputs.swift_scan_required }}
+      cpp_scan_required: ${{ steps.changes.outputs.cpp_scan_required }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,19 +80,80 @@ jobs:
       - name: Block high and critical findings
         run: python3 scripts/ci/check-sarif.py --directory build/codeql-results --category /language:actions
 
-  native:
+  # Seconds-long check that every file bound by the reviewed C/C++ findings
+  # still has its reviewed content. It runs on every event, including pull
+  # requests that do not run the compiled scans.
+  review-sources:
+    name: Reviewed findings sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require the reviewed content of every bound source
+        run: python3 scripts/ci/check-sarif.py --check-reviewed-sources scripts/ci/reviewed-findings.json --source-root . --runtime-lock scripts/ci/runtime-lock.json
+
+  native-swift:
     needs: changes
-    if: needs.changes.outputs.scope == 'full'
-    name: CodeQL (${{ matrix.language }})
+    if: needs.changes.outputs.swift_scan_required == 'true'
+    name: CodeQL (swift)
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
       contents: read
       security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [swift, c-cpp]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify toolchain
+        run: |
+          test -d "$DEVELOPER_DIR"
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          swift --version
+      - name: Prepare project generator
+        run: |
+          bash scripts/ci/tools.sh xcodegen
+          build/ci-tools/xcodegen/xcodegen/bin/xcodegen generate
+      # Package resolution compiles no project source. Doing it before init keeps
+      # it out of the traced build, which reuses the same derived data.
+      - name: Resolve Swift packages before tracing
+        run: |
+          xcodebuild -resolvePackageDependencies -project Steno.xcodeproj -scheme Steno \
+            -derivedDataPath build/codeql-swift
+      - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        with:
+          languages: swift
+          build-mode: manual
+          queries: security-extended
+      # A fresh build after init lets CodeQL observe actual compiler invocations.
+      # No compilation cache is restored in this workflow.
+      - name: Build Swift app for analysis
+        run: |
+          xcodebuild build -project Steno.xcodeproj -scheme Steno \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build/codeql-swift \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO
+      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        with:
+          category: /language:swift
+          output: build/codeql-results
+      - name: Block high and critical findings
+        run: python3 scripts/ci/check-sarif.py --directory build/codeql-results --category /language:swift
+
+  native-cpp:
+    needs: changes
+    if: needs.changes.outputs.cpp_scan_required == 'true'
+    name: CodeQL (c-cpp)
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
@@ -103,60 +167,32 @@ jobs:
           xcodebuild -version
           swift --version
       - name: Prepare pinned native sources
-        if: matrix.language == 'c-cpp'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ggml-org/whisper.cpp
           ref: 764482c3175d9c3bc6089c1ec84df7d1b9537d83
           path: vendor/whisper.cpp
           persist-credentials: false
-      - name: Prepare project generator
-        if: matrix.language == 'swift'
-        run: |
-          bash scripts/ci/tools.sh xcodegen
-          build/ci-tools/xcodegen/xcodegen/bin/xcodegen generate
-      # Package resolution compiles no project source. Doing it before init keeps
-      # it out of the traced build, which reuses the same derived data.
-      - name: Resolve Swift packages before tracing
-        if: matrix.language == 'swift'
-        run: |
-          xcodebuild -resolvePackageDependencies -project Steno.xcodeproj -scheme Steno \
-            -derivedDataPath build/codeql-swift
       - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
-          languages: ${{ matrix.language }}
+          languages: c-cpp
           build-mode: manual
           queries: security-extended
-      # A fresh build after init lets CodeQL observe actual compiler invocations.
-      # No compilation cache is restored in this workflow.
-      - name: Build Swift app for analysis
-        if: matrix.language == 'swift'
-        run: |
-          xcodebuild build -project Steno.xcodeproj -scheme Steno \
-            -destination 'generic/platform=macOS' \
-            -derivedDataPath build/codeql-swift \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO
       - name: Build C++ runtime for analysis
-        if: matrix.language == 'c-cpp'
         run: bash scripts/build-whisper-runtime-helper.sh
       - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
-          category: /language:${{ matrix.language }}
+          category: /language:c-cpp
           output: build/codeql-results
       - name: Block high and critical findings
-        env:
-          ANALYSIS_CATEGORY: /language:${{ matrix.language }}
         run: |
-          args=(--directory build/codeql-results --category "$ANALYSIS_CATEGORY")
-          if [ "$ANALYSIS_CATEGORY" = /language:c-cpp ]; then
-            args+=(--reviewed-dispositions scripts/ci/reviewed-findings.json --source-root .)
-          fi
-          python3 scripts/ci/check-sarif.py "${args[@]}"
+          python3 scripts/ci/check-sarif.py --directory build/codeql-results --category /language:c-cpp \
+            --reviewed-dispositions scripts/ci/reviewed-findings.json --source-root .
 
   gate:
     name: Security Gate
     if: always()
-    needs: [changes, dependency-review, actions, native]
+    needs: [changes, dependency-review, actions, review-sources, native-swift, native-cpp]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -164,21 +200,36 @@ jobs:
         env:
           SCOPE_RESULT: ${{ needs.changes.result }}
           SCOPE: ${{ needs.changes.outputs.scope }}
+          SWIFT_REQUIRED: ${{ needs.changes.outputs.swift_scan_required }}
+          CPP_REQUIRED: ${{ needs.changes.outputs.cpp_scan_required }}
           DEPENDENCY_RESULT: ${{ needs.dependency-review.result }}
           ACTIONS_RESULT: ${{ needs.actions.result }}
-          NATIVE_RESULT: ${{ needs.native.result }}
+          REVIEW_SOURCES_RESULT: ${{ needs.review-sources.result }}
+          SWIFT_RESULT: ${{ needs.native-swift.result }}
+          CPP_RESULT: ${{ needs.native-cpp.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           test "$ACTIONS_RESULT" = success
           test "$SCOPE_RESULT" = success
-          case "$SCOPE" in
-            docs) expected=skipped ;;
-            full) expected=success ;;
-            *) exit 1 ;;
-          esac
-          test "$NATIVE_RESULT" = "$expected"
+          test "$REVIEW_SOURCES_RESULT" = success
+          case "$SCOPE" in docs|full) ;; *) exit 1 ;; esac
+          case "$SWIFT_REQUIRED" in true|false) ;; *) exit 1 ;; esac
+          case "$CPP_REQUIRED" in true|false) ;; *) exit 1 ;; esac
           if [ "$EVENT_NAME" = pull_request ]; then
             test "$DEPENDENCY_RESULT" = success
           else
+            # Main, schedules, dispatches, merge groups and release calls must
+            # have run both compiled scans.
             test "$DEPENDENCY_RESULT" = skipped
+            test "$SCOPE" = full
+            test "$SWIFT_REQUIRED" = true
+            test "$CPP_REQUIRED" = true
           fi
+          if [ "$SCOPE" = docs ]; then
+            test "$SWIFT_REQUIRED" = false
+            test "$CPP_REQUIRED" = false
+          fi
+          if [ "$SWIFT_REQUIRED" = true ]; then swift_expected=success; else swift_expected=skipped; fi
+          if [ "$CPP_REQUIRED" = true ]; then cpp_expected=success; else cpp_expected=skipped; fi
+          test "$SWIFT_RESULT" = "$swift_expected"
+          test "$CPP_RESULT" = "$cpp_expected"

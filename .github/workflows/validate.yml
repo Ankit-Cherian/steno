@@ -17,6 +17,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       scope: ${{ steps.changes.outputs.scope }}
+      runtime_required: ${{ steps.changes.outputs.runtime_required }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,7 +121,7 @@ jobs:
 
   runtime:
     needs: policy
-    if: needs.policy.outputs.scope == 'full'
+    if: needs.policy.outputs.runtime_required == 'true'
     name: Runtime and distribution preview
     runs-on: macos-15
     timeout-minutes: 75
@@ -190,15 +191,27 @@ jobs:
       - name: Require every validation job to succeed
         env:
           SCOPE: ${{ needs.policy.outputs.scope }}
+          RUNTIME_REQUIRED: ${{ needs.policy.outputs.runtime_required }}
+          EVENT_NAME: ${{ github.event_name }}
           POLICY_RESULT: ${{ needs.policy.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
           RUNTIME_RESULT: ${{ needs.runtime.result }}
         run: |
           test "$POLICY_RESULT" = success
-          case "$SCOPE" in
-            docs) expected=skipped ;;
-            full) expected=success ;;
-            *) exit 1 ;;
-          esac
-          test "$MACOS_RESULT" = "$expected"
-          test "$RUNTIME_RESULT" = "$expected"
+          case "$SCOPE" in docs|full) ;; *) exit 1 ;; esac
+          case "$RUNTIME_REQUIRED" in true|false) ;; *) exit 1 ;; esac
+          # Only a pull request may skip a job; main, schedules, dispatches,
+          # merge groups and release calls must have run everything.
+          if [ "$EVENT_NAME" != pull_request ]; then
+            test "$SCOPE" = full
+            test "$RUNTIME_REQUIRED" = true
+          fi
+          if [ "$SCOPE" = docs ]; then
+            test "$RUNTIME_REQUIRED" = false
+            macos_expected=skipped
+          else
+            macos_expected=success
+          fi
+          if [ "$RUNTIME_REQUIRED" = true ]; then runtime_expected=success; else runtime_expected=skipped; fi
+          test "$MACOS_RESULT" = "$macos_expected"
+          test "$RUNTIME_RESULT" = "$runtime_expected"

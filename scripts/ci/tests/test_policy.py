@@ -195,33 +195,72 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertTrue({'pull_request', 'merge_group', 'workflow_dispatch'} <= set(workflow['on']))
         self.assertEqual(workflow['jobs']['validate']['uses'], './.github/workflows/validate.yml')
         self.assertNotIn('if', workflow['jobs']['validate'])
+        # Weekly full validation of main, an hour after the weekly Security scan.
+        self.assertEqual(workflow['on']['schedule'], [{'cron': '31 9 * * 1'}])
+        security = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
+        self.assertEqual(security['on']['schedule'], [{'cron': '31 8 * * 1'}])
+
+    def run_with_fake_python(self, command, status):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake = root / 'python3'
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGUMENT_LOG"\nexit "$GATE_EXIT_STATUS"\n')
+            fake.chmod(0o755)
+            arguments = root / 'arguments.txt'
+            environment = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                           'ARGUMENT_LOG': str(arguments), 'GATE_EXIT_STATUS': str(status)}
+            result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
+                                    env=environment, cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+            return arguments.read_text().splitlines()
 
     def test_security_workflow_dispatches_cpp_review_and_preserves_gate_failure(self):
         workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
-        steps = [step for step in workflow['jobs']['native']['steps']
-                 if step.get('name') == 'Block high and critical findings']
-        self.assertEqual(len(steps), 1)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            command = root / 'python3'
-            command.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGUMENT_LOG"\nexit "$GATE_EXIT_STATUS"\n')
-            command.chmod(0o755)
-            arguments = root / 'arguments.txt'
-            for category in ('/language:c-cpp', '/language:swift'):
-                for status in (0, 31):
-                    with self.subTest(category=category, status=status):
-                        environment = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
-                            'ANALYSIS_CATEGORY': category, 'ARGUMENT_LOG': str(arguments),
-                            'GATE_EXIT_STATUS': str(status)}
-                        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps[0]['run']],
-                                                env=environment, cwd=root, capture_output=True, text=True)
-                        self.assertEqual(result.returncode, status, result.stdout + result.stderr)
-                        expected = ['scripts/ci/check-sarif.py', '--directory', 'build/codeql-results',
-                                    '--category', category]
-                        if category == '/language:c-cpp':
-                            expected += ['--reviewed-dispositions', 'scripts/ci/reviewed-findings.json',
-                                         '--source-root', '.']
-                        self.assertEqual(arguments.read_text().splitlines(), expected)
+        for job, category in (('native-cpp', '/language:c-cpp'), ('native-swift', '/language:swift')):
+            steps = [step for step in workflow['jobs'][job]['steps']
+                     if step.get('name') == 'Block high and critical findings']
+            self.assertEqual(len(steps), 1)
+            for status in (0, 31):
+                with self.subTest(job=job, status=status):
+                    expected = ['scripts/ci/check-sarif.py', '--directory', 'build/codeql-results',
+                                '--category', category]
+                    if category == '/language:c-cpp':
+                        expected += ['--reviewed-dispositions', 'scripts/ci/reviewed-findings.json',
+                                     '--source-root', '.']
+                    self.assertEqual(self.run_with_fake_python(steps[0]['run'], status), expected)
+
+    def test_each_compiled_scan_analyzes_exactly_its_language(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
+        for job, language in (('native-swift', 'swift'), ('native-cpp', 'c-cpp')):
+            with self.subTest(job=job):
+                steps = workflow['jobs'][job]['steps']
+                init = [step['with'] for step in steps if str(step.get('uses', '')).startswith('github/codeql-action/init@')]
+                analyze = [step['with'] for step in steps if str(step.get('uses', '')).startswith('github/codeql-action/analyze@')]
+                self.assertEqual([entry['languages'] for entry in init], [language])
+                self.assertEqual(init[0]['build-mode'], 'manual')
+                self.assertEqual(init[0]['queries'], 'security-extended')
+                self.assertEqual([entry['category'] for entry in analyze], [f'/language:{language}'])
+                self.assertEqual(workflow['jobs'][job]['name'], f'CodeQL ({language})')
+                self.assertEqual(workflow['jobs'][job]['permissions'], {'contents': 'read', 'security-events': 'write'})
+                self.assertNotIn('strategy', workflow['jobs'][job])
+        self.assertNotIn('native', workflow['jobs'])
+        builds = {job: [step.get('run', '') for step in workflow['jobs'][job]['steps']] for job in ('native-swift', 'native-cpp')}
+        self.assertTrue(any('xcodebuild build' in run for run in builds['native-swift']))
+        self.assertTrue(any('build-whisper-runtime-helper.sh' in run for run in builds['native-cpp']))
+
+    def test_reviewed_sources_are_checked_on_every_event(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
+        job = workflow['jobs']['review-sources']
+        self.assertNotIn('if', job)
+        self.assertNotIn('needs', job)
+        self.assertNotIn('permissions', job)
+        self.assertEqual(job['runs-on'], 'ubuntu-24.04')
+        runs = [step['run'] for step in job['steps'] if 'run' in step]
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(self.run_with_fake_python(runs[0], 0), [
+            'scripts/ci/check-sarif.py', '--check-reviewed-sources', 'scripts/ci/reviewed-findings.json',
+            '--source-root', '.', '--runtime-lock', 'scripts/ci/runtime-lock.json'])
+        self.assertEqual(self.run_with_fake_python(runs[0], 1)[1], '--check-reviewed-sources')
 
     def test_only_pull_request_runs_can_be_cancelled_by_a_newer_run(self):
         for path, prefix in (('ci.yml', 'ci-'), ('security.yml', 'security-')):
@@ -262,7 +301,7 @@ class WorkflowPolicyTests(unittest.TestCase):
 
     def test_swift_analysis_resolves_packages_before_tracing_the_same_build(self):
         workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
-        steps = workflow['jobs']['native']['steps']
+        steps = workflow['jobs']['native-swift']['steps']
         def index(predicate):
             matches = [position for position, step in enumerate(steps) if predicate(step)]
             self.assertEqual(len(matches), 1)
@@ -272,7 +311,6 @@ class WorkflowPolicyTests(unittest.TestCase):
         build = index(lambda step: step.get('name') == 'Build Swift app for analysis')
         self.assertLess(resolve, init)
         self.assertLess(init, build)
-        self.assertEqual(steps[resolve].get('if'), "matrix.language == 'swift'")
         self.assertIn('-derivedDataPath build/codeql-swift', steps[resolve]['run'])
         self.assertIn('-derivedDataPath build/codeql-swift', steps[build]['run'])
         # Resolution must not compile the app; the traced build still does that.
@@ -282,12 +320,44 @@ class WorkflowPolicyTests(unittest.TestCase):
         root = Path(__file__).parents[3]
         lock = json.loads((root / 'scripts/ci/runtime-lock.json').read_text())['whisper']
         workflow = POLICY.parse_workflow((root / '.github/workflows/security.yml').read_text())
-        checkouts = [step['with'] for step in workflow['jobs']['native']['steps']
+        checkouts = [step['with'] for step in workflow['jobs']['native-cpp']['steps']
                      if str(step.get('uses', '')).startswith('actions/checkout@')
                      and 'repository' in step.get('with', {})]
         self.assertEqual(len(checkouts), 1)
         self.assertEqual(f"https://github.com/{checkouts[0]['repository']}.git", lock['repository'])
         self.assertEqual(checkouts[0]['ref'], lock['revision'])
+
+    def test_release_signs_only_after_full_validation_of_the_same_run(self):
+        root = Path(__file__).parents[3] / '.github/workflows'
+        release = POLICY.parse_workflow((root / 'release.yml').read_text())['jobs']
+        publish = POLICY.parse_workflow((root / 'publish-release.yml').read_text())['jobs']
+        for jobs in (release, publish):
+            for name in ('validate', 'security'):
+                self.assertEqual(jobs[name]['uses'], f'./.github/workflows/{name}.yml')
+                self.assertEqual(jobs[name]['needs'], 'preflight')
+                self.assertNotIn('if', jobs[name])
+        self.assertTrue({'preflight', 'validate', 'security'} <= set(release['sign']['needs']))
+        self.assertNotIn('if', release['sign'])
+        self.assertEqual(release['draft']['needs'], 'sign')
+        self.assertNotIn('if', release['draft'])
+        self.assertEqual(release['publish']['needs'], 'draft')
+        self.assertEqual(release['publish']['if'], 'inputs.publish_release')
+        self.assertTrue({'preflight', 'validate', 'security'} <= set(publish['publish']['needs']))
+        self.assertNotIn('if', publish['publish'])
+
+    def test_release_transfers_have_bounded_downloads_within_a_longer_job(self):
+        jobs = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/release.yml').read_text())['jobs']
+        for name in ('draft', 'publish'):
+            with self.subTest(job=name):
+                self.assertEqual(jobs[name]['timeout-minutes'], '30')
+                downloads = [step for step in jobs[name]['steps']
+                             if str(step.get('uses', '')).startswith('actions/download-artifact@')]
+                self.assertEqual(len(downloads), 1)
+                self.assertEqual(downloads[0].get('timeout-minutes'), '10')
+                # The download precedes every step that writes a release.
+                writes = [index for index, step in enumerate(jobs[name]['steps']) if 'release-publish.py' in step.get('run', '')]
+                self.assertTrue(writes)
+                self.assertLess(jobs[name]['steps'].index(downloads[0]), min(writes))
 
     def test_dependabot_checks_monthly_and_keeps_major_updates_separate(self):
         config = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/dependabot.yml').read_text())

@@ -4,6 +4,24 @@ This record explains the corrections made while activating the 1.0 pipeline in [
 
 For current commands and gate behavior, use the [CI/CD operating guide](../ci-cd.md). For repository settings and release approvals, use [GitHub activation](github-setup.md).
 
+## Run only the jobs a pull request needs
+
+Recorded October 2, 2026. Before this change, every pull request that touched more than documentation ran every job and waited 22 to 29 minutes on hosted runners. The Swift scan took 19 to 25 minutes, the C/C++ scan about 20 and the runtime and distribution job about 17, against 6 to 9 for each package and hosted test job.
+
+Pull requests against main now run the [jobs their changed paths need](../ci-cd.md#what-a-pull-request-runs). App and test changes run the two test jobs; code the runtime job executes adds that job; C/C++ helper sources add the C/C++ scan; CI definitions and any unrecognized path run everything. Expected waits, from the job times above: about 8 to 11 minutes for app and test changes, about 17 for runtime code, about 21 for helper sources and 22 to 29 for CI changes, plus queueing when main's own runs hold the macOS runners.
+
+What did not change: main pushes, merge groups, manual dispatches, release calls and the weekly schedules run everything, and both gates now fail if those events report anything less. `validate / CI Gate` and `Security Gate` keep their names and fail for a required job that failed, was cancelled or was skipped, and for a job that ran when it should have been skipped. No permission, trigger, third-party action or cache was added.
+
+Other parts of the same change:
+
+- The Swift and C/C++ scans are two jobs with separate classifier outputs, so a pull request can require one without the other. The wiring tests reject a step condition or other value inside a gated job that reads classifier outputs, since a job whose work is skipped by a step condition still reports success.
+- A new **Reviewed findings sources** job checks the reviewed C/C++ receipt's bound files on every event in seconds. A pull request that changes a bound file runs that check instead of the compiled scans; the scans confirm the record on main and in the release.
+- CI runs weekly on Mondays at 09:31 UTC, an hour after the existing Security schedule.
+- The Release workflow's `draft` and `publish` jobs now allow 30 minutes, and their signed-artifact downloads have a 10-minute step limit, so a stalled download fails before anything is written.
+- A pull request whose base is not main, a symbolic link or submodule in the diff, or two names differing only by case or Unicode normalization run everything. Classification writes path names only to the escaped step summary.
+
+The local checks were the workflow policy check, the workflow regression suite and actionlint. Hosted timings for each kind of change, the first post-merge main run and the first weekly CI run are to be recorded here once observed.
+
 ## Match test inference threads to the hosted CPU budget
 
 The [PR #29 measurement run](https://github.com/Ankit-Cherian/steno/actions/runs/36804958331/job/110187273962) reported three logical CPUs on `macos-15`. One public JFK recognition request through the real CPU helper was timed at each count:

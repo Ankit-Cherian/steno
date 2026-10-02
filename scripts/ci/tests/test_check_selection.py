@@ -1,12 +1,16 @@
-"""Ensure documentation changes cannot accidentally waive required checks."""
+"""Ensure change classification cannot accidentally waive required checks."""
 import importlib.util
+import io
 import itertools
+import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -20,7 +24,73 @@ def load(name, file):
 SELECT = load('select_checks', 'select-checks.py')
 POLICY = load('selection_policy', 'check-policy.py')
 
-class SelectionTests(unittest.TestCase):
+FULL = {'scope': 'full', 'runtime_required': 'true', 'swift_scan_required': 'true', 'cpp_scan_required': 'true'}
+DOCS = {'scope': 'docs', 'runtime_required': 'false', 'swift_scan_required': 'false', 'cpp_scan_required': 'false'}
+TESTS = {'scope': 'full', 'runtime_required': 'false', 'swift_scan_required': 'false', 'cpp_scan_required': 'false'}
+RUNTIME = {'scope': 'full', 'runtime_required': 'true', 'swift_scan_required': 'false', 'cpp_scan_required': 'false'}
+NATIVE = {'scope': 'full', 'runtime_required': 'true', 'swift_scan_required': 'false', 'cpp_scan_required': 'true'}
+
+
+def pull_request(before, after, ref='main'):
+    return {'pull_request': {'base': {'sha': before, 'ref': ref}, 'head': {'sha': after}}}
+
+
+class Repository:
+    """A scratch Git repository; the classifier runs with it as the working directory."""
+
+    def __init__(self, directory):
+        self.root = Path(directory)
+        self.git('init', '-q')
+        self.git('config', 'user.name', 'Test')
+        self.git('config', 'user.email', 'test@example.invalid')
+
+    def git(self, *args, input=None):
+        return subprocess.check_output(['git', '-C', str(self.root), *args], input=input).decode().strip()
+
+    def write(self, path, text='content\n'):
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+
+    def commit(self, message='change'):
+        self.git('add', '-A')
+        self.git('commit', '-qm', message, '--allow-empty')
+        return self.git('rev-parse', 'HEAD')
+
+    def add_index_entry(self, mode, path, content=b'content\n'):
+        # Builds entries the case-insensitive scratch volume cannot hold.
+        if mode == '160000':
+            sha = '1' * 40
+        else:
+            sha = self.git('hash-object', '-w', '--stdin', input=content)
+        self.git('update-index', '-z', '--add', '--index-info', input=f'{mode} {sha}\t{path}\0'.encode())
+
+    def commit_index(self, message='index change'):
+        self.git('commit', '-qm', message)
+        return self.git('rev-parse', 'HEAD')
+
+
+class ScratchRepositoryTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.repo = Repository(temporary.name)
+        original = Path.cwd()
+        os.chdir(self.repo.root)
+        self.addCleanup(os.chdir, original)
+        for path in ('README.md', 'Steno/ContentView.swift', 'StenoTests/ViewTests.swift',
+                     'StenoKit/Sources/StenoKit/Services/LocalCleanupRanker.swift',
+                     'StenoKit/Sources/StenoKit/Services/SessionCoordinator.swift',
+                     'runtime-helper/steno_prompt_scoring.h', 'scripts/ci/select-checks.py',
+                     'scripts/ci/reviewed-findings.json', 'program.py'):
+            self.repo.write(path)
+        self.base = self.repo.commit('baseline')
+
+    def select(self, head, workflow='CI', base=None, ref='main'):
+        return SELECT.select('pull_request', pull_request(base or self.base, head, ref), workflow)
+
+
+class SelectionTests(ScratchRepositoryTest):
     def test_only_documentation_paths_are_allowed(self):
         for path in ('README.md', 'docs/release/1.0-checklist.md', 'docs/images/app.png'):
             self.assertTrue(SELECT.documentation_path(path))
@@ -28,120 +98,370 @@ class SelectionTests(unittest.TestCase):
             self.assertFalse(SELECT.documentation_path(path))
 
     def test_real_git_diff_and_rename(self):
-        with tempfile.TemporaryDirectory() as directory:
-            def git(*args):
-                return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
-            git('init', '-q')
-            git('config', 'user.name', 'Test')
-            git('config', 'user.email', 'test@example.invalid')
-            root = Path(directory)
-            (root / 'README.md').write_text('before\n')
-            (root / 'program.py').write_text('pass\n')
-            git('add', '.')
-            git('commit', '-qm', 'baseline')
-            base = git('rev-parse', 'HEAD')
-            (root / 'README.md').write_text('after\n')
-            git('commit', '-qam', 'docs')
-            head = git('rev-parse', 'HEAD')
-            original = Path.cwd()
-            os.chdir(root)
-            def pull_request(before, after):
-                return {'pull_request': {'base': {'sha': before}, 'head': {'sha': after}}}
-            try:
-                self.assertEqual(SELECT.select('pull_request', pull_request(base, head), 'CI'), 'docs')
-                self.assertEqual(SELECT.select('pull_request', pull_request(base, head), 'Security'), 'docs')
-                self.assertEqual(SELECT.select('pull_request', pull_request(head, head), 'CI'), 'full')
-                git('mv', 'program.py', 'CONTRIBUTING.md')
-                git('commit', '-qm', 'rename executable')
-                changed = git('rev-parse', 'HEAD')
-                self.assertEqual(SELECT.select('pull_request', pull_request(head, changed), 'CI'), 'full')
-                (root / 'README.md').unlink()
-                (root / 'README.md').symlink_to('CONTRIBUTING.md')
-                git('add', '.')
-                git('commit', '-qm', 'symlink')
-                self.assertEqual(SELECT.select('pull_request', pull_request(changed, git('rev-parse', 'HEAD')), 'CI'), 'full')
-                before_delete = git('rev-parse', 'HEAD')
-                (root / 'CONTRIBUTING.md').unlink()
-                git('commit', '-qam', 'delete documentation')
-                self.assertEqual(SELECT.select('pull_request', pull_request(before_delete, git('rev-parse', 'HEAD')), 'CI'), 'docs')
-            finally:
-                os.chdir(original)
+        self.repo.write('README.md', 'after\n')
+        head = self.repo.commit('docs')
+        for workflow in ('CI', 'Security'):
+            self.assertEqual(self.select(head, workflow), DOCS)
+        self.assertEqual(self.select(head, base=head), FULL)
+        self.repo.git('mv', 'program.py', 'CONTRIBUTING.md')
+        renamed = self.repo.commit('rename executable')
+        # The unrecognized source side of the rename is still classified.
+        self.assertEqual(self.select(renamed, base=head), FULL)
+        (self.repo.root / 'README.md').unlink()
+        (self.repo.root / 'README.md').symlink_to('CONTRIBUTING.md')
+        linked = self.repo.commit('symlink')
+        self.assertEqual(self.select(linked, base=renamed), FULL)
+        (self.repo.root / 'CONTRIBUTING.md').unlink()
+        self.assertEqual(self.select(self.repo.commit('delete documentation'), base=linked), DOCS)
+
+    def test_each_kind_of_change_selects_its_jobs(self):
+        cases = {
+            'Steno/ContentView.swift': TESTS,
+            'StenoTests/ViewTests.swift': TESTS,
+            'StenoKit/Sources/StenoKit/Services/SessionCoordinator.swift': TESTS,
+            'scripts/ci/reviewed-findings.json': TESTS,
+            'StenoKit/Sources/StenoKit/Services/LocalCleanupRanker.swift': RUNTIME,
+            'runtime-helper/steno_prompt_scoring.h': NATIVE,
+            'scripts/ci/select-checks.py': FULL,
+            'unrecognized/file.txt': FULL,
+        }
+        for path, expected in cases.items():
+            with self.subTest(path=path):
+                self.repo.git('checkout', '-q', '--detach', self.base)
+                self.repo.write(path, 'edited\n')
+                self.assertEqual(self.select(self.repo.commit(path)), expected)
+
+    def test_mixed_changes_select_the_union(self):
+        def change(*paths):
+            self.repo.git('checkout', '-q', '--detach', self.base)
+            for path in paths:
+                self.repo.write(path, 'edited\n')
+            return self.select(self.repo.commit())
+        self.assertEqual(change('README.md', 'Steno/ContentView.swift'), TESTS)
+        self.assertEqual(change('Steno/ContentView.swift', 'StenoKit/Sources/StenoKit/Services/LocalCleanupRanker.swift'), RUNTIME)
+        self.assertEqual(change('StenoKit/Sources/StenoKit/Services/LocalCleanupRanker.swift', 'runtime-helper/steno_prompt_scoring.h'), NATIVE)
+        self.assertEqual(change('Steno/ContentView.swift', 'scripts/ci/select-checks.py'), FULL)
+
+    def test_deleting_or_renaming_into_a_runtime_path_selects_runtime(self):
+        (self.repo.root / 'StenoKit/Sources/StenoKit/Services/LocalCleanupRanker.swift').unlink()
+        self.assertEqual(self.select(self.repo.commit('delete')), RUNTIME)
+        self.repo.git('checkout', '-q', '--detach', self.base)
+        self.repo.git('mv', 'StenoTests/ViewTests.swift', 'StenoKit/Sources/StenoKit/Services/CommonEnglishWords.swift')
+        self.assertEqual(self.select(self.repo.commit('rename')), RUNTIME)
+
+    def test_symlink_or_submodule_anywhere_selects_full(self):
+        for mode, path in (('120000', 'Steno/Link.swift'), ('160000', 'StenoTests/Vendor')):
+            with self.subTest(mode=mode):
+                self.repo.git('checkout', '-q', '--detach', self.base)
+                self.repo.write('Steno/ContentView.swift', 'edited\n')
+                self.repo.git('add', '-A')
+                self.repo.add_index_entry(mode, path, b'../StenoKit/Sources/StenoKit/Services/LocalCleanupRanker.swift')
+                self.assertEqual(self.select(self.repo.commit_index()), FULL)
+
+    def test_case_or_unicode_collision_in_the_checkout_selects_full(self):
+        composed, decomposed = 'StenoTests/Caf\u00e9.swift', 'StenoTests/Cafe\u0301.swift'
+        for paths, expected in (([composed], TESTS), (['StenoTests/viewtests.swift'], FULL), ([composed, decomposed], FULL)):
+            with self.subTest(paths=paths):
+                self.repo.git('checkout', '-q', '--detach', self.base)
+                for path in paths:
+                    self.repo.add_index_entry('100644', path)
+                self.assertEqual(self.select(self.repo.commit_index()), expected)
+
+    def test_variants_of_costly_paths_never_select_less(self):
+        self.assertEqual(SELECT.tier('stenokit/sources/stenokit/services/localcleanupranker.swift'), 'runtime')
+        self.assertEqual(SELECT.tier('SCRIPTS/CI/select-checks.py'), 'infrastructure')
+        self.assertEqual(SELECT.tier('scripts/ci/Reviewed-Findings.json'), 'infrastructure')
+        self.assertEqual(SELECT.tier('Runtime-Helper/steno_prompt_scoring.h'), 'native')
+        self.assertEqual(SELECT.tier('steno/ContentView.swift'), 'unknown')
+        self.assertEqual(SELECT.fold('Caf\u00e9'), SELECT.fold('CAFE\u0301'))
+
+    def test_pull_request_against_another_branch_selects_full(self):
+        self.repo.write('README.md', 'after\n')
+        head = self.repo.commit('docs')
+        self.assertEqual(self.select(head), DOCS)
+        for ref in ('release/1.1', 'Main', '', None):
+            with self.subTest(ref=ref):
+                self.assertEqual(self.select(head, ref=ref), FULL)
+        event = {'pull_request': {'base': {'sha': self.base}, 'head': {'sha': head}}}
+        self.assertEqual(SELECT.select('pull_request', event, 'CI'), FULL)
 
     def test_documentation_only_main_pushes_and_merge_groups_require_full(self):
         # A release commit is often documentation only; main must still be fully tested.
-        with tempfile.TemporaryDirectory() as directory:
-            def git(*args):
-                return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
-            git('init', '-q')
-            git('config', 'user.name', 'Test')
-            git('config', 'user.email', 'test@example.invalid')
-            root = Path(directory)
-            (root / 'CHANGELOG.md').write_text('before\n')
-            git('add', '.')
-            git('commit', '-qm', 'baseline')
-            base = git('rev-parse', 'HEAD')
-            (root / 'CHANGELOG.md').write_text('after\n')
-            git('commit', '-qam', 'docs')
-            head = git('rev-parse', 'HEAD')
-            original = Path.cwd()
-            os.chdir(root)
-            try:
-                self.assertEqual(SELECT.select('pull_request', {'pull_request': {'base': {'sha': base}, 'head': {'sha': head}}}, 'CI'), 'docs')
-                for workflow in ('CI', 'Security'):
-                    self.assertEqual(SELECT.select('push', {'before': base, 'after': head}, workflow), 'full')
-                    self.assertEqual(SELECT.select('merge_group', {'merge_group': {'base_sha': base, 'head_sha': head}}, workflow), 'full')
-            finally:
-                os.chdir(original)
+        self.repo.write('README.md', 'after\n')
+        head = self.repo.commit('docs')
+        self.assertEqual(self.select(head), DOCS)
+        for workflow in ('CI', 'Security'):
+            self.assertEqual(SELECT.select('push', {'before': self.base, 'after': head}, workflow), FULL)
+            self.assertEqual(SELECT.select('merge_group', {'merge_group': {'base_sha': self.base, 'head_sha': head}}, workflow), FULL)
 
+    def test_path_names_cannot_add_or_replace_outputs(self):
+        self.repo.write('StenoKit/Sources/StenoKit/Services/LocalCleanupRanker.swift', 'edited\n')
+        self.repo.git('add', '-A')
+        hostile = ('Steno/x\n::set-output name=runtime_required::false\nruntime_required=false.swift',
+                   'StenoTests/::warning::name|`<b>.swift')
+        for path in hostile:
+            self.repo.add_index_entry('100644', path)
+        head = self.repo.commit_index()
+        event = self.repo.root / '.git' / 'event.json'
+        event.write_text(json.dumps(pull_request(self.base, head)))
+        output = self.repo.root / '.git' / 'output'
+        summary = self.repo.root / '.git' / 'summary'
+        stdout = io.StringIO()
+        with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': 'pull_request',
+                                     'GITHUB_WORKFLOW': 'CI', 'GITHUB_OUTPUT': str(output),
+                                     'GITHUB_STEP_SUMMARY': str(summary)}), redirect_stdout(stdout):
+            SELECT.main()
+        self.assertEqual(output.read_text().splitlines(), [f'{key}={RUNTIME[key]}' for key in SELECT.KEYS])
+        self.assertNotIn('::', stdout.getvalue())
+        self.assertNotIn('Steno/x', stdout.getvalue())
+        text = summary.read_text()
+        self.assertIn('LocalCleanupRanker.swift', text)
+        self.assertFalse(any(line.startswith(('::', 'runtime_required')) for line in text.splitlines()))
+        for fragment in ('|`<', '<b>', 'name|'):
+            self.assertNotIn(fragment, text)
+        self.assertEqual(text.count('\\u{a}'), 2)
+
+    def test_unavailable_comparison_falls_back_to_full(self):
+        event = self.repo.root / '.git' / 'event.json'
+        output = self.repo.root / '.git' / 'output'
+        for payload in ('{}', 'null', '[]', '{"pull_request": null}', '{"pull_request": {"base": {}, "head": {}}}',
+                        '{"pull_request": {"base": {"ref": "main", "sha": "' + 'b' * 40 + '"}, "head": {"sha": "' + 'c' * 40 + '"}}}'):
+            event.write_text(payload)
+            output.write_text('')
+            with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_WORKFLOW': 'CI', 'GITHUB_OUTPUT': str(output)}), redirect_stdout(io.StringIO()):
+                SELECT.main()
+            self.assertEqual(output.read_text(), ''.join(f'{key}={FULL[key]}\n' for key in SELECT.KEYS))
+
+
+class StaticSelectionTests(unittest.TestCase):
     def test_release_schedule_dispatch_and_missing_base_require_full(self):
         for event in ('push', 'merge_group', 'schedule', 'workflow_dispatch', 'workflow_call', 'unknown'):
-            self.assertEqual(SELECT.select(event, {}, 'CI'), 'full')
+            self.assertEqual(SELECT.select(event, {}, 'CI'), FULL)
         # Both release callers reuse validation and security; each must get the full suite.
         for workflow in ('Release', 'Publish release'):
             for event in ('pull_request', 'push', 'workflow_dispatch'):
                 with self.subTest(workflow=workflow, event=event):
-                    self.assertEqual(SELECT.select(event, {}, workflow), 'full')
-        self.assertEqual(SELECT.select('pull_request', {'pull_request': {'base': {'sha': '0' * 40}, 'head': {'sha': 'a' * 40}}}, 'CI'), 'full')
+                    self.assertEqual(SELECT.select(event, {}, workflow), FULL)
+        self.assertEqual(SELECT.select('pull_request', pull_request('0' * 40, 'a' * 40), 'CI'), FULL)
 
     def test_release_caller_names_match_the_release_workflows(self):
         for path, name in (('release.yml', 'Release'), ('publish-release.yml', 'Publish release')):
             workflow = POLICY.parse_workflow((ROOT / '.github/workflows' / path).read_text())
             self.assertEqual(workflow['name'], name)
 
-    def test_unavailable_comparison_falls_back_to_full(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            event = root / 'event.json'
-            output = root / 'output'
-            for payload in ('{}', 'null', '[]', '{"pull_request": null}', '{"pull_request": {"base": {}, "head": {}}}'):
-                event.write_text(payload)
-                output.write_text('')
-                with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_WORKFLOW': 'CI', 'GITHUB_OUTPUT': str(output)}):
-                    SELECT.main()
-                self.assertEqual(output.read_text(), 'scope=full\n')
+    def test_ci_definitions_and_gate_scripts_run_everything(self):
+        for path in ('.github/workflows/security.yml', 'scripts/ci/select-checks.py', 'scripts/ci/check-sarif.py',
+                     'scripts/ci/tests/test_check_selection.py', 'scripts/ci/runtime-lock.json',
+                     'scripts/ci/patches/whisper-security.patch', 'project.yml', '.github/dependabot.yml'):
+            self.assertEqual(SELECT.tier(path), 'infrastructure', path)
+        for path in ('runtime-helper/steno_whisper_runtime.cpp', 'runtime-helper/steno_prompt_verification.h',
+                     'scripts/build-whisper-runtime-helper.sh'):
+            self.assertEqual(SELECT.tier(path), 'native', path)
+        for path in ('scripts/test-whisper-prompt-scoring.sh', 'research/benchmarks/manifest.json',
+                     'StenoKit/Sources/StenoBenchmarkCore/BenchmarkRunner.swift', 'Steno/BundledWhisperRuntime.swift',
+                     'Steno/StenoDistribution.entitlements', 'StenoKit/Tests/StenoKitTests/RetainedWhisperProcessIntegrationTests.swift'):
+            self.assertEqual(SELECT.tier(path), 'runtime', path)
+        for path in ('Steno/DictationController.swift', 'StenoKit/Sources/StenoKit/Services/HistoryStore.swift',
+                     'StenoKit/Tests/StenoKitTests/SessionCoordinatorTests.swift', 'Design/Steno.icon/icon.json'):
+            self.assertEqual(SELECT.tier(path), 'tests', path)
 
-    def test_actual_ci_gate_rejects_missing_failed_cancelled_and_wrong_skips(self):
-        workflow = POLICY.parse_workflow((ROOT / '.github/workflows/validate.yml').read_text())
-        command = workflow['jobs']['gate']['steps'][0]['run']
-        for scope, policy, macos, runtime in itertools.product(('docs', 'full', ''), ('success', 'failure', 'skipped', 'cancelled'), ('success', 'failure', 'skipped', 'cancelled'), ('success', 'failure', 'skipped', 'cancelled')):
-            env = dict(os.environ, SCOPE=scope, POLICY_RESULT=policy, MACOS_RESULT=macos, RUNTIME_RESULT=runtime)
-            result = subprocess.run(['bash', '-e', '-c', command], env=env, capture_output=True)
-            expected = policy == 'success' and ((scope == 'docs' and macos == runtime == 'skipped') or (scope == 'full' and macos == runtime == 'success'))
-            self.assertEqual(result.returncode == 0, expected, env)
+    def test_every_tracked_path_has_a_rule(self):
+        tracked = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '-z']).decode().split('\0')
+        unknown = [path for path in tracked if path and SELECT.tier(path) == 'unknown']
+        self.assertEqual(unknown, [], 'add a rule to select-checks.py for each new path')
 
-    def test_security_gate_rejects_failed_classification_or_unexpected_skip(self):
-        workflow = POLICY.parse_workflow((ROOT / '.github/workflows/security.yml').read_text())
-        command = workflow['jobs']['gate']['steps'][0]['run']
-        for scope, classification, native in itertools.product(('docs', 'full', ''), ('success', 'failure', 'skipped'), ('success', 'failure', 'skipped', 'cancelled')):
-            env = dict(os.environ, SCOPE=scope, SCOPE_RESULT=classification, NATIVE_RESULT=native, ACTIONS_RESULT='success', DEPENDENCY_RESULT='success', EVENT_NAME='pull_request')
-            result = subprocess.run(['bash', '-e', '-c', command], env=env, capture_output=True)
-            expected = classification == 'success' and ((scope == 'docs' and native == 'skipped') or (scope == 'full' and native == 'success'))
-            self.assertEqual(result.returncode == 0, expected)
+    def test_exact_rules_name_tracked_files(self):
+        # A renamed file must not silently fall back to its directory's cheaper rule.
+        tracked = set(subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '-z']).decode().split('\0'))
+        for name, patterns in SELECT.RULES.items():
+            for pattern in patterns:
+                if not pattern.endswith('/'):
+                    self.assertIn(pattern, tracked, f'{name} rule names a missing file')
+
+    def test_no_rule_is_listed_twice(self):
+        folded = [SELECT.fold(pattern) for patterns in SELECT.RULES.values() for pattern in patterns]
+        self.assertEqual(len(folded), len(set(folded)))
+        self.assertEqual(set(SELECT.RULES) | {'docs', 'unknown'}, set(SELECT.EFFECTS))
+
+    def test_listed_package_types_are_not_extended_from_unlisted_files(self):
+        # StenoKit is one module: an extension anywhere in it can change what a
+        # runtime file calls. Only the runtime job executes those files.
+        tracked = [path for path in subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '-z', 'StenoKit']).decode().split('\0')
+                   if path.endswith('.swift')]
+        listed = [path for path in tracked if SELECT.tier(path) == 'runtime']
+        declaration = re.compile(r'^(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|internal|package|private|fileprivate|open|final|indirect|nonisolated)\s+)*'
+                                 r'(?:class|struct|enum|protocol|actor|typealias)\s+([A-Za-z_]\w*)', re.M)
+        extension = re.compile(r'^(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|internal|package|private|fileprivate)\s+)*extension\s+([A-Za-z_]\w*)', re.M)
+        types = {}
+        for path in listed:
+            for match in declaration.finditer((ROOT / path).read_text()):
+                types.setdefault(match.group(1), path)
+        self.assertIn('RuleBasedCleanupEngine', types)
+        violations = [f'{path} extends {match.group(1)} from {types[match.group(1)]}'
+                      for path in tracked if path not in listed
+                      for match in extension.finditer((ROOT / path).read_text()) if match.group(1) in types]
+        self.assertEqual(violations, [], 'move the extension into a listed file or list this file')
+
+    def test_escaped_summary_text_cannot_form_markup_or_commands(self):
+        text = SELECT.escaped('a|b`c\n::d<e>')
+        for character in '|`\n:<>':
+            self.assertNotIn(character, text)
+
+
+# Runs a gate script once per environment in one shell, each in a subshell
+# where `set -e` applies, and prints one exit status per line.
+HARNESS = 'set +e\nwhile IFS= read -r assignments; do\n  ( eval "$assignments"; set -e; eval "$GATE_SCRIPT" ) >/dev/null 2>&1\n  echo "$?"\ndone\n'
+RESULTS = ('success', 'failure', 'skipped', 'cancelled')
+EVENTS = ('pull_request', 'push', 'workflow_dispatch', 'schedule', 'merge_group')
+
+
+def gate_command(path):
+    workflow = POLICY.parse_workflow((ROOT / '.github/workflows' / path).read_text())
+    return workflow['jobs']['gate']['steps'][0]['run']
+
+
+def gate_passes(command, cases):
+    lines = ''.join('export ' + ' '.join(f'{key}={shlex.quote(value)}' for key, value in case.items()) + '\n' for case in cases)
+    result = subprocess.run(['bash', '-c', HARNESS], input=lines, capture_output=True, text=True,
+                            env={'PATH': os.environ['PATH'], 'GATE_SCRIPT': command}, check=True)
+    statuses = result.stdout.split()
+    assert len(statuses) == len(cases)
+    return [status == '0' for status in statuses]
+
+
+def possible_classifications():
+    """Every output the classifier can produce for a pull request."""
+    tiers = list(SELECT.EFFECTS)
+    outputs = {tuple(SELECT.outputs_for(list(subset)).items())
+               for size in range(1, len(tiers) + 1) for subset in itertools.combinations(tiers, size)}
+    return [dict(output) for output in sorted(outputs)] + [dict(FULL)]
+
+
+class GateTests(unittest.TestCase):
+    def test_harness_matches_a_separate_shell(self):
+        command = gate_command('validate.yml')
+        cases = [dict(SCOPE=scope, RUNTIME_REQUIRED=flag, EVENT_NAME='pull_request', POLICY_RESULT='success',
+                      MACOS_RESULT='success', RUNTIME_RESULT=runtime)
+                 for scope, flag, runtime in itertools.product(('docs', 'full'), ('true', 'false'), ('success', 'skipped'))]
+        separate = [subprocess.run(['bash', '-e', '-c', command], env={**os.environ, **case}, capture_output=True).returncode == 0
+                    for case in cases]
+        self.assertEqual(gate_passes(command, cases), separate)
+        self.assertTrue(any(separate) and not all(separate))
+
+    def test_ci_gate_matches_an_independent_oracle(self):
+        allowed = {'pull_request': {('docs', 'false'), ('full', 'false'), ('full', 'true')}}
+        cases, expected = [], []
+        for scope, flag, event, policy, macos, runtime in itertools.product(
+                ('docs', 'full', '', 'other'), ('true', 'false', '', 'other'), EVENTS, RESULTS, RESULTS, RESULTS):
+            cases.append(dict(SCOPE=scope, RUNTIME_REQUIRED=flag, EVENT_NAME=event, POLICY_RESULT=policy,
+                              MACOS_RESULT=macos, RUNTIME_RESULT=runtime))
+            expected.append(policy == 'success' and (scope, flag) in allowed.get(event, {('full', 'true')})
+                            and macos == {'docs': 'skipped', 'full': 'success'}[scope]
+                            and runtime == {'true': 'success', 'false': 'skipped'}[flag])
+        self.assertEqual(gate_passes(gate_command('validate.yml'), cases), expected)
+
+    def security_case(self, **values):
+        case = dict(SCOPE='full', SWIFT_REQUIRED='true', CPP_REQUIRED='true', EVENT_NAME='push',
+                    SCOPE_RESULT='success', ACTIONS_RESULT='success', REVIEW_SOURCES_RESULT='success',
+                    DEPENDENCY_RESULT='skipped', SWIFT_RESULT='success', CPP_RESULT='success')
+        case.update(values)
+        return case
+
+    def test_security_gate_matches_an_independent_oracle(self):
+        def allowed(event, scope, swift, cpp):
+            if event != 'pull_request':
+                return (scope, swift, cpp) == ('full', 'true', 'true')
+            if scope == 'docs':
+                return (swift, cpp) == ('false', 'false')
+            return scope == 'full' and swift in ('true', 'false') and cpp in ('true', 'false')
+        expect = {'true': 'success', 'false': 'skipped'}
+        cases, expected = [], []
+        for scope, swift, cpp, event, swift_result, cpp_result in itertools.product(
+                ('docs', 'full', '', 'other'), ('true', 'false', ''), ('true', 'false', 'other'), EVENTS, RESULTS, RESULTS):
+            cases.append(self.security_case(SCOPE=scope, SWIFT_REQUIRED=swift, CPP_REQUIRED=cpp, EVENT_NAME=event,
+                                            DEPENDENCY_RESULT='success' if event == 'pull_request' else 'skipped',
+                                            SWIFT_RESULT=swift_result, CPP_RESULT=cpp_result))
+            expected.append(allowed(event, scope, swift, cpp) and swift_result == expect.get(swift)
+                            and cpp_result == expect.get(cpp))
+        for event, classify, actions, review, dependency in itertools.product(EVENTS, RESULTS, RESULTS, RESULTS, RESULTS):
+            cases.append(self.security_case(EVENT_NAME=event, SCOPE_RESULT=classify, ACTIONS_RESULT=actions,
+                                            REVIEW_SOURCES_RESULT=review, DEPENDENCY_RESULT=dependency))
+            expected.append(classify == actions == review == 'success'
+                            and dependency == ('success' if event == 'pull_request' else 'skipped'))
+        self.assertEqual(gate_passes(gate_command('security.yml'), cases), expected)
+
+    def test_named_failures(self):
+        ci = gate_command('validate.yml')
+        base = dict(SCOPE='full', RUNTIME_REQUIRED='true', EVENT_NAME='pull_request', POLICY_RESULT='success',
+                    MACOS_RESULT='success', RUNTIME_RESULT='success')
+        failing = [dict(base, RUNTIME_RESULT=result) for result in ('skipped', 'cancelled', 'failure')]
+        failing += [dict(base, RUNTIME_REQUIRED='false', RUNTIME_RESULT='success'),
+                    dict(base, EVENT_NAME='push', RUNTIME_REQUIRED='false', RUNTIME_RESULT='skipped'),
+                    dict(base, SCOPE='docs', MACOS_RESULT='skipped')]
+        self.assertEqual(gate_passes(ci, [base] + failing), [True] + [False] * len(failing))
+        security = gate_command('security.yml')
+        failing = [self.security_case(EVENT_NAME='workflow_dispatch', CPP_REQUIRED='false', CPP_RESULT='skipped'),
+                   self.security_case(EVENT_NAME='pull_request', DEPENDENCY_RESULT='success', SCOPE='docs',
+                                      SWIFT_REQUIRED='false', SWIFT_RESULT='skipped'),
+                   self.security_case(REVIEW_SOURCES_RESULT='failure'),
+                   self.security_case(REVIEW_SOURCES_RESULT='skipped'),
+                   self.security_case(CPP_RESULT='cancelled'),
+                   self.security_case(EVENT_NAME='pull_request', DEPENDENCY_RESULT='success', SWIFT_REQUIRED='false',
+                                      SWIFT_RESULT='success')]
+        self.assertEqual(gate_passes(security, [self.security_case()] + failing), [True] + [False] * len(failing))
+
+    def evaluate(self, condition, outputs, classifier, event):
+        if condition is None:
+            return True
+        match = re.fullmatch(r"needs\.([A-Za-z0-9_-]+)\.outputs\.([a-z_]+) == '([a-z]+)'", condition)
+        if match and match.group(1) == classifier:
+            return outputs[match.group(2)] == match.group(3)
+        if condition == "github.event_name == 'pull_request'":
+            return event == 'pull_request'
+        self.fail(f'unsupported job condition: {condition}')
+
+    def test_job_conditions_agree_with_the_gates(self):
+        # Every job runs exactly when its gate requires it, and any other result fails.
+        for path, classifier in GATES.items():
+            workflow = POLICY.parse_workflow((ROOT / '.github/workflows' / path).read_text())
+            jobs = {name: job for name, job in workflow['jobs'].items() if name != 'gate'}
+            step = workflow['jobs']['gate']['steps'][0]
+            variables = {value[len('${{ '):-len(' }}')]: name for name, value in step['env'].items()}
+            def environment(outputs, event, results):
+                values = {'github.event_name': event, **{f'needs.{name}.result': result for name, result in results.items()},
+                          **{f'needs.{classifier}.outputs.{key}': value for key, value in outputs.items()}}
+                return {name: values[reference] for reference, name in variables.items()}
+            cases, expected = [], []
+            for event in EVENTS:
+                for outputs in possible_classifications() if event == 'pull_request' else [FULL]:
+                    results = {name: 'success' if self.evaluate(job.get('if'), outputs, classifier, event) else 'skipped'
+                               for name, job in jobs.items()}
+                    cases.append(environment(outputs, event, results))
+                    expected.append(True)
+                    for name, result in results.items():
+                        for other in RESULTS:
+                            if other != result:
+                                cases.append(environment(outputs, event, {**results, name: other}))
+                                expected.append(False)
+            with self.subTest(workflow=path):
+                self.assertEqual(gate_passes(step['run'], cases), expected)
+
 
 # A gate skipped by its own condition reports success to required checks, so
 # its wiring matters as much as its script.
 GATES = {'validate.yml': 'policy', 'security.yml': 'changes'}
 REFERENCE = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+')
+
+
+def strings(value):
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from strings(child)
+    elif isinstance(value, str):
+        yield value
 
 
 def gate_wiring_errors(workflow, classifier):
@@ -177,7 +497,20 @@ def gate_wiring_errors(workflow, classifier):
     if 'if' in jobs.get(classifier, {}):
         errors.append('the classifier itself must always run')
     for name in others:
-        condition = jobs[name].get('if')
+        job = jobs[name]
+        condition = job.get('if')
+        # A job can also skip its work inside itself: a step condition, a value
+        # read from another job, or an allowed failure would let it report
+        # success without doing what the gate assumes.
+        if 'continue-on-error' in job:
+            errors.append(f'{name} must not be allowed to fail')
+        for index, step in enumerate(job.get('steps', [])):
+            if step.get('if', 'always()') != 'always()':
+                errors.append(f'{name} step {index + 1} has a condition other than always()')
+            if 'continue-on-error' in step:
+                errors.append(f'{name} step {index + 1} must not be allowed to fail')
+        if any('needs.' in value for value in strings({key: value for key, value in job.items() if key not in ('if', 'needs')})):
+            errors.append(f'{name} reads another job outside its job condition')
         if condition is None:
             continue
         for reference in REFERENCE.findall(condition):
@@ -216,17 +549,18 @@ class GateWiringTests(unittest.TestCase):
     def test_job_missing_from_gate_needs_is_rejected(self):
         validate = self.workflow('validate.yml', [('needs: [policy, macos, runtime]', 'needs: [policy, runtime]')])
         self.assertTrue(any('gate needs' in error for error in gate_wiring_errors(validate, 'policy')))
-        security = self.workflow('security.yml', [('needs: [changes, dependency-review, actions, native]', 'needs: [changes, dependency-review, actions]')])
+        security = self.workflow('security.yml', [('needs: [changes, dependency-review, actions, review-sources, native-swift, native-cpp]',
+                                                   'needs: [changes, dependency-review, actions, review-sources, native-swift]')])
         self.assertTrue(any('gate needs' in error for error in gate_wiring_errors(security, 'changes')))
 
     def test_result_variable_pointing_at_the_wrong_job_is_rejected(self):
         validate = self.workflow('validate.yml', [('MACOS_RESULT: ${{ needs.macos.result }}', 'MACOS_RESULT: ${{ needs.runtime.result }}')])
         self.assertTrue(any('macos result' in error for error in gate_wiring_errors(validate, 'policy')))
-        security = self.workflow('security.yml', [('NATIVE_RESULT: ${{ needs.native.result }}', 'NATIVE_RESULT: ${{ needs.actions.result }}')])
-        self.assertTrue(any('native result' in error for error in gate_wiring_errors(security, 'changes')))
+        security = self.workflow('security.yml', [('CPP_RESULT: ${{ needs.native-cpp.result }}', 'CPP_RESULT: ${{ needs.native-swift.result }}')])
+        self.assertTrue(any('native-cpp result' in error for error in gate_wiring_errors(security, 'changes')))
 
     def test_job_conditions_outside_the_classifier_are_rejected(self):
-        validate = self.workflow('validate.yml', [("    if: needs.policy.outputs.scope == 'full'\n    name: Runtime",
+        validate = self.workflow('validate.yml', [("    if: needs.policy.outputs.runtime_required == 'true'\n    name: Runtime",
                                                    "    if: github.ref == 'refs/heads/main'\n    name: Runtime")])
         self.assertTrue(any('github.ref' in error for error in gate_wiring_errors(validate, 'policy')))
         unchecked_event = self.workflow('security.yml', [('          EVENT_NAME: ${{ github.event_name }}\n', '')])
@@ -236,6 +570,25 @@ class GateWiringTests(unittest.TestCase):
         validate = self.workflow('validate.yml', [('      - name: Require every validation job to succeed\n',
                                                    '      - name: Require every validation job to succeed\n        if: false\n')])
         self.assertIn('gate steps must not be conditional or allowed to fail', gate_wiring_errors(validate, 'policy'))
+
+    def test_step_that_skips_work_inside_a_gated_job_is_rejected(self):
+        # A job whose analysis step is skipped still concludes success.
+        mutations = [
+            ('security.yml', 'changes', '      - name: Build Swift app for analysis\n',
+             "      - name: Build Swift app for analysis\n        if: needs.changes.outputs.swift_scan_required == 'true'\n"),
+            ('security.yml', 'changes', '      - name: Build C++ runtime for analysis\n',
+             "      - name: Build C++ runtime for analysis\n        if: github.event_name != 'pull_request'\n"),
+            ('validate.yml', 'policy', '      - name: Native protocol matrix and prompt scoring\n',
+             "      - name: Native protocol matrix and prompt scoring\n        if: needs.policy.outputs.scope == 'full'\n"),
+            ('validate.yml', 'policy', '      - name: Native protocol matrix and prompt scoring\n',
+             '      - name: Native protocol matrix and prompt scoring\n        continue-on-error: true\n'),
+            ('validate.yml', 'policy', '      - name: Native protocol matrix and prompt scoring\n',
+             '      - name: Native protocol matrix and prompt scoring\n        env:\n          SKIP: ${{ needs.policy.outputs.runtime_required }}\n'),
+            ('security.yml', 'changes', '    name: CodeQL (c-cpp)\n', '    name: CodeQL (c-cpp)\n    continue-on-error: true\n'),
+        ]
+        for path, classifier, old, new in mutations:
+            with self.subTest(change=new.strip()):
+                self.assertTrue(gate_wiring_errors(self.workflow(path, [(old, new)]), classifier))
 
 
 if __name__ == '__main__':
