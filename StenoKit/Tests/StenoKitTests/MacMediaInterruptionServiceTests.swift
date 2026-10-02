@@ -7352,6 +7352,151 @@ func sessionStillPlayingAfterPauseEarnsNoPlay() async {
     #expect(!driver.commands.contains(.play))
 }
 
+// A tab or player can be closed during a long dictation. Its session is then
+// gone, and a Play addressed to it would start some other application.
+@MainActor
+@Test("An application whose session is gone by release is not sent Play")
+func applicationWhoseSessionIsGoneByReleaseIsNotSentPlay() async {
+    func snapshot(
+        playing: Bool,
+        session: MediaSessionPlayback
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [podcastsProducer],
+            playingApplications: playing ? ["com.apple.podcasts"] : [],
+            sessions: ["com.apple.podcasts": session]
+        )
+    }
+    // The Pause is slow to act. By release the application has released its
+    // assertion, which would verify the stop, but its session is gone.
+    let playing = snapshot(playing: true, session: .playing)
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [playing, playing, playing]
+            + Array(repeating: snapshot(playing: false, session: .noSession), count: 6)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        resumeVerificationDelays: [0]
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("The playing application should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.contains(.pause))
+    #expect(!driver.commands.contains(.play))
+}
+
+// Custody that was verified early is released without another reading, so the
+// last check is made where the command is dispatched.
+@MainActor
+@Test("A verified pause is not resumed once the application's session has disappeared")
+func verifiedPauseIsNotResumedOnceSessionHasDisappeared() async {
+    let producer = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts"
+    )
+    let bridge = FakeMediaRemoteBridge()
+    bridge.sessionPlaybackByApplication = ["com.apple.podcasts": .playing]
+    let audioOutputMonitor = FakeAudioOutputMonitor()
+    audioOutputMonitor.observation = MediaAudioOutputObservation(
+        targets: [producer],
+        unresolvedProcessCount: 0
+    )
+    let driver = MacMediaInterruptionDriver(
+        bridge: bridge,
+        playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
+        audioOutputMonitor: audioOutputMonitor,
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
+        applicationResolver: AudioProcessApplicationResolver(
+            processPath: { _ in "/Applications/Podcasts.app/Contents/MacOS/Podcasts" },
+            bundleIdentifierAtURL: { _ in "com.apple.podcasts" }
+        )
+    )
+    let sleepGate = MediaSleepGate()
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [1],
+        resumeVerificationDelays: [],
+        sleep: { _ in await sleepGate.wait() }
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("The playing application should be paused.")
+        return
+    }
+    #expect(bridge.targetedCommands.map(\.0) == [.pause])
+
+    // The Pause takes effect and is verified on the first pass.
+    bridge.sessionPlaybackByApplication = ["com.apple.podcasts": .stopped]
+    _ = await sleepGate.waitUntilCount(1, timeoutMilliseconds: 1_000)
+    await sleepGate.openPermanently()
+    // One session read before the Pause, one as it is dispatched, and one in
+    // the verification pass that sees the stop.
+    await waitUntil { bridge.sessionPlaybackRequests.count >= 3 }
+
+    // Later in the dictation the player is closed.
+    bridge.sessionPlaybackByApplication = ["com.apple.podcasts": .noSession]
+    await service.endInterruption(token: token)
+
+    #expect(
+        bridge.targetedCommands.map(\.0) == [.pause],
+        "No Play may be addressed to an application that no longer has a session."
+    )
+}
+
+@MainActor
+@Test("No command of either kind is sent to an application with no media session")
+func noCommandIsSentToApplicationWithoutMediaSession() async {
+    let bridge = FakeMediaRemoteBridge()
+    bridge.sessionPlaybackByApplication = [
+        primaryAudioOutput.applicationBundleIdentifier: .noSession,
+    ]
+    let driver = MacMediaInterruptionDriver(
+        bridge: bridge,
+        playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
+        audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
+        applicationResolver: AudioProcessApplicationResolver(
+            processPath: { processID in
+                processID == primaryAudioOutput.processID
+                    ? "/Applications/Example.app/Contents/MacOS/Example"
+                    : nil
+            },
+            bundleIdentifierAtURL: { _ in
+                primaryAudioOutput.applicationBundleIdentifier
+            }
+        )
+    )
+    let destination = VerifiedMediaResumeDestination(
+        applicationBundleIdentifiers: [primaryAudioOutput.applicationBundleIdentifier],
+        expectedProcessTargets: [primaryAudioOutput]
+    )
+
+    let play = await driver.sendPlay(to: destination)
+    let pause = await driver.sendPause(to: destination)
+
+    #expect(play.acceptedApplicationBundleIdentifiers.isEmpty)
+    #expect(pause.acceptedApplicationBundleIdentifiers.isEmpty)
+    #expect(bridge.targetedCommands.isEmpty)
+
+    // Once the session is back, or when it cannot be read, commands go through.
+    bridge.sessionPlaybackByApplication = [:]
+    let playWithUnknownSession = await driver.sendPlay(to: destination)
+    #expect(
+        playWithUnknownSession.acceptedApplicationBundleIdentifiers
+            == [primaryAudioOutput.applicationBundleIdentifier]
+    )
+}
+
 @MainActor
 @Test("The driver reads session state for exactly the applications with open output streams")
 func driverReadsSessionStateForApplicationsWithOpenStreams() async {

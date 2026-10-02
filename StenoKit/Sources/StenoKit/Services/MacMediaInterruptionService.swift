@@ -1192,9 +1192,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         /// by construction — Chrome elects its main process while the renderer
         /// helper owns the stream — so neither an elected process that is absent
         /// from the producer set nor drifting elected content is evidence about
-        /// this application's custody. Only a replaced producer process, or fresh
-        /// strong-positive playback evidence corroborated for this exact
-        /// application, contradicts.
+        /// this application's custody. Only a replaced producer process, a media
+        /// session that has disappeared, or fresh strong-positive playback
+        /// evidence corroborated for this exact application, contradicts.
         private func contradictsPendingCustody(
             _ snapshot: MediaInterruptionSnapshot,
             for applicationBundleIdentifier: String,
@@ -1202,6 +1202,11 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         ) -> Bool {
             let expectedTargets = observedTargets.filter {
                 $0.applicationBundleIdentifier == applicationBundleIdentifier
+            }
+            // Custody of an application whose session has disappeared cannot be
+            // redeemed: its Play would be handed to another application.
+            if snapshot.sessionPlaybackByApplication[applicationBundleIdentifier] == .noSession {
+                return true
             }
             guard let observation = snapshot.audioOutputObservation else { return false }
             let observedApplicationTargets = Set(
@@ -1759,6 +1764,9 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
             guard !originalTargets.isEmpty,
                   currentTargets.isSubset(of: originalTargets)
             else { continue }
+            // An application whose session is gone cannot be resumed: a Play
+            // addressed to it would reach a different application.
+            guard sessionPlaybackByApplication[candidate] != .noSession else { continue }
 
             // The application being seen to stop playing since the Pause is
             // what shows the Pause worked. A closed output stream alone does
@@ -2628,6 +2636,19 @@ final class MacMediaInterruptionDriver: MediaInterruptionDriving {
         let bridge = self.bridge
         let tasks = applicationBundleIdentifiers.map { applicationBundleIdentifier in
             Task { @MainActor () -> (String, Bool) in
+                // A session can disappear between the snapshot and the command,
+                // or during a long capture. The system hands a command for an
+                // application with no session to another application, so no
+                // command of either kind is ever sent to one.
+                let session = await bridge.applicationSessionPlayback(
+                    forApplicationBundleIdentifier: applicationBundleIdentifier
+                )
+                guard session != .noSession else {
+                    Self.logger.info(
+                        "Semantic media \(command.logValue, privacy: .public) withheld from an application with no media session."
+                    )
+                    return (applicationBundleIdentifier, false)
+                }
                 let accepted = await bridge.send(
                     command,
                     toApplicationBundleIdentifier: applicationBundleIdentifier
