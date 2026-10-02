@@ -308,16 +308,67 @@ class StaticSelectionTests(unittest.TestCase):
             self.assertNotIn(character, text)
 
 
-class GateTests(unittest.TestCase):
-    def test_actual_ci_gate_rejects_missing_failed_cancelled_and_wrong_skips(self):
-        workflow = POLICY.parse_workflow((ROOT / '.github/workflows/validate.yml').read_text())
-        command = workflow['jobs']['gate']['steps'][0]['run']
-        for scope, policy, macos, runtime in itertools.product(('docs', 'full', ''), ('success', 'failure', 'skipped', 'cancelled'), ('success', 'failure', 'skipped', 'cancelled'), ('success', 'failure', 'skipped', 'cancelled')):
-            env = dict(os.environ, SCOPE=scope, POLICY_RESULT=policy, MACOS_RESULT=macos, RUNTIME_RESULT=runtime)
-            result = subprocess.run(['bash', '-e', '-c', command], env=env, capture_output=True)
-            expected = policy == 'success' and ((scope == 'docs' and macos == runtime == 'skipped') or (scope == 'full' and macos == runtime == 'success'))
-            self.assertEqual(result.returncode == 0, expected, env)
+# Runs a gate script once per environment in one shell, each in a subshell
+# where `set -e` applies, and prints one exit status per line.
+HARNESS = 'set +e\nwhile IFS= read -r assignments; do\n  ( eval "$assignments"; set -e; eval "$GATE_SCRIPT" ) >/dev/null 2>&1\n  echo "$?"\ndone\n'
+RESULTS = ('success', 'failure', 'skipped', 'cancelled')
+EVENTS = ('pull_request', 'push', 'workflow_dispatch', 'schedule', 'merge_group')
 
+
+def gate_command(path):
+    workflow = POLICY.parse_workflow((ROOT / '.github/workflows' / path).read_text())
+    return workflow['jobs']['gate']['steps'][0]['run']
+
+
+def gate_passes(command, cases):
+    lines = ''.join('export ' + ' '.join(f'{key}={shlex.quote(value)}' for key, value in case.items()) + '\n' for case in cases)
+    result = subprocess.run(['bash', '-c', HARNESS], input=lines, capture_output=True, text=True,
+                            env={'PATH': os.environ['PATH'], 'GATE_SCRIPT': command}, check=True)
+    statuses = result.stdout.split()
+    assert len(statuses) == len(cases)
+    return [status == '0' for status in statuses]
+
+
+def possible_classifications():
+    """Every output the classifier can produce for a pull request."""
+    tiers = list(SELECT.EFFECTS)
+    outputs = {tuple(SELECT.outputs_for(list(subset)).items())
+               for size in range(1, len(tiers) + 1) for subset in itertools.combinations(tiers, size)}
+    return [dict(output) for output in sorted(outputs)] + [dict(FULL)]
+
+
+class GateTests(unittest.TestCase):
+    def test_harness_matches_a_separate_shell(self):
+        command = gate_command('validate.yml')
+        cases = [dict(SCOPE=scope, RUNTIME_REQUIRED=flag, EVENT_NAME='pull_request', POLICY_RESULT='success',
+                      MACOS_RESULT='success', RUNTIME_RESULT=runtime)
+                 for scope, flag, runtime in itertools.product(('docs', 'full'), ('true', 'false'), ('success', 'skipped'))]
+        separate = [subprocess.run(['bash', '-e', '-c', command], env={**os.environ, **case}, capture_output=True).returncode == 0
+                    for case in cases]
+        self.assertEqual(gate_passes(command, cases), separate)
+        self.assertTrue(any(separate) and not all(separate))
+
+    def test_ci_gate_matches_an_independent_oracle(self):
+        allowed = {'pull_request': {('docs', 'false'), ('full', 'false'), ('full', 'true')}}
+        cases, expected = [], []
+        for scope, flag, event, policy, macos, runtime in itertools.product(
+                ('docs', 'full', '', 'other'), ('true', 'false', '', 'other'), EVENTS, RESULTS, RESULTS, RESULTS):
+            cases.append(dict(SCOPE=scope, RUNTIME_REQUIRED=flag, EVENT_NAME=event, POLICY_RESULT=policy,
+                              MACOS_RESULT=macos, RUNTIME_RESULT=runtime))
+            expected.append(policy == 'success' and (scope, flag) in allowed.get(event, {('full', 'true')})
+                            and macos == {'docs': 'skipped', 'full': 'success'}[scope]
+                            and runtime == {'true': 'success', 'false': 'skipped'}[flag])
+        self.assertEqual(gate_passes(gate_command('validate.yml'), cases), expected)
+
+    def test_named_failures(self):
+        ci = gate_command('validate.yml')
+        base = dict(SCOPE='full', RUNTIME_REQUIRED='true', EVENT_NAME='pull_request', POLICY_RESULT='success',
+                    MACOS_RESULT='success', RUNTIME_RESULT='success')
+        failing = [dict(base, RUNTIME_RESULT=result) for result in ('skipped', 'cancelled', 'failure')]
+        failing += [dict(base, RUNTIME_REQUIRED='false', RUNTIME_RESULT='success'),
+                    dict(base, EVENT_NAME='push', RUNTIME_REQUIRED='false', RUNTIME_RESULT='skipped'),
+                    dict(base, SCOPE='docs', MACOS_RESULT='skipped')]
+        self.assertEqual(gate_passes(ci, [base] + failing), [True] + [False] * len(failing))
     def test_security_gate_rejects_failed_classification_or_unexpected_skip(self):
         workflow = POLICY.parse_workflow((ROOT / '.github/workflows/security.yml').read_text())
         command = workflow['jobs']['gate']['steps'][0]['run']
@@ -326,6 +377,43 @@ class GateTests(unittest.TestCase):
             result = subprocess.run(['bash', '-e', '-c', command], env=env, capture_output=True)
             expected = classification == 'success' and ((scope == 'docs' and native == 'skipped') or (scope == 'full' and native == 'success'))
             self.assertEqual(result.returncode == 0, expected)
+
+    def evaluate(self, condition, outputs, classifier, event):
+        if condition is None:
+            return True
+        match = re.fullmatch(r"needs\.([A-Za-z0-9_-]+)\.outputs\.([a-z_]+) == '([a-z]+)'", condition)
+        if match and match.group(1) == classifier:
+            return outputs[match.group(2)] == match.group(3)
+        if condition == "github.event_name == 'pull_request'":
+            return event == 'pull_request'
+        self.fail(f'unsupported job condition: {condition}')
+
+    def test_job_conditions_agree_with_the_gates(self):
+        # Every job runs exactly when its gate requires it, and any other result fails.
+        for path, classifier in GATES.items():
+            workflow = POLICY.parse_workflow((ROOT / '.github/workflows' / path).read_text())
+            jobs = {name: job for name, job in workflow['jobs'].items() if name != 'gate'}
+            step = workflow['jobs']['gate']['steps'][0]
+            variables = {value[len('${{ '):-len(' }}')]: name for name, value in step['env'].items()}
+            def environment(outputs, event, results):
+                values = {'github.event_name': event, **{f'needs.{name}.result': result for name, result in results.items()},
+                          **{f'needs.{classifier}.outputs.{key}': value for key, value in outputs.items()}}
+                return {name: values[reference] for reference, name in variables.items()}
+            cases, expected = [], []
+            for event in EVENTS:
+                for outputs in possible_classifications() if event == 'pull_request' else [FULL]:
+                    results = {name: 'success' if self.evaluate(job.get('if'), outputs, classifier, event) else 'skipped'
+                               for name, job in jobs.items()}
+                    cases.append(environment(outputs, event, results))
+                    expected.append(True)
+                    for name, result in results.items():
+                        for other in RESULTS:
+                            if other != result:
+                                cases.append(environment(outputs, event, {**results, name: other}))
+                                expected.append(False)
+            with self.subTest(workflow=path):
+                self.assertEqual(gate_passes(step['run'], cases), expected)
+
 
 # A gate skipped by its own condition reports success to required checks, so
 # its wiring matters as much as its script.
@@ -415,7 +503,7 @@ class GateWiringTests(unittest.TestCase):
         self.assertTrue(any('native result' in error for error in gate_wiring_errors(security, 'changes')))
 
     def test_job_conditions_outside_the_classifier_are_rejected(self):
-        validate = self.workflow('validate.yml', [("    if: needs.policy.outputs.scope == 'full'\n    name: Runtime",
+        validate = self.workflow('validate.yml', [("    if: needs.policy.outputs.runtime_required == 'true'\n    name: Runtime",
                                                    "    if: github.ref == 'refs/heads/main'\n    name: Runtime")])
         self.assertTrue(any('github.ref' in error for error in gate_wiring_errors(validate, 'policy')))
         unchecked_event = self.workflow('security.yml', [('          EVENT_NAME: ${{ github.event_name }}\n', '')])

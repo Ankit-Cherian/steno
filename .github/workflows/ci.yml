@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
   merge_group:
+  # Weekly full validation of main catches runner-image drift that no change
+  # reveals. It starts an hour after the weekly Security scan.
+  schedule:
+    - cron: '31 9 * * 1'
   workflow_dispatch:
 
 permissions:

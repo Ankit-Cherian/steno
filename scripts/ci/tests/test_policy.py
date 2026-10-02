@@ -195,6 +195,10 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertTrue({'pull_request', 'merge_group', 'workflow_dispatch'} <= set(workflow['on']))
         self.assertEqual(workflow['jobs']['validate']['uses'], './.github/workflows/validate.yml')
         self.assertNotIn('if', workflow['jobs']['validate'])
+        # Weekly full validation of main, an hour after the weekly Security scan.
+        self.assertEqual(workflow['on']['schedule'], [{'cron': '31 9 * * 1'}])
+        security = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
+        self.assertEqual(security['on']['schedule'], [{'cron': '31 8 * * 1'}])
 
     def test_security_workflow_dispatches_cpp_review_and_preserves_gate_failure(self):
         workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
