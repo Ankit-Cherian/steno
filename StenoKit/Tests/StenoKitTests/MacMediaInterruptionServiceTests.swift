@@ -7064,6 +7064,48 @@ func playbackActivityKeepsOnlyOwnedSleepPreventingAssertions() {
     )
 }
 
+@Test("An assertion list that cannot be read is unknown, not empty")
+func unreadableAssertionListIsUnknownNotEmpty() {
+    let wellFormed: [NSNumber: [[String: Any]]] = [
+        NSNumber(value: 100): [
+            [
+                "AssertType": "PreventUserIdleSystemSleep",
+                "AssertLevel": NSNumber(value: 255),
+                "GlobalUniqueID": NSNumber(value: 7),
+            ],
+            // An entry with no type or identity is skipped, not fatal.
+            ["AssertName": "incomplete"],
+        ],
+    ]
+
+    #expect(
+        PowerAssertionPlaybackActivityMonitor.records(
+            fromAssertionsByProcess: wellFormed as CFDictionary
+        ) == [
+            PowerAssertionRecord(
+                ownerProcessID: 100,
+                type: "PreventUserIdleSystemSleep",
+                level: 255,
+                identifier: 7
+            ),
+        ]
+    )
+    // No dictionary at all is how the system reports that nothing is held.
+    #expect(
+        PowerAssertionPlaybackActivityMonitor.records(fromAssertionsByProcess: nil) == []
+    )
+    #expect(
+        PowerAssertionPlaybackActivityMonitor.records(
+            fromAssertionsByProcess: ["unexpected": "shape"] as CFDictionary
+        ) == nil
+    )
+    #expect(
+        PowerAssertionPlaybackActivityMonitor.records(
+            fromAssertionsByProcess: [NSNumber(value: 100): "not a list"] as CFDictionary
+        ) == nil
+    )
+}
+
 @Test("A released assertion is seen even when the application has taken a new one")
 func releasedAssertionIsSeenDespiteNewAssertion() {
     func snapshot(

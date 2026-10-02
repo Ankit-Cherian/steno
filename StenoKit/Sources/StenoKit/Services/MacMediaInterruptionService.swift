@@ -2432,10 +2432,37 @@ final class PowerAssertionPlaybackActivityMonitor: PlaybackActivityMonitoring {
             )
             return nil
         }
-        // Success without a dictionary means no process holds an assertion.
-        let assertions = assertionsByProcess?.takeRetainedValue()
-            as? [NSNumber: [[String: Any]]] ?? [:]
+        guard let records = Self.records(
+            fromAssertionsByProcess: assertionsByProcess?.takeRetainedValue()
+        ) else {
+            Self.logger.debug("Power assertion list had an unexpected shape.")
+            return nil
+        }
+        let observation = PlaybackActivityObservationBuilder(
+            applicationResolver: applicationResolver
+        ).makeObservation(
+            from: records,
+            forApplications: applicationBundleIdentifiers
+        )
+        Self.logger.debug(
+            "Power assertion discovery assertions=\(records.count, privacy: .public) playback=\(observation.assertions.count, privacy: .public)"
+        )
+        return observation
+    }
+}
 
+extension PowerAssertionPlaybackActivityMonitor {
+    /// Success without a dictionary means no process holds an assertion. A
+    /// dictionary that cannot be read is not that: it is an unknown, and
+    /// returning an empty list for it would look like every assertion had been
+    /// released.
+    nonisolated static func records(
+        fromAssertionsByProcess assertionsByProcess: CFDictionary?
+    ) -> [PowerAssertionRecord]? {
+        guard let assertionsByProcess else { return [] }
+        guard let assertions = assertionsByProcess as? [NSNumber: [[String: Any]]] else {
+            return nil
+        }
         var records: [PowerAssertionRecord] = []
         for (processID, processAssertions) in assertions {
             for assertion in processAssertions {
@@ -2455,16 +2482,7 @@ final class PowerAssertionPlaybackActivityMonitor: PlaybackActivityMonitoring {
                 )
             }
         }
-        let observation = PlaybackActivityObservationBuilder(
-            applicationResolver: applicationResolver
-        ).makeObservation(
-            from: records,
-            forApplications: applicationBundleIdentifiers
-        )
-        Self.logger.debug(
-            "Power assertion discovery assertions=\(records.count, privacy: .public) playback=\(observation.assertions.count, privacy: .public)"
-        )
-        return observation
+        return records
     }
 }
 
