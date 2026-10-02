@@ -161,11 +161,13 @@ public struct BenchmarkArtifactIdentity: Sendable, Codable, Equatable {
                 return candidate
             }
 
-            let parent = candidate.deletingLastPathComponent()
-            if parent.path == candidate.path {
+            // Stop at the root itself. Deleting the last component of "/"
+            // gives "/.." on some macOS versions, so waiting for the path to
+            // stop changing would never end there.
+            guard candidate.pathComponents.count > 1 else {
                 return nil
             }
-            candidate = parent
+            candidate = candidate.deletingLastPathComponent().standardizedFileURL
         }
     }
 
