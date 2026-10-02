@@ -6788,6 +6788,42 @@ func outputStreamClosingAloneNeverEarnsPlay() async {
     #expect(!driver.commands.contains(.play))
 }
 
+// An output process that cannot be tied to an application, such as a browser's
+// system helper or a command-line player, says nothing about whether the
+// application Steno paused has stopped.
+@MainActor
+@Test(
+    "An unrelated unresolved output process does not block the resume",
+    arguments: [0, 2, 5]
+)
+func unresolvedOutputProcessDoesNotBlockResume(
+    verificationPassesBeforeRelease: Int
+) async {
+    let stoppedBesideUnresolvedOutput = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsProducer],
+        unresolvedAudioOutputCount: 1,
+        playingApplications: []
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [podcastsSnapshot(playing: true)]
+            + Array(repeating: stoppedBesideUnresolvedOutput, count: 15)
+    )
+
+    await runDictation(
+        over: driver,
+        verificationPassesBeforeRelease: verificationPassesBeforeRelease
+    )
+
+    #expect(driver.commands.first == .pause)
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.commands.last == .play)
+}
+
 @MainActor
 @Test(
     "A slowly acknowledged Pause changes neither outcome",

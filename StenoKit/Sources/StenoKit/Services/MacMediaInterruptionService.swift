@@ -1736,11 +1736,14 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
         from before: MediaInterruptionSnapshot,
         among candidates: Set<String>
     ) -> Set<String> {
-        guard before.audioOutputObservation?.unresolvedProcessCount == 0,
-              audioOutputObservation?.unresolvedProcessCount == 0,
-              let beforeObservation = before.audioOutputObservation,
+        guard let beforeObservation = before.audioOutputObservation,
               let afterObservation = audioOutputObservation
         else { return [] }
+        // An output process that cannot be tied to any application is not
+        // evidence about these applications. It limits only the check below
+        // that rests on the elected session, which names a single process.
+        let everyOutputProcessIsResolved = beforeObservation.unresolvedProcessCount == 0
+            && afterObservation.unresolvedProcessCount == 0
 
         let beforeTargets = Set(beforeObservation.targets)
         let afterTargets = Set(afterObservation.targets)
@@ -1769,6 +1772,8 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
                 }
                 continue
             }
+
+            guard everyOutputProcessIsResolved else { continue }
 
             let beforeCandidateTarget = before.target.flatMap { target in
                 target.bundleIdentifier == candidate ? target : nil
