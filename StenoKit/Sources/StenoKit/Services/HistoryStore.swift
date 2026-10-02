@@ -42,15 +42,31 @@ public actor HistoryStore: HistoryStoreProtocol {
     private let storageURL: URL
     private let clipboardService: ClipboardService
     private let maxEntries: Int
+    private let removeFile: @Sendable (URL) throws -> Void
 
     public init(
         storageURL: URL? = nil,
         clipboardService: ClipboardService,
         maxEntries: Int = 1_000
     ) {
+        self.init(
+            storageURL: storageURL,
+            clipboardService: clipboardService,
+            maxEntries: maxEntries,
+            removeFile: { try FileManager.default.removeItem(at: $0) }
+        )
+    }
+
+    init(
+        storageURL: URL?,
+        clipboardService: ClipboardService,
+        maxEntries: Int = 1_000,
+        removeFile: @escaping @Sendable (URL) throws -> Void
+    ) {
         self.storageURL = storageURL ?? Self.defaultStorageURL()
         self.clipboardService = clipboardService
         self.maxEntries = maxEntries
+        self.removeFile = removeFile
     }
 
     public func append(entry: TranscriptEntry) async throws {
@@ -81,17 +97,33 @@ public actor HistoryStore: HistoryStoreProtocol {
     /// Removes every transcript. The previous-generation copy kept beside the
     /// file is removed too, and so are copies kept when the file couldn't be
     /// read in full, so the deleted text doesn't stay on disk.
+    ///
+    /// Nothing is read, kept aside or copied first, so the deleted text is
+    /// never written anywhere new: the file is replaced with an empty history
+    /// even when it couldn't be read. Every removal is attempted before a
+    /// failure is reported, so one file that can't be removed doesn't keep
+    /// the others.
     public func deleteAll() async throws {
-        try commit { working in
-            working.removeAll()
-            return true
-        }
-        let copies = [StorageFilePreservation.previousCopyURL(for: storageURL)]
-            + StorageFilePreservation.keptCopies(of: storageURL, labels: ["original", "unreadable"])
-        for copy in copies where FileManager.default.fileExists(atPath: copy.path) {
+        try StorageFileLock.withLock(for: storageURL) {
+            var failed = false
             do {
-                try FileManager.default.removeItem(at: copy)
+                try write([], previousCopy: .matchNewFile)
+                entries = []
+                loadFailed = false
+                unpreservedOriginal = nil
             } catch {
+                failed = true
+            }
+            let copies = [StorageFilePreservation.previousCopyURL(for: storageURL)]
+                + StorageFilePreservation.keptCopies(of: storageURL, labels: ["original", "unreadable"])
+            for copy in copies where FileManager.default.fileExists(atPath: copy.path) {
+                do {
+                    try removeFile(copy)
+                } catch {
+                    failed = true
+                }
+            }
+            if failed {
                 throw HistoryStoreError.persistenceFailed
             }
         }
