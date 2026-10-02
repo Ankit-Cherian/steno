@@ -35,7 +35,7 @@ struct MediaSettingsSection: View {
 
     var captionText: String {
         isMediaPausingSupported
-            ? "Steno resumes only apps it paused during dictation. If you paused media yourself a few seconds before dictating, it may resume."
+            ? "Steno pauses apps that are playing when you start dictating and resumes only those. Media you paused yourself stays paused."
             : "Pausing media requires macOS 15 or later. Your choice is kept and takes effect after you update macOS."
     }
 

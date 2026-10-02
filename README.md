@@ -19,7 +19,7 @@ Settings also lets you adjust how Steno handles your words:
 - Add recurring misheard words and preferred spellings to your word list, with optional aliases and rules for individual apps. Corrections apply to every dictation, however clearly it was spoken, including corrections that only change capitalization, such as “github” to “GitHub”. Steno always keeps a few common words as spoken, such as “cloud” and “code”; Settings shows a correction for one of them as Never applies.
 - Expand a short phrase into saved text, such as an address or a reply you use often. Shortcuts can apply everywhere or in one app.
 - Choose cleanup preferences: a Natural, Paragraph or Bullets structure, and how many fillers to remove. Default cleanup keeps ambiguous phrases such as “like” and “you know”; Aggressive cleanup can remove its supported fillers.
-- Enable media interruption to pause an app that is playing audio and resume it after recording. Steno resumes only apps it paused, and leaves playback alone when it cannot confirm which app it would control. Media you paused yourself a few seconds before dictating may be resumed. Media interruption requires macOS 15 or later; on earlier versions the settings are unavailable.
+- Enable media interruption to pause an app that is playing audio and resume it after recording. Steno pauses only apps it can confirm are playing and resumes only those, so media you paused yourself stays paused. Media interruption requires macOS 15 or later; on earlier versions the settings are unavailable.
 - Choose a light or dark appearance, follow the system setting, and pick an accent color.
 
 Most settings wait for **Save changes**; **Discard** restores the saved values. Appearance changes save immediately.
