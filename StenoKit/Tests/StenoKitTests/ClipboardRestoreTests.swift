@@ -139,3 +139,41 @@ func restorePointRecognizesPrivateMarkers() {
     #expect(ClipboardRestorePoint(items: [ordinary, concealed]).holdsPrivateContent)
 }
 #endif
+
+#if os(macOS)
+@Test("A paste into a remote-desktop client leaves the transcript on the clipboard")
+func remoteDesktopPasteKeepsTranscriptOnClipboard() async throws {
+    let remote = AppContext.classified(
+        bundleIdentifier: "com.microsoft.rdc.macos",
+        appName: "Microsoft Remote Desktop"
+    )
+    #expect(remote.isRemoteDesktop)
+    let pasteboard = FakePasteboard(items: [copiedImageItem])
+    let keys = FakeKeyPoster()
+    let service = InsertionService(transports: MacInsertionTransportFactory.makeTransports(
+        orderedMethods: defaultInsertionOrder,
+        clipboard: pasteboard,
+        system: makeFakeInsertionSystem(
+            keys: keys,
+            activator: FakeApplicationActivator(
+                frontmost: remote.bundleIdentifier,
+                running: [remote.bundleIdentifier]
+            ),
+            accessibility: FakeAccessibilityClient(focusedBundle: remote.bundleIdentifier)
+        ),
+        clipboardRestoreDelay: .milliseconds(50)
+    ))
+
+    let result = await service.insert(text: "remote text", target: remote)
+
+    #expect(result.status == .copiedOnly)
+    #expect(result.method == .clipboardPaste)
+    #expect(result.pasteAttempted == true)
+    #expect(result.errorMessage == nil)
+    #expect(keys.commandShortcuts.count == 1)
+    // The client may fetch the clipboard long after the keystroke.
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(pasteboard.restoreCount == 0)
+    #expect(pasteboard.plainText == "remote text")
+}
+#endif

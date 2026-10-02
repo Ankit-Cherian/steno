@@ -634,6 +634,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
 
             let pasteWrite = try await commitClipboardForAutoPaste(
                 exactTargetText,
+                restoresPreviousClipboard: !target.isRemoteDesktop,
                 authorization: commitAuthorization,
                 lease: commitLease
             )
@@ -703,6 +704,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
 
         let pasteWrite = try await commitClipboardForAutoPaste(
             text,
+            restoresPreviousClipboard: !target.isRemoteDesktop,
             authorization: commitAuthorization,
             lease: commitLease
         )
@@ -840,8 +842,12 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         }
     }
 
+    /// `restoresPreviousClipboard` is false for remote-desktop and virtual
+    /// machine clients: they read the clipboard only when the remote side
+    /// pastes, which can happen after a restore, so the transcript stays.
     private func commitClipboardForAutoPaste(
         _ text: String,
+        restoresPreviousClipboard: Bool,
         authorization: InsertionCommitAuthorization?,
         lease: InsertionCommitLease?
     ) async throws -> AutoPasteClipboardWrite {
@@ -852,8 +858,8 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         // Private content, such as a password a manager will clear itself, is
         // not put back: restoring it would outlive that clear. The dictation
         // stays on the clipboard instead.
-        let snapshot = await restorable.makeRestorePoint()
-        let restorePoint = snapshot.holdsPrivateContent ? nil : snapshot
+        let snapshot = restoresPreviousClipboard ? await restorable.makeRestorePoint() : nil
+        let restorePoint = snapshot?.holdsPrivateContent == false ? snapshot : nil
         let changeCount = try await commitClipboardWrite(authorization: authorization, lease: lease) {
             try await restorable.setTransientString(text)
         }
