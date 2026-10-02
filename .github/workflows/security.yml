@@ -77,6 +77,20 @@ jobs:
       - name: Block high and critical findings
         run: python3 scripts/ci/check-sarif.py --directory build/codeql-results --category /language:actions
 
+  # Seconds-long check that every file bound by the reviewed C/C++ findings
+  # still has its reviewed content. It runs on every event, including pull
+  # requests that do not run the compiled scans.
+  review-sources:
+    name: Reviewed findings sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require the reviewed content of every bound source
+        run: python3 scripts/ci/check-sarif.py --check-reviewed-sources scripts/ci/reviewed-findings.json --source-root . --runtime-lock scripts/ci/runtime-lock.json
+
   native:
     needs: changes
     if: needs.changes.outputs.scope == 'full'
@@ -156,7 +170,7 @@ jobs:
   gate:
     name: Security Gate
     if: always()
-    needs: [changes, dependency-review, actions, native]
+    needs: [changes, dependency-review, actions, review-sources, native]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -166,11 +180,13 @@ jobs:
           SCOPE: ${{ needs.changes.outputs.scope }}
           DEPENDENCY_RESULT: ${{ needs.dependency-review.result }}
           ACTIONS_RESULT: ${{ needs.actions.result }}
+          REVIEW_SOURCES_RESULT: ${{ needs.review-sources.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           test "$ACTIONS_RESULT" = success
           test "$SCOPE_RESULT" = success
+          test "$REVIEW_SOURCES_RESULT" = success
           case "$SCOPE" in
             docs) expected=skipped ;;
             full) expected=success ;;

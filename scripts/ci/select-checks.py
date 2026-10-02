@@ -113,6 +113,10 @@ RULES = {
         '.github/CODEOWNERS',
         '.gitignore',
         'SUPPORT.md',
+        # The reviewed-findings record is data. The Security workflow's source
+        # check holds it to the bound files on every pull request, and the
+        # compiled C/C++ scan checks it again on main and before signing.
+        'scripts/ci/reviewed-findings.json',
     ),
 }
 # A case or Unicode variant of a costly path keeps its cost; a variant of a

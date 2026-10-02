@@ -1,6 +1,7 @@
 """Code scanning completion must not be confused with a clean severity gate."""
 
 from copy import deepcopy
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -450,6 +451,158 @@ class ReviewedDispositionTests(unittest.TestCase):
         sarif.write_text('{"version":"2.1.0", "version":"2.1.0", "runs":[]}')
         with self.assertRaises(GATE.ScanError):
             GATE.check_directory(scan_dir, '/language:c-cpp')
+
+
+
+class ReviewedSourceCheckTests(unittest.TestCase):
+    """The pull-request check of the receipt's bound sources, without scan output."""
+
+    REVISION = '7' * 40
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
+        for relative in GATE.REVIEW_CONTRACTS:
+            target = self.root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f'reviewed source contract {relative}\n')
+        subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
+        self.patch = GATE.source_digest(self.root, GATE.PATCH)
+        self.generated = f'vendor/whisper.cpp/build-steno/patched-source/{self.REVISION}-{self.patch}/source/examples/cli/cli.cpp'
+        sources = {path: GATE.source_digest(self.root, path) for path in GATE.REVIEW_CONTRACTS}
+        sources[self.generated] = hashlib.sha256(b'generated upstream source\n').hexdigest()
+        self.entry = {'id': 'cli-response-file', 'classification': 'not_actionable_in_supported_deployment',
+            'rule': 'cpp/path-injection',
+            'location': {'path': self.generated, 'startLine': 3, 'startColumn': 4, 'endLine': 3, 'endColumn': 9},
+            'identity_sha256': 'e' * 64, 'source_sha256': sources,
+            'rationale': 'The caller selects its own response file.',
+            'reassess_when': 'Source, privilege, invocation, and transport changes require review.'}
+        self.receipt = {'schema_version': 1, 'category': '/language:c-cpp', 'status': 'accepted',
+            'reviewed_commit': 'a' * 40, 'findings': [self.entry]}
+        self.receipt_path = self.root / 'receipt.json'
+        self.lock_path = self.root / 'lock.json'
+        self.lock_path.write_text(json.dumps({'schema_version': 1, 'whisper': {'revision': self.REVISION}}))
+
+    def check(self):
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        return GATE.check_reviewed_sources(self.receipt_path, self.root, self.lock_path)
+
+    def assert_fails(self, fragment='reassessment required'):
+        with self.assertRaises(GATE.ScanError) as raised:
+            self.check()
+        self.assertIn(fragment, str(raised.exception))
+
+    def test_the_repository_record_matches_its_bound_sources(self):
+        root = Path(__file__).resolve().parents[3]
+        count = GATE.check_reviewed_sources(root / 'scripts/ci/reviewed-findings.json', root,
+                                            root / 'scripts/ci/runtime-lock.json')
+        self.assertEqual(count, 4)
+
+    def test_unchanged_sources_and_absent_generated_source_pass(self):
+        self.assertEqual(self.check(), 1)
+
+    def test_any_changed_byte_of_a_bound_file_fails(self):
+        for relative in GATE.REVIEW_CONTRACTS:
+            with self.subTest(path=relative):
+                target = self.root / relative
+                original = target.read_bytes()
+                target.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+                self.assert_fails(relative)
+                target.write_bytes(original)
+        self.assertEqual(self.check(), 1)
+
+    def test_missing_bound_file_or_omitted_contract_fails(self):
+        target = self.root / GATE.REVIEW_CONTRACTS[2]
+        contents = target.read_bytes()
+        target.unlink()
+        self.assert_fails('missing')
+        target.write_bytes(contents)
+        del self.entry['source_sha256'][GATE.REVIEW_CONTRACTS[0]]
+        self.assert_fails('omit a source or launch contract')
+
+    def test_generated_source_must_name_the_pinned_revision_and_current_patch(self):
+        self.lock_path.write_text(json.dumps({'whisper': {'revision': '8' * 40}}))
+        self.assert_fails(self.generated)
+        self.lock_path.write_text(json.dumps({'whisper': {'revision': self.REVISION}}))
+        patch = self.root / GATE.PATCH
+        patch.write_text('another correction\n')
+        self.assert_fails()
+        # A re-recorded patch hash cannot stand in for the patch the directory names.
+        self.entry['source_sha256'][GATE.PATCH] = GATE.source_digest(self.root, GATE.PATCH)
+        self.assert_fails(self.generated)
+
+    def test_existing_generated_source_is_hashed(self):
+        target = self.root / self.generated
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'generated upstream source\n')
+        self.assertEqual(self.check(), 1)
+        target.write_bytes(b'different generated source\n')
+        self.assert_fails(self.generated)
+
+    def test_tracked_or_linked_generated_source_fails(self):
+        target = self.root / self.generated
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'generated upstream source\n')
+        subprocess.run(['git', '-C', str(self.root), 'add', '-f', self.generated], check=True)
+        target.unlink()
+        self.assert_fails('must not be tracked')
+        subprocess.run(['git', '-C', str(self.root), 'rm', '-q', '--cached', self.generated], check=True)
+        (self.root / 'vendor/whisper.cpp/build-steno').rename(self.root / 'elsewhere')
+        (self.root / 'vendor/whisper.cpp/build-steno').symlink_to(self.root / 'elsewhere')
+        self.assert_fails('symlink')
+
+    def test_generated_source_is_never_inferred_without_a_lock(self):
+        # Full mode, after a scan, always hashes the generated file itself.
+        with self.assertRaises(GATE.ScanError):
+            GATE.validate_receipt_sources(self.receipt, self.root)
+        for lock in ('{}', '{"whisper": {"revision": "main"}}', '[]', '{broken'):
+            with self.subTest(lock=lock):
+                self.lock_path.write_text(lock)
+                with self.assertRaises(GATE.ScanError):
+                    self.check()
+
+    def test_malformed_receipt_fails(self):
+        for field, value in (('status', 'proposed'), ('schema_version', True), ('category', '/language:swift'),
+                             ('reviewed_commit', 'main'), ('findings', []), ('unexpected', True)):
+            with self.subTest(field=field):
+                original = deepcopy(self.receipt)
+                self.receipt[field] = value
+                with self.assertRaises(GATE.ScanError):
+                    self.check()
+                self.receipt = original
+        self.receipt['findings'].append(deepcopy(self.entry))
+        with self.assertRaises(GATE.ScanError):
+            self.check()
+
+    def test_both_modes_report_the_same_changed_source(self):
+        relative = GATE.REVIEW_CONTRACTS[5]
+        (self.root / relative).write_text('changed\n')
+        messages = []
+        for check in (self.check, lambda: GATE.apply_dispositions([], self.receipt, self.root, [])):
+            with self.assertRaises(GATE.ScanError) as raised:
+                check()
+            messages.append(str(raised.exception))
+        self.assertEqual(messages, [f'reviewed source changed; reassessment required: {relative}'] * 2)
+
+    def test_cli_mode_and_its_arguments(self):
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        command = [sys.executable, SPEC.origin, '--check-reviewed-sources', str(self.receipt_path),
+                   '--source-root', str(self.root), '--runtime-lock', str(self.lock_path)]
+        passed = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        (self.root / GATE.REVIEW_CONTRACTS[0]).write_text('changed\n')
+        failed = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn('reassessment required: ' + GATE.REVIEW_CONTRACTS[0], failed.stderr)
+        for extra in (['--category', '/language:c-cpp'], ['--directory', '.'], ['--reviewed-dispositions', 'x']):
+            with self.subTest(extra=extra):
+                self.assertEqual(subprocess.run(command + extra, capture_output=True).returncode, 2)
+        self.assertEqual(subprocess.run(command[:-2], capture_output=True).returncode, 2)
+        scan = [sys.executable, SPEC.origin, '--directory', '.', '--category', '/language:c-cpp',
+                '--runtime-lock', str(self.lock_path)]
+        self.assertEqual(subprocess.run(scan, capture_output=True).returncode, 2)
 
 
 if __name__ == '__main__':

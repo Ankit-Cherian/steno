@@ -200,6 +200,20 @@ class WorkflowPolicyTests(unittest.TestCase):
         security = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
         self.assertEqual(security['on']['schedule'], [{'cron': '31 8 * * 1'}])
 
+    def run_with_fake_python(self, command, status):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake = root / 'python3'
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGUMENT_LOG"\nexit "$GATE_EXIT_STATUS"\n')
+            fake.chmod(0o755)
+            arguments = root / 'arguments.txt'
+            environment = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                           'ARGUMENT_LOG': str(arguments), 'GATE_EXIT_STATUS': str(status)}
+            result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
+                                    env=environment, cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+            return arguments.read_text().splitlines()
+
     def test_security_workflow_dispatches_cpp_review_and_preserves_gate_failure(self):
         workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
         steps = [step for step in workflow['jobs']['native']['steps']
@@ -226,6 +240,20 @@ class WorkflowPolicyTests(unittest.TestCase):
                             expected += ['--reviewed-dispositions', 'scripts/ci/reviewed-findings.json',
                                          '--source-root', '.']
                         self.assertEqual(arguments.read_text().splitlines(), expected)
+
+    def test_reviewed_sources_are_checked_on_every_event(self):
+        workflow = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/security.yml').read_text())
+        job = workflow['jobs']['review-sources']
+        self.assertNotIn('if', job)
+        self.assertNotIn('needs', job)
+        self.assertNotIn('permissions', job)
+        self.assertEqual(job['runs-on'], 'ubuntu-24.04')
+        runs = [step['run'] for step in job['steps'] if 'run' in step]
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(self.run_with_fake_python(runs[0], 0), [
+            'scripts/ci/check-sarif.py', '--check-reviewed-sources', 'scripts/ci/reviewed-findings.json',
+            '--source-root', '.', '--runtime-lock', 'scripts/ci/runtime-lock.json'])
+        self.assertEqual(self.run_with_fake_python(runs[0], 1)[1], '--check-reviewed-sources')
 
     def test_only_pull_request_runs_can_be_cancelled_by_a_newer_run(self):
         for path, prefix in (('ci.yml', 'ci-'), ('security.yml', 'security-')):

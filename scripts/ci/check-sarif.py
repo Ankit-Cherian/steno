@@ -10,8 +10,10 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -198,7 +200,50 @@ def duplicate_checked_object(pairs):
     return value
 
 
-def apply_dispositions(records, receipt, root, reviewed):
+# The C/C++ scan compiles a generated copy of the pinned upstream source with the
+# reviewed patch applied. Its directory names that revision and patch digest.
+GENERATED_SOURCE = re.compile(r'vendor/whisper\.cpp/build-steno/patched-source/([0-9a-f]{40})-([0-9a-f]{64})/source/.+')
+PATCH = 'scripts/ci/patches/whisper-security.patch'
+
+
+def generated_source_matches(root, path, sources, revision):
+    """Check a generated source that is absent from the checkout.
+
+    Staging is deterministic: `git archive` of the pinned revision plus the
+    reviewed patch. Its content is therefore fixed by the two values in its
+    directory name, which must be the pinned revision and the current patch.
+    """
+    match = GENERATED_SOURCE.fullmatch(path)
+    if match is None or revision is None:
+        return False
+    target = root
+    for part in path.split('/'):
+        target = target / part
+        if target.is_symlink():
+            raise ScanError(f'reviewed source cannot traverse a symlink: {path}')
+    if target.exists():
+        # A local native build created it; hash it like any other source.
+        return False
+    try:
+        tracked = subprocess.run(['git', '-C', str(root), 'ls-files', '-z', '--', path],
+                                 capture_output=True, check=True,
+                                 env={**os.environ, 'GIT_LITERAL_PATHSPECS': '1'}).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ScanError('cannot confirm that a generated reviewed source is untracked') from error
+    if tracked:
+        raise ScanError(f'generated reviewed source must not be tracked: {path}')
+    patch = source_digest(root, PATCH)
+    if match.group(1) != revision or match.group(2) != patch or sources.get(PATCH) != patch:
+        raise ScanError(f'reviewed source changed; reassessment required: {path}')
+    return True
+
+
+def validate_receipt_sources(receipt, root, revision=None):
+    """Validate a review receipt and require the reviewed content of every bound source.
+
+    With a pinned revision, a generated vendor source absent from the checkout
+    is checked through its revision and patch digest instead of its bytes.
+    """
     exact_keys(receipt, ('schema_version', 'category', 'status', 'reviewed_commit', 'findings'), 'disposition receipt')
     if (type(receipt['schema_version']) is not int or receipt['schema_version'] != 1 or
             receipt['category'] != '/language:c-cpp' or receipt['status'] != 'accepted' or
@@ -233,9 +278,16 @@ def apply_dispositions(records, receipt, root, reviewed):
         for path, expected in sources.items():
             if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected):
                 raise ScanError('reviewed source hash must be a SHA-256 digest')
+            if generated_source_matches(root, path, sources, revision):
+                continue
             if source_digest(root, path) != expected:
                 raise ScanError(f'reviewed source changed; reassessment required: {path}')
         pending[digest] = entry
+    return pending
+
+
+def apply_dispositions(records, receipt, root, reviewed):
+    pending = validate_receipt_sources(receipt, root)
     blocked = []
     consumed = set()
     for identifier, severity, result, run, text in records:
@@ -390,13 +442,45 @@ def check_directory(directory, category, dispositions=None, source_root=None, re
     return findings
 
 
+def read_json(path, label):
+    try:
+        return json.loads(path.read_text(), object_pairs_hook=duplicate_checked_object)
+    except (OSError, ValueError) as error:
+        raise ScanError(f'cannot read valid {label}') from error
+
+
+def check_reviewed_sources(dispositions, source_root, runtime_lock):
+    """Check the review receipt's bound sources without scan output."""
+    lock = object_value(read_json(runtime_lock, 'runtime lock'), 'runtime lock')
+    revision = object_value(lock.get('whisper'), 'runtime lock whisper').get('revision')
+    if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision):
+        raise ScanError('runtime lock has no exact whisper revision')
+    receipt = read_json(dispositions, 'disposition receipt')
+    return len(validate_receipt_sources(receipt, source_root.resolve(), revision))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--directory', required=True, type=Path)
-    parser.add_argument('--category', required=True)
+    parser.add_argument('--directory', type=Path)
+    parser.add_argument('--category')
     parser.add_argument('--reviewed-dispositions', type=Path)
     parser.add_argument('--source-root', type=Path)
+    parser.add_argument('--check-reviewed-sources', type=Path, metavar='RECEIPT',
+                        help='check only the receipt and its bound sources, without scan output')
+    parser.add_argument('--runtime-lock', type=Path)
     args = parser.parse_args()
+    if args.check_reviewed_sources is not None:
+        if args.directory or args.category or args.reviewed_dispositions or not args.source_root or not args.runtime_lock:
+            parser.error('--check-reviewed-sources takes only --source-root and --runtime-lock')
+        try:
+            count = check_reviewed_sources(args.check_reviewed_sources, args.source_root, args.runtime_lock)
+        except (ScanError, OSError) as error:
+            print(f'Security gate failed: {error}', file=sys.stderr)
+            return 1
+        print(f'Reviewed sources unchanged for {count} findings. The compiled C/C++ scan confirms the findings themselves.')
+        return 0
+    if not args.directory or not args.category or args.runtime_lock:
+        parser.error('--directory and --category are required; --runtime-lock needs --check-reviewed-sources')
     reviewed = []
     try:
         findings = check_directory(args.directory, args.category, args.reviewed_dispositions, args.source_root, reviewed)

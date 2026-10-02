@@ -119,7 +119,7 @@ class SelectionTests(ScratchRepositoryTest):
             'Steno/ContentView.swift': TESTS,
             'StenoTests/ViewTests.swift': TESTS,
             'StenoKit/Sources/StenoKit/Services/SessionCoordinator.swift': TESTS,
-            'scripts/ci/reviewed-findings.json': FULL,
+            'scripts/ci/reviewed-findings.json': TESTS,
             'StenoKit/Sources/StenoKit/Services/LocalCleanupRanker.swift': RUNTIME,
             'runtime-helper/steno_prompt_scoring.h': NATIVE,
             'scripts/ci/select-checks.py': FULL,
@@ -372,10 +372,10 @@ class GateTests(unittest.TestCase):
     def test_security_gate_rejects_failed_classification_or_unexpected_skip(self):
         workflow = POLICY.parse_workflow((ROOT / '.github/workflows/security.yml').read_text())
         command = workflow['jobs']['gate']['steps'][0]['run']
-        for scope, classification, native in itertools.product(('docs', 'full', ''), ('success', 'failure', 'skipped'), ('success', 'failure', 'skipped', 'cancelled')):
-            env = dict(os.environ, SCOPE=scope, SCOPE_RESULT=classification, NATIVE_RESULT=native, ACTIONS_RESULT='success', DEPENDENCY_RESULT='success', EVENT_NAME='pull_request')
+        for scope, classification, native, review in itertools.product(('docs', 'full', ''), ('success', 'failure', 'skipped'), ('success', 'failure', 'skipped', 'cancelled'), ('success', 'failure', 'skipped')):
+            env = dict(os.environ, SCOPE=scope, SCOPE_RESULT=classification, NATIVE_RESULT=native, REVIEW_SOURCES_RESULT=review, ACTIONS_RESULT='success', DEPENDENCY_RESULT='success', EVENT_NAME='pull_request')
             result = subprocess.run(['bash', '-e', '-c', command], env=env, capture_output=True)
-            expected = classification == 'success' and ((scope == 'docs' and native == 'skipped') or (scope == 'full' and native == 'success'))
+            expected = classification == review == 'success' and ((scope == 'docs' and native == 'skipped') or (scope == 'full' and native == 'success'))
             self.assertEqual(result.returncode == 0, expected)
 
     def evaluate(self, condition, outputs, classifier, event):
@@ -493,7 +493,7 @@ class GateWiringTests(unittest.TestCase):
     def test_job_missing_from_gate_needs_is_rejected(self):
         validate = self.workflow('validate.yml', [('needs: [policy, macos, runtime]', 'needs: [policy, runtime]')])
         self.assertTrue(any('gate needs' in error for error in gate_wiring_errors(validate, 'policy')))
-        security = self.workflow('security.yml', [('needs: [changes, dependency-review, actions, native]', 'needs: [changes, dependency-review, actions]')])
+        security = self.workflow('security.yml', [('needs: [changes, dependency-review, actions, review-sources, native]', 'needs: [changes, dependency-review, actions, review-sources]')])
         self.assertTrue(any('gate needs' in error for error in gate_wiring_errors(security, 'changes')))
 
     def test_result_variable_pointing_at_the_wrong_job_is_rejected(self):
