@@ -6970,6 +6970,58 @@ func applicationStoppedByFirstPauseIsResumedAfterRePause() async {
     )
 }
 
+// With two players, one reading can miss an application that another reading
+// covered. What was seen stopped must not have to be seen again.
+@MainActor
+@Test("Applications verified in different passes are all resumed")
+func applicationsVerifiedInDifferentPassesAreAllResumed() async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(
+        sessions: [String: MediaSessionPlayback]
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: [],
+            sessions: sessions
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(sessions: ["com.apple.Music": .playing, "com.apple.podcasts": .playing]),
+            // Podcasts has stopped; Music has not yet.
+            snapshot(sessions: ["com.apple.Music": .playing, "com.apple.podcasts": .stopped]),
+        ]
+            // Music has stopped; the Podcasts session could not be read.
+            + Array(repeating: snapshot(sessions: ["com.apple.Music": .stopped]), count: 6)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        resumeVerificationDelays: []
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Both playing applications should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(
+        driver.destinations.last
+            == .observedApplications(["com.apple.Music", "com.apple.podcasts"])
+    )
+}
+
 @MainActor
 @Test("Unreadable playback activity leaves every application alone")
 func unreadablePlaybackActivityLeavesEveryApplicationAlone() async {

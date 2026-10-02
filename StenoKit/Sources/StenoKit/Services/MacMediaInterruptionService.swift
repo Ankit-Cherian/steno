@@ -301,7 +301,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
 
         let acceptedDestination = acceptedReceipt.makeVerifiedReceipt().resumeDestination
         var pendingReceipt: PendingPauseReceipt? = acceptedReceipt
-        var lastVerifiedApplications: Set<String> = []
+        var verifiedApplications: Set<String> = []
         for (index, delay) in verificationDelays.enumerated() {
             await ladderSleep(delay)
             guard pauseTransition?.id == id else { return .noOwnership }
@@ -312,18 +312,23 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             Self.logger.info(
                 "Media Pause verification pass \(index + 1, privacy: .public): \(after.logValue, privacy: .private)"
             )
-            let verifiedApplications = acceptedReceipt
-                .verifiedApplicationBundleIdentifiers(atRelease: after)
-            lastVerifiedApplications = verifiedApplications
+            // Each application is verified on its own evidence, and one reading
+            // can miss an application another reading saw. What has been seen
+            // stopped is kept across passes instead of being required again.
+            verifiedApplications.formUnion(
+                acceptedReceipt.verifiedApplicationBundleIdentifiers(atRelease: after)
+            )
             if verifiedApplications == acceptedReceipt.acceptedApplications {
                 return .verified(acceptedReceipt.makeVerifiedReceipt())
             }
             let hasOwner = pauseTransitionHasOwner(id: id)
             let releasing = releaseControl.releaseRequested && !hasOwner
-            pendingReceipt = pendingReceipt?.retainingCustody(
-                after: after,
-                allowingAcceptedPauseToSettle: releasing
-            )
+            pendingReceipt = pendingReceipt?
+                .recordingVerified(verifiedApplications)
+                .retainingCustody(
+                    after: after,
+                    allowingAcceptedPauseToSettle: releasing
+                )
             if !hasOwner { continue }
             guard index < verificationDelays.index(before: verificationDelays.endIndex),
                   pauseTransition?.id == id
@@ -355,9 +360,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         // compensates here, and only for playback this Pause verifiably stopped.
         let hasOwner = pauseTransitionHasOwner(id: id)
         let releasing = releaseControl.releaseRequested && !hasOwner
-        if !lastVerifiedApplications.isEmpty, !hasOwner, !releasing {
+        if !verifiedApplications.isEmpty, !hasOwner, !releasing {
             _ = await driver.sendPlay(
-                to: acceptedDestination.narrowed(to: lastVerifiedApplications)
+                to: acceptedDestination.narrowed(to: verifiedApplications)
             )
             Self.logger.info(
                 "Cancelled media Pause transition was compensated with exact-lineage Play."
@@ -669,9 +674,13 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
               case .pending = currentInterruption.custody
         else { return }
 
+        // What earlier passes saw stopped still counts, unless this reading
+        // contradicts custody of that application.
+        let uncontradictedReceipt = pendingReceipt.retainingCustody(after: releaseSnapshot)
         let verifiedApplications = pendingReceipt
             .verifiedApplicationBundleIdentifiers(atRelease: releaseSnapshot)
-        let retainedReceipt = pendingReceipt.retainingCustody(after: releaseSnapshot)
+            .intersection(uncontradictedReceipt?.acceptedApplications ?? [])
+        let retainedReceipt = uncontradictedReceipt?.recordingVerified(verifiedApplications)
         let hasOwners = !currentInterruption.tokenIDs.isEmpty
 
         if verifiedApplications == pendingReceipt.acceptedApplications {
@@ -692,7 +701,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             {
                 await repausePendingInterruption(
                     interruptionID: interruptionID,
-                    pendingReceipt: pendingReceipt,
+                    pendingReceipt: pendingReceipt.recordingVerified(verifiedApplications),
                     activeSnapshot: releaseSnapshot
                 )
                 return
@@ -1077,6 +1086,19 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         /// paused and was resuming. A first Pause starts without it, and earns
         /// resume ownership only by being observed to stop playback.
         let continuesVerifiedPause: Bool
+        /// Applications already seen to have stopped in response to the Pause.
+        /// Evidence arrives per application and per reading, and a later reading
+        /// that cannot see one application must not undo what an earlier one
+        /// established.
+        var verifiedApplications: Set<String> = []
+
+        func recordingVerified(_ applications: Set<String>) -> Self {
+            var receipt = self
+            receipt.verifiedApplications.formUnion(
+                applications.intersection(acceptedApplications)
+            )
+            return receipt
+        }
 
         /// Provisional custody rests on what can actually be observed: the
         /// application was confirmed playing, and an application-targeted Pause was
@@ -1158,7 +1180,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 ),
                 acceptedApplications: acceptedApplications,
                 observedTargets: observedTargets,
-                continuesVerifiedPause: continuesVerifiedPause
+                continuesVerifiedPause: continuesVerifiedPause,
+                verifiedApplications: verifiedApplications
             )
         }
 
@@ -1235,7 +1258,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 ),
                 acceptedApplications: applications,
                 observedTargets: targets,
-                continuesVerifiedPause: continuesVerifiedPause
+                continuesVerifiedPause: continuesVerifiedPause,
+                verifiedApplications: verifiedApplications.intersection(applications)
             )
         }
 
@@ -1257,12 +1281,15 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             )
         }
 
+        /// Everything seen stopped so far: earlier readings plus this one.
         func verifiedApplicationBundleIdentifiers(
             atRelease snapshot: MediaInterruptionSnapshot
         ) -> Set<String> {
-            snapshot.confirmedPausedApplicationBundleIdentifiers(
-                from: before,
-                among: acceptedApplications
+            verifiedApplications.union(
+                snapshot.confirmedPausedApplicationBundleIdentifiers(
+                    from: before,
+                    among: acceptedApplications
+                )
             )
         }
 
