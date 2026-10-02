@@ -7,7 +7,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [1.0.1] - 2026-10-01
+## [1.0.1] - 2026-10-02
 
 A maintenance release that fixes bugs across recording, text cleanup, insertion, saved data, media pausing and setup. It needs no new permissions.
 
