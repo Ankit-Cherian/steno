@@ -6,7 +6,7 @@ struct InsertionSettingsSection: View {
 
     var body: some View {
         settingsCard("Insertion order") {
-            Text("Steno tries these methods in order. Terminal and remote-desktop apps start with Clipboard paste, and nearby text puts Accessibility first so Steno can check the exact field. Clipboard paste stays available as a backup. After a clipboard paste, your previous clipboard contents come back a moment later. Steno copies the text instead of inserting it into a password field, or when focus moved to another field or app while it was transcribing.")
+            Text("Steno tries these methods in order. Terminal and remote-desktop apps start with Clipboard paste, and nearby text puts Accessibility first so Steno can check the exact field. Clipboard paste stays available as a backup. After a clipboard paste, your previous clipboard contents come back a moment later, except in remote-desktop apps, where the transcript stays on the clipboard, and except for a password or other item marked private. Steno copies the text instead of inserting it into a password field, or when focus moved to another field or app while it was transcribing.")
                 .font(StenoDesign.caption())
                 .foregroundStyle(StenoDesign.textSecondary)
 

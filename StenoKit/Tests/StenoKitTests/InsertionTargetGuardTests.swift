@@ -104,6 +104,78 @@ func nearbyTextSecureFieldCopiesOnly() async throws {
     #expect(scenario.accessibility.writes.isEmpty)
 }
 
+@Test("A transcript refused at a secure field is copied as concealed, still ready to paste")
+func secureFieldRefusalCopiesConcealed() async throws {
+    let scenario = GuardScenario(accessibility: FakeAccessibilityClient(secure: true))
+
+    let result = try await scenario.run("hunter two")
+
+    #expect(result.status == .copiedOnly)
+    #expect(scenario.pasteboard.concealedWrites == ["Hunter two"])
+    #expect(scenario.pasteboard.plainWrites.isEmpty)
+    #expect(scenario.pasteboard.isConcealed)
+    #expect(scenario.pasteboard.plainText == "Hunter two")
+}
+
+@Test("Focus moving into a secure field copies the transcript as concealed")
+func driftIntoSecureFieldCopiesConcealed() async throws {
+    let scenario = GuardScenario()
+
+    let result = try await scenario.run("hunter two") {
+        scenario.accessibility.focus("password", secure: true)
+    }
+
+    #expect(result.status == .copiedOnly)
+    #expect(scenario.pasteboard.concealedWrites == ["Hunter two"])
+    #expect(scenario.pasteboard.plainWrites.isEmpty)
+    #expect(scenario.pasteboard.plainText == "Hunter two")
+}
+
+@Test("Nearby text on: a secure field copies the transcript as concealed")
+func nearbyTextSecureFieldCopiesConcealed() async throws {
+    let scenario = GuardScenario(accessibility: FakeAccessibilityClient(secure: true))
+
+    let result = try await scenario.run(
+        "hunter two",
+        options: SessionStartOptions(nearbyContextEnabled: true)
+    )
+
+    #expect(result.status == .copiedOnly)
+    #expect(scenario.pasteboard.concealedWrites == ["Hunter two"])
+    #expect(scenario.pasteboard.plainWrites.isEmpty)
+}
+
+@Test("Nearby text on: focus moving into a secure field copies the transcript as concealed")
+func nearbyTextDriftIntoSecureFieldCopiesConcealed() async throws {
+    let scenario = GuardScenario()
+
+    let result = try await scenario.run(
+        "hunter two",
+        options: SessionStartOptions(nearbyContextEnabled: true)
+    ) {
+        scenario.accessibility.focus("password", secure: true)
+    }
+
+    #expect(result.status == .copiedOnly)
+    #expect(scenario.keys.events.isEmpty)
+    #expect(scenario.accessibility.writes.isEmpty)
+    #expect(scenario.pasteboard.concealedWrites == ["Hunter two"])
+    #expect(scenario.pasteboard.plainWrites.isEmpty)
+}
+
+@Test("A transcript refused because focus moved to another field is copied as an ordinary item")
+func focusDriftCopyIsNotConcealed() async throws {
+    let scenario = GuardScenario()
+
+    _ = try await scenario.run("meant for field a") {
+        scenario.accessibility.focus("field-B")
+    }
+
+    #expect(scenario.pasteboard.plainWrites == ["Meant for field a"])
+    #expect(scenario.pasteboard.concealedWrites.isEmpty)
+    #expect(!scenario.pasteboard.isConcealed)
+}
+
 @Test("Default settings: an Accessibility timeout keeps today's direct insertion")
 func defaultSettingsLookupTimeoutStillInserts() async throws {
     let scenario = GuardScenario()

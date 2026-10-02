@@ -33,7 +33,8 @@ struct HistoryTab: View {
                     Label("Delete all history…", systemImage: "trash")
                 }
                 .buttonStyle(StenoActionButtonStyle(theme: theme, tone: .soft))
-                .disabled(controller.recentEntries.isEmpty)
+                // Always available: an empty list doesn't mean nothing is on
+                // disk, for example when the History file couldn't be read.
                 .help("Delete every saved transcript from this Mac")
                 .accessibilityIdentifier("history.deleteAll")
             }
@@ -67,11 +68,11 @@ struct HistoryTab: View {
             Text("This removes the saved transcript from this Mac. It does not remove text already inserted into another app.")
         }
         .confirmationDialog(
-            "Delete all \(InsightsFormatting.count(controller.recentEntries.count, "transcript"))?",
+            Self.deleteAllConfirmationTitle(listedCount: controller.recentEntries.count),
             isPresented: $isConfirmingDeleteAll
         ) {
             Button("Delete all history", role: .destructive) {
-                Task { await controller.deleteAllHistory() }
+                Task { await Self.deleteAllHistory(using: controller) }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -87,6 +88,28 @@ struct HistoryTab: View {
             theme: theme,
             availableSize: availableSize
         )
+    }
+
+    /// Deletes every saved transcript, then lets go of deleted text the app
+    /// still holds: the last transcript, and a notice that offers a transcript
+    /// for copying or points at a kept History copy that is now gone.
+    @MainActor
+    static func deleteAllHistory(using controller: DictationController) async {
+        await controller.deleteAllHistory()
+        guard controller.status == "History deleted." else { return }
+        controller.lastTranscript = ""
+        if let notice = controller.storageNotice,
+           notice.recoverableText != nil
+            || notice.fileURL.map({ !FileManager.default.fileExists(atPath: $0.path) }) == true {
+            controller.dismissStorageNotice()
+        }
+    }
+
+    /// Names the listed transcripts. With none listed, files may still be on
+    /// disk, so the title names History instead of "0 transcripts".
+    static func deleteAllConfirmationTitle(listedCount: Int) -> String {
+        guard listedCount > 0 else { return "Delete all history?" }
+        return "Delete all \(InsightsFormatting.count(listedCount, "transcript"))?"
     }
 
     private var filteredEntries: [TranscriptEntry] {
