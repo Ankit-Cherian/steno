@@ -70,7 +70,10 @@ If you are upgrading from 1.0.0, three changes are the most noticeable. Saved co
 - A media player that was slow to confirm a pause is now resumed after dictation instead of being left paused.
 - A short Option press that ends while Steno is still checking for playing media no longer pauses the media and immediately resumes it.
 - Quitting Steno immediately after releasing the dictation key no longer leaves media that Steno paused still paused.
-- The media settings caption now says that media you paused yourself a few seconds before dictating may be resumed, instead of promising it always stays paused.
+- Media you paused yourself no longer starts playing when a dictation ends. Steno now pauses an app only when it is actually playing and resumes it only after seeing that pause take effect, so an app that was paused earlier, even a moment earlier, is left alone.
+- With an app open that keeps its audio output running without being a media player, such as a video editor, a dictation no longer ends by starting the last media app you used.
+- Media paused for a short press resumes as soon as the press ends, instead of about two seconds later.
+- The media settings caption now says what media pausing does: apps that are playing are paused and resumed, and media you paused yourself stays paused.
 
 #### Cleanup and corrections
 - "Never mind" and "scratch that" are now recognized when the recognizer writes them as "Nevermind.", after a full stop, or without a comma before the corrected name.
@@ -127,6 +130,7 @@ If you are upgrading from 1.0.0, three changes are the most noticeable. Saved co
 - Runs on `main` are no longer canceled by a newer push and always get full validation, including documentation-only commits. Dependency updates are checked monthly.
 - Added a release rehearsal workflow that signs and notarizes without being able to publish, a pre-tag check of the version, build number, changelog date, bundle identifier and entitlements, and `scripts/check.sh` for running the package tests, app build and hosted tests locally.
 - Stand-in helper processes used by tests now exit when orphaned, so an interrupted test run no longer leaves one running.
+- Media pausing tests now state whether playback actually stopped, instead of treating an open audio output as playback. New tests cover media that was already paused, an app that keeps its audio output open without being a media player, a player that reports playback only through its media session, and a second dictation that begins while the first is still being released.
 
 ### Compatibility
 - Steno 1.0.1 targets Apple silicon Macs running macOS 13 or later, as 1.0 did. Media pausing requires macOS 15 or later.
@@ -134,6 +138,8 @@ If you are upgrading from 1.0.0, three changes are the most noticeable. Saved co
 
 ### Known issues
 - Changing a transcription setting, such as the model or thread count, reloads the speech model. A dictation key pressed during that short reload is ignored.
+- Media playing in Safari is not paused during dictation. Safari plays audio through a system helper process that Steno cannot yet tie to the app.
+- If you resume media and then pause it again yourself during a single dictation, it may start playing when the dictation ends.
 
 ## [1.0.0] - 2026-09-17
 

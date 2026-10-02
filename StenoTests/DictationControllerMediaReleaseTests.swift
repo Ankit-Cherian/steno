@@ -402,9 +402,16 @@ let podcastsOutput = MediaAudioOutputTarget(
 )
 
 /// The production snapshot shape: no elected now-playing target, a stuck
-/// weak-positive playback signal, and Core Audio output from the app.
-func productionSnapshot(_ outputs: [MediaAudioOutputTarget]) -> MediaInterruptionSnapshot {
-    MediaInterruptionSnapshot(
+/// weak-positive playback signal, and Core Audio output from the app. Each app
+/// with an open output stream is playing unless the scripted driver has paused
+/// it; the stream itself stays open either way, as a real player's does.
+func productionSnapshot(
+    _ outputs: [MediaAudioOutputTarget],
+    pausedApplications: Set<String> = [],
+    observing observedApplications: Set<String> = []
+) -> MediaInterruptionSnapshot {
+    let applicationsWithOpenStreams = Set(outputs.map(\.applicationBundleIdentifier))
+    return MediaInterruptionSnapshot(
         target: nil,
         contentIdentifier: nil,
         detection: .likelyPlaying,
@@ -413,7 +420,16 @@ func productionSnapshot(_ outputs: [MediaAudioOutputTarget]) -> MediaInterruptio
         audioOutputObservation: MediaAudioOutputObservation(
             targets: outputs,
             unresolvedProcessCount: 0
-        )
+        ),
+        playbackActivityObservation: MediaPlaybackActivityObservation(
+            observedApplications: applicationsWithOpenStreams.union(observedApplications),
+            assertions: Set(
+                applicationsWithOpenStreams
+                    .filter { !pausedApplications.contains($0) }
+                    .map { MediaPlaybackAssertion(applicationBundleIdentifier: $0, identifier: 1) }
+            )
+        ),
+        sessionPlaybackByApplication: [:]
     )
 }
 
@@ -473,11 +489,14 @@ final class MediaReleaseEventLog: @unchecked Sendable {
 
 /// Replays scripted snapshots with an injected per-snapshot latency and
 /// accepts every command, the way MediaRemote acknowledges a running player.
+/// An accepted Pause stops the app's playback and a Play restarts it, while
+/// its scripted output stream is left as it is.
 @MainActor
 final class ScriptedMediaDriver: MediaInterruptionDriving {
     private let events: MediaReleaseEventLog
     private var snapshots: [MediaInterruptionSnapshot]
     private var fallback: MediaInterruptionSnapshot
+    private var pausedApplications: Set<String> = []
     var snapshotDelayNanoseconds: UInt64
     private(set) var commands: [SemanticMediaCommand] = []
     private(set) var snapshotCallCount = 0
@@ -500,16 +519,27 @@ final class ScriptedMediaDriver: MediaInterruptionDriving {
     }
 
     func snapshot() async -> MediaInterruptionSnapshot {
+        await snapshot(observing: [])
+    }
+
+    func snapshot(
+        observing applicationBundleIdentifiers: Set<String>
+    ) async -> MediaInterruptionSnapshot {
         snapshotCallCount += 1
         if snapshotDelayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: snapshotDelayNanoseconds)
         }
-        guard !snapshots.isEmpty else { return fallback }
-        return snapshots.removeFirst()
+        let scripted = snapshots.isEmpty ? fallback : snapshots.removeFirst()
+        return productionSnapshot(
+            scripted.audioOutputObservation?.targets ?? [],
+            pausedApplications: pausedApplications,
+            observing: applicationBundleIdentifiers
+        )
     }
 
     func sendPause(to destination: MediaPauseDestination) async -> MediaCommandDispatchResult {
         await record(.pause)
+        pausedApplications.formUnion(destination.applicationBundleIdentifiers)
         return MediaCommandDispatchResult(
             acceptedApplicationBundleIdentifiers: destination.applicationBundleIdentifiers
         )
@@ -517,6 +547,7 @@ final class ScriptedMediaDriver: MediaInterruptionDriving {
 
     func sendPause(to destination: VerifiedMediaResumeDestination) async -> MediaCommandDispatchResult {
         await record(.pause)
+        pausedApplications.formUnion(destination.applicationBundleIdentifiers)
         return MediaCommandDispatchResult(
             acceptedApplicationBundleIdentifiers: destination.applicationBundleIdentifiers
         )
@@ -524,6 +555,7 @@ final class ScriptedMediaDriver: MediaInterruptionDriving {
 
     func sendPlay(to destination: VerifiedMediaResumeDestination) async -> MediaCommandDispatchResult {
         await record(.play)
+        pausedApplications.subtract(destination.applicationBundleIdentifiers)
         return MediaCommandDispatchResult(
             acceptedApplicationBundleIdentifiers: destination.applicationBundleIdentifiers
         )

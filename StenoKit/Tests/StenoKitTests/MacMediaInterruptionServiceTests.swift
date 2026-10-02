@@ -21,9 +21,29 @@ private func makeSnapshot(
     isPlaying: Bool?,
     playbackState: Int?,
     activeAudioOutputs: [MediaAudioOutputTarget]?,
-    unresolvedAudioOutputCount: Int = 0
+    unresolvedAudioOutputCount: Int = 0,
+    playingApplications: Set<String>?? = .none,
+    sessions: [String: MediaSessionPlayback] = [:]
 ) -> MediaInterruptionSnapshot {
-    MediaInterruptionSnapshot(
+    // Unless a test says otherwise, an application is playing exactly while its
+    // output stream is open, so a snapshot with the stream gone describes an
+    // application that has also stopped playing. Tests about a stream that
+    // outlives playback, which is what a real player's stream does, or about a
+    // stream that closes while an assertion is still held, name the playing
+    // applications themselves; `.some(nil)` models unreadable playback activity.
+    let playbackAssertions: Set<MediaPlaybackAssertion>?
+    switch playingApplications {
+    case .none:
+        playbackAssertions = Set(
+            (activeAudioOutputs ?? []).map(\.applicationBundleIdentifier)
+                .map(playbackAssertion(forApplication:))
+        )
+    case .some(let applications):
+        playbackAssertions = applications.map {
+            Set($0.map(playbackAssertion(forApplication:)))
+        }
+    }
+    return MediaInterruptionSnapshot(
         target: target,
         contentIdentifier: contentIdentifier,
         detection: detection,
@@ -34,7 +54,32 @@ private func makeSnapshot(
                 targets: $0,
                 unresolvedProcessCount: unresolvedAudioOutputCount
             )
-        }
+        },
+        // The scripted state of the world. The fake driver decides which
+        // applications a reading of it covers.
+        playbackActivityObservation: playbackAssertions.map {
+            MediaPlaybackActivityObservation(
+                observedApplications: Set($0.map(\.applicationBundleIdentifier)),
+                assertions: $0
+            )
+        },
+        sessionPlaybackByApplication: sessions
+    )
+}
+
+extension MediaSessionPlayback {
+    /// Stopped long ago: before anything a test does.
+    static var stopped: MediaSessionPlayback { .stopped(at: .distantPast) }
+}
+
+/// One stable playback assertion per application, so an application that keeps
+/// playing across snapshots keeps holding the same assertion.
+private func playbackAssertion(
+    forApplication applicationBundleIdentifier: String
+) -> MediaPlaybackAssertion {
+    MediaPlaybackAssertion(
+        applicationBundleIdentifier: applicationBundleIdentifier,
+        identifier: 1
     )
 }
 
@@ -93,16 +138,58 @@ private final class FakeMediaInterruptionDriver: MediaInterruptionDriving {
         self.sendResults = sendResults
     }
 
+    private(set) var observedApplicationsBySnapshot: [Set<String>] = []
+
     func snapshot() async -> MediaInterruptionSnapshot {
+        await snapshot(observing: [])
+    }
+
+    func snapshot(
+        observing applicationBundleIdentifiers: Set<String>
+    ) async -> MediaInterruptionSnapshot {
         snapshotCallCount += 1
+        observedApplicationsBySnapshot.append(applicationBundleIdentifiers)
         if let gate = snapshotGates[snapshotCallCount] {
             await gate.wait()
         }
         if snapshotDelayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: snapshotDelayNanoseconds)
         }
-        guard !snapshots.isEmpty else { return fallbackSnapshot }
-        return snapshots.removeFirst()
+        let scripted = snapshots.isEmpty ? fallbackSnapshot : snapshots.removeFirst()
+        return readableByDriver(scripted, observing: applicationBundleIdentifiers)
+    }
+
+    /// A scripted snapshot states which applications are playing. Like the
+    /// production driver, a reading covers only the applications with an open
+    /// output stream plus those it was asked to observe, and nothing at all
+    /// when output streams cannot be read.
+    private func readableByDriver(
+        _ snapshot: MediaInterruptionSnapshot,
+        observing applicationBundleIdentifiers: Set<String>
+    ) -> MediaInterruptionSnapshot {
+        let readable = snapshot.audioOutputObservation.map {
+            $0.applicationBundleIdentifiers.union(applicationBundleIdentifiers)
+        }
+        return MediaInterruptionSnapshot(
+            target: snapshot.target,
+            contentIdentifier: snapshot.contentIdentifier,
+            detection: snapshot.detection,
+            nowPlayingIsPlaying: snapshot.nowPlayingIsPlaying,
+            playbackState: snapshot.playbackState,
+            audioOutputObservation: snapshot.audioOutputObservation,
+            playbackActivityObservation: readable.flatMap { readable in
+                snapshot.playbackActivityObservation.map { scripted in
+                    MediaPlaybackActivityObservation(
+                        observedApplications: readable,
+                        assertions: scripted.assertions.filter {
+                            readable.contains($0.applicationBundleIdentifier)
+                        }
+                    )
+                }
+            },
+            sessionPlaybackByApplication: snapshot.sessionPlaybackByApplication
+                .filter { readable?.contains($0.key) == true }
+        )
     }
 
     func sendPause(
@@ -175,6 +262,27 @@ private final class FakeAudioOutputMonitor: AudioOutputMonitoring {
         excludingProcessID: Int32
     ) -> MediaAudioOutputObservation? {
         observation
+    }
+}
+
+/// Reports every application it is asked about as playing unless a test
+/// supplies its own observation.
+@MainActor
+private final class FakePlaybackActivityMonitor: PlaybackActivityMonitoring {
+    var observation: MediaPlaybackActivityObservation??
+    private(set) var requestedApplications: [Set<String>] = []
+
+    func observePlaybackActivity(
+        forApplications applicationBundleIdentifiers: Set<String>
+    ) -> MediaPlaybackActivityObservation? {
+        requestedApplications.append(applicationBundleIdentifiers)
+        if let observation { return observation }
+        return MediaPlaybackActivityObservation(
+            observedApplications: applicationBundleIdentifiers,
+            assertions: Set(
+                applicationBundleIdentifiers.map(playbackAssertion(forApplication:))
+            )
+        )
     }
 }
 
@@ -322,6 +430,8 @@ private final class FakeMediaRemoteBridge: MediaRemoteBridging {
     var playbackStateIsAdvancingSequence: [Bool?] = []
     var targetedSendDelayNanoseconds: UInt64 = 0
     var targetedSendResultsByApplication: [String: Bool] = [:]
+    var sessionPlaybackByApplication: [String: MediaSessionPlayback] = [:]
+    private(set) var sessionPlaybackRequests: [String] = []
     private(set) var targetedCommands: [(SemanticMediaCommand, String)] = []
     private(set) var targetedApplications: [String] = []
     private(set) var targetedSendsInFlight = 0
@@ -361,6 +471,13 @@ private final class FakeMediaRemoteBridge: MediaRemoteBridging {
 
     func nowPlayingContentIdentifier() async -> String? {
         nil
+    }
+
+    func applicationSessionPlayback(
+        forApplicationBundleIdentifier applicationBundleIdentifier: String
+    ) async -> MediaSessionPlayback? {
+        sessionPlaybackRequests.append(applicationBundleIdentifier)
+        return sessionPlaybackByApplication[applicationBundleIdentifier]
     }
 
     func isPlaybackStateAdvancing(_ playbackState: Int) -> Bool? {
@@ -427,6 +544,7 @@ func initialPauseRejectsProducerThatExitedAfterAudioSnapshot() async {
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
         audioOutputMonitor: audioOutputMonitor,
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
         applicationResolver: AudioProcessApplicationResolver(
             processPath: { _ in nil },
             bundleIdentifierAtURL: { _ in nil },
@@ -689,9 +807,19 @@ func beginReturnsCustodyWithoutWaitingForVerificationLadder() async {
         playbackState: 2,
         activeAudioOutputs: [podcastsOutput]
     )
+    let stoppedWithOpenStream = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput],
+        playingApplications: []
+    )
     let verificationGate = MediaSnapshotGate()
     let driver = FakeMediaInterruptionDriver(
-        snapshots: Array(repeating: laggingOpenStream, count: 6)
+        snapshots: [laggingOpenStream]
+            + Array(repeating: stoppedWithOpenStream, count: 5)
     )
     // Park the ladder inside its first verification pass.
     driver.snapshotGates[2] = verificationGate
@@ -715,7 +843,7 @@ func beginReturnsCustodyWithoutWaitingForVerificationLadder() async {
 
     verificationGate.open()
     guard let token = await begin.value else {
-        Issue.record("An accepted Pause of a verified-active application must yield custody.")
+        Issue.record("An accepted Pause of a playing application must yield custody.")
         return
     }
     await service.endInterruption(token: token)
@@ -739,8 +867,20 @@ func stuckAnyApplicationPlayingSignalCannotOrphanAcceptedPause() async {
         playbackState: 2,
         activeAudioOutputs: [podcastsOutput]
     )
+    // The Pause stops playback; the weak-positive bit and the output stream
+    // both stay as they were.
+    let stoppedWithStuckWeakPositive = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput],
+        playingApplications: []
+    )
     let driver = FakeMediaInterruptionDriver(
-        snapshots: Array(repeating: stuckWeakPositive, count: 4)
+        snapshots: [stuckWeakPositive]
+            + Array(repeating: stoppedWithStuckWeakPositive, count: 3)
     )
     let service = MacMediaInterruptionService(
         driver: driver,
@@ -781,7 +921,8 @@ func laggingCoreAudioTeardownBeyondVerificationLadderResumesAtRelease() async {
         detection: .unknown,
         isPlaying: false,
         playbackState: 2,
-        activeAudioOutputs: [podcastsOutput]
+        activeAudioOutputs: [podcastsOutput],
+        playingApplications: []
     )
     let driver = FakeMediaInterruptionDriver(
         snapshots: [audible] + Array(repeating: silentWithOpenOutputStream, count: 6)
@@ -792,7 +933,7 @@ func laggingCoreAudioTeardownBeyondVerificationLadderResumesAtRelease() async {
     )
 
     guard let token = await service.beginInterruption() else {
-        Issue.record("Pending custody must survive a teardown slower than the delay ladder.")
+        Issue.record("Custody must not depend on the output stream closing.")
         return
     }
     await service.endInterruption(token: token)
@@ -908,26 +1049,21 @@ func transientUnresolvedOutputProcessNarrowsPauseDestination() async {
 }
 
 @MainActor
-@Test("A cancelled owner after an accepted initial Pause compensates with exact-lineage Play")
-func cancelledOwnerAfterAcceptedInitialPauseCompensatesWithPlay() async {
-    let replacementOutput = MediaAudioOutputTarget(
-        processID: primaryAudioOutput.processID + 1,
-        applicationBundleIdentifier: primaryAudioOutput.applicationBundleIdentifier
-    )
-    let activeReplacement = makeSnapshot(
-        target: MediaPlaybackTarget(
-            processID: primaryTarget.processID + 1,
-            bundleIdentifier: primaryTarget.bundleIdentifier
-        ),
-        contentIdentifier: "item-2",
-        detection: .playing,
-        isPlaying: true,
-        playbackState: 1,
-        activeAudioOutputs: [replacementOutput]
+@Test("A cancelled owner after an accepted initial Pause restores the playback it stopped")
+func cancelledOwnerAfterAcceptedInitialPauseRestoresStoppedPlayback() async {
+    let stoppedWithOpenStream = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .unknown,
+        isPlaying: nil,
+        playbackState: nil,
+        activeAudioOutputs: [primaryAudioOutput],
+        playingApplications: []
     )
     let pauseDispatchGate = MediaSnapshotGate()
     let driver = FakeMediaInterruptionDriver(
-        snapshots: [confirmedPlayingSnapshot, activeReplacement, activeReplacement]
+        snapshots: [confirmedPlayingSnapshot]
+            + Array(repeating: stoppedWithOpenStream, count: 3)
     )
     driver.sendGates[1] = pauseDispatchGate
     let service = MacMediaInterruptionService(
@@ -958,6 +1094,51 @@ func cancelledOwnerAfterAcceptedInitialPauseCompensatesWithPlay() async {
             ),
         ]
     )
+}
+
+// The other outcome of a cancelled press: by the time the Pause is accepted the
+// application's producer process has been replaced by one that is playing. A
+// Play would reach either a process that is gone or media that is already
+// playing, so custody is dropped and nothing is sent.
+@MainActor
+@Test("A cancelled owner whose paused application was replaced sends no Play")
+func cancelledOwnerWithReplacedProducerSendsNoPlay() async {
+    let replacementOutput = MediaAudioOutputTarget(
+        processID: primaryAudioOutput.processID + 1,
+        applicationBundleIdentifier: primaryAudioOutput.applicationBundleIdentifier
+    )
+    let activeReplacement = makeSnapshot(
+        target: MediaPlaybackTarget(
+            processID: primaryTarget.processID + 1,
+            bundleIdentifier: primaryTarget.bundleIdentifier
+        ),
+        contentIdentifier: "item-2",
+        detection: .playing,
+        isPlaying: true,
+        playbackState: 1,
+        activeAudioOutputs: [replacementOutput]
+    )
+    let pauseDispatchGate = MediaSnapshotGate()
+    let finalized = CompletionProbe()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [confirmedPlayingSnapshot, activeReplacement, activeReplacement]
+    )
+    driver.sendGates[1] = pauseDispatchGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        afterPauseTransitionFinalization: { finalized.didComplete = true }
+    )
+
+    let begin = Task { @MainActor in await service.beginInterruption() }
+    await waitUntil { pauseDispatchGate.waitCount == 1 }
+    begin.cancel()
+    await Task.yield()
+    pauseDispatchGate.open()
+
+    #expect(await begin.value == nil)
+    await waitUntil { finalized.didComplete }
+    #expect(driver.commands == [.pause])
 }
 
 @MainActor
@@ -1137,7 +1318,8 @@ func targetedPauseFanoutIsConcurrent() async {
     let driver = MacMediaInterruptionDriver(
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
-        audioOutputMonitor: FakeAudioOutputMonitor()
+        audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor()
     )
 
     let dispatch = await driver.sendPause(
@@ -1165,7 +1347,8 @@ func targetedPauseFanoutReportsOnlyAcceptedApplications() async {
     let driver = MacMediaInterruptionDriver(
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
-        audioOutputMonitor: FakeAudioOutputMonitor()
+        audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor()
     )
 
     let dispatch = await driver.sendPause(
@@ -1184,6 +1367,7 @@ func targetedPlayRejectsExitedExactProcess() async {
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
         audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
         applicationResolver: AudioProcessApplicationResolver(
             processPath: { _ in nil },
             bundleIdentifierAtURL: { _ in nil }
@@ -1217,6 +1401,7 @@ func targetedPlayAcceptsSurvivingOriginalProducer() async {
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
         audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
         applicationResolver: AudioProcessApplicationResolver(
             processPath: { processID in
                 processID == survivingProducer.processID
@@ -1258,6 +1443,7 @@ func targetedPlayRejectsReusedOriginalProducerPID() async {
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
         audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
         applicationResolver: AudioProcessApplicationResolver(
             processPath: { processID in
                 processID == survivingProducer.processID
@@ -1296,6 +1482,7 @@ func targetedPlayRejectsSameBundlePIDReuse() async {
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
         audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
         applicationResolver: AudioProcessApplicationResolver(
             processPath: { _ in
                 "/Applications/Podcasts.app/Contents/MacOS/Podcasts"
@@ -1326,6 +1513,7 @@ func lineagePauseRejectsExitedExactProcess() async {
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
         audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
         applicationResolver: AudioProcessApplicationResolver(
             processPath: { _ in nil },
             bundleIdentifierAtURL: { _ in nil }
@@ -1351,6 +1539,7 @@ func targetedPlayAcceptsMatchingExactProcess() async {
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
         audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
         applicationResolver: AudioProcessApplicationResolver(
             processPath: { processID in
                 processID == primaryAudioOutput.processID
@@ -1390,6 +1579,7 @@ func lineagePauseAcceptsMatchingExactProcess() async {
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
         audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
         applicationResolver: AudioProcessApplicationResolver(
             processPath: { processID in
                 processID == primaryAudioOutput.processID
@@ -1946,7 +2136,7 @@ func laggingMultiProcessPauseRejectsReplacementProducer() async {
 }
 
 @MainActor
-@Test("Repeated ambiguous exact-app snapshots resume at release under preserved lineage")
+@Test("Repeated ambiguous exact-app snapshots resume at release once playback is seen stopped")
 func repeatedUnknownExactAppSnapshotsDoNotAuthorizePlay() async {
     let podcastsOutput = MediaAudioOutputTarget(
         processID: 63_508,
@@ -1968,12 +2158,23 @@ func repeatedUnknownExactAppSnapshotsDoNotAuthorizePlay() async {
         playbackState: 2,
         activeAudioOutputs: [podcastsOutput]
     )
+    // The Pause takes effect only after the verification window: playback is
+    // first seen stopped at release, with the output stream still open.
+    let stoppedWithLaggingOutput = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .unknown,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput],
+        playingApplications: []
+    )
     let driver = FakeMediaInterruptionDriver(
         snapshots: [
             playingWithoutTarget,
             pausedTransitionWithLaggingOutput,
             pausedTransitionWithLaggingOutput,
-            pausedTransitionWithLaggingOutput,
+            stoppedWithLaggingOutput,
         ]
     )
     let service = MacMediaInterruptionService(
@@ -1982,7 +2183,7 @@ func repeatedUnknownExactAppSnapshotsDoNotAuthorizePlay() async {
     )
 
     guard let token = await service.beginInterruption() else {
-        Issue.record("Expected pending custody while the accepted Pause remains ambiguous.")
+        Issue.record("Expected provisional custody while the accepted Pause remains ambiguous.")
         return
     }
 
@@ -2024,7 +2225,8 @@ func laggingExactAppPauseVerificationDoesNotResumeWithoutReleaseProof() async {
         detection: .unknown,
         isPlaying: false,
         playbackState: 3,
-        activeAudioOutputs: [podcastsOutput]
+        activeAudioOutputs: [podcastsOutput],
+        playingApplications: []
     )
     let driver = FakeMediaInterruptionDriver(
         snapshots: [
@@ -2076,7 +2278,8 @@ func pendingReleaseRejectsReplacementProcess() async {
         detection: .notPlaying,
         isPlaying: false,
         playbackState: 2,
-        activeAudioOutputs: [primaryAudioOutput]
+        activeAudioOutputs: [primaryAudioOutput],
+        playingApplications: []
     )
     let driver = FakeMediaInterruptionDriver(
         snapshots: [
@@ -6012,8 +6215,20 @@ func electedSessionProcessOutsideCoreAudioDomainKeepsCustody() async {
         playbackState: 2,
         activeAudioOutputs: [rendererOutput]
     )
+    let chromeIsStopped = makeSnapshot(
+        target: MediaPlaybackTarget(
+            processID: 100,
+            bundleIdentifier: "com.google.Chrome"
+        ),
+        contentIdentifier: "video-1",
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [rendererOutput],
+        playingApplications: []
+    )
     let driver = FakeMediaInterruptionDriver(
-        snapshots: Array(repeating: chromeIsActive, count: 6)
+        snapshots: [chromeIsActive] + Array(repeating: chromeIsStopped, count: 5)
     )
     let service = MacMediaInterruptionService(
         driver: driver,
@@ -6034,7 +6249,7 @@ func electedSessionProcessOutsideCoreAudioDomainKeepsCustody() async {
 }
 
 @MainActor
-@Test("Content drift under a preserved Core Audio producer never breaks custody")
+@Test("A producer seen to stop is resumed even though the elected content has drifted")
 func contentDriftUnderPreservedProducerKeepsCustody() async {
     let producerOutput = MediaAudioOutputTarget(
         processID: 63_508,
@@ -6060,7 +6275,8 @@ func contentDriftUnderPreservedProducerKeepsCustody() async {
         detection: .likelyPlaying,
         isPlaying: false,
         playbackState: 2,
-        activeAudioOutputs: [producerOutput]
+        activeAudioOutputs: [producerOutput],
+        playingApplications: []
     )
     let driver = FakeMediaInterruptionDriver(
         snapshots: [before] + Array(repeating: contentDrifted, count: 5)
@@ -6079,8 +6295,46 @@ func contentDriftUnderPreservedProducerKeepsCustody() async {
     #expect(driver.commands.filter { $0 == .play }.count == 1)
 }
 
+// Without evidence from the application itself, verification falls back to the
+// elected session going from playing to not playing. That fallback describes a
+// single session, so it is withheld when the session's content has changed: the
+// session may no longer be the one Steno paused.
 @MainActor
-@Test("Teardown observed after the ladder but before release verifies custody")
+@Test(
+    "Verification that rests on the elected session alone is withheld when its content drifts",
+    arguments: [true, false]
+)
+func electedSessionVerificationIsWithheldWhenContentDrifts(contentDrifts: Bool) async {
+    // The application holds its assertion throughout and its session state
+    // cannot be read, so only the elected session speaks to the stop.
+    let electedPaused = makeSnapshot(
+        contentIdentifier: contentDrifts ? "item-2" : "item-1",
+        detection: .notPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [primaryAudioOutput],
+        playingApplications: [primaryAudioOutput.applicationBundleIdentifier]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [confirmedPlayingSnapshot] + Array(repeating: electedPaused, count: 5)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        resumeVerificationDelays: []
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("The playing application should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.contains(.play) == !contentDrifts)
+}
+
+@MainActor
+@Test("Playback seen stopped only at release, with the stream already closed, verifies custody")
 func teardownAfterLadderBeforeReleaseVerifiesCustody() async {
     let podcastsOutput = MediaAudioOutputTarget(
         processID: 63_508,
@@ -6094,15 +6348,18 @@ func teardownAfterLadderBeforeReleaseVerifiesCustody() async {
         playbackState: 2,
         activeAudioOutputs: [podcastsOutput]
     )
-    // Core Audio teardown outlasts the whole verification ladder but lands
-    // before capture release, so pending custody upgrades to verified.
+    // The Pause takes effect after the whole verification ladder. By release
+    // playback has stopped and the stream has closed as well. The stop is what
+    // verifies custody: the application is still read once its stream is gone,
+    // and it no longer holds the assertion it held before the Pause.
     let tornDown = makeSnapshot(
         target: nil,
         contentIdentifier: nil,
         detection: .likelyPlaying,
         isPlaying: false,
         playbackState: 2,
-        activeAudioOutputs: []
+        activeAudioOutputs: [],
+        playingApplications: []
     )
     let driver = FakeMediaInterruptionDriver(
         snapshots: [openStream, openStream, openStream, tornDown]
@@ -6121,6 +6378,10 @@ func teardownAfterLadderBeforeReleaseVerifiesCustody() async {
     #expect(driver.commands.filter { $0 == .play }.count == 1)
     #expect(
         driver.verifiedDestinations.last?.expectedProcessTargets == [podcastsOutput]
+    )
+    #expect(
+        driver.observedApplicationsBySnapshot.last == ["com.apple.podcasts"],
+        "The release reading must cover the application whose stream has closed."
     )
 }
 
@@ -6162,8 +6423,9 @@ func releasedOwnerHoldingUncontradictedCustodyResumesExactlyOnce() async {
         processID: 63_508,
         applicationBundleIdentifier: "com.apple.podcasts"
     )
-    // Output teardown lags the accepted Pause, so custody stays pending and
-    // uncontradicted for the whole window. The owner releases mid-verification.
+    // The Pause has not visibly taken effect when the owner releases
+    // mid-verification, so custody is still provisional and uncontradicted.
+    // Playback is seen stopped on the next pass, with the stream still open.
     let laggingOpenStream = makeSnapshot(
         target: nil,
         contentIdentifier: nil,
@@ -6172,9 +6434,19 @@ func releasedOwnerHoldingUncontradictedCustodyResumesExactlyOnce() async {
         playbackState: 2,
         activeAudioOutputs: [podcastsOutput]
     )
+    let stoppedWithOpenStream = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsOutput],
+        playingApplications: []
+    )
     let verificationGate = MediaSnapshotGate()
     let driver = FakeMediaInterruptionDriver(
-        snapshots: Array(repeating: laggingOpenStream, count: 5)
+        snapshots: [laggingOpenStream, laggingOpenStream]
+            + Array(repeating: stoppedWithOpenStream, count: 3)
     )
     driver.snapshotGates[2] = verificationGate
     let service = MacMediaInterruptionService(
@@ -6459,5 +6731,1408 @@ func mediaPausingSupportMatchesCoreAudioAvailability() {
     } else {
         #expect(!MacMediaInterruptionService.isSupportedOnCurrentSystem)
     }
+}
+
+// MARK: - Resume ownership rests on observed playback, not on the output stream
+
+private let podcastsProducer = MediaAudioOutputTarget(
+    processID: 31_751,
+    applicationBundleIdentifier: "com.apple.podcasts",
+    processStartTimeMicroseconds: 1_000
+)
+
+/// The elected session is unreadable and the any-application bit is stuck, as
+/// on current systems, so the output stream and playback activity are the only
+/// evidence in play.
+private func podcastsSnapshot(
+    outputStreamOpen: Bool = true,
+    playing: Bool
+) -> MediaInterruptionSnapshot {
+    makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: outputStreamOpen ? [podcastsProducer] : [],
+        playingApplications: playing ? ["com.apple.podcasts"] : []
+    )
+}
+
+/// Runs one dictation through the production verification ladder, releasing
+/// after the given number of verification passes.
+@MainActor
+private func runDictation(
+    over driver: FakeMediaInterruptionDriver,
+    verificationPassesBeforeRelease: Int
+) async {
+    let sleepGate = MediaSleepGate()
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: MacMediaInterruptionService.defaultVerificationDelays,
+        resumeVerificationDelays: [0],
+        sleep: { _ in await sleepGate.wait() }
+    )
+
+    let token = await service.beginInterruption()
+    for pass in 0..<verificationPassesBeforeRelease {
+        guard await sleepGate.waitUntilCount(pass + 1, timeoutMilliseconds: 200) else { break }
+        await sleepGate.open()
+    }
+    await sleepGate.openPermanently()
+    if let token {
+        await service.endInterruption(token: token)
+    }
+}
+
+// The sequence recorded when media the listener had paused started playing at
+// the end of a dictation: the application's output stream is still open, so it
+// looks active, yet nothing is playing.
+@MainActor
+@Test(
+    "Media the listener paused is never sent a command while its output stream is still open",
+    arguments: [0, 2, 5]
+)
+func listenerPausedMediaWithOpenOutputStreamIsLeftAlone(
+    verificationPassesBeforeRelease: Int
+) async {
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: podcastsSnapshot(playing: false), count: 16)
+    )
+
+    await runDictation(
+        over: driver,
+        verificationPassesBeforeRelease: verificationPassesBeforeRelease
+    )
+
+    #expect(driver.commands.isEmpty)
+}
+
+@MainActor
+@Test(
+    "Media that was playing is resumed even though its output stream never closes",
+    arguments: [0, 2, 5]
+)
+func playingMediaIsResumedWhileItsOutputStreamStaysOpen(
+    verificationPassesBeforeRelease: Int
+) async {
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [podcastsSnapshot(playing: true)]
+            + Array(repeating: podcastsSnapshot(playing: false), count: 15)
+    )
+
+    await runDictation(
+        over: driver,
+        verificationPassesBeforeRelease: verificationPassesBeforeRelease
+    )
+
+    #expect(driver.commands.first == .pause)
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.commands.last == .play)
+    #expect(driver.verifiedDestinations.last?.expectedProcessTargets == [podcastsProducer])
+}
+
+// An application can keep the system awake for reasons other than playback, so
+// holding an assertion is not enough to be owed a Play: the accepted Pause has
+// to be seen releasing one.
+@MainActor
+@Test(
+    "An accepted Pause that stops nothing never earns a Play",
+    arguments: [0, 2, 5]
+)
+func acceptedPauseThatStopsNothingNeverEarnsPlay(
+    verificationPassesBeforeRelease: Int
+) async {
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: podcastsSnapshot(playing: true), count: 16)
+    )
+
+    await runDictation(
+        over: driver,
+        verificationPassesBeforeRelease: verificationPassesBeforeRelease
+    )
+
+    #expect(driver.commands.contains(.pause))
+    #expect(!driver.commands.contains(.play))
+}
+
+@MainActor
+@Test("An output stream closing during the dictation does not earn a Play by itself")
+func outputStreamClosingAloneNeverEarnsPlay() async {
+    // Media the listener paused shortly before dictating, in an application
+    // that holds an unrelated assertion and keeps holding it. Its stream closes
+    // mid-dictation, as every paused stream eventually does. The application is
+    // still read after that, so the closed stream is not mistaken for a stop.
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: podcastsSnapshot(playing: true), count: 6)
+            + Array(
+                repeating: podcastsSnapshot(outputStreamOpen: false, playing: true),
+                count: 4
+            )
+    )
+
+    await runDictation(over: driver, verificationPassesBeforeRelease: 5)
+
+    #expect(!driver.commands.contains(.play))
+}
+
+// An output process that cannot be tied to an application, such as a browser's
+// system helper or a command-line player, says nothing about whether the
+// application Steno paused has stopped.
+@MainActor
+@Test(
+    "An unrelated unresolved output process does not block the resume",
+    arguments: [0, 2, 5]
+)
+func unresolvedOutputProcessDoesNotBlockResume(
+    verificationPassesBeforeRelease: Int
+) async {
+    let stoppedBesideUnresolvedOutput = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsProducer],
+        unresolvedAudioOutputCount: 1,
+        playingApplications: []
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [podcastsSnapshot(playing: true)]
+            + Array(repeating: stoppedBesideUnresolvedOutput, count: 15)
+    )
+
+    await runDictation(
+        over: driver,
+        verificationPassesBeforeRelease: verificationPassesBeforeRelease
+    )
+
+    #expect(driver.commands.first == .pause)
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.commands.last == .play)
+}
+
+@MainActor
+@Test(
+    "A slowly acknowledged Pause changes neither outcome",
+    arguments: [true, false]
+)
+func slowlyAcknowledgedPauseChangesNeitherOutcome(wasPlaying: Bool) async {
+    // An application that holds an assertion either way, so a Pause is sent in
+    // both cases and only its observed effect differs.
+    let before = podcastsSnapshot(playing: true)
+    let after = podcastsSnapshot(playing: !wasPlaying)
+    let acknowledgementGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [before] + Array(repeating: after, count: 8)
+    )
+    driver.sendGates[1] = acknowledgementGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        resumeVerificationDelays: [0]
+    )
+
+    let begin = Task { @MainActor in await service.beginInterruption() }
+    await waitUntil { acknowledgementGate.waitCount == 1 }
+    #expect(driver.commands == [.pause])
+    acknowledgementGate.open()
+    let token = await begin.value
+    if let token {
+        await service.endInterruption(token: token)
+    }
+
+    #expect(driver.commands.contains(.play) == wasPlaying)
+}
+
+@MainActor
+@Test("With one application playing and another paused, only the playing one is touched")
+func onlyThePlayingApplicationIsPausedAndResumed() async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(podcastsPlaying: Bool) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            // Music was paused by the listener; its stream is still open.
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: podcastsPlaying ? ["com.apple.podcasts"] : []
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [snapshot(podcastsPlaying: true)]
+            + Array(repeating: snapshot(podcastsPlaying: false), count: 6)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        resumeVerificationDelays: []
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("The playing application should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands == [.pause, .play])
+    #expect(
+        driver.destinations == [
+            .observedApplications(["com.apple.podcasts"]),
+            .observedApplications(["com.apple.podcasts"]),
+        ]
+    )
+}
+
+// A second dictation can begin while the first is being released. Custody is
+// then re-paused for the new owner, and an application the first Pause already
+// stopped must still be resumed when that owner finishes.
+@MainActor
+@Test("An application the first Pause stopped is still resumed after a re-Pause for a new owner")
+func applicationStoppedByFirstPauseIsResumedAfterRePause() async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(playing: Set<String>) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: playing
+        )
+    }
+    // Podcasts stops at the first Pause. Music keeps playing until the re-Pause.
+    let onlyMusicPlaying = snapshot(playing: ["com.apple.Music"])
+    let releaseGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(playing: ["com.apple.Music", "com.apple.podcasts"]),
+            onlyMusicPlaying,
+            onlyMusicPlaying,
+            onlyMusicPlaying,
+            snapshot(playing: []),
+        ]
+    )
+    driver.snapshotGates[4] = releaseGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0]
+    )
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected custody for the first capture.")
+        return
+    }
+
+    let firstEnd = Task { @MainActor in
+        await service.endInterruption(token: firstToken)
+    }
+    await waitUntil { releaseGate.waitCount == 1 }
+    let secondToken = await service.beginInterruption()
+    releaseGate.open()
+    await firstEnd.value
+
+    guard let secondToken else {
+        Issue.record("Expected the new capture to inherit custody.")
+        return
+    }
+    #expect(!driver.commands.contains(.play))
+
+    await service.endInterruption(token: secondToken)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.commands.last == .play)
+    #expect(
+        driver.destinations.last
+            == .observedApplications(["com.apple.Music", "com.apple.podcasts"])
+    )
+}
+
+// With two players, one reading can miss an application that another reading
+// covered. What was seen stopped must not have to be seen again.
+@MainActor
+@Test("Applications verified in different passes are all resumed")
+func applicationsVerifiedInDifferentPassesAreAllResumed() async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(
+        sessions: [String: MediaSessionPlayback]
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: [],
+            sessions: sessions
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(sessions: ["com.apple.Music": .playing, "com.apple.podcasts": .playing]),
+            // Podcasts has stopped; Music has not yet.
+            snapshot(sessions: ["com.apple.Music": .playing, "com.apple.podcasts": .stopped]),
+        ]
+            // Music has stopped; the Podcasts session could not be read.
+            + Array(repeating: snapshot(sessions: ["com.apple.Music": .stopped]), count: 6)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        resumeVerificationDelays: []
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Both playing applications should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(
+        driver.destinations.last
+            == .observedApplications(["com.apple.Music", "com.apple.podcasts"])
+    )
+}
+
+// Being seen stopped on one pass does not survive a later contradiction. Here
+// Podcasts stops, then its session disappears, and Music stops only after that.
+@MainActor
+@Test(
+    "An application seen stopped and then contradicted during the ladder is not resumed",
+    arguments: [false, true]
+)
+func applicationContradictedAfterVerificationInLadderIsNotResumed(
+    everyApplicationContradicted: Bool
+) async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(
+        music: MediaSessionPlayback,
+        podcasts: MediaSessionPlayback
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: [],
+            sessions: ["com.apple.Music": music, "com.apple.podcasts": podcasts]
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(music: .playing, podcasts: .playing),
+            snapshot(music: .playing, podcasts: .stopped),
+            snapshot(
+                music: everyApplicationContradicted ? .noSession : .playing,
+                podcasts: .noSession
+            ),
+        ] + Array(repeating: snapshot(music: .stopped, podcasts: .noSession), count: 6)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0, 0],
+        resumeVerificationDelays: []
+    )
+
+    let token = await service.beginInterruption()
+    if let token {
+        await service.endInterruption(token: token)
+    }
+
+    if everyApplicationContradicted {
+        // Custody that was contradicted for every application is gone. Seeing
+        // one of them stopped afterwards does not bring it back.
+        #expect(!driver.commands.contains(.play))
+    } else {
+        #expect(driver.commands.filter { $0 == .play }.count == 1)
+        #expect(driver.destinations.last == .observedApplications(["com.apple.Music"]))
+    }
+}
+
+// The other kind of contradiction: strong evidence that the application is
+// playing again after it was seen stopped. It is not resumed either, and what
+// was seen earlier does not count for it.
+@MainActor
+@Test("An application seen stopped and then strongly playing again during the ladder is not resumed")
+func applicationPlayingAgainAfterVerificationInLadderIsNotResumed() async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(
+        music: MediaSessionPlayback,
+        podcasts: MediaSessionPlayback,
+        podcastsStronglyPlaying: Bool = false
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: podcastsStronglyPlaying
+                ? MediaPlaybackTarget(
+                    processID: podcastsProducer.processID,
+                    bundleIdentifier: "com.apple.podcasts"
+                )
+                : nil,
+            contentIdentifier: nil,
+            detection: podcastsStronglyPlaying ? .playing : .likelyPlaying,
+            isPlaying: podcastsStronglyPlaying,
+            playbackState: podcastsStronglyPlaying ? 1 : 2,
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: [],
+            sessions: ["com.apple.Music": music, "com.apple.podcasts": podcasts]
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(music: .playing, podcasts: .playing),
+            snapshot(music: .playing, podcasts: .stopped),
+            snapshot(music: .playing, podcasts: .playing, podcastsStronglyPlaying: true),
+        ] + Array(
+            repeating: snapshot(
+                music: .stopped,
+                podcasts: .playing,
+                podcastsStronglyPlaying: true
+            ),
+            count: 6
+        )
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0, 0],
+        resumeVerificationDelays: []
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Both playing applications should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.commands.last == .play)
+    #expect(driver.destinations.last == .observedApplications(["com.apple.Music"]))
+}
+
+@MainActor
+@Test("An application seen stopped in the ladder and contradicted at release is not resumed")
+func applicationContradictedAtReleaseAfterVerificationIsNotResumed() async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(
+        music: MediaSessionPlayback,
+        podcasts: MediaSessionPlayback
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: [],
+            sessions: ["com.apple.Music": music, "com.apple.podcasts": podcasts]
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(music: .playing, podcasts: .playing),
+            // The ladder sees Podcasts stop and ends with Music still playing.
+            snapshot(music: .playing, podcasts: .stopped),
+        ]
+            // At release Music has stopped, and the Podcasts session is gone.
+            + Array(repeating: snapshot(music: .stopped, podcasts: .noSession), count: 4)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0],
+        resumeVerificationDelays: []
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Both playing applications should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.destinations.last == .observedApplications(["com.apple.Music"]))
+}
+
+// A second dictation can begin while the first, still unverified, is being
+// released. Custody is then re-paused for the new owner. An output process
+// that cannot be tied to any application says nothing about the application
+// Steno paused, so it must not cost that application its custody.
+@MainActor
+@Test("An unresolved output process does not discard custody when it is re-paused for a new owner")
+func unresolvedOutputProcessDoesNotDiscardCustodyAtRePause() async {
+    func snapshot(
+        playing: Bool,
+        unresolvedAudioOutputCount: Int = 0
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [podcastsProducer],
+            unresolvedAudioOutputCount: unresolvedAudioOutputCount,
+            playingApplications: playing ? ["com.apple.podcasts"] : []
+        )
+    }
+    let releaseGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(playing: true),
+            // The Pause has not taken effect when the ladder ends.
+            snapshot(playing: true),
+            snapshot(playing: true),
+            // The release reading, with an unresolvable output process active.
+            snapshot(playing: true, unresolvedAudioOutputCount: 1),
+            snapshot(playing: false, unresolvedAudioOutputCount: 1),
+        ]
+    )
+    driver.snapshotGates[4] = releaseGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0]
+    )
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected custody for the first capture.")
+        return
+    }
+
+    let firstEnd = Task { @MainActor in
+        await service.endInterruption(token: firstToken)
+    }
+    await waitUntil { releaseGate.waitCount == 1 }
+    let secondToken = await service.beginInterruption()
+    releaseGate.open()
+    await firstEnd.value
+
+    guard let secondToken else {
+        Issue.record("Expected the new capture to inherit custody.")
+        return
+    }
+    #expect(driver.commands == [.pause, .pause, .pause])
+
+    await service.endInterruption(token: secondToken)
+    #expect(driver.commands == [.pause, .pause, .pause, .play])
+}
+
+@MainActor
+@Test("Unreadable playback activity leaves every application alone")
+func unreadablePlaybackActivityLeavesEveryApplicationAlone() async {
+    let unreadable = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsProducer],
+        playingApplications: .some(nil)
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: unreadable, count: 4)
+    )
+    let service = makeService(driver: driver)
+
+    let token = await service.beginInterruption()
+
+    #expect(token == nil)
+    #expect(driver.commands.isEmpty)
+}
+
+@MainActor
+@Test("Playback activity that becomes unreadable after the Pause earns no Play")
+func playbackActivityLostAfterPauseEarnsNoPlay() async {
+    let unreadable = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsProducer],
+        playingApplications: .some(nil)
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [podcastsSnapshot(playing: true)]
+            + Array(repeating: unreadable, count: 6)
+    )
+
+    await runDictation(over: driver, verificationPassesBeforeRelease: 5)
+
+    #expect(driver.commands.contains(.pause))
+    #expect(!driver.commands.contains(.play))
+}
+
+@Test("Playback activity keeps only sleep-preventing assertions owned by the requested applications")
+func playbackActivityKeepsOnlyOwnedSleepPreventingAssertions() {
+    let pathsByProcessID: [Int32: String] = [
+        // The player and one of its helper processes.
+        100: "/Applications/Player.app/Contents/MacOS/Player",
+        101: "/Applications/Player.app/Contents/Frameworks/Player Helper.app/Contents/MacOS/Player Helper",
+        // The audio server holds assertions on behalf of whichever application
+        // has an open stream; it is not part of any application.
+        460: "/usr/sbin/coreaudiod",
+        200: "/Applications/Other.app/Contents/MacOS/Other",
+    ]
+    let builder = PlaybackActivityObservationBuilder(
+        applicationResolver: AudioProcessApplicationResolver(
+            processPath: { pathsByProcessID[$0] },
+            bundleIdentifierAtURL: { url in
+                switch url.lastPathComponent {
+                case "Player.app": "com.example.player"
+                case "Player Helper.app": "com.example.player.helper"
+                case "Other.app": "com.example.other"
+                default: nil
+                }
+            },
+            processStartTimeMicroseconds: { _ in 1 }
+        )
+    )
+
+    let observation = builder.makeObservation(
+        from: [
+            PowerAssertionRecord(ownerProcessID: 100, type: "PreventUserIdleSystemSleep", level: 255, identifier: 1),
+            PowerAssertionRecord(ownerProcessID: 101, type: "NoDisplaySleepAssertion", level: 255, identifier: 2),
+            PowerAssertionRecord(ownerProcessID: 100, type: "PreventUserIdleSystemSleep", level: 0, identifier: 3),
+            PowerAssertionRecord(ownerProcessID: 100, type: "UserIsActive", level: 255, identifier: 4),
+            PowerAssertionRecord(ownerProcessID: 100, type: "BackgroundTask", level: 255, identifier: 5),
+            PowerAssertionRecord(ownerProcessID: 460, type: "PreventUserIdleSystemSleep", level: 255, identifier: 6),
+            PowerAssertionRecord(ownerProcessID: 200, type: "PreventUserIdleSystemSleep", level: 255, identifier: 7),
+            PowerAssertionRecord(ownerProcessID: 999, type: "PreventUserIdleSystemSleep", level: 255, identifier: 8),
+        ],
+        forApplications: ["com.example.player"]
+    )
+
+    #expect(
+        observation.assertions == [
+            MediaPlaybackAssertion(applicationBundleIdentifier: "com.example.player", identifier: 1),
+            MediaPlaybackAssertion(applicationBundleIdentifier: "com.example.player", identifier: 2),
+        ]
+    )
+}
+
+@Test("An assertion list that cannot be read is unknown, not empty")
+func unreadableAssertionListIsUnknownNotEmpty() {
+    let wellFormed: [NSNumber: [[String: Any]]] = [
+        NSNumber(value: 100): [
+            [
+                "AssertType": "PreventUserIdleSystemSleep",
+                "AssertLevel": NSNumber(value: 255),
+                "GlobalUniqueID": NSNumber(value: 7),
+            ],
+            // An entry with no type or identity is skipped, not fatal.
+            ["AssertName": "incomplete"],
+        ],
+    ]
+
+    #expect(
+        PowerAssertionPlaybackActivityMonitor.records(
+            fromAssertionsByProcess: wellFormed as CFDictionary
+        ) == [
+            PowerAssertionRecord(
+                ownerProcessID: 100,
+                type: "PreventUserIdleSystemSleep",
+                level: 255,
+                identifier: 7
+            ),
+        ]
+    )
+    // No dictionary at all is how the system reports that nothing is held.
+    #expect(
+        PowerAssertionPlaybackActivityMonitor.records(fromAssertionsByProcess: nil) == []
+    )
+    #expect(
+        PowerAssertionPlaybackActivityMonitor.records(
+            fromAssertionsByProcess: ["unexpected": "shape"] as CFDictionary
+        ) == nil
+    )
+    #expect(
+        PowerAssertionPlaybackActivityMonitor.records(
+            fromAssertionsByProcess: [NSNumber(value: 100): "not a list"] as CFDictionary
+        ) == nil
+    )
+}
+
+@Test("A released assertion is seen even when the application has taken a new one")
+func releasedAssertionIsSeenDespiteNewAssertion() {
+    func snapshot(
+        assertionIdentifiers: Set<UInt64>?,
+        observed: Bool = true
+    ) -> MediaInterruptionSnapshot {
+        MediaInterruptionSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .unknown,
+            nowPlayingIsPlaying: nil,
+            playbackState: nil,
+            audioOutputObservation: MediaAudioOutputObservation(
+                targets: [podcastsProducer],
+                unresolvedProcessCount: 0
+            ),
+            playbackActivityObservation: assertionIdentifiers.map { identifiers in
+                MediaPlaybackActivityObservation(
+                    observedApplications: observed ? ["com.apple.podcasts"] : [],
+                    assertions: Set(identifiers.map {
+                        MediaPlaybackAssertion(
+                            applicationBundleIdentifier: "com.apple.podcasts",
+                            identifier: $0
+                        )
+                    })
+                )
+            },
+            sessionPlaybackByApplication: [:]
+        )
+    }
+    let before = snapshot(assertionIdentifiers: [1, 2])
+
+    func stopped(_ identifiers: Set<UInt64>?) -> Bool {
+        snapshot(assertionIdentifiers: identifiers)
+            .observesPlaybackStopped(since: before, forApplication: "com.apple.podcasts")
+    }
+    #expect(!stopped([1, 2]))
+    #expect(!stopped([1, 2, 3]))
+    #expect(stopped([2]))
+    #expect(stopped([2, 3]))
+    #expect(stopped([]))
+    #expect(!stopped(nil))
+    #expect(
+        !snapshot(assertionIdentifiers: [], observed: false)
+            .observesPlaybackStopped(since: before, forApplication: "com.apple.podcasts"),
+        "A reading that does not cover the application says nothing about it."
+    )
+    #expect(
+        !before.observesPlaybackStopped(
+            since: snapshot(assertionIdentifiers: []),
+            forApplication: "com.apple.podcasts"
+        ),
+        "An application that held nothing before the Pause has nothing to release."
+    )
+}
+
+@MainActor
+@Test("The driver reads playback activity for applications with open output streams and those it is asked to observe")
+func driverReadsPlaybackActivityForApplicationsWithOpenStreams() async {
+    let audioOutputMonitor = FakeAudioOutputMonitor()
+    audioOutputMonitor.observation = MediaAudioOutputObservation(
+        targets: [podcastsProducer],
+        unresolvedProcessCount: 1
+    )
+    let playbackActivityMonitor = FakePlaybackActivityMonitor()
+    let bridge = FakeMediaRemoteBridge()
+    let driver = MacMediaInterruptionDriver(
+        bridge: bridge,
+        playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
+        audioOutputMonitor: audioOutputMonitor,
+        playbackActivityMonitor: playbackActivityMonitor
+    )
+
+    let playing = await driver.snapshot()
+    #expect(playbackActivityMonitor.requestedApplications == [["com.apple.podcasts"]])
+    #expect(playing.pauseDestination == .observedApplications(["com.apple.podcasts"]))
+
+    playbackActivityMonitor.observation = .some(
+        MediaPlaybackActivityObservation(
+            observedApplications: ["com.apple.podcasts"],
+            assertions: []
+        )
+    )
+    let paused = await driver.snapshot()
+    #expect(paused.pauseDestination == nil)
+
+    // An application being tracked is read even after its stream has closed.
+    audioOutputMonitor.observation = MediaAudioOutputObservation(
+        targets: [],
+        unresolvedProcessCount: 0
+    )
+    playbackActivityMonitor.observation = nil
+    let tracked = await driver.snapshot(observing: ["com.apple.podcasts"])
+    #expect(playbackActivityMonitor.requestedApplications.last == ["com.apple.podcasts"])
+    #expect(
+        tracked.playbackActivityObservation?.observedApplications == ["com.apple.podcasts"]
+    )
+
+    audioOutputMonitor.observation = nil
+    let withoutOutputs = await driver.snapshot(observing: ["com.apple.podcasts"])
+    #expect(withoutOutputs.playbackActivityObservation == nil)
+    #expect(playbackActivityMonitor.requestedApplications.count == 3)
+}
+// MARK: - Per-application media sessions
+
+private let editorProducer = MediaAudioOutputTarget(
+    processID: 29_027,
+    applicationBundleIdentifier: "com.example.editor",
+    processStartTimeMicroseconds: 3_000
+)
+
+// An application can hold an output stream open and keep the system awake
+// without being a media player at all. A command addressed to it would be
+// handed to whichever application the system considers to be now playing, so a
+// Play would start media the listener had paused, however long ago.
+@MainActor
+@Test("An application with no media session is never sent a command")
+func applicationWithoutMediaSessionIsNeverSentCommand() async {
+    let editorHoldingStream = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [editorProducer],
+        playingApplications: ["com.example.editor"],
+        sessions: ["com.example.editor": .noSession]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: editorHoldingStream, count: 16)
+    )
+
+    await runDictation(over: driver, verificationPassesBeforeRelease: 5)
+
+    #expect(driver.commands.isEmpty)
+}
+
+@MainActor
+@Test("Paused media beside a session-less application with an open stream stays paused")
+func pausedMediaBesideSessionlessApplicationStaysPaused() async {
+    let snapshot = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [editorProducer, podcastsProducer],
+        playingApplications: ["com.example.editor"],
+        sessions: [
+            "com.example.editor": .noSession,
+            "com.apple.podcasts": .stopped,
+        ]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: snapshot, count: 16)
+    )
+
+    await runDictation(over: driver, verificationPassesBeforeRelease: 5)
+
+    #expect(driver.commands.isEmpty)
+}
+
+@MainActor
+@Test("Playing media beside a session-less application is paused and resumed alone")
+func playingMediaBesideSessionlessApplicationIsHandledAlone() async {
+    func snapshot(podcasts: MediaSessionPlayback) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [editorProducer, podcastsProducer],
+            playingApplications: podcasts == .playing
+                ? ["com.example.editor", "com.apple.podcasts"]
+                : ["com.example.editor"],
+            sessions: [
+                "com.example.editor": .noSession,
+                "com.apple.podcasts": podcasts,
+            ]
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [snapshot(podcasts: .playing)]
+            + Array(repeating: snapshot(podcasts: .stopped), count: 15)
+    )
+
+    await runDictation(over: driver, verificationPassesBeforeRelease: 2)
+
+    #expect(driver.commands == [.pause, .play])
+    #expect(
+        driver.destinations == [
+            .observedApplications(["com.apple.podcasts"]),
+            .observedApplications(["com.apple.podcasts"]),
+        ]
+    )
+}
+
+// A browser releases one of its assertions about two seconds after its media
+// pauses. Its session records the stop at once, so media paused a moment before
+// dictating is not mistaken for media that is playing.
+@MainActor
+@Test("Media whose session has stopped is left alone while an assertion lingers")
+func stoppedSessionIsLeftAloneWhileAssertionLingers() async {
+    let browserProducer = MediaAudioOutputTarget(
+        processID: 42_543,
+        applicationBundleIdentifier: "com.google.Chrome",
+        processStartTimeMicroseconds: 4_000
+    )
+    func snapshot(assertionHeld: Bool) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [browserProducer],
+            playingApplications: assertionHeld ? ["com.google.Chrome"] : [],
+            sessions: ["com.google.Chrome": .stopped]
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [snapshot(assertionHeld: true)]
+            + Array(repeating: snapshot(assertionHeld: false), count: 15)
+    )
+
+    await runDictation(over: driver, verificationPassesBeforeRelease: 5)
+
+    #expect(driver.commands.isEmpty)
+}
+
+@MainActor
+@Test(
+    "A player that holds no assertion is paused and resumed on its session's evidence",
+    arguments: [0, 2, 5]
+)
+func playerWithoutAssertionIsResumedOnSessionEvidence(
+    verificationPassesBeforeRelease: Int
+) async {
+    func snapshot(_ session: MediaSessionPlayback) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [podcastsProducer],
+            playingApplications: [],
+            sessions: ["com.apple.podcasts": session]
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [snapshot(.playing)] + Array(repeating: snapshot(.stopped), count: 15)
+    )
+
+    await runDictation(
+        over: driver,
+        verificationPassesBeforeRelease: verificationPassesBeforeRelease
+    )
+
+    #expect(driver.commands.first == .pause)
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.commands.last == .play)
+}
+
+@MainActor
+@Test("A session that keeps reporting playback after the Pause earns no Play")
+func sessionStillPlayingAfterPauseEarnsNoPlay() async {
+    let stillPlaying = makeSnapshot(
+        target: nil,
+        contentIdentifier: nil,
+        detection: .likelyPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [podcastsProducer],
+        playingApplications: [],
+        sessions: ["com.apple.podcasts": .playing]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: Array(repeating: stillPlaying, count: 16)
+    )
+
+    await runDictation(over: driver, verificationPassesBeforeRelease: 5)
+
+    #expect(driver.commands.contains(.pause))
+    #expect(!driver.commands.contains(.play))
+}
+
+// A tab or player can be closed during a long dictation. Its session is then
+// gone, and a Play addressed to it would start some other application.
+@MainActor
+@Test("An application whose session is gone by release is not sent Play")
+func applicationWhoseSessionIsGoneByReleaseIsNotSentPlay() async {
+    func snapshot(
+        playing: Bool,
+        session: MediaSessionPlayback
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [podcastsProducer],
+            playingApplications: playing ? ["com.apple.podcasts"] : [],
+            sessions: ["com.apple.podcasts": session]
+        )
+    }
+    // The Pause is slow to act. By release the application has released its
+    // assertion, which would verify the stop, but its session is gone.
+    let playing = snapshot(playing: true, session: .playing)
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [playing, playing, playing]
+            + Array(repeating: snapshot(playing: false, session: .noSession), count: 6)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        resumeVerificationDelays: [0]
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("The playing application should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.contains(.pause))
+    #expect(!driver.commands.contains(.play))
+}
+
+// Custody that was verified early is released without another reading, so the
+// last check is made where the command is dispatched.
+@MainActor
+@Test("A verified pause is not resumed once the application's session has disappeared")
+func verifiedPauseIsNotResumedOnceSessionHasDisappeared() async {
+    let producer = MediaAudioOutputTarget(
+        processID: 63_508,
+        applicationBundleIdentifier: "com.apple.podcasts"
+    )
+    let bridge = FakeMediaRemoteBridge()
+    bridge.sessionPlaybackByApplication = ["com.apple.podcasts": .playing]
+    let audioOutputMonitor = FakeAudioOutputMonitor()
+    audioOutputMonitor.observation = MediaAudioOutputObservation(
+        targets: [producer],
+        unresolvedProcessCount: 0
+    )
+    let driver = MacMediaInterruptionDriver(
+        bridge: bridge,
+        playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
+        audioOutputMonitor: audioOutputMonitor,
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
+        applicationResolver: AudioProcessApplicationResolver(
+            processPath: { _ in "/Applications/Podcasts.app/Contents/MacOS/Podcasts" },
+            bundleIdentifierAtURL: { _ in "com.apple.podcasts" }
+        )
+    )
+    let sleepGate = MediaSleepGate()
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [1],
+        resumeVerificationDelays: [],
+        sleep: { _ in await sleepGate.wait() }
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("The playing application should be paused.")
+        return
+    }
+    #expect(bridge.targetedCommands.map(\.0) == [.pause])
+
+    // The Pause takes effect and is verified on the first pass.
+    bridge.sessionPlaybackByApplication = ["com.apple.podcasts": .stopped]
+    _ = await sleepGate.waitUntilCount(1, timeoutMilliseconds: 1_000)
+    await sleepGate.openPermanently()
+    // One session read before the Pause, one as it is dispatched, and one in
+    // the verification pass that sees the stop.
+    await waitUntil { bridge.sessionPlaybackRequests.count >= 3 }
+
+    // Later in the dictation the player is closed.
+    bridge.sessionPlaybackByApplication = ["com.apple.podcasts": .noSession]
+    await service.endInterruption(token: token)
+
+    #expect(
+        bridge.targetedCommands.map(\.0) == [.pause],
+        "No Play may be addressed to an application that no longer has a session."
+    )
+}
+
+@MainActor
+@Test("No command of either kind is sent to an application with no media session")
+func noCommandIsSentToApplicationWithoutMediaSession() async {
+    let bridge = FakeMediaRemoteBridge()
+    bridge.sessionPlaybackByApplication = [
+        primaryAudioOutput.applicationBundleIdentifier: .noSession,
+    ]
+    let driver = MacMediaInterruptionDriver(
+        bridge: bridge,
+        playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
+        audioOutputMonitor: FakeAudioOutputMonitor(),
+        playbackActivityMonitor: FakePlaybackActivityMonitor(),
+        applicationResolver: AudioProcessApplicationResolver(
+            processPath: { processID in
+                processID == primaryAudioOutput.processID
+                    ? "/Applications/Example.app/Contents/MacOS/Example"
+                    : nil
+            },
+            bundleIdentifierAtURL: { _ in
+                primaryAudioOutput.applicationBundleIdentifier
+            }
+        )
+    )
+    let destination = VerifiedMediaResumeDestination(
+        applicationBundleIdentifiers: [primaryAudioOutput.applicationBundleIdentifier],
+        expectedProcessTargets: [primaryAudioOutput]
+    )
+
+    let play = await driver.sendPlay(to: destination)
+    let pause = await driver.sendPause(to: destination)
+
+    #expect(play.acceptedApplicationBundleIdentifiers.isEmpty)
+    #expect(pause.acceptedApplicationBundleIdentifiers.isEmpty)
+    #expect(bridge.targetedCommands.isEmpty)
+
+    // Once the session is back, or when it cannot be read, commands go through.
+    bridge.sessionPlaybackByApplication = [:]
+    let playWithUnknownSession = await driver.sendPlay(to: destination)
+    #expect(
+        playWithUnknownSession.acceptedApplicationBundleIdentifiers
+            == [primaryAudioOutput.applicationBundleIdentifier]
+    )
+}
+
+@MainActor
+@Test("The driver reads session state for exactly the applications with open output streams")
+func driverReadsSessionStateForApplicationsWithOpenStreams() async {
+    let audioOutputMonitor = FakeAudioOutputMonitor()
+    audioOutputMonitor.observation = MediaAudioOutputObservation(
+        targets: [editorProducer, podcastsProducer],
+        unresolvedProcessCount: 0
+    )
+    let bridge = FakeMediaRemoteBridge()
+    bridge.sessionPlaybackByApplication = [
+        "com.example.editor": .noSession,
+        "com.apple.Music": .playing,
+    ]
+    let driver = MacMediaInterruptionDriver(
+        bridge: bridge,
+        playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
+        audioOutputMonitor: audioOutputMonitor,
+        playbackActivityMonitor: FakePlaybackActivityMonitor()
+    )
+
+    let snapshot = await driver.snapshot()
+
+    #expect(
+        Set(bridge.sessionPlaybackRequests) == ["com.example.editor", "com.apple.podcasts"]
+    )
+    // Podcasts could not be read, so it stays unknown and its assertion decides.
+    #expect(snapshot.sessionPlaybackByApplication == ["com.example.editor": .noSession])
+    #expect(snapshot.pauseDestination == .observedApplications(["com.apple.podcasts"]))
+}
+
+@MainActor
+@Test("The session registry never reports playback for an application that is not running")
+func sessionRegistryReportsNoPlaybackForMissingApplication() async {
+    let bridge = MediaRemoteBridge()
+
+    let playback = await bridge.applicationSessionPlayback(
+        forApplicationBundleIdentifier: "com.example.steno.tests.not-installed"
+    )
+
+    #expect(playback == nil || playback == .noSession)
+}
+// MARK: - A dictation that begins while the previous resume is still settling
+
+/// The player as the re-pause paths see it: its stream is open, and its session
+/// either stopped before Steno's Play (the Play has not taken effect yet) or
+/// after it (it played again and the listener paused it by hand).
+private func resumedPlayerSnapshot(
+    stoppedAfterResume: Bool
+) -> MediaInterruptionSnapshot {
+    makeSnapshot(
+        detection: .playing,
+        isPlaying: true,
+        playbackState: 1,
+        activeAudioOutputs: [primaryAudioOutput],
+        playingApplications: [],
+        sessions: [
+            primaryAudioOutput.applicationBundleIdentifier:
+                .stopped(at: stoppedAfterResume ? .distantFuture : .distantPast),
+        ]
+    )
+}
+
+@MainActor
+@Test(
+    "A dictation that joins an in-flight resume leaves alone media the listener has since paused",
+    arguments: [true, false]
+)
+func inFlightResumeJoinLeavesListenerPausedMediaAlone(listenerPausedAfterResume: Bool) async {
+    let resumeGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            confirmedPlayingSnapshot,
+            confirmedPausedSnapshot,
+            resumedPlayerSnapshot(stoppedAfterResume: listenerPausedAfterResume),
+        ] + (listenerPausedAfterResume
+            ? Array(repeating: resumedPlayerSnapshot(stoppedAfterResume: true), count: 4)
+            : [confirmedPausedSnapshot])
+    )
+    driver.sendGates[2] = resumeGate
+    let service = makeService(driver: driver)
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected the first interruption token.")
+        return
+    }
+
+    let firstEnd = Task { @MainActor in
+        await service.endInterruption(token: firstToken)
+    }
+    await waitUntil { resumeGate.waitCount == 1 }
+    #expect(driver.commands == [.pause, .play])
+
+    let secondBegin = Task { @MainActor in await service.beginInterruption() }
+    await Task.yield()
+    resumeGate.open()
+    await firstEnd.value
+    let secondToken = await secondBegin.value
+    if let secondToken {
+        await service.endInterruption(token: secondToken)
+    }
+
+    if listenerPausedAfterResume {
+        // The media played again after Steno's Play and was then paused by
+        // hand. It is neither re-paused nor resumed.
+        #expect(secondToken == nil)
+        #expect(driver.commands == [.pause, .play])
+    } else {
+        // Steno's Play has not taken effect yet, so the media is still paused
+        // because of Steno: it is re-paused and resumed for the new owner.
+        #expect(driver.commands == [.pause, .play, .pause, .play])
+    }
+}
+
+@MainActor
+@Test(
+    "A dictation inside the resume grace window leaves alone media the listener has since paused",
+    arguments: [true, false]
+)
+func resumeGraceWindowLeavesListenerPausedMediaAlone(listenerPausedAfterResume: Bool) async {
+    let unavailable = makeSnapshot(
+        detection: .unknown,
+        isPlaying: nil,
+        playbackState: nil,
+        activeAudioOutputs: nil
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            confirmedPlayingSnapshot,
+            confirmedPausedSnapshot,
+            unavailable,
+            resumedPlayerSnapshot(stoppedAfterResume: listenerPausedAfterResume),
+            confirmedPausedSnapshot,
+        ]
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0],
+        resumeVerificationDelays: [0],
+        resumeLineageGraceDuration: 3,
+        now: { 100 }
+    )
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected verified interruption ownership.")
+        return
+    }
+    await service.endInterruption(token: firstToken)
+    #expect(driver.commands == [.pause, .play])
+
+    let secondToken = await service.beginInterruption()
+    if let secondToken {
+        await service.endInterruption(token: secondToken)
+    }
+
+    if listenerPausedAfterResume {
+        #expect(secondToken == nil)
+        #expect(driver.commands == [.pause, .play])
+    } else {
+        #expect(driver.commands == [.pause, .play, .pause, .play])
+    }
+}
+
+@Test("Custody excludes an application the listener stopped after Steno's Play, and one with no session")
+func custodyExcludesApplicationsTakenOver() {
+    let resumedAt = Date()
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music"
+    )
+    let receipt = MediaPauseReceipt(
+        resumeDestination: VerifiedMediaResumeDestination(
+            applicationBundleIdentifiers: ["com.apple.Music", "com.apple.podcasts"],
+            expectedProcessTargets: [musicProducer, podcastsProducer]
+        ),
+        resumeDispatchedAt: resumedAt
+    )
+    func remaining(_ sessions: [String: MediaSessionPlayback]) -> [String]? {
+        receipt.excludingApplicationsTakenOver(
+            in: makeSnapshot(
+                target: nil,
+                contentIdentifier: nil,
+                detection: .likelyPlaying,
+                isPlaying: false,
+                playbackState: 2,
+                activeAudioOutputs: [musicProducer, podcastsProducer],
+                sessions: sessions
+            )
+        )?.resumeDestination.applicationBundleIdentifiers
+    }
+    let both = ["com.apple.Music", "com.apple.podcasts"]
+
+    #expect(remaining([:]) == both)
+    #expect(remaining(["com.apple.Music": .playing, "com.apple.podcasts": .playing]) == both)
+    #expect(
+        remaining(["com.apple.podcasts": .stopped(at: resumedAt.addingTimeInterval(-5))]) == both,
+        "Stopped before the Play: still paused by Steno."
+    )
+    #expect(
+        remaining(["com.apple.podcasts": .stopped(at: resumedAt.addingTimeInterval(1))])
+            == ["com.apple.Music"]
+    )
+    #expect(remaining(["com.apple.Music": .noSession]) == ["com.apple.podcasts"])
+    #expect(
+        remaining([
+            "com.apple.Music": .noSession,
+            "com.apple.podcasts": .stopped(at: resumedAt.addingTimeInterval(1)),
+        ]) == nil
+    )
+    // Custody that was never resumed has no Play to compare against.
+    let neverResumed = MediaPauseReceipt(resumeDestination: receipt.resumeDestination)
+    #expect(
+        neverResumed.excludingApplicationsTakenOver(
+            in: makeSnapshot(
+                target: nil,
+                contentIdentifier: nil,
+                detection: .likelyPlaying,
+                isPlaying: false,
+                playbackState: 2,
+                activeAudioOutputs: [musicProducer, podcastsProducer],
+                sessions: ["com.apple.podcasts": .stopped(at: .distantFuture)]
+            )
+        ) == neverResumed
+    )
 }
 #endif

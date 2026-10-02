@@ -85,10 +85,12 @@ func stopDoesNotWaitForUnansweredPause() async {
 }
 
 /// Answers Pause only after a delay, like a player that is slow to acknowledge.
+/// Its playback stops once it has acknowledged, and restarts on Play.
 @MainActor
 final class SlowPauseMediaDriver: MediaInterruptionDriving {
     private let events: MediaReleaseEventLog
     private let pauseAcknowledgementDelay: Duration
+    private var pausedApplications: Set<String> = []
     private(set) var commands: [SemanticMediaCommand] = []
     private(set) var playedApplications: [[String]] = []
 
@@ -98,7 +100,7 @@ final class SlowPauseMediaDriver: MediaInterruptionDriving {
     }
 
     func snapshot() async -> MediaInterruptionSnapshot {
-        playingPodcasts()
+        productionSnapshot([podcastsOutput], pausedApplications: pausedApplications)
     }
 
     func sendPause(to destination: MediaPauseDestination) async -> MediaCommandDispatchResult {
@@ -111,6 +113,7 @@ final class SlowPauseMediaDriver: MediaInterruptionDriving {
 
     func sendPlay(to destination: VerifiedMediaResumeDestination) async -> MediaCommandDispatchResult {
         commands.append(.play)
+        pausedApplications.subtract(destination.applicationBundleIdentifiers)
         playedApplications.append(destination.applicationBundleIdentifiers)
         events.append("media.command.play")
         return MediaCommandDispatchResult(
@@ -123,6 +126,7 @@ final class SlowPauseMediaDriver: MediaInterruptionDriving {
         events.append("media.command.pause")
         try? await Task.sleep(for: pauseAcknowledgementDelay)
         events.append("media.pause.acknowledged")
+        pausedApplications.formUnion(applications)
         return MediaCommandDispatchResult(acceptedApplicationBundleIdentifiers: applications)
     }
 }

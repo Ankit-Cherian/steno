@@ -43,7 +43,7 @@ struct MediaSettingsAvailabilityTests {
         #expect(!section.captionText.contains("macOS 15"))
     }
 
-    @Test("The media caption describes resume behavior without an absolute promise")
+    @Test("The media caption says that only playing media is paused and resumed")
     func captionMatchesResumeBehavior() {
         let storage = PreferencesBox(AppPreferences.default)
         let section = MediaSettingsSection(
@@ -51,10 +51,10 @@ struct MediaSettingsAvailabilityTests {
             isMediaPausingSupported: true
         )
 
-        // Output from an app paused moments earlier cannot be told apart from
-        // playback, so a very recent manual pause may be resumed.
-        #expect(section.captionText == "Steno resumes only apps it paused during dictation. If you paused media yourself a few seconds before dictating, it may resume.")
-        #expect(!section.captionText.contains("stays paused"))
+        // An app is paused only when it is confirmed playing, so media paused
+        // by hand, even moments earlier, is never resumed.
+        #expect(section.captionText == "Steno pauses apps that are playing when you start dictating and resumes only those. Media you paused yourself stays paused.")
+        #expect(!section.captionText.contains("may resume"))
     }
 
     @Test("Media settings render in both availability states")

@@ -117,14 +117,15 @@ public extension OverlayPresenter {
 @MainActor
 public protocol MediaInterruptionService: AnyObject {
     /// Sends targeted Pause requests and returns a custody token when an
-    /// application that was verifiably producing audio accepts the pause.
+    /// application that was confirmed playing accepts the pause.
     ///
-    /// Custody is tracked per application and defaults to deferred: observed
-    /// silence upgrades it to verified whenever that becomes observable, but
-    /// output teardown routinely lags an accepted pause by longer than any
-    /// bounded verification window. Deferred custody is dropped without a Play
-    /// if the application's process lineage breaks or fresh evidence shows it
-    /// producing audio again. Returns `nil` if no media pause can be tracked.
+    /// Custody is tracked per application and starts provisional. It becomes
+    /// resume ownership only once the application is observed to stop playing
+    /// in response. An output stream that stays open, or closes later, proves
+    /// nothing either way: media the listener paused earlier looks the same.
+    /// Provisional custody that is never confirmed is dropped without a Play,
+    /// as is custody whose process lineage breaks. Returns `nil` if no media
+    /// pause can be tracked.
     func beginInterruption() async -> MediaInterruptionToken?
 
     /// Releases an interruption token and, after the final valid token, resumes
