@@ -424,6 +424,8 @@ public struct InsertionTargetGuard: Sendable {
         switch reason {
         case .secureOrProtectedElement:
             return "Secure text field—final text copied instead of typed."
+        case .focusedElementUnavailable:
+            return "No text field was selected—final text copied."
         default:
             return "The focused field changed—final text copied."
         }

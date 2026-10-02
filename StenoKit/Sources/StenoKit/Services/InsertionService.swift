@@ -18,10 +18,24 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
     ]
 
     private let transports: [any InsertionTransport]
+    #if os(macOS)
+    private let ownAppTextFocus: OwnAppTextFocus
+    #endif
 
     public init(transports: [any InsertionTransport]) {
+        #if os(macOS)
+        self.init(transports: transports, ownAppTextFocus: .live)
+        #else
         self.transports = transports
+        #endif
     }
+
+    #if os(macOS)
+    init(transports: [any InsertionTransport], ownAppTextFocus: OwnAppTextFocus) {
+        self.transports = transports
+        self.ownAppTextFocus = ownAppTextFocus
+    }
+    #endif
 
     public func insert(text: String, target: AppContext) async -> InsertResult {
         await insertUsingAvailableTarget(
@@ -113,6 +127,19 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         clipboardRecoveryText: String,
         commitAuthorization: InsertionCommitAuthorization?
     ) async -> InsertResult {
+        #if os(macOS)
+        // Started from Steno's own window with no text field focused, typing or
+        // pasting would only sound the alert. Copy before any transport runs.
+        if await ownAppTextFocus.refusesInsertion(into: target) {
+            return await refusedResult(
+                reason: .focusedElementUnavailable,
+                text: text,
+                clipboardRecoveryText: clipboardRecoveryText,
+                commitAuthorization: commitAuthorization
+            )
+        }
+        #endif
+
         var failures: [String] = []
 
         for transport in prioritizedTransports(
