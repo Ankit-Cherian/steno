@@ -4,6 +4,7 @@ import Darwin
 import Dispatch
 import Foundation
 import IOKit.pwr_mgt
+import ObjectiveC
 
 @MainActor
 public final class MacMediaInterruptionService: MediaInterruptionService {
@@ -1269,7 +1270,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     unresolvedProcessCount: 0
                 ),
                 playbackActivityObservation: snapshot.playbackActivityObservation?
-                    .narrowed(to: applications)
+                    .narrowed(to: applications),
+                sessionPlaybackByApplication: snapshot.sessionPlaybackByApplication
+                    .filter { applications.contains($0.key) }
             )
         }
     }
@@ -1479,6 +1482,17 @@ struct MediaPlaybackActivityObservation: Sendable, Equatable {
     }
 }
 
+/// What the system's media session registry reports about one application's
+/// own now-playing session.
+enum MediaSessionPlayback: Sendable, Equatable {
+    /// The application has no now-playing session. A command addressed to it
+    /// would be rerouted to whichever application the system considers to be
+    /// now playing.
+    case noSession
+    case playing
+    case stopped
+}
+
 struct MediaPauseReceipt: Sendable, Equatable {
     let resumeDestination: VerifiedMediaResumeDestination
 }
@@ -1501,16 +1515,25 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
     let playbackState: Int?
     let audioOutputObservation: MediaAudioOutputObservation?
     let playbackActivityObservation: MediaPlaybackActivityObservation?
+    /// Per-application session state, for the applications whose state could be
+    /// read. An application that is absent is unknown.
+    let sessionPlaybackByApplication: [String: MediaSessionPlayback]
 
     /// An application is paused only when it is confirmed playing: it has an
-    /// active Core Audio output stream and it is holding a playback assertion.
+    /// active Core Audio output stream, and either it is holding a playback
+    /// assertion or its own media session reports that it is playing.
     ///
     /// The output stream identifies the exact producer process, but it stays
     /// open for seconds after a pause, so by itself it cannot tell playing media
     /// from media the listener just paused. The playback assertion is released
-    /// the moment playback stops. An application with an open stream and no
-    /// assertion is left alone, and so is every application when the assertions
-    /// cannot be read: Steno only touches playback it can later restore.
+    /// when playback stops, and the session records the instant it stopped. An
+    /// application with an open stream and neither sign of playback is left
+    /// alone: Steno only touches playback it can later restore.
+    ///
+    /// The session can also rule an application out. One whose session reports
+    /// that it has stopped is not playing, whatever assertion it still holds.
+    /// One with no session at all is never sent a command, because the system
+    /// would hand that command to a different application.
     ///
     /// The elected now-playing session reports at most one application and is
     /// frequently degraded, so it may only veto the single application it is
@@ -1519,11 +1542,20 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
     /// Output processes that cannot be resolved to an application narrow the
     /// destination instead of cancelling it; they are simply never paused.
     var pauseDestination: MediaPauseDestination? {
-        guard let audioOutputObservation, let playbackActivityObservation else {
-            return nil
-        }
+        guard let audioOutputObservation else { return nil }
+        let applicationsHoldingAssertions = playbackActivityObservation?
+            .applicationBundleIdentifiers ?? []
         var observedApplications = audioOutputObservation.applicationBundleIdentifiers
-            .intersection(playbackActivityObservation.applicationBundleIdentifiers)
+            .filter { application in
+                switch sessionPlaybackByApplication[application] {
+                case .noSession, .stopped:
+                    false
+                case .playing:
+                    true
+                case nil:
+                    applicationsHoldingAssertions.contains(application)
+                }
+            }
         if detection == .notPlaying, let target {
             observedApplications.remove(target.bundleIdentifier)
         }
@@ -1535,13 +1567,19 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
         audioOutputObservation.map(\.applicationBundleIdentifiers)
     }
 
-    /// Whether a playback assertion the application held in `before` has been
-    /// released by this snapshot. Assertions are compared by identity, so one
-    /// the application takes later for new playback never hides the release.
+    /// Whether the application is seen to have stopped playing since `before`:
+    /// its session went from playing to stopped, or it released a playback
+    /// assertion it held in `before`. Assertions are compared by identity, so
+    /// one the application takes later for new playback never hides the release.
     func observesPlaybackStopped(
         since before: MediaInterruptionSnapshot,
         forApplication applicationBundleIdentifier: String
     ) -> Bool {
+        if before.sessionPlaybackByApplication[applicationBundleIdentifier] == .playing,
+           sessionPlaybackByApplication[applicationBundleIdentifier] == .stopped
+        {
+            return true
+        }
         guard let beforeActivity = before.playbackActivityObservation,
               let currentActivity = playbackActivityObservation
         else { return false }
@@ -1698,12 +1736,12 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
                   currentTargets.isSubset(of: originalTargets)
             else { continue }
 
-            // The application releasing the playback assertion it held before
-            // the Pause is what shows the Pause stopped it. A closed output
-            // stream alone does not: the stream of media the listener paused
-            // earlier closes the same way. This is judged on the application's
-            // own evidence, so the elected session can contradict it only with
-            // strong evidence that this application is playing.
+            // The application being seen to stop playing since the Pause is
+            // what shows the Pause worked. A closed output stream alone does
+            // not: the stream of media the listener paused earlier closes the
+            // same way. This is judged on the application's own evidence, so
+            // the elected session can contradict it only with strong evidence
+            // that this application is playing.
             if observesPlaybackStopped(since: before, forApplication: candidate) {
                 if detection != .playing || target?.bundleIdentifier != candidate {
                     confirmedApplications.insert(candidate)
@@ -1769,7 +1807,11 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
         let activityValue = playbackActivityObservation.map { observation in
             "[\(observation.applicationBundleIdentifiers.sorted().joined(separator: ","))]"
         } ?? "unavailable"
-        return "target=\(targetValue) detection=\(detection.logValue) electedPlaying=\(playingValue) state=\(stateValue) activeOutput=\(outputValue) playbackActivity=\(activityValue)"
+        let sessionValue = sessionPlaybackByApplication
+            .map { "\($0.key):\($0.value)" }
+            .sorted()
+            .joined(separator: ",")
+        return "target=\(targetValue) detection=\(detection.logValue) electedPlaying=\(playingValue) state=\(stateValue) activeOutput=\(outputValue) playbackActivity=\(activityValue) sessions=[\(sessionValue)]"
     }
 
 }
@@ -1827,6 +1869,11 @@ protocol MediaRemoteBridging: Sendable {
     func nowPlayingApplicationDisplayID() async -> String?
     func nowPlayingContentIdentifier() async -> String?
     func isPlaybackStateAdvancing(_ playbackState: Int) -> Bool?
+    /// Reports the application's own now-playing session, or `nil` when that
+    /// cannot be determined.
+    func applicationSessionPlayback(
+        forApplicationBundleIdentifier applicationBundleIdentifier: String
+    ) async -> MediaSessionPlayback?
     func send(
         _ command: SemanticMediaCommand,
         toApplicationBundleIdentifier applicationBundleIdentifier: String
@@ -2411,8 +2458,11 @@ final class MacMediaInterruptionDriver: MediaInterruptionDriving {
         let audioOutputObservation = audioOutputMonitor.observeActiveAudioOutputs(
             excludingProcessID: getpid()
         )
-        // Read together with the output streams, after the slower probes, so
-        // both describe the same instant.
+        let sessionPlaybackByApplication = await sessionPlayback(
+            forApplications: audioOutputObservation?.applicationBundleIdentifiers ?? []
+        )
+        // Read last, after the slower probes, so it describes the moment just
+        // before any command is sent.
         let playbackActivityObservation = audioOutputObservation.flatMap {
             playbackActivityMonitor.observePlaybackActivity(
                 forApplications: $0.applicationBundleIdentifiers
@@ -2426,8 +2476,29 @@ final class MacMediaInterruptionDriver: MediaInterruptionDriving {
             nowPlayingIsPlaying: resolvedEvidence.nowPlayingIsPlaying,
             playbackState: resolvedEvidence.playbackState,
             audioOutputObservation: audioOutputObservation,
-            playbackActivityObservation: playbackActivityObservation
+            playbackActivityObservation: playbackActivityObservation,
+            sessionPlaybackByApplication: sessionPlaybackByApplication
         )
+    }
+
+    private func sessionPlayback(
+        forApplications applicationBundleIdentifiers: Set<String>
+    ) async -> [String: MediaSessionPlayback] {
+        let bridge = self.bridge
+        let tasks = applicationBundleIdentifiers.map { applicationBundleIdentifier in
+            Task { @MainActor () -> (String, MediaSessionPlayback?) in
+                let playback = await bridge.applicationSessionPlayback(
+                    forApplicationBundleIdentifier: applicationBundleIdentifier
+                )
+                return (applicationBundleIdentifier, playback)
+            }
+        }
+        var sessionPlaybackByApplication: [String: MediaSessionPlayback] = [:]
+        for task in tasks {
+            let (applicationBundleIdentifier, playback) = await task.value
+            sessionPlaybackByApplication[applicationBundleIdentifier] = playback
+        }
+        return sessionPlaybackByApplication
     }
 
     func sendPause(to destination: MediaPauseDestination) async -> MediaCommandDispatchResult {
@@ -2846,6 +2917,88 @@ final class MediaRemoteBridge: MediaRemoteBridging {
         return playbackStateIsAdvancingFn(playbackState)
     }
 
+    /// The registry reports when an application's player last played: the
+    /// present moment while it is playing, and the instant it stopped once it
+    /// has. Unlike the elected-session probes, this is answered per application
+    /// for callers without special entitlements. A missing-client error is a
+    /// definite answer that the application has no session; any other failure,
+    /// a timeout, or an unavailable interface is unknown.
+    func applicationSessionPlayback(
+        forApplicationBundleIdentifier applicationBundleIdentifier: String
+    ) async -> MediaSessionPlayback? {
+        guard !applicationBundleIdentifier.isEmpty,
+              let request = sessionRequest(
+                forApplicationBundleIdentifier: applicationBundleIdentifier
+              )
+        else { return nil }
+
+        let requestedAt = Date()
+        let reply: SessionRequestReply? = await probeRunner.run { callback in
+            let completion: SessionRequestInterface.LastPlayingDateCompletion = { date, error in
+                if let error {
+                    callback(.failed(domain: error.domain, code: error.code))
+                } else if let date {
+                    callback(.lastPlayed(date as Date))
+                } else {
+                    callback(.empty)
+                }
+            }
+            SessionRequestInterface.requestLastPlayingDate(
+                request,
+                on: callbackQueue,
+                completion: completion
+            )
+        }
+
+        switch reply {
+        case .lastPlayed(let date):
+            // A playing session answers with the time of the request itself.
+            let isPlaying = date >= requestedAt.addingTimeInterval(
+                -Self.playingSessionTolerance
+            )
+            return isPlaying ? .playing : .stopped
+        case .failed(let domain, let code):
+            if domain == Self.mediaRemoteErrorDomain, code == Self.missingClientErrorCode {
+                return .noSession
+            }
+            Self.logger.debug(
+                "Media session request failed code=\(code, privacy: .public) application=\(applicationBundleIdentifier, privacy: .private)"
+            )
+            return nil
+        case .empty, nil:
+            return nil
+        }
+    }
+
+    private static let playingSessionTolerance: TimeInterval = 0.05
+    private static let mediaRemoteErrorDomain = "kMRMediaRemoteFrameworkErrorDomain"
+    private static let missingClientErrorCode = 35
+
+    private enum SessionRequestReply: Sendable {
+        case lastPlayed(Date)
+        case failed(domain: String, code: Int)
+        case empty
+    }
+
+    private var sessionRequests: [String: AnyObject] = [:]
+
+    private func sessionRequest(
+        forApplicationBundleIdentifier applicationBundleIdentifier: String
+    ) -> AnyObject? {
+        if let request = sessionRequests[applicationBundleIdentifier] {
+            return request
+        }
+        guard handle != nil,
+              let origin = getLocalOriginFn?(),
+              let request = SessionRequestInterface.makeRequest(
+                origin: Unmanaged<AnyObject>.fromOpaque(origin).takeUnretainedValue(),
+                applicationBundleIdentifier: applicationBundleIdentifier
+              )
+        else { return nil }
+        sessionRequests[applicationBundleIdentifier] = request
+        return request
+    }
+
     /// Acceptance is the asynchronous callback reporting error 0 within a bounded
     /// wait (longer for Pause than for Play). The synchronous return reports only that the command was handed off:
     /// it is `true` even for a bundle identifier that is not running, so on its
@@ -2935,6 +3088,103 @@ final class MediaRemoteBridge: MediaRemoteBridging {
     nonisolated private static func closeHandle(address: Int) {
         guard let handle = UnsafeMutableRawPointer(bitPattern: address) else { return }
         dlclose(handle)
+    }
+}
+
+/// Reaches the registry's per-application request objects through the
+/// Objective-C runtime. Every class and method is looked up before use, so a
+/// system without them yields `nil` instead of a call into something missing.
+enum SessionRequestInterface {
+    typealias LastPlayingDateCompletion = @convention(block) (NSDate?, NSError?) -> Void
+
+    private typealias AllocFn = @convention(c) (AnyClass, Selector) -> Unmanaged<AnyObject>?
+    private typealias InitWithObjectFn = @convention(c) (
+        Unmanaged<AnyObject>, Selector, AnyObject?
+    ) -> Unmanaged<AnyObject>?
+    private typealias InitPlayerPathFn = @convention(c) (
+        Unmanaged<AnyObject>, Selector, AnyObject?, AnyObject?, AnyObject?
+    ) -> Unmanaged<AnyObject>?
+    private typealias RequestLastPlayingDateFn = @convention(c) (
+        AnyObject, Selector, DispatchQueue, LastPlayingDateCompletion
+    ) -> Void
+
+    private static let allocSelector = NSSelectorFromString("alloc")
+    private static let clientInitSelector = NSSelectorFromString("initWithBundleIdentifier:")
+    private static let playerPathInitSelector = NSSelectorFromString("initWithOrigin:client:player:")
+    private static let requestInitSelector = NSSelectorFromString("initWithPlayerPath:")
+    private static let lastPlayingDateSelector = NSSelectorFromString(
+        "requestLastPlayingDateOnQueue:completion:"
+    )
+
+    static func makeRequest(
+        origin: AnyObject,
+        applicationBundleIdentifier: String
+    ) -> AnyObject? {
+        guard let client = makeObject(
+                className: "MRClient",
+                initSelector: clientInitSelector,
+                argument: applicationBundleIdentifier as NSString
+              ),
+              let playerPath = makePlayerPath(origin: origin, client: client),
+              let request = makeObject(
+                className: "MRNowPlayingRequest",
+                initSelector: requestInitSelector,
+                argument: playerPath
+              ),
+              class_getInstanceMethod(type(of: request), lastPlayingDateSelector) != nil
+        else { return nil }
+        return request
+    }
+
+    static func requestLastPlayingDate(
+        _ request: AnyObject,
+        on queue: DispatchQueue,
+        completion: @escaping LastPlayingDateCompletion
+    ) {
+        guard let implementation = class_getMethodImplementation(
+            type(of: request),
+            lastPlayingDateSelector
+        ) else { return }
+        unsafeBitCast(implementation, to: RequestLastPlayingDateFn.self)(
+            request,
+            lastPlayingDateSelector,
+            queue,
+            completion
+        )
+    }
+
+    private static func allocate(className: String, respondingTo initSelector: Selector) -> Unmanaged<AnyObject>? {
+        guard let objectClass = NSClassFromString(className),
+              class_getInstanceMethod(objectClass, initSelector) != nil,
+              let allocMethod = class_getClassMethod(objectClass, allocSelector)
+        else { return nil }
+        let alloc = unsafeBitCast(method_getImplementation(allocMethod), to: AllocFn.self)
+        return alloc(objectClass, allocSelector)
+    }
+
+    // An initializer consumes the allocated object and returns a retained one.
+    private static func makeObject(
+        className: String,
+        initSelector: Selector,
+        argument: AnyObject
+    ) -> AnyObject? {
+        guard let allocated = allocate(className: className, respondingTo: initSelector),
+              let objectClass = NSClassFromString(className),
+              let implementation = class_getMethodImplementation(objectClass, initSelector)
+        else { return nil }
+        let initialize = unsafeBitCast(implementation, to: InitWithObjectFn.self)
+        return initialize(allocated, initSelector, argument)?.takeRetainedValue()
+    }
+
+    private static func makePlayerPath(origin: AnyObject, client: AnyObject) -> AnyObject? {
+        let className = "MRPlayerPath"
+        guard let allocated = allocate(className: className, respondingTo: playerPathInitSelector),
+              let objectClass = NSClassFromString(className),
+              let implementation = class_getMethodImplementation(objectClass, playerPathInitSelector)
+        else { return nil }
+        let initialize = unsafeBitCast(implementation, to: InitPlayerPathFn.self)
+        return initialize(allocated, playerPathInitSelector, origin, client, nil)?
+            .takeRetainedValue()
     }
 }
 

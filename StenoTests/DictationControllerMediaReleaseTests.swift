@@ -426,7 +426,8 @@ func productionSnapshot(
                     .filter { !pausedApplications.contains($0) }
                     .map { MediaPlaybackAssertion(applicationBundleIdentifier: $0, identifier: 1) }
             )
-        )
+        ),
+        sessionPlaybackByApplication: [:]
     )
 }
 
