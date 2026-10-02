@@ -327,6 +327,38 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(f"https://github.com/{checkouts[0]['repository']}.git", lock['repository'])
         self.assertEqual(checkouts[0]['ref'], lock['revision'])
 
+    def test_release_signs_only_after_full_validation_of_the_same_run(self):
+        root = Path(__file__).parents[3] / '.github/workflows'
+        release = POLICY.parse_workflow((root / 'release.yml').read_text())['jobs']
+        publish = POLICY.parse_workflow((root / 'publish-release.yml').read_text())['jobs']
+        for jobs in (release, publish):
+            for name in ('validate', 'security'):
+                self.assertEqual(jobs[name]['uses'], f'./.github/workflows/{name}.yml')
+                self.assertEqual(jobs[name]['needs'], 'preflight')
+                self.assertNotIn('if', jobs[name])
+        self.assertTrue({'preflight', 'validate', 'security'} <= set(release['sign']['needs']))
+        self.assertNotIn('if', release['sign'])
+        self.assertEqual(release['draft']['needs'], 'sign')
+        self.assertNotIn('if', release['draft'])
+        self.assertEqual(release['publish']['needs'], 'draft')
+        self.assertEqual(release['publish']['if'], 'inputs.publish_release')
+        self.assertTrue({'preflight', 'validate', 'security'} <= set(publish['publish']['needs']))
+        self.assertNotIn('if', publish['publish'])
+
+    def test_release_transfers_have_bounded_downloads_within_a_longer_job(self):
+        jobs = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/workflows/release.yml').read_text())['jobs']
+        for name in ('draft', 'publish'):
+            with self.subTest(job=name):
+                self.assertEqual(jobs[name]['timeout-minutes'], '30')
+                downloads = [step for step in jobs[name]['steps']
+                             if str(step.get('uses', '')).startswith('actions/download-artifact@')]
+                self.assertEqual(len(downloads), 1)
+                self.assertEqual(downloads[0].get('timeout-minutes'), '10')
+                # The download precedes every step that writes a release.
+                writes = [index for index, step in enumerate(jobs[name]['steps']) if 'release-publish.py' in step.get('run', '')]
+                self.assertTrue(writes)
+                self.assertLess(jobs[name]['steps'].index(downloads[0]), min(writes))
+
     def test_dependabot_checks_monthly_and_keeps_major_updates_separate(self):
         config = POLICY.parse_workflow((Path(__file__).parents[3] / '.github/dependabot.yml').read_text())
         ecosystems = {update['package-ecosystem']: update for update in config['updates']}
