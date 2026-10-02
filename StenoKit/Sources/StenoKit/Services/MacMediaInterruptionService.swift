@@ -3154,6 +3154,10 @@ final class MediaRemoteBridge: MediaRemoteBridging {
         let requestedAt = Date()
         let reply: SessionRequestReply? = await probeRunner.run { callback in
             let completion: SessionRequestInterface.LastPlayingDateCompletion = { date, error in
+                // Captured so the request lives until its reply, even if that
+                // arrives after the bounded wait has given up. This block runs
+                // on the callback queue, so it must not call anything isolated.
+                _ = request
                 if let error {
                     callback(.failed(domain: error.domain, code: error.code))
                 } else if let date {
@@ -3168,10 +3172,6 @@ final class MediaRemoteBridge: MediaRemoteBridging {
                 completion: completion
             )
         }
-
-        // The request is no longer cached, so it is kept alive here until its
-        // asynchronous reply has arrived.
-        withExtendedLifetime(request) {}
 
         switch reply {
         case .lastPlayed(let date):
