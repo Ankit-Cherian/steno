@@ -130,9 +130,11 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         #if os(macOS)
         // Started from Steno's own window with no text field focused, typing or
         // pasting would only sound the alert. Copy before any transport runs.
+        // This is an ordinary copy, not a problem, so a success carries no message.
         if await ownAppTextFocus.refusesInsertion(into: target) {
             return await refusedResult(
-                reason: .focusedElementUnavailable,
+                message: "No text field was selected.",
+                reportsMessageWhenCopied: false,
                 text: text,
                 clipboardRecoveryText: clipboardRecoveryText,
                 commitAuthorization: commitAuthorization
@@ -257,7 +259,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                 if let macError = error as? MacInsertionError,
                    case .insertionRefused(let reason) = macError {
                     return await refusedResult(
-                        reason: reason,
+                        message: InsertionTargetGuard.refusalMessage(for: reason),
                         text: text,
                         clipboardRecoveryText: clipboardRecoveryText,
                         commitAuthorization: commitAuthorization
@@ -303,13 +305,15 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
     #if os(macOS)
     /// A refusal happens before any side effect, so no other transport may
     /// try. The final text goes to the clipboard, where the user recovers it.
+    /// `message` explains a failure; a successful copy carries it only when
+    /// `reportsMessageWhenCopied` is true.
     private func refusedResult(
-        reason: EditorTargetUnavailableReason,
+        message: String,
+        reportsMessageWhenCopied: Bool = true,
         text: String,
         clipboardRecoveryText: String,
         commitAuthorization: InsertionCommitAuthorization?
     ) async -> InsertResult {
-        let message = InsertionTargetGuard.refusalMessage(for: reason)
         guard let clipboardTransport = transports.lazy
             .compactMap({ $0 as? ClipboardInsertionTransport }).first else {
             return InsertResult(
@@ -339,7 +343,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             status: .copiedOnly,
             method: .clipboardPaste,
             insertedText: clipboardRecoveryText,
-            errorMessage: message
+            errorMessage: reportsMessageWhenCopied ? message : nil
         )
     }
     #endif

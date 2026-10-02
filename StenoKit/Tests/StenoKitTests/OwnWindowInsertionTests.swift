@@ -92,7 +92,7 @@ func ownWindowWithoutTextFocusCopiesOnly(order: [InsertionMethod]) async throws 
     #expect(result.status == .copiedOnly)
     #expect(result.method == .clipboardPaste)
     #expect(result.pasteAttempted == nil)
-    #expect(result.errorMessage == "No text field was selected—final text copied.")
+    #expect(result.errorMessage == nil)
     #expect(scenario.keys.events.isEmpty)
     #expect(scenario.accessibility.writes.isEmpty)
     #expect(scenario.activator.activationRequests.isEmpty)

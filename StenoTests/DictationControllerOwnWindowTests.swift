@@ -58,11 +58,10 @@ struct DictationControllerOwnWindowTests {
             controller.recordingLifecycleState == .idle && !controller.lastTranscript.isEmpty
         })
 
-        let message = "No text field was selected—final text copied."
         #expect(await typing.texts().isEmpty)
         #expect(await clipboard.latestValue == controller.lastTranscript)
         #expect(controller.status == "Transcript copied to clipboard. Paste with Cmd+V.")
-        #expect(controller.lastError == message)
+        #expect(controller.lastError.isEmpty)
         #expect(presenter.hostedEvidenceShownStates().last == .copiedOnly)
         #expect(!presenter.hostedEvidenceShownStates().contains(.inserted))
         let entry = try #require(await history.recent(limit: 1).first)
