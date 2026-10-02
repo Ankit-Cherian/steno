@@ -355,19 +355,12 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             return .pending(pendingReceipt)
         }
 
-        // A release adjudicates contradicted custody itself and never plays into
-        // fresh contrary evidence; only a cancelled or abandoned transition
-        // compensates here, and only for playback this Pause verifiably stopped.
-        let hasOwner = pauseTransitionHasOwner(id: id)
-        let releasing = releaseControl.releaseRequested && !hasOwner
-        if !verifiedApplications.isEmpty, !hasOwner, !releasing {
-            _ = await driver.sendPlay(
-                to: acceptedDestination.narrowed(to: verifiedApplications)
-            )
-            Self.logger.info(
-                "Cancelled media Pause transition was compensated with exact-lineage Play."
-            )
-        }
+        // Custody of every application was contradicted: its producer process
+        // was replaced, its session disappeared, or it is strongly playing
+        // again. None of those is helped by a Play, so nothing is sent, whether
+        // the capture is still open, being released, or was cancelled. A
+        // cancelled transition whose custody is intact took the branch above
+        // and is resolved by the release path like any other.
         Self.logger.info(
             "Semantic media Pause custody was contradicted; no resume ownership was authorized."
         )

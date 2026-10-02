@@ -1045,7 +1045,7 @@ func transientUnresolvedOutputProcessNarrowsPauseDestination() async {
 
 @MainActor
 @Test("A cancelled owner after an accepted initial Pause restores the playback it stopped")
-func cancelledOwnerAfterAcceptedInitialPauseCompensatesWithPlay() async {
+func cancelledOwnerAfterAcceptedInitialPauseRestoresStoppedPlayback() async {
     let stoppedWithOpenStream = makeSnapshot(
         target: nil,
         contentIdentifier: nil,
@@ -1089,6 +1089,51 @@ func cancelledOwnerAfterAcceptedInitialPauseCompensatesWithPlay() async {
             ),
         ]
     )
+}
+
+// The other outcome of a cancelled press: by the time the Pause is accepted the
+// application's producer process has been replaced by one that is playing. A
+// Play would reach either a process that is gone or media that is already
+// playing, so custody is dropped and nothing is sent.
+@MainActor
+@Test("A cancelled owner whose paused application was replaced sends no Play")
+func cancelledOwnerWithReplacedProducerSendsNoPlay() async {
+    let replacementOutput = MediaAudioOutputTarget(
+        processID: primaryAudioOutput.processID + 1,
+        applicationBundleIdentifier: primaryAudioOutput.applicationBundleIdentifier
+    )
+    let activeReplacement = makeSnapshot(
+        target: MediaPlaybackTarget(
+            processID: primaryTarget.processID + 1,
+            bundleIdentifier: primaryTarget.bundleIdentifier
+        ),
+        contentIdentifier: "item-2",
+        detection: .playing,
+        isPlaying: true,
+        playbackState: 1,
+        activeAudioOutputs: [replacementOutput]
+    )
+    let pauseDispatchGate = MediaSnapshotGate()
+    let finalized = CompletionProbe()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [confirmedPlayingSnapshot, activeReplacement, activeReplacement]
+    )
+    driver.sendGates[1] = pauseDispatchGate
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        afterPauseTransitionFinalization: { finalized.didComplete = true }
+    )
+
+    let begin = Task { @MainActor in await service.beginInterruption() }
+    await waitUntil { pauseDispatchGate.waitCount == 1 }
+    begin.cancel()
+    await Task.yield()
+    pauseDispatchGate.open()
+
+    #expect(await begin.value == nil)
+    await waitUntil { finalized.didComplete }
+    #expect(driver.commands == [.pause])
 }
 
 @MainActor
@@ -6199,7 +6244,7 @@ func electedSessionProcessOutsideCoreAudioDomainKeepsCustody() async {
 }
 
 @MainActor
-@Test("Content drift under a preserved Core Audio producer never breaks custody")
+@Test("A producer seen to stop is resumed even though the elected content has drifted")
 func contentDriftUnderPreservedProducerKeepsCustody() async {
     let producerOutput = MediaAudioOutputTarget(
         processID: 63_508,
@@ -6243,6 +6288,44 @@ func contentDriftUnderPreservedProducerKeepsCustody() async {
     await service.endInterruption(token: token)
 
     #expect(driver.commands.filter { $0 == .play }.count == 1)
+}
+
+// Without evidence from the application itself, verification falls back to the
+// elected session going from playing to not playing. That fallback describes a
+// single session, so it is withheld when the session's content has changed: the
+// session may no longer be the one Steno paused.
+@MainActor
+@Test(
+    "Verification that rests on the elected session alone is withheld when its content drifts",
+    arguments: [true, false]
+)
+func electedSessionVerificationIsWithheldWhenContentDrifts(contentDrifts: Bool) async {
+    // The application holds its assertion throughout and its session state
+    // cannot be read, so only the elected session speaks to the stop.
+    let electedPaused = makeSnapshot(
+        contentIdentifier: contentDrifts ? "item-2" : "item-1",
+        detection: .notPlaying,
+        isPlaying: false,
+        playbackState: 2,
+        activeAudioOutputs: [primaryAudioOutput],
+        playingApplications: [primaryAudioOutput.applicationBundleIdentifier]
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [confirmedPlayingSnapshot] + Array(repeating: electedPaused, count: 5)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0],
+        resumeVerificationDelays: []
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("The playing application should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.contains(.play) == !contentDrifts)
 }
 
 @MainActor
