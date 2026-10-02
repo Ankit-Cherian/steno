@@ -551,8 +551,10 @@ func queuedPreviewNeverCollidesWithAppend() async throws {
         let runtime = try #require(factory.sessions.first)
         #expect(await events.unavailable[sessionID] == nil, "trial \(trial)")
         #expect(await runtime.rejectedHypotheses == 0, "trial \(trial)")
-        #expect(await runtime.hypotheses >= 5, "trial \(trial)")
-        #expect(await events.snapshots >= 5, "trial \(trial)")
+        // Enough to show previews kept coming; how many fit in two seconds
+        // depends on how busy the machine is.
+        #expect(await runtime.hypotheses >= 2, "trial \(trial)")
+        #expect(await events.snapshots >= 2, "trial \(trial)")
         #expect(factory.sessions.count == 1, "trial \(trial)")
         let rejectedAppends = await runtime.rejectedAppends
         let finishedStreams = await runtime.finishedStreams

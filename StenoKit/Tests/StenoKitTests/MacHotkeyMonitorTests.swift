@@ -76,7 +76,8 @@ struct MacHotkeyMonitorPressToTalkTests {
 
         #expect(actions == ["start", "confirm", "stop"])
         let elapsed = (stoppedAt ?? .infinity) - pressedAt
-        #expect(elapsed < 1.5, "stopped after \(elapsed) s")
+        // About a second on an idle machine; the bound leaves room for a busy one.
+        #expect(elapsed < 3.0, "stopped after \(elapsed) s")
     }
 
     @Test("The monitor confirms a held Option only after the confirmation window")

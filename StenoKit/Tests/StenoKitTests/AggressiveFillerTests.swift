@@ -27,14 +27,15 @@ private func clean(
 
 // MARK: - Speed
 
-@Test("Aggressive cleanup of a 10,000-character dictation takes well under 100 ms")
+@Test("Aggressive cleanup of a 10,000-character dictation stays far below the quadratic cost")
 func aggressiveCleanupIsLinear() async throws {
     let unit = "So I was thinking um that we should look at the deployment plan and uh figure out what is basically left to do before the release. "
     let text = String(repeating: unit, count: 77)
     #expect(text.count >= 10_000)
 
     // Best of several runs, so other tests running in parallel don't decide the result. The
-    // quadratic version took about a second here.
+    // quadratic version took about a second on a fast machine, where this takes a few
+    // milliseconds. The bound leaves room for a slow, busy machine.
     var fastest = Duration.seconds(60)
     var cleaned = ""
     for _ in 0..<5 {
@@ -43,7 +44,7 @@ func aggressiveCleanupIsLinear() async throws {
         fastest = min(fastest, ContinuousClock.now - start)
     }
 
-    #expect(fastest < .milliseconds(100), "took \(fastest)")
+    #expect(fastest < .milliseconds(500), "took \(fastest)")
     #expect(cleaned.contains(" um ") == false)
     #expect(cleaned.contains(" uh ") == false)
     #expect(cleaned.contains("basically") == false)

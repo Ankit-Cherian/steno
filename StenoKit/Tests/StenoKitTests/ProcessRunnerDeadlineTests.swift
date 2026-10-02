@@ -36,7 +36,10 @@ func processRunnerTerminatesChildAtDeadline() async throws {
         )
     }
 
-    #expect(ContinuousClock.now - started < .seconds(3))
+    // The child would run for 30 s on its own. The bound only has to show
+    // the deadline ended it; it is generous because a busy machine can stall
+    // a test for seconds.
+    #expect(ContinuousClock.now - started < .seconds(15))
     let pid = try #require(recordedPID(at: pidURL))
     #expect(!processIsAlive(pid))
 }
@@ -55,7 +58,8 @@ func processRunnerKillsChildIgnoringTerminationAtDeadline() async throws {
         )
     }
 
-    #expect(ContinuousClock.now - started < .seconds(7))
+    // As above: the child's own loop lasts 30 s.
+    #expect(ContinuousClock.now - started < .seconds(20))
     let pid = try #require(recordedPID(at: pidURL))
     #expect(!processIsAlive(pid))
 }

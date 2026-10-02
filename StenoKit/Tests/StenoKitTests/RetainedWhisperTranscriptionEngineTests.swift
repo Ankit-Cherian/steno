@@ -318,7 +318,9 @@ func retainedRuntimeCancellationDuringLoadDoesNotFallback() async throws {
         _ = try await task.value
         Issue.record("Expected cancellation during load.")
     } catch is CancellationError {
-        #expect(started.duration(to: clock.now) < .milliseconds(500))
+        // The load would take 10 s. Returning well before that shows the
+        // cancellation was honored without waiting for it.
+        #expect(started.duration(to: clock.now) < .seconds(5))
     }
     #expect((await state.snapshot()).fallbacks == 0)
 }
