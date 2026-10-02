@@ -67,6 +67,11 @@ private func makeSnapshot(
     )
 }
 
+extension MediaSessionPlayback {
+    /// Stopped long ago: before anything a test does.
+    static var stopped: MediaSessionPlayback { .stopped(at: .distantPast) }
+}
+
 /// One stable playback assertion per application, so an application that keeps
 /// playing across snapshots keeps holding the same assertion.
 private func playbackAssertion(
@@ -7714,5 +7719,186 @@ func sessionRegistryReportsNoPlaybackForMissingApplication() async {
     )
 
     #expect(playback == nil || playback == .noSession)
+}
+// MARK: - A dictation that begins while the previous resume is still settling
+
+/// The player as the re-pause paths see it: its stream is open, and its session
+/// either stopped before Steno's Play (the Play has not taken effect yet) or
+/// after it (it played again and the listener paused it by hand).
+private func resumedPlayerSnapshot(
+    stoppedAfterResume: Bool
+) -> MediaInterruptionSnapshot {
+    makeSnapshot(
+        detection: .playing,
+        isPlaying: true,
+        playbackState: 1,
+        activeAudioOutputs: [primaryAudioOutput],
+        playingApplications: [],
+        sessions: [
+            primaryAudioOutput.applicationBundleIdentifier:
+                .stopped(at: stoppedAfterResume ? .distantFuture : .distantPast),
+        ]
+    )
+}
+
+@MainActor
+@Test(
+    "A dictation that joins an in-flight resume leaves alone media the listener has since paused",
+    arguments: [true, false]
+)
+func inFlightResumeJoinLeavesListenerPausedMediaAlone(listenerPausedAfterResume: Bool) async {
+    let resumeGate = MediaSnapshotGate()
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            confirmedPlayingSnapshot,
+            confirmedPausedSnapshot,
+            resumedPlayerSnapshot(stoppedAfterResume: listenerPausedAfterResume),
+        ] + (listenerPausedAfterResume
+            ? Array(repeating: resumedPlayerSnapshot(stoppedAfterResume: true), count: 4)
+            : [confirmedPausedSnapshot])
+    )
+    driver.sendGates[2] = resumeGate
+    let service = makeService(driver: driver)
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected the first interruption token.")
+        return
+    }
+
+    let firstEnd = Task { @MainActor in
+        await service.endInterruption(token: firstToken)
+    }
+    await waitUntil { resumeGate.waitCount == 1 }
+    #expect(driver.commands == [.pause, .play])
+
+    let secondBegin = Task { @MainActor in await service.beginInterruption() }
+    await Task.yield()
+    resumeGate.open()
+    await firstEnd.value
+    let secondToken = await secondBegin.value
+    if let secondToken {
+        await service.endInterruption(token: secondToken)
+    }
+
+    if listenerPausedAfterResume {
+        // The media played again after Steno's Play and was then paused by
+        // hand. It is neither re-paused nor resumed.
+        #expect(secondToken == nil)
+        #expect(driver.commands == [.pause, .play])
+    } else {
+        // Steno's Play has not taken effect yet, so the media is still paused
+        // because of Steno: it is re-paused and resumed for the new owner.
+        #expect(driver.commands == [.pause, .play, .pause, .play])
+    }
+}
+
+@MainActor
+@Test(
+    "A dictation inside the resume grace window leaves alone media the listener has since paused",
+    arguments: [true, false]
+)
+func resumeGraceWindowLeavesListenerPausedMediaAlone(listenerPausedAfterResume: Bool) async {
+    let unavailable = makeSnapshot(
+        detection: .unknown,
+        isPlaying: nil,
+        playbackState: nil,
+        activeAudioOutputs: nil
+    )
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            confirmedPlayingSnapshot,
+            confirmedPausedSnapshot,
+            unavailable,
+            resumedPlayerSnapshot(stoppedAfterResume: listenerPausedAfterResume),
+            confirmedPausedSnapshot,
+        ]
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0],
+        resumeVerificationDelays: [0],
+        resumeLineageGraceDuration: 3,
+        now: { 100 }
+    )
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected verified interruption ownership.")
+        return
+    }
+    await service.endInterruption(token: firstToken)
+    #expect(driver.commands == [.pause, .play])
+
+    let secondToken = await service.beginInterruption()
+    if let secondToken {
+        await service.endInterruption(token: secondToken)
+    }
+
+    if listenerPausedAfterResume {
+        #expect(secondToken == nil)
+        #expect(driver.commands == [.pause, .play])
+    } else {
+        #expect(driver.commands == [.pause, .play, .pause, .play])
+    }
+}
+
+@Test("Custody excludes an application the listener stopped after Steno's Play, and one with no session")
+func custodyExcludesApplicationsTakenOver() {
+    let resumedAt = Date()
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music"
+    )
+    let receipt = MediaPauseReceipt(
+        resumeDestination: VerifiedMediaResumeDestination(
+            applicationBundleIdentifiers: ["com.apple.Music", "com.apple.podcasts"],
+            expectedProcessTargets: [musicProducer, podcastsProducer]
+        ),
+        resumeDispatchedAt: resumedAt
+    )
+    func remaining(_ sessions: [String: MediaSessionPlayback]) -> [String]? {
+        receipt.excludingApplicationsTakenOver(
+            in: makeSnapshot(
+                target: nil,
+                contentIdentifier: nil,
+                detection: .likelyPlaying,
+                isPlaying: false,
+                playbackState: 2,
+                activeAudioOutputs: [musicProducer, podcastsProducer],
+                sessions: sessions
+            )
+        )?.resumeDestination.applicationBundleIdentifiers
+    }
+    let both = ["com.apple.Music", "com.apple.podcasts"]
+
+    #expect(remaining([:]) == both)
+    #expect(remaining(["com.apple.Music": .playing, "com.apple.podcasts": .playing]) == both)
+    #expect(
+        remaining(["com.apple.podcasts": .stopped(at: resumedAt.addingTimeInterval(-5))]) == both,
+        "Stopped before the Play: still paused by Steno."
+    )
+    #expect(
+        remaining(["com.apple.podcasts": .stopped(at: resumedAt.addingTimeInterval(1))])
+            == ["com.apple.Music"]
+    )
+    #expect(remaining(["com.apple.Music": .noSession]) == ["com.apple.podcasts"])
+    #expect(
+        remaining([
+            "com.apple.Music": .noSession,
+            "com.apple.podcasts": .stopped(at: resumedAt.addingTimeInterval(1)),
+        ]) == nil
+    )
+    // Custody that was never resumed has no Play to compare against.
+    let neverResumed = MediaPauseReceipt(resumeDestination: receipt.resumeDestination)
+    #expect(
+        neverResumed.excludingApplicationsTakenOver(
+            in: makeSnapshot(
+                target: nil,
+                contentIdentifier: nil,
+                detection: .likelyPlaying,
+                isPlaying: false,
+                playbackState: 2,
+                activeAudioOutputs: [musicProducer, podcastsProducer],
+                sessions: ["com.apple.podcasts": .stopped(at: .distantFuture)]
+            )
+        ) == neverResumed
+    )
 }
 #endif

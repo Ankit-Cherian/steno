@@ -392,6 +392,12 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             )
             return .noOwnership
         }
+        guard let receipt = receipt.excludingApplicationsTakenOver(in: lineageSnapshot) else {
+            Self.logger.info(
+                "Pending media resume lineage was taken over by the listener; no command was sent."
+            )
+            return .noOwnership
+        }
 
         let expectedApplications = Set(
             receipt.resumeDestination.applicationBundleIdentifiers
@@ -808,6 +814,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         if Task.isCancelled, hasJoiningResumeTokens(id: id) {
             return .retained(receipt)
         }
+        var receipt = receipt
+        receipt.resumeDispatchedAt = Date()
         let destination = receipt.resumeDestination
         let initialDispatch = await driver.sendPlay(to: destination)
         var acceptedPlayApplications = Set(
@@ -883,7 +891,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             .intersection(acceptedPlayApplications)
         if !unconfirmedApplications.isEmpty {
             let pendingReceipt = MediaPauseReceipt(
-                resumeDestination: destination.narrowed(to: unconfirmedApplications)
+                resumeDestination: destination.narrowed(to: unconfirmedApplications),
+                resumeDispatchedAt: receipt.resumeDispatchedAt
             )
             Self.logger.info(
                 "Semantic media Play remained unverified; preserving bounded exact-app resume lineage destination=\(pendingReceipt.resumeDestination.logValue, privacy: .private)"
@@ -900,10 +909,10 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         id: UUID,
         receipt: MediaPauseReceipt
     ) async -> ResumeTransitionOutcome {
-        let applications = receipt.resumeDestination.applicationBundleIdentifiers
-        let expectedApplications = Set(applications)
         guard hasJoiningResumeTokens(id: id) else { return .resumed }
-        let lineageSnapshot = await driver.snapshot(observing: expectedApplications)
+        let lineageSnapshot = await driver.snapshot(
+            observing: Set(receipt.resumeDestination.applicationBundleIdentifiers)
+        )
         guard hasJoiningResumeTokens(id: id),
               lineageSnapshot.detection == .playing
                 || lineageSnapshot.detection == .likelyPlaying,
@@ -916,6 +925,14 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             )
             return .resumed
         }
+        guard let receipt = receipt.excludingApplicationsTakenOver(in: lineageSnapshot) else {
+            Self.logger.info(
+                "In-flight media resume was taken over by the listener; no lineage command was sent."
+            )
+            return .resumed
+        }
+        let applications = receipt.resumeDestination.applicationBundleIdentifiers
+        let expectedApplications = Set(applications)
 
         let initialDispatch = await driver.sendPause(
             to: receipt.resumeDestination
@@ -1533,11 +1550,49 @@ enum MediaSessionPlayback: Sendable, Equatable {
     /// now playing.
     case noSession
     case playing
-    case stopped
+    /// Not playing, and the instant its player last was.
+    case stopped(at: Date)
+
+    var isStopped: Bool {
+        if case .stopped = self { return true }
+        return false
+    }
 }
 
 struct MediaPauseReceipt: Sendable, Equatable {
     let resumeDestination: VerifiedMediaResumeDestination
+    /// When Steno last sent Play for this custody, if it has.
+    var resumeDispatchedAt: Date?
+
+    /// The custody that may still be re-paused for a new capture while its
+    /// resume is in flight or only just finished, or `nil` when none is left.
+    ///
+    /// An application whose session shows it stopping after Steno's Play played
+    /// again and was then stopped by someone else, which is the listener
+    /// pausing it by hand. It is theirs now: it is neither re-paused nor
+    /// resumed later. An application that stopped before that Play is still
+    /// paused by Steno, because the Play has not taken effect, and stays in
+    /// custody. One whose session is gone can no longer be addressed at all.
+    func excludingApplicationsTakenOver(
+        in snapshot: MediaInterruptionSnapshot
+    ) -> Self? {
+        let remaining = Set(resumeDestination.applicationBundleIdentifiers).filter {
+            switch snapshot.sessionPlaybackByApplication[$0] {
+            case .noSession:
+                return false
+            case .stopped(let stoppedAt):
+                guard let resumeDispatchedAt else { return true }
+                return stoppedAt <= resumeDispatchedAt
+            case .playing, nil:
+                return true
+            }
+        }
+        guard !remaining.isEmpty else { return nil }
+        return Self(
+            resumeDestination: resumeDestination.narrowed(to: remaining),
+            resumeDispatchedAt: resumeDispatchedAt
+        )
+    }
 }
 
 struct MediaCommandDispatchResult: Sendable, Equatable {
@@ -1619,7 +1674,7 @@ struct MediaInterruptionSnapshot: Sendable, Equatable {
         forApplication applicationBundleIdentifier: String
     ) -> Bool {
         if before.sessionPlaybackByApplication[applicationBundleIdentifier] == .playing,
-           sessionPlaybackByApplication[applicationBundleIdentifier] == .stopped
+           sessionPlaybackByApplication[applicationBundleIdentifier]?.isStopped == true
         {
             return true
         }
@@ -3070,7 +3125,7 @@ final class MediaRemoteBridge: MediaRemoteBridging {
             let isPlaying = date >= requestedAt.addingTimeInterval(
                 -Self.playingSessionTolerance
             )
-            return isPlaying ? .playing : .stopped
+            return isPlaying ? .playing : .stopped(at: date)
         case .failed(let domain, let code):
             if domain == Self.mediaRemoteErrorDomain, code == Self.missingClientErrorCode {
                 return .noSession
