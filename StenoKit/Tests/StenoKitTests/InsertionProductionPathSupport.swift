@@ -252,6 +252,7 @@ final class FakePasteboard: RestorableClipboardService, @unchecked Sendable {
     private var changeCountStorage = 0
     private var transientWritesStorage: [String] = []
     private var plainWritesStorage: [String] = []
+    private var concealedWritesStorage: [String] = []
     private var restoreCountStorage = 0
     private var externalWriteOnTransientWrite: Item?
 
@@ -264,6 +265,18 @@ final class FakePasteboard: RestorableClipboardService, @unchecked Sendable {
         lock.withLock {
             plainWritesStorage.append(text)
             itemsStorage = [Item(representations: ["public.utf8-plain-text": Data(text.utf8)])]
+            changeCountStorage += 1
+        }
+    }
+
+    func setConcealedString(_ text: String) async throws {
+        try Task.checkCancellation()
+        lock.withLock {
+            concealedWritesStorage.append(text)
+            itemsStorage = [Item(representations: [
+                "public.utf8-plain-text": Data(text.utf8),
+                "org.nspasteboard.ConcealedType": Data()
+            ])]
             changeCountStorage += 1
         }
     }
@@ -330,6 +343,14 @@ final class FakePasteboard: RestorableClipboardService, @unchecked Sendable {
     var items: [Item] { lock.withLock { itemsStorage } }
     var transientWrites: [String] { lock.withLock { transientWritesStorage } }
     var plainWrites: [String] { lock.withLock { plainWritesStorage } }
+    var concealedWrites: [String] { lock.withLock { concealedWritesStorage } }
+
+    /// True when the first item carries the marker clipboard managers skip.
+    var isConcealed: Bool {
+        lock.withLock {
+            itemsStorage.first?.representations["org.nspasteboard.ConcealedType"] != nil
+        }
+    }
     var restoreCount: Int { lock.withLock { restoreCountStorage } }
 
     var plainText: String? {

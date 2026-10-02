@@ -144,6 +144,19 @@ public protocol CleanupEngine: Sendable {
 public protocol ClipboardService: Sendable {
     /// Copies the given text to the system clipboard.
     func setString(_ text: String) async throws
+
+    /// Copies text that was meant for a password or other secure field. The
+    /// user can still paste it, but the item is marked so clipboard managers
+    /// and clipboard history leave it out.
+    func setConcealedString(_ text: String) async throws
+}
+
+extension ClipboardService {
+    /// Clipboards without a system clipboard history, such as in-memory ones,
+    /// have nothing to mark.
+    public func setConcealedString(_ text: String) async throws {
+        try await setString(text)
+    }
 }
 
 /// A strategy for inserting transcribed text into target applications.

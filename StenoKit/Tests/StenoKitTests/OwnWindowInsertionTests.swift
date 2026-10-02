@@ -97,6 +97,7 @@ func ownWindowWithoutTextFocusCopiesOnly(order: [InsertionMethod]) async throws 
     #expect(scenario.accessibility.writes.isEmpty)
     #expect(scenario.activator.activationRequests.isEmpty)
     #expect(scenario.pasteboard.transientWrites.isEmpty)
+    #expect(scenario.pasteboard.concealedWrites.isEmpty)
     #expect(scenario.pasteboard.plainText == "Note for later")
     // The transcript stays on the clipboard; the earlier image is not put back.
     try await Task.sleep(for: .milliseconds(200))

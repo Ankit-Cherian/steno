@@ -260,6 +260,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                    case .insertionRefused(let reason) = macError {
                     return await refusedResult(
                         message: InsertionTargetGuard.refusalMessage(for: reason),
+                        concealsCopy: reason == .secureOrProtectedElement,
                         text: text,
                         clipboardRecoveryText: clipboardRecoveryText,
                         commitAuthorization: commitAuthorization
@@ -306,10 +307,12 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
     /// A refusal happens before any side effect, so no other transport may
     /// try. The final text goes to the clipboard, where the user recovers it.
     /// `message` explains a failure; a successful copy carries it only when
-    /// `reportsMessageWhenCopied` is true.
+    /// `reportsMessageWhenCopied` is true. Text refused at a secure field is
+    /// copied as concealed, since it is most likely a password.
     private func refusedResult(
         message: String,
         reportsMessageWhenCopied: Bool = true,
+        concealsCopy: Bool = false,
         text: String,
         clipboardRecoveryText: String,
         commitAuthorization: InsertionCommitAuthorization?
@@ -326,6 +329,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         do {
             try await clipboardTransport.copyForRecovery(
                 clipboardRecoveryText,
+                concealed: concealsCopy,
                 commitAuthorization: commitAuthorization,
                 commitLease: commitAuthorization.map { _ in InsertionCommitLease() }
             )
@@ -603,6 +607,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
             if case .failure(let reason) = await editorTarget.revalidate() {
                 _ = try await commitClipboard(
                     text,
+                    concealed: reason == .secureOrProtectedElement,
                     authorization: commitAuthorization,
                     lease: commitLease
                 )
@@ -733,9 +738,11 @@ public struct ClipboardInsertionTransport: InsertionTransport {
     }
 
     /// Copies the final text without pasting, for an insertion that was
-    /// refused before any side effect.
+    /// refused before any side effect. `concealed` marks the copy so
+    /// clipboard managers leave it out.
     func copyForRecovery(
         _ text: String,
+        concealed: Bool = false,
         commitAuthorization: InsertionCommitAuthorization?,
         commitLease: InsertionCommitLease?
     ) async throws {
@@ -743,7 +750,12 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         guard commitAuthorization?.canStartNewCommit != false else {
             throw CancellationError()
         }
-        try await commitClipboard(text, authorization: commitAuthorization, lease: commitLease)
+        try await commitClipboard(
+            text,
+            concealed: concealed,
+            authorization: commitAuthorization,
+            lease: commitLease
+        )
     }
 
     /// The dictation written for an auto-paste, plus what is needed to put the
@@ -795,12 +807,17 @@ public struct ClipboardInsertionTransport: InsertionTransport {
     @discardableResult
     private func commitClipboard(
         _ text: String,
+        concealed: Bool = false,
         authorization: InsertionCommitAuthorization?,
         lease: InsertionCommitLease?
     ) async throws -> Int? {
         let clipboard = self.clipboard
         return try await commitClipboardWrite(authorization: authorization, lease: lease) {
-            try await clipboard.setString(text)
+            if concealed {
+                try await clipboard.setConcealedString(text)
+            } else {
+                try await clipboard.setString(text)
+            }
             return nil
         }
     }
@@ -879,6 +896,9 @@ public actor MacClipboardService: RestorableClipboardService {
     /// Clipboard managers skip items carrying this marker
     /// (see nspasteboard.org).
     private static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+    /// Marks content such as a password that clipboard managers must not
+    /// record or show (see nspasteboard.org).
+    private static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
 
     public init() {}
 
@@ -886,6 +906,18 @@ public actor MacClipboardService: RestorableClipboardService {
         try Task.checkCancellation()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    public func setConcealedString(_ text: String) async throws {
+        try Task.checkCancellation()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setData(Data(), forType: Self.concealedType)
+        guard pasteboard.writeObjects([item]) else {
+            throw MacClipboardError.writeFailed
+        }
     }
 
     public func makeRestorePoint() -> ClipboardRestorePoint {
