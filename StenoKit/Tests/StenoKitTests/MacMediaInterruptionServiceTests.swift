@@ -7110,6 +7110,178 @@ func applicationsVerifiedInDifferentPassesAreAllResumed() async {
     )
 }
 
+// Being seen stopped on one pass does not survive a later contradiction. Here
+// Podcasts stops, then its session disappears, and Music stops only after that.
+@MainActor
+@Test(
+    "An application seen stopped and then contradicted during the ladder is not resumed",
+    arguments: [false, true]
+)
+func applicationContradictedAfterVerificationInLadderIsNotResumed(
+    everyApplicationContradicted: Bool
+) async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(
+        music: MediaSessionPlayback,
+        podcasts: MediaSessionPlayback
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: [],
+            sessions: ["com.apple.Music": music, "com.apple.podcasts": podcasts]
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(music: .playing, podcasts: .playing),
+            snapshot(music: .playing, podcasts: .stopped),
+            snapshot(
+                music: everyApplicationContradicted ? .noSession : .playing,
+                podcasts: .noSession
+            ),
+        ] + Array(repeating: snapshot(music: .stopped, podcasts: .noSession), count: 6)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0, 0],
+        resumeVerificationDelays: []
+    )
+
+    let token = await service.beginInterruption()
+    if let token {
+        await service.endInterruption(token: token)
+    }
+
+    if everyApplicationContradicted {
+        // Custody that was contradicted for every application is gone. Seeing
+        // one of them stopped afterwards does not bring it back.
+        #expect(!driver.commands.contains(.play))
+    } else {
+        #expect(driver.commands.filter { $0 == .play }.count == 1)
+        #expect(driver.destinations.last == .observedApplications(["com.apple.Music"]))
+    }
+}
+
+// The other kind of contradiction: strong evidence that the application is
+// playing again after it was seen stopped. It is not resumed either, and what
+// was seen earlier does not count for it.
+@MainActor
+@Test("An application seen stopped and then strongly playing again during the ladder is not resumed")
+func applicationPlayingAgainAfterVerificationInLadderIsNotResumed() async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(
+        music: MediaSessionPlayback,
+        podcasts: MediaSessionPlayback,
+        podcastsStronglyPlaying: Bool = false
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: podcastsStronglyPlaying
+                ? MediaPlaybackTarget(
+                    processID: podcastsProducer.processID,
+                    bundleIdentifier: "com.apple.podcasts"
+                )
+                : nil,
+            contentIdentifier: nil,
+            detection: podcastsStronglyPlaying ? .playing : .likelyPlaying,
+            isPlaying: podcastsStronglyPlaying,
+            playbackState: podcastsStronglyPlaying ? 1 : 2,
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: [],
+            sessions: ["com.apple.Music": music, "com.apple.podcasts": podcasts]
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(music: .playing, podcasts: .playing),
+            snapshot(music: .playing, podcasts: .stopped),
+            snapshot(music: .playing, podcasts: .playing, podcastsStronglyPlaying: true),
+        ] + Array(
+            repeating: snapshot(
+                music: .stopped,
+                podcasts: .playing,
+                podcastsStronglyPlaying: true
+            ),
+            count: 6
+        )
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0, 0, 0],
+        resumeVerificationDelays: []
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Both playing applications should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.commands.last == .play)
+    #expect(driver.destinations.last == .observedApplications(["com.apple.Music"]))
+}
+
+@MainActor
+@Test("An application seen stopped in the ladder and contradicted at release is not resumed")
+func applicationContradictedAtReleaseAfterVerificationIsNotResumed() async {
+    let musicProducer = MediaAudioOutputTarget(
+        processID: 5_895,
+        applicationBundleIdentifier: "com.apple.Music",
+        processStartTimeMicroseconds: 2_000
+    )
+    func snapshot(
+        music: MediaSessionPlayback,
+        podcasts: MediaSessionPlayback
+    ) -> MediaInterruptionSnapshot {
+        makeSnapshot(
+            target: nil,
+            contentIdentifier: nil,
+            detection: .likelyPlaying,
+            isPlaying: false,
+            playbackState: 2,
+            activeAudioOutputs: [musicProducer, podcastsProducer],
+            playingApplications: [],
+            sessions: ["com.apple.Music": music, "com.apple.podcasts": podcasts]
+        )
+    }
+    let driver = FakeMediaInterruptionDriver(
+        snapshots: [
+            snapshot(music: .playing, podcasts: .playing),
+            // The ladder sees Podcasts stop and ends with Music still playing.
+            snapshot(music: .playing, podcasts: .stopped),
+        ]
+            // At release Music has stopped, and the Podcasts session is gone.
+            + Array(repeating: snapshot(music: .stopped, podcasts: .noSession), count: 4)
+    )
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: [0],
+        resumeVerificationDelays: []
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Both playing applications should be paused.")
+        return
+    }
+    await service.endInterruption(token: token)
+
+    #expect(driver.commands.filter { $0 == .play }.count == 1)
+    #expect(driver.destinations.last == .observedApplications(["com.apple.Music"]))
+}
+
 @MainActor
 @Test("Unreadable playback activity leaves every application alone")
 func unreadablePlaybackActivityLeavesEveryApplicationAlone() async {

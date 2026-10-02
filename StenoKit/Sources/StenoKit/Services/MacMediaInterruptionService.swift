@@ -300,41 +300,58 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         publishInitialCustody(id: id, receipt: acceptedReceipt)
 
         let acceptedDestination = acceptedReceipt.makeVerifiedReceipt().resumeDestination
-        var pendingReceipt: PendingPauseReceipt? = acceptedReceipt
-        var verifiedApplications: Set<String> = []
+        // Custody is tracked per application through the ladder.
+        //   - `custody`: applications that can still be resumed. One whose
+        //     producer process was replaced or whose session disappeared leaves
+        //     for good.
+        //   - `stillPlaying`: applications with strong evidence that they are
+        //     playing after the Pause. The Pause has not worked yet, so they are
+        //     owed nothing until a retry is seen to stop them.
+        //   - `seenStopped`: applications seen to have stopped. One reading can
+        //     miss an application another reading saw, so this is kept across
+        //     passes, but only while nothing since has contradicted it.
+        let trackedApplications = acceptedReceipt.acceptedApplications
+        var custody = trackedApplications
+        var stillPlaying: Set<String> = []
+        var seenStopped: Set<String> = []
         for (index, delay) in verificationDelays.enumerated() {
             await ladderSleep(delay)
             guard pauseTransition?.id == id else { return .noOwnership }
-            let after = await driver.snapshot(
-                observing: acceptedReceipt.acceptedApplications
-            )
+            let after = await driver.snapshot(observing: trackedApplications)
             guard pauseTransition?.id == id else { return .noOwnership }
             Self.logger.info(
                 "Media Pause verification pass \(index + 1, privacy: .public): \(after.logValue, privacy: .private)"
             )
-            // Each application is verified on its own evidence, and one reading
-            // can miss an application another reading saw. What has been seen
-            // stopped is kept across passes instead of being required again.
-            verifiedApplications.formUnion(
-                acceptedReceipt.verifiedApplicationBundleIdentifiers(atRelease: after)
-            )
-            if verifiedApplications == acceptedReceipt.acceptedApplications {
-                return .verified(acceptedReceipt.makeVerifiedReceipt())
-            }
             let hasOwner = pauseTransitionHasOwner(id: id)
             let releasing = releaseControl.releaseRequested && !hasOwner
-            pendingReceipt = pendingReceipt?
-                .recordingVerified(verifiedApplications)
-                .retainingCustody(
-                    after: after,
-                    allowingAcceptedPauseToSettle: releasing
-                )
+            custody.subtract(acceptedReceipt.applicationsLostFromCustody(after: after))
+            let stoppedNow = acceptedReceipt
+                .verifiedApplicationBundleIdentifiers(atRelease: after)
+                .intersection(custody)
+            // Once release has started, same-process playback stays provisional
+            // until the release reading, because an accepted Pause can take
+            // effect after this pass.
+            let playingNow = releasing
+                ? []
+                : acceptedReceipt.applicationsPlayingAgain(after: after)
+            stillPlaying = stillPlaying.union(playingNow)
+                .subtracting(stoppedNow)
+                .intersection(custody)
+            seenStopped = seenStopped.union(stoppedNow)
+                .subtracting(playingNow)
+                .intersection(custody)
+
+            // Verified custody is returned for the applications still in
+            // custody, never for one that has left it. While any application is
+            // still playing, the ladder goes on retrying its Pause instead.
+            if stillPlaying.isEmpty, !custody.isEmpty, seenStopped == custody {
+                return .verified(acceptedReceipt.makeVerifiedReceipt(narrowedTo: custody))
+            }
             if !hasOwner { continue }
             guard index < verificationDelays.index(before: verificationDelays.endIndex),
                   pauseTransition?.id == id
             else { continue }
-            let stillActiveApplications = acceptedReceipt.acceptedApplications
-                .subtracting(verifiedApplications)
+            let stillActiveApplications = custody.subtracting(seenStopped)
             if !stillActiveApplications.isEmpty {
                 let retryDestination = acceptedDestination.narrowed(
                     to: stillActiveApplications
@@ -348,23 +365,27 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             }
         }
 
-        if let pendingReceipt {
+        let retainedApplications = custody.subtracting(stillPlaying)
+        guard !retainedApplications.isEmpty else {
+            // Nothing is left to resume: every application lost its producer
+            // process or its session, or is still playing. None of those is
+            // helped by a Play, so nothing is sent, whether the capture is
+            // still open, being released, or was cancelled.
             Self.logger.info(
-                "Semantic media Pause has not yet been observed to stop playback; resume authorization is deferred to release."
+                "Semantic media Pause custody was contradicted; no resume ownership was authorized."
             )
-            return .pending(pendingReceipt)
+            return .noOwnership
         }
-
-        // Custody of every application was contradicted: its producer process
-        // was replaced, its session disappeared, or it is strongly playing
-        // again. None of those is helped by a Play, so nothing is sent, whether
-        // the capture is still open, being released, or was cancelled. A
-        // cancelled transition whose custody is intact took the branch above
-        // and is resolved by the release path like any other.
+        // A cancelled transition whose custody is intact also ends here and is
+        // resolved by the release path like any other.
         Self.logger.info(
-            "Semantic media Pause custody was contradicted; no resume ownership was authorized."
+            "Semantic media Pause has not yet been observed to stop playback; resume authorization is deferred to release."
         )
-        return .noOwnership
+        return .pending(
+            acceptedReceipt
+                .narrowed(to: retainedApplications)
+                .recordingVerified(seenStopped)
+        )
     }
 
     private func performResumeLineagePauseTransition(
@@ -1200,22 +1221,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         /// losing its lineage never discards another's. Once release has started,
         /// same-process playback remains provisional until the final release
         /// snapshot because an accepted Pause can take effect after this pass.
-        func retainingCustody(
-            after snapshot: MediaInterruptionSnapshot,
-            allowingAcceptedPauseToSettle: Bool = false
-        ) -> Self? {
-            let retainedApplications = acceptedApplications.filter {
-                !contradictsPendingCustody(
-                    snapshot,
-                    for: $0,
-                    allowingAcceptedPauseToSettle: allowingAcceptedPauseToSettle
-                )
-            }
-            guard !retainedApplications.isEmpty else { return nil }
-            guard retainedApplications != acceptedApplications else { return self }
-            return narrowed(to: retainedApplications)
-        }
-
+        ///
         /// A still-open output stream never contradicts custody: teardown lags an
         /// accepted Pause by seconds, and a weak-positive playing bit can stay set
         /// long after real silence.
@@ -1228,32 +1234,76 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         /// this application's custody. Only a replaced producer process, a media
         /// session that has disappeared, or fresh strong-positive playback
         /// evidence corroborated for this exact application, contradicts.
-        private func contradictsPendingCustody(
-            _ snapshot: MediaInterruptionSnapshot,
-            for applicationBundleIdentifier: String,
-            allowingAcceptedPauseToSettle: Bool
-        ) -> Bool {
-            let expectedTargets = observedTargets.filter {
+        func retainingCustody(
+            after snapshot: MediaInterruptionSnapshot,
+            allowingAcceptedPauseToSettle: Bool = false
+        ) -> Self? {
+            var contradictedApplications = applicationsLostFromCustody(after: snapshot)
+            if !allowingAcceptedPauseToSettle {
+                contradictedApplications.formUnion(applicationsPlayingAgain(after: snapshot))
+            }
+            let retainedApplications = acceptedApplications
+                .subtracting(contradictedApplications)
+            guard !retainedApplications.isEmpty else { return nil }
+            guard retainedApplications != acceptedApplications else { return self }
+            return narrowed(to: retainedApplications)
+        }
+
+        /// Applications that can no longer be resumed at all: the producer
+        /// process was replaced, or the media session has disappeared, in which
+        /// case a Play would be handed to another application.
+        func applicationsLostFromCustody(
+            after snapshot: MediaInterruptionSnapshot
+        ) -> Set<String> {
+            acceptedApplications.filter { applicationBundleIdentifier in
+                if snapshot.sessionPlaybackByApplication[applicationBundleIdentifier] == .noSession {
+                    return true
+                }
+                guard let observedTargets = observedProducerTargets(
+                    in: snapshot,
+                    for: applicationBundleIdentifier
+                ) else { return false }
+                return !observedTargets.isSubset(of: expectedTargets(for: applicationBundleIdentifier))
+            }
+        }
+
+        /// Applications with fresh strong-positive evidence, corroborated for
+        /// this exact application, that they are playing after the Pause.
+        func applicationsPlayingAgain(
+            after snapshot: MediaInterruptionSnapshot
+        ) -> Set<String> {
+            guard snapshot.detection == .playing else { return [] }
+            return acceptedApplications.filter { applicationBundleIdentifier in
+                guard snapshot.target?.bundleIdentifier == applicationBundleIdentifier,
+                      let observedTargets = observedProducerTargets(
+                        in: snapshot,
+                        for: applicationBundleIdentifier
+                      )
+                else { return false }
+                return !observedTargets.isEmpty
+                    && observedTargets.isSubset(of: expectedTargets(for: applicationBundleIdentifier))
+            }
+        }
+
+        private func expectedTargets(
+            for applicationBundleIdentifier: String
+        ) -> Set<MediaAudioOutputTarget> {
+            observedTargets.filter {
                 $0.applicationBundleIdentifier == applicationBundleIdentifier
             }
-            // Custody of an application whose session has disappeared cannot be
-            // redeemed: its Play would be handed to another application.
-            if snapshot.sessionPlaybackByApplication[applicationBundleIdentifier] == .noSession {
-                return true
+        }
+
+        private func observedProducerTargets(
+            in snapshot: MediaInterruptionSnapshot,
+            for applicationBundleIdentifier: String
+        ) -> Set<MediaAudioOutputTarget>? {
+            snapshot.audioOutputObservation.map { observation in
+                Set(
+                    observation.targets.filter {
+                        $0.applicationBundleIdentifier == applicationBundleIdentifier
+                    }
+                )
             }
-            guard let observation = snapshot.audioOutputObservation else { return false }
-            let observedApplicationTargets = Set(
-                observation.targets.filter {
-                    $0.applicationBundleIdentifier == applicationBundleIdentifier
-                }
-            )
-            guard observedApplicationTargets.isSubset(of: expectedTargets) else {
-                return true
-            }
-            return !allowingAcceptedPauseToSettle
-                && snapshot.detection == .playing
-                && snapshot.target?.bundleIdentifier == applicationBundleIdentifier
-                && !observedApplicationTargets.isEmpty
         }
 
         func narrowed(to applications: Set<String>) -> Self {
