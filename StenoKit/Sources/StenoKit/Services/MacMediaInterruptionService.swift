@@ -3119,6 +3119,10 @@ final class MediaRemoteBridge: MediaRemoteBridging {
             )
         }
 
+        // The request is no longer cached, so it is kept alive here until its
+        // asynchronous reply has arrived.
+        withExtendedLifetime(request) {}
+
         switch reply {
         case .lastPlayed(let date):
             // A playing session answers with the time of the request itself.
@@ -3149,23 +3153,16 @@ final class MediaRemoteBridge: MediaRemoteBridging {
         case empty
     }
 
-    private var sessionRequests: [String: AnyObject] = [:]
-
+    /// Built for each read. A request kept across reads could go on describing
+    /// a session that ended when its application quit or was relaunched.
     private func sessionRequest(
         forApplicationBundleIdentifier applicationBundleIdentifier: String
     ) -> AnyObject? {
-        if let request = sessionRequests[applicationBundleIdentifier] {
-            return request
-        }
-        guard handle != nil,
-              let origin = getLocalOriginFn?(),
-              let request = SessionRequestInterface.makeRequest(
-                origin: Unmanaged<AnyObject>.fromOpaque(origin).takeUnretainedValue(),
-                applicationBundleIdentifier: applicationBundleIdentifier
-              )
-        else { return nil }
-        sessionRequests[applicationBundleIdentifier] = request
-        return request
+        guard handle != nil, let origin = getLocalOriginFn?() else { return nil }
+        return SessionRequestInterface.makeRequest(
+            origin: Unmanaged<AnyObject>.fromOpaque(origin).takeUnretainedValue(),
+            applicationBundleIdentifier: applicationBundleIdentifier
+        )
     }
 
     /// Acceptance is the asynchronous callback reporting error 0 within a bounded
