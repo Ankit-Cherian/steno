@@ -16,6 +16,86 @@ public enum OverlayState: Sendable, Equatable {
     case copiedOnly
     case failure(message: String)
     case noSpeechDetected
+    /// The outcome of a finished dictation. `showsWords` is false when a
+    /// successful insertion should only be confirmed briefly.
+    case result(OverlayResult, showsWords: Bool)
+    case busy(OverlayBusyReason)
+    /// A long recording was discarded; it can be restored until `undoUntil`.
+    case discarded(undoUntil: Date)
+}
+
+public enum OverlayResult: Sendable, Equatable {
+    case inserted(appName: String?, method: InsertionMethodKind)
+    case copied(CopyReason)
+    /// The clipboard changed before the paste, so the text is only in History.
+    case notPasted
+    case failed(savedInHistory: Bool)
+    case microphoneDisconnected(insertedPartial: Bool)
+    case transcriptionFailed
+    case microphoneAccessOff
+    case shortcutsUnavailable
+    case speechModelMissing
+}
+
+public enum InsertionMethodKind: String, Sendable, Equatable {
+    case typed
+    case accessibility
+    case pasted
+}
+
+public enum CopyReason: String, Sendable, Equatable {
+    case secureField
+    case fieldChanged
+    case appChanged
+    case appNotResponding
+    case accessibilityOff
+    case noTextField
+    case other
+}
+
+public enum OverlayBusyReason: Sendable, Equatable {
+    case stillFinishing
+    case handsFreeDeferred
+    case modelLoading
+    /// Paste Last Dictation pressed while a dictation is in progress.
+    case pasteWaitsForDictation
+    /// Paste Last Dictation pressed with no dictation to paste.
+    case nothingToPaste
+}
+
+extension OverlayState {
+    /// The 1.0 state that presents the same outcome, for presenters that
+    /// predate the 1.1 cases. Nil for states that are already 1.0 states.
+    public var legacyEquivalent: OverlayState? {
+        switch self {
+        case .listening, .transcribing, .inserted, .copiedOnly, .failure, .noSpeechDetected:
+            return nil
+        case .result(let result, _):
+            switch result {
+            case .inserted: return .inserted
+            case .copied: return .copiedOnly
+            case .notPasted: return .failure(message: "Not pasted. Saved in History.")
+            case .failed(let saved):
+                return .failure(message: saved ? "Couldn\u{2019}t insert. Saved in History." : "Couldn\u{2019}t insert or save. Copy it now.")
+            case .microphoneDisconnected(let inserted):
+                return .failure(message: inserted ? "Microphone disconnected. Inserted what you said before that." : "Microphone disconnected. Copied what you said before that.")
+            case .transcriptionFailed: return .failure(message: "Couldn\u{2019}t transcribe this recording.")
+            case .microphoneAccessOff: return .failure(message: "Microphone access is off.")
+            case .shortcutsUnavailable: return .failure(message: "Shortcuts unavailable. Open Steno.")
+            case .speechModelMissing: return .failure(message: "Speech model not found. Open Steno.")
+            }
+        case .busy(let reason):
+            switch reason {
+            case .stillFinishing: return .failure(message: "Still finishing the last one")
+            case .handsFreeDeferred: return .failure(message: "Starts when the last one finishes")
+            case .modelLoading: return .failure(message: "Still loading the speech model")
+            case .pasteWaitsForDictation: return .failure(message: "Finish this dictation first")
+            case .nothingToPaste: return .failure(message: "No dictation to paste yet")
+            }
+        case .discarded:
+            return .failure(message: "Recording discarded")
+        }
+    }
 }
 
 /// An opaque token used to coalesce overlapping media interruptions.
@@ -55,10 +135,31 @@ public protocol HotkeyService: AnyObject {
     var confirmsPressToTalk: Bool { get }
     var onPressToTalkConfirmed: (() -> Void)? { get set }
     var onPressToTalkDiscarded: (() -> Void)? { get set }
+
+    /// An optional shortcut for Paste Last Dictation. Nil registers nothing.
+    var pasteLastShortcut: GlobalShortcut? { get set }
+    var onPasteLastShortcut: (() -> Void)? { get set }
+    /// Whether the shortcut could be registered; `.unavailable` says why not.
+    var onPasteLastShortcutStatusChanged: ((HotkeyRegistrationStatus) -> Void)? { get set }
 }
 
 extension HotkeyService {
     public var confirmsPressToTalk: Bool { false }
+
+    public var pasteLastShortcut: GlobalShortcut? {
+        get { nil }
+        set {}
+    }
+
+    public var onPasteLastShortcut: (() -> Void)? {
+        get { nil }
+        set {}
+    }
+
+    public var onPasteLastShortcutStatusChanged: ((HotkeyRegistrationStatus) -> Void)? {
+        get { nil }
+        set {}
+    }
 
     public var onPressToTalkConfirmed: (() -> Void)? {
         get { nil }
@@ -83,6 +184,11 @@ public protocol OverlayPresenter: AnyObject {
     /// Shows the overlay with the given state.
     func show(state: OverlayState)
 
+    /// Shows a successful insertion with the first line of the words, which the controller offers
+    /// only when they may be shown (see `DictationResultPresentation.overlayWords`). A presenter
+    /// that has no use for them shows `state` alone.
+    func show(state: OverlayState, insertedWords: String?)
+
     /// Enables or disables ephemeral local transcript previews for future
     /// recording sessions. This does not affect final transcription.
     func setLiveTranscriptEnabled(_ isEnabled: Bool)
@@ -99,11 +205,32 @@ public protocol OverlayPresenter: AnyObject {
     /// controls when the local preview can no longer continue.
     func showLiveTranscriptUnavailable()
 
+    /// Draws the microphone level of the recording in progress: 0 (silence)
+    /// to 1, already smoothed, at most 60 times a second, and 0 when capture
+    /// ends. Implementations should write layer properties directly rather
+    /// than view state.
+    func updateInputLevel(_ level: Float)
+
     /// Hides the overlay.
     func hide()
+
+    /// Called by the overlay's Undo button on a discarded recording.
+    var onUndoDiscard: (() -> Void)? { get set }
+    /// Called by the overlay's Copy button on a problem result.
+    var onCopyResult: (() -> Void)? { get set }
 }
 
 public extension OverlayPresenter {
+    func show(state: OverlayState, insertedWords _: String?) { show(state: state) }
+    func updateInputLevel(_: Float) {}
+    var onUndoDiscard: (() -> Void)? {
+        get { nil }
+        set {}
+    }
+    var onCopyResult: (() -> Void)? {
+        get { nil }
+        set {}
+    }
     func setLiveTranscriptEnabled(_: Bool) {}
     func pinNextSessionToDisplay(containing _: CGPoint?) {}
     func updateLiveTranscript(_: LiveTranscriptionSnapshot) {}

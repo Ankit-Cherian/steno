@@ -25,6 +25,10 @@ let package = Package(
             name: "StenoBenchmarkCLI",
             targets: ["StenoBenchmarkCLI"]
         ),
+        .executable(
+            name: "StenoIconRenderer",
+            targets: ["StenoIconRenderer"]
+        ),
     ],
     targets: [
         .target(
@@ -44,6 +48,10 @@ let package = Package(
         .executableTarget(
             name: "StenoBenchmarkCLI",
             dependencies: ["StenoBenchmarkCore"]
+        ),
+        .executableTarget(
+            name: "StenoIconRenderer",
+            dependencies: ["StenoKit"]
         ),
         .testTarget(
             name: "StenoKitTests",

@@ -10,7 +10,7 @@ public enum StenoKitAssembly {
         accessibilityInsertion: InsertionTransport? = nil,
         historyStorageURL: URL? = nil
     ) -> SessionCoordinator {
-        let historyStore = HistoryStore(storageURL: historyStorageURL, clipboardService: clipboardService)
+        let historyStore = HistoryStore(storageURL: historyStorageURL)
         var transports: [any InsertionTransport] = []
         if let directInsertion {
             transports.append(directInsertion)

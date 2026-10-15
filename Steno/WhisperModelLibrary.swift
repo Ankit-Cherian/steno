@@ -52,6 +52,19 @@ struct WhisperModelLocations: Sendable {
         modelsDirectory: { try WhisperModelLibrary.modelsDirectory() },
         bundledModelPath: { BundledWhisperRuntime.modelPath(for: $0) }
     )
+
+    /// Downloaded models live under the launch storage root.
+    static func root(_ root: StenoStorageRoot) -> WhisperModelLocations {
+        WhisperModelLocations(
+            modelsDirectory: {
+                guard let directory = root.modelsDirectory else {
+                    throw WhisperModelDownloadError.applicationSupportUnavailable
+                }
+                return directory
+            },
+            bundledModelPath: { BundledWhisperRuntime.modelPath(for: $0) }
+        )
+    }
 }
 
 struct WhisperModelInstallResult: Sendable, Equatable {
