@@ -2,6 +2,7 @@
 
 #include "steno_prompt_scoring.h"
 #include "steno_prompt_verification.h"
+#include "steno_window_recovery.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1333,7 +1334,161 @@ bool verify_prompted_segments(
     return true;
 }
 
+// Recovery decodes a defective window in pieces of at most this length, cut at
+// the quietest 100 ms of each piece's second half. A shorter piece gives a
+// repetition loop or an early end less audio to lose, and starting at a pause
+// keeps the decoder from dropping a sentence cut in half.
+constexpr size_t kRecoveryPieceSamples = 10U * WHISPER_SAMPLE_RATE;
+constexpr size_t kRecoveryEnergyFrameSamples = WHISPER_SAMPLE_RATE / 10;
+constexpr size_t kRecoveryMinimumTailSamples = 2U * WHISPER_SAMPLE_RATE;
+// The text that conditions each piece: the end of the text decoded just
+// before it, at most this many bytes, starting at a word.
+constexpr size_t kRecoveryContextBytes = 200;
 
+std::string recovery_context(const std::string & text) {
+    if (text.size() <= kRecoveryContextBytes) {
+        return text;
+    }
+    size_t start = text.size() - kRecoveryContextBytes;
+    const size_t space = text.find(' ', start);
+    if (space != std::string::npos) {
+        return text.substr(space + 1);
+    }
+    // No word boundary: start at a whole UTF-8 character instead.
+    while (start < text.size() && (static_cast<unsigned char>(text[start]) & 0xC0) == 0x80) {
+        ++start;
+    }
+    return text.substr(start);
+}
+
+// Decode again every window that lost the speech it holds (see
+// steno_window_recovery.h), and keep the recovered text where it is clearly
+// better. A recovered window is decoded in short pieces with a fresh state,
+// so it is not conditioned on the defective text or on the request prompt.
+// Each piece is conditioned on the text just before it instead, but only on
+// text that passed these checks, which keeps the sentence case and
+// punctuation of the surrounding windows. Only windows that produced a
+// segment are examined, so a window the decoder judged to hold no speech
+// stays empty.
+//
+// Returns false only when the request was cancelled. A recovery decode that
+// fails otherwise leaves the remaining windows as they were decoded.
+bool recover_defective_windows(
+    whisper_context * context,
+    const whisper_full_params & decoded_parameters,
+    const std::vector<float> & samples,
+    std::atomic<bool> * abort_requested,
+    std::vector<SegmentView> & segments
+) {
+    const int64_t window_limit = static_cast<int64_t>(samples.size()) / kSamplesPerCentisecond;
+    std::vector<int64_t> seeks(segments.size(), -1);
+    std::vector<std::vector<std::string>> decoded_words(segments.size());
+    for (size_t index = 0; index < segments.size(); ++index) {
+        int64_t seek = 0;
+        if (window_seek_for_segment(segments[index], window_limit, seek)) {
+            seeks[index] = seek;
+        }
+        decoded_words[index] = steno::comparison_words(segments[index].text);
+    }
+
+    whisper_full_params parameters = decoded_parameters;
+    parameters.no_context = true;
+    std::unique_ptr<whisper_state, decltype(&whisper_free_state)> state(nullptr, &whisper_free_state);
+    std::string context_text;
+    int64_t context_seek = -1;
+    const std::vector<std::string> no_words;
+    for (size_t index = 0; index < segments.size(); ++index) {
+        const int64_t seek = seeks[index];
+        if (seek < 0) {
+            continue;
+        }
+        const std::vector<std::string> * previous = &no_words;
+        for (size_t candidate = 0; candidate < index; ++candidate) {
+            if (seeks[candidate] == seek - kWindowCentiseconds) {
+                previous = &decoded_words[candidate];
+            }
+        }
+        const size_t start = static_cast<size_t>(seek) * kSamplesPerCentisecond;
+        const size_t end = std::min(
+            samples.size(),
+            start + static_cast<size_t>(kWindowCentiseconds) * kSamplesPerCentisecond
+        );
+        if (start >= end) {
+            continue;
+        }
+        const double seconds = static_cast<double>(end - start) / WHISPER_SAMPLE_RATE;
+        const steno::WindowDefect defect =
+            steno::classify_window(decoded_words[index], *previous, seconds);
+        if (defect == steno::WindowDefect::None) {
+            context_text = segments[index].text;
+            context_seek = seek;
+            continue;
+        }
+        if (abort_requested != nullptr && abort_requested->load(std::memory_order_relaxed)) {
+            return false;
+        }
+        if (state == nullptr) {
+            state.reset(whisper_init_state(context));
+            if (state == nullptr) {
+                return true;
+            }
+        }
+
+        SegmentView recovered;
+        recovered.processed_start = segments[index].processed_start;
+        recovered.processed_end = segments[index].processed_end;
+        std::string preceding = context_seek == seek - kWindowCentiseconds ? context_text : std::string();
+        const std::vector<std::string> prompt_words = steno::comparison_words(recovery_context(preceding));
+        for (const auto & piece : steno::recovery_pieces(
+                 samples.data() + start,
+                 end - start,
+                 kRecoveryPieceSamples,
+                 kRecoveryEnergyFrameSamples,
+                 kRecoveryMinimumTailSamples)) {
+            const std::string prompt = recovery_context(preceding);
+            parameters.initial_prompt = prompt.empty() ? nullptr : prompt.c_str();
+            if (whisper_full_with_state(
+                    context,
+                    state.get(),
+                    parameters,
+                    samples.data() + start + piece.first,
+                    static_cast<int>(piece.second - piece.first)
+                ) != 0) {
+                return abort_requested == nullptr
+                    || !abort_requested->load(std::memory_order_relaxed);
+            }
+            const int64_t offset = static_cast<int64_t>((start + piece.first) / kSamplesPerCentisecond);
+            std::string piece_text;
+            for (SegmentView & part : collect_segments(context, state.get())) {
+                piece_text += part.text;
+                for (TokenView & token : part.tokens) {
+                    if (token.start >= 0) {
+                        token.start += offset;
+                    }
+                    if (token.end >= 0) {
+                        token.end += offset;
+                    }
+                    recovered.tokens.push_back(std::move(token));
+                }
+            }
+            recovered.text += piece_text;
+            if (!piece_text.empty()) {
+                preceding = piece_text;
+            }
+        }
+        if (steno::recovery_replaces(
+                defect,
+                decoded_words[index],
+                steno::comparison_words(recovered.text),
+                *previous,
+                prompt_words)) {
+            segments[index] = std::move(recovered);
+            context_text = segments[index].text;
+            context_seek = seek;
+        }
+    }
+    return true;
+}
 
 bool transcribe(
     whisper_context * context,
@@ -1456,6 +1611,10 @@ bool transcribe(
         return false;
     }
     std::vector<SegmentView> segments = collect_segments(context, state.get());
+    // Recovered windows still pass through prompt verification below.
+    if (!recover_defective_windows(context, parameters, prepared.samples, abort_requested, segments)) {
+        return false;
+    }
     VerificationReport verification;
     const bool verified = verify_prompted_segments(
         context,

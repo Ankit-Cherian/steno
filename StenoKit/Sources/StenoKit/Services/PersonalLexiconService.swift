@@ -34,6 +34,69 @@ public actor PersonalLexiconService {
         entries = PersonalLexicon.longestFirst(entries)
     }
 
+    /// Checks the correction Fix a word adds for future dictations, without adding it. The
+    /// correction applies in every app. Throws when it can't be added as asked: a common word
+    /// needs `confirmingCommonWord`, a word Steno always keeps as spoken would never be replaced,
+    /// and an existing correction for the same word with another spelling takes precedence.
+    public func reviewWordCorrection(
+        original: String,
+        replacement: String,
+        confirmingCommonWord: Bool
+    ) throws -> LexiconEntry {
+        let candidate = LexiconEntry(
+            term: original.trimmingCharacters(in: .whitespacesAndNewlines),
+            preferred: replacement.trimmingCharacters(in: .whitespacesAndNewlines),
+            scope: .global
+        )
+        let spokenForm = LexiconMatcher.normalizedSpokenForm(candidate.term)
+        if let existing = entries.first(where: {
+            $0.scope == .global
+                && LexiconMatcher.normalizedSpokenForm($0.term) == spokenForm
+                && $0.preferred != candidate.preferred
+        }) {
+            throw WordFixError.conflictingCorrection(existing: existing)
+        }
+
+        let review = LexiconEntryValidator.review(candidate, existing: entries)
+        switch review.rejection {
+        case nil:
+            break
+        case .duplicate(let existing):
+            throw WordFixError.conflictingCorrection(existing: existing)
+        case .blankTerm, .blankSpelling, .missingApp:
+            throw WordFixError.invalidReplacement
+        }
+        if let kept = review.keptSpokenForms.first {
+            throw WordFixError.keptAsSpoken(kept)
+        }
+        // The vocabulary review leaves out a word the correction changes only by case, but a
+        // fix made from History still asks first: it would change the case of that common
+        // word in every dictation.
+        let caseOnlyCommonWord = candidate.term.split(whereSeparator: \.isWhitespace).count == 1
+            && candidate.term != candidate.preferred
+            && candidate.term.caseInsensitiveCompare(candidate.preferred) == .orderedSame
+            && CommonEnglishWords.contains(candidate.term)
+        if let common = review.commonWords.first ?? (caseOnlyCommonWord ? candidate.term : nil),
+           !confirmingCommonWord {
+            throw WordFixError.commonWord(common)
+        }
+        return candidate
+    }
+
+    /// Adds `entry`, replacing an entry for the same word and scope.
+    /// Adds a correction. A correction that already exists with the same word, spelling and scope
+    /// stays as configured, with its aliases and phonetic recovery.
+    public func add(_ entry: LexiconEntry) {
+        if entries.contains(where: {
+            $0.term.caseInsensitiveCompare(entry.term) == .orderedSame
+                && $0.preferred == entry.preferred
+                && $0.scope == entry.scope
+        }) {
+            return
+        }
+        upsert(term: entry.term, preferred: entry.preferred, scope: entry.scope, aliases: entry.aliases)
+    }
+
     public func remove(term: String, scope: Scope) {
         entries.removeAll {
             $0.term.caseInsensitiveCompare(term) == .orderedSame && $0.scope == scope

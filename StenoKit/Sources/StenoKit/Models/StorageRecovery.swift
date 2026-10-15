@@ -8,17 +8,22 @@ public struct StorageRecoveryNotice: Sendable, Equatable, Identifiable {
     public var fileURL: URL?
     /// Text the user may want to copy because it couldn't be saved.
     public var recoverableText: String?
+    /// True when `recoverableText` was meant for a secure field, so copying
+    /// it must be concealed.
+    public var recoverableTextIsConcealed: Bool?
 
     public init(
         id: UUID = UUID(),
         message: String,
         fileURL: URL?,
-        recoverableText: String? = nil
+        recoverableText: String? = nil,
+        recoverableTextIsConcealed: Bool? = nil
     ) {
         self.id = id
         self.message = message
         self.fileURL = fileURL
         self.recoverableText = recoverableText
+        self.recoverableTextIsConcealed = recoverableTextIsConcealed
     }
 }
 
@@ -103,6 +108,18 @@ extension KeyedDecodingContainer {
         guard contains(key), try !decodeNil(forKey: key) else { return nil }
         return try decode(LossyArray<Element>.self, forKey: key).elements
     }
+
+    /// Decodes an array that is a detail of a larger value, skipping elements that can't be
+    /// decoded. A skipped element is reported as a replaced value, not as a skipped entry, so a
+    /// recovery notice doesn't count it as a hidden item. Returns nil when the key is absent or
+    /// null.
+    func decodeLossyDetailsIfPresent<Element: Decodable>(
+        of type: Element.Type,
+        forKey key: Key
+    ) throws -> [Element]? {
+        guard contains(key), try !decodeNil(forKey: key) else { return nil }
+        return try decode(LossyDetailArray<Element>.self, forKey: key).elements
+    }
 }
 
 /// An array that skips elements it can't decode instead of failing as a whole.
@@ -110,6 +127,10 @@ public struct LossyArray<Element: Decodable>: Decodable {
     public var elements: [Element]
 
     public init(from decoder: Decoder) throws {
+        elements = try Self.elements(from: decoder) { decoder.decodingIssueLog?.recordSkipped() }
+    }
+
+    static func elements(from decoder: Decoder, onSkip: () -> Void) throws -> [Element] {
         var container = try decoder.unkeyedContainer()
         var elements: [Element] = []
         if let count = container.count {
@@ -120,14 +141,24 @@ public struct LossyArray<Element: Decodable>: Decodable {
             do {
                 elements.append(try container.decode(Element.self))
             } catch {
-                decoder.decodingIssueLog?.recordSkipped()
+                onSkip()
                 if try !container.decodeNil() {
                     _ = try container.decode(SkippedValue.self)
                 }
                 guard container.currentIndex > index else { throw error }
             }
         }
-        self.elements = elements
+        return elements
+    }
+}
+
+/// An array inside a larger value that skips elements it can't decode, reporting each as a
+/// replaced value.
+struct LossyDetailArray<Element: Decodable>: Decodable {
+    var elements: [Element]
+
+    init(from decoder: Decoder) throws {
+        elements = try LossyArray<Element>.elements(from: decoder) { decoder.recordReplacedValue() }
     }
 }
 
