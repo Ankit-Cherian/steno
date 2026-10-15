@@ -19,7 +19,7 @@ private struct RerunFixture {
     ) {
         historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("rerun-history-\(UUID().uuidString).json")
-        history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+        history = HistoryStore(storageURL: historyURL)
         lexicon = PersonalLexiconService(entries: entries)
         styles = StyleProfileService(globalProfile: globalProfile, appProfiles: [:])
         self.snippets = SnippetService(snippets: snippets)
@@ -226,7 +226,7 @@ func historyWithOriginalDecodesInReleasedVersion() async throws {
     )
     #expect(released.map(\.cleanText) == ["Ship the Gizmo build today"])
 
-    let reloaded = HistoryStore(storageURL: fixture.historyURL, clipboardService: MemoryClipboardService())
+    let reloaded = HistoryStore(storageURL: fixture.historyURL)
     #expect(await reloaded.recent(limit: 1).first?.originalCleanText == "Ship the gizmo build today")
     #expect(await reloaded.takeRecoveryNotices().isEmpty)
 }

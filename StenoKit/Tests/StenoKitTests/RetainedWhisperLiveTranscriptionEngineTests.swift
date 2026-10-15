@@ -476,11 +476,7 @@ func retainedLiveCancelDuringFinishIsPromptAndReusable() async throws {
             request: .init()
         )
     }
-    for _ in 0..<200 {
-        if await state.hasStartedFinish() { break }
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    #expect(await state.hasStartedFinish())
+    #expect(await eventually { await state.hasStartedFinish() })
 
     await engine.cancelLiveTranscription(session: first)
     await #expect(throws: CancellationError.self) {

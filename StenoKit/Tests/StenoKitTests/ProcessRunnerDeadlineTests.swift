@@ -22,24 +22,28 @@ private func processIsAlive(_ pid: pid_t) -> Bool {
     kill(pid, 0) == 0
 }
 
+/// A shell loop that runs for about two minutes on an idle machine, then writes
+/// `natural` to `markerURL`. The marker is the evidence that the child ended on its
+/// own; a run the deadline ended never writes it, however slow the machine is.
+private func longLoop(writingTo markerURL: URL) -> String {
+    "i=0; while [ $i -lt 600 ]; do sleep 0.2; i=$((i + 1)); done; echo natural > '\(markerURL.path)'"
+}
+
 @Test("ProcessRunner terminates a child that outlives its deadline")
 func processRunnerTerminatesChildAtDeadline() async throws {
     let pidURL = deadlineScratchURL("pid")
-    defer { try? FileManager.default.removeItem(at: pidURL) }
-    let started = ContinuousClock.now
+    let markerURL = deadlineScratchURL("natural-exit")
+    defer { for url in [pidURL, markerURL] { try? FileManager.default.removeItem(at: url) } }
 
     await #expect(throws: ProcessRunnerError.timedOut(after: .seconds(1))) {
         _ = try await ProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
-            arguments: ["-c", "echo $$ > '\(pidURL.path)'; exec sleep 30"],
+            arguments: ["-c", "echo $$ > '\(pidURL.path)'; \(longLoop(writingTo: markerURL))"],
             timeout: .seconds(1)
         )
     }
 
-    // The child would run for 30 s on its own. The bound only has to show
-    // the deadline ended it; it is generous because a busy machine can stall
-    // a test for seconds.
-    #expect(ContinuousClock.now - started < .seconds(15))
+    #expect(!FileManager.default.fileExists(atPath: markerURL.path), "the child ran to its natural end")
     let pid = try #require(recordedPID(at: pidURL))
     #expect(!processIsAlive(pid))
 }
@@ -47,19 +51,18 @@ func processRunnerTerminatesChildAtDeadline() async throws {
 @Test("ProcessRunner forcibly kills a child that ignores termination after its deadline")
 func processRunnerKillsChildIgnoringTerminationAtDeadline() async throws {
     let pidURL = deadlineScratchURL("pid")
-    defer { try? FileManager.default.removeItem(at: pidURL) }
-    let started = ContinuousClock.now
+    let markerURL = deadlineScratchURL("natural-exit")
+    defer { for url in [pidURL, markerURL] { try? FileManager.default.removeItem(at: url) } }
 
     await #expect(throws: ProcessRunnerError.timedOut(after: .seconds(1))) {
         _ = try await ProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
-            arguments: ["-c", "trap '' TERM; echo $$ > '\(pidURL.path)'; i=0; while [ $i -lt 150 ]; do sleep 0.2; i=$((i + 1)); done"],
+            arguments: ["-c", "trap '' TERM; echo $$ > '\(pidURL.path)'; \(longLoop(writingTo: markerURL))"],
             timeout: .seconds(1)
         )
     }
 
-    // As above: the child's own loop lasts 30 s.
-    #expect(ContinuousClock.now - started < .seconds(20))
+    #expect(!FileManager.default.fileExists(atPath: markerURL.path), "the child ran to its natural end")
     let pid = try #require(recordedPID(at: pidURL))
     #expect(!processIsAlive(pid))
 }

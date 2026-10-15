@@ -18,8 +18,7 @@ func historyFailureAfterInsertionIsNotATranscriptionFailure() async throws {
         hotkey: StorageRecoveryTestHotkeyService(),
         coordinator: coordinator,
         historyStore: HistoryStore(
-            storageURL: directory.appendingPathComponent("history.json"),
-            clipboardService: MemoryClipboardService()
+            storageURL: directory.appendingPathComponent("history.json")
         )
     )
     defer { controller.teardown() }
@@ -57,8 +56,7 @@ func historyFailureAfterPasteSaysPasted() async throws {
         hotkey: StorageRecoveryTestHotkeyService(),
         coordinator: coordinator,
         historyStore: HistoryStore(
-            storageURL: directory.appendingPathComponent("history.json"),
-            clipboardService: MemoryClipboardService()
+            storageURL: directory.appendingPathComponent("history.json")
         )
     )
     defer { controller.teardown() }
@@ -122,16 +120,9 @@ final class StorageRecoveryTestHotkeyService: HotkeyService {
 
 @MainActor
 func waitForStorageRecoveryCondition(
-    attempts: Int = 400,
     _ condition: @MainActor () -> Bool
 ) async -> Bool {
-    for _ in 0..<attempts {
-        if condition() {
-            return true
-        }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+    await eventuallyOnMain { condition() }
 }
 
 @MainActor
@@ -250,9 +241,7 @@ func storageNoticeRenders() async throws {
         var edited = controller.preferences
         edited.hotkeys.optionPressToTalkEnabled.toggle()
         draftState.edit(edited)
-        let theme = StenoDesign.theme(for: controller.preferences)
-        let data = try await renderer.render(SettingsView(previewDraftState: draftState)
-            .foregroundStyle(theme.text).background(theme.ink0),
+        let data = try await renderer.render(SettingsView(previewDraftState: draftState),
             controller: controller, appearance: appearance,
             size: CGSize(width: StenoDesign.windowMinWidth, height: StenoDesign.windowMinHeight), accessibility: true)
         try data.write(to: root.appendingPathComponent("settings-save-failed-\(appearance)-minimum-accessible.png"))

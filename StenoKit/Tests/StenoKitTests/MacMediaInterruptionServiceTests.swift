@@ -336,10 +336,15 @@ private actor MediaSleepGate {
         }
     }
 
+    /// Waits until the service has reached `minimumCount` sleeps. Without a
+    /// timeout it waits up to the hang-guard ceiling.
     func waitUntilCount(
         _ minimumCount: Int,
-        timeoutMilliseconds: Int
+        timeoutMilliseconds: Int? = nil
     ) async -> Bool {
+        guard let timeoutMilliseconds else {
+            return await eventually { await self.waitCount >= minimumCount }
+        }
         for _ in 0..<timeoutMilliseconds {
             if waitCount >= minimumCount { return true }
             try? await Task.sleep(nanoseconds: 1_000_000)
@@ -386,26 +391,18 @@ private actor MediaDelayRecorder {
 
 @MainActor
 private func waitUntil(
-    _ predicate: @escaping @MainActor () -> Bool,
-    timeoutMilliseconds: Int = 1_000
+    _ predicate: @escaping @MainActor () -> Bool
 ) async {
-    for _ in 0..<timeoutMilliseconds {
-        if predicate() { return }
-        try? await Task.sleep(nanoseconds: 1_000_000)
+    if !(await eventuallyOnMain(predicate)) {
+        Issue.record("Timed out waiting for test condition.")
     }
-    Issue.record("Timed out waiting for test condition.")
 }
 
 @MainActor
 private func waitUntilSatisfied(
-    _ predicate: @escaping @MainActor () -> Bool,
-    timeoutMilliseconds: Int = 1_000
+    _ predicate: @escaping @MainActor () -> Bool
 ) async -> Bool {
-    for _ in 0..<timeoutMilliseconds {
-        if predicate() { return true }
-        try? await Task.sleep(nanoseconds: 1_000_000)
-    }
-    return predicate()
+    await eventuallyOnMain(predicate)
 }
 
 @MainActor
@@ -429,6 +426,8 @@ private final class FakeMediaRemoteBridge: MediaRemoteBridging {
     var nowPlayingPlaybackRateSequence: [Double?] = []
     var playbackStateIsAdvancingSequence: [Bool?] = []
     var targetedSendDelayNanoseconds: UInt64 = 0
+    /// Holds each send until this many are in flight at once.
+    var targetedSendBarrier: Int?
     var targetedSendResultsByApplication: [String: Bool] = [:]
     var sessionPlaybackByApplication: [String: MediaSessionPlayback] = [:]
     private(set) var sessionPlaybackRequests: [String] = []
@@ -497,6 +496,9 @@ private final class FakeMediaRemoteBridge: MediaRemoteBridging {
         )
         if targetedSendDelayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: targetedSendDelayNanoseconds)
+        }
+        if let targetedSendBarrier {
+            _ = await eventuallyOnMain { self.maximumConcurrentTargetedSends >= targetedSendBarrier }
         }
         targetedSendsInFlight -= 1
         return targetedSendResultsByApplication[applicationBundleIdentifier] ?? true
@@ -1314,7 +1316,8 @@ func observedOutputReceivesRepeatedPauseUntilEveryClientStops() async {
 @Test("Targeted Pause fan-out sends to applications concurrently")
 func targetedPauseFanoutIsConcurrent() async {
     let bridge = FakeMediaRemoteBridge()
-    bridge.targetedSendDelayNanoseconds = 40_000_000
+    // Each send waits for the other, so only concurrent sends finish promptly.
+    bridge.targetedSendBarrier = 2
     let driver = MacMediaInterruptionDriver(
         bridge: bridge,
         playbackDetector: MultiSignalMediaPlaybackStateDetector(bridge: bridge),
@@ -3688,10 +3691,7 @@ func releasePreservesAcceptedPauseSettlingWindow() async {
     // Observe custody on the MainActor before starting the independent sleep
     // gate's deadline; queued MainActor work must not consume that deadline.
     let beginCompleted = await waitUntilSatisfied { beginProbe.didComplete }
-    let reachedFirstSleep = await sleepGate.waitUntilCount(
-        1,
-        timeoutMilliseconds: 1_000
-    )
+    let reachedFirstSleep = await sleepGate.waitUntilCount(1)
     guard reachedFirstSleep, beginCompleted else {
         begin.cancel()
         await sleepGate.openPermanently()
@@ -3721,10 +3721,7 @@ func releasePreservesAcceptedPauseSettlingWindow() async {
     #expect(driver.commands == [.pause])
 
     await sleepGate.open()
-    let reachedSecondSleep = await sleepGate.waitUntilCount(
-        2,
-        timeoutMilliseconds: 1_000
-    )
+    let reachedSecondSleep = await sleepGate.waitUntilCount(2)
     #expect(
         reachedSecondSleep,
         "Release must preserve every remaining verification delay before adjudicating custody."
@@ -3775,10 +3772,7 @@ func newOwnerRestoresPauseRetriesDuringReleaseDrain() async {
     // Observe custody on the MainActor before starting the independent sleep
     // gate's deadline; queued MainActor work must not consume that deadline.
     let beginCompleted = await waitUntilSatisfied { beginProbe.didComplete }
-    let reachedFirstSleep = await sleepGate.waitUntilCount(
-        1,
-        timeoutMilliseconds: 1_000
-    )
+    let reachedFirstSleep = await sleepGate.waitUntilCount(1)
     guard reachedFirstSleep, beginCompleted else {
         begin.cancel()
         await sleepGate.openPermanently()
@@ -3812,10 +3806,7 @@ func newOwnerRestoresPauseRetriesDuringReleaseDrain() async {
     }
 
     await sleepGate.open()
-    let reachedSecondSleep = await sleepGate.waitUntilCount(
-        2,
-        timeoutMilliseconds: 1_000
-    )
+    let reachedSecondSleep = await sleepGate.waitUntilCount(2)
     #expect(
         reachedSecondSleep,
         "The release drain should preserve the second configured verification delay."
@@ -3882,10 +3873,7 @@ func cancellationDuringAcceptedPauseDelayWaitsForVerification() async {
 
     // The cancelled transition still pays its full verification delay before
     // any restoring command can be considered.
-    let reachedVerificationSleep = await sleepGate.waitUntilCount(
-        1,
-        timeoutMilliseconds: 1_000
-    )
+    let reachedVerificationSleep = await sleepGate.waitUntilCount(1)
     guard reachedVerificationSleep else {
         pauseDispatchGate.openPermanently()
         await sleepGate.openPermanently()
@@ -6495,6 +6483,7 @@ func releasedOwnerHoldingUncontradictedCustodyResumesExactlyOnce() async {
 private func makeCommandBridge(
     timeout: DispatchTimeInterval = .milliseconds(250),
     pauseAcknowledgementTimeout: DispatchTimeInterval = MediaRemoteBridge.defaultPauseAcknowledgementTimeout,
+    expiries: ManualExpiries? = nil,
     dispatch: @escaping @MainActor (
         SemanticMediaCommand,
         String,
@@ -6505,11 +6494,62 @@ private func makeCommandBridge(
         frameworkPath: "/does/not/exist",
         probeRunner: MediaRemoteAsyncProbeRunner(
             timeout: timeout,
-            timeoutQueue: DispatchQueue(label: "StenoTests.MediaRemote.CommandTimeout")
+            timeoutQueue: DispatchQueue(label: "StenoTests.MediaRemote.CommandTimeout"),
+            scheduleExpiry: expiries.map { expiries -> MediaRemoteAsyncProbeRunner.ExpiryScheduler in
+                { delay, expire in expiries.schedule(after: delay, expire) }
+            }
         ),
         pauseAcknowledgementTimeout: pauseAcknowledgementTimeout,
         sendCommandOverride: dispatch
     )
+}
+
+/// A clock for bounded waits that moves only when the test advances it, so a
+/// busy machine cannot make a wait expire early or late.
+private final class ManualExpiries: @unchecked Sendable {
+    private let lock = NSLock()
+    private var elapsedNanoseconds = 0
+    private var pending: [(dueNanoseconds: Int, expire: @Sendable () -> Void)] = []
+
+    var pendingCount: Int { lock.withLock { pending.count } }
+
+    func schedule(after delay: DispatchTimeInterval, _ expire: @escaping @Sendable () -> Void) {
+        lock.withLock {
+            pending.append((elapsedNanoseconds + Self.nanoseconds(delay), expire))
+        }
+    }
+
+    /// Moves the clock forward and runs every wait that is now due. Returns how many expired.
+    @discardableResult
+    func advance(by interval: DispatchTimeInterval) -> Int {
+        let due: [@Sendable () -> Void] = lock.withLock {
+            elapsedNanoseconds += Self.nanoseconds(interval)
+            let now = elapsedNanoseconds
+            let expired = pending.filter { $0.dueNanoseconds <= now }.map(\.expire)
+            pending.removeAll { $0.dueNanoseconds <= now }
+            return expired
+        }
+        due.forEach { $0() }
+        return due.count
+    }
+
+    private static func nanoseconds(_ interval: DispatchTimeInterval) -> Int {
+        switch interval {
+        case .seconds(let value): value * 1_000_000_000
+        case .milliseconds(let value): value * 1_000_000
+        case .microseconds(let value): value * 1_000
+        case .nanoseconds(let value): value
+        case .never: .max / 2
+        @unknown default: .max / 2
+        }
+    }
+}
+
+/// Holds a dispatched command's acknowledgement so the test decides when it arrives.
+@MainActor
+private final class HeldAcknowledgement {
+    private(set) var acknowledge: (@Sendable (UInt32) -> Void)?
+    func hold(_ acknowledge: @escaping @Sendable (UInt32) -> Void) { self.acknowledge = acknowledge }
 }
 
 @MainActor
@@ -6627,63 +6667,60 @@ func mediaRemoteProbeRunnerIgnoresLateCallbacks() async {
 @MainActor
 @Test("A zero-error Pause callback that arrives after the probe window is still acceptance")
 func latePauseAcknowledgementWithinPauseBoundIsAcceptance() async {
-    // Production probe window: 250 ms. A Pause the application honours can be
-    // acknowledged later than that; treating it as rejected would leave the
-    // application paused with no resume ownership.
-    //
-    // The Pause bound is widened here so a busy machine that delivers the
-    // 400 ms acknowledgement late still lands inside it. The production bound
-    // is checked by the test below.
-    let bridge = makeCommandBridge(pauseAcknowledgementTimeout: .seconds(10)) { _, _, acknowledge in
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400)) {
-            acknowledge(0)
-        }
+    // A Pause the application honours can be acknowledged later than the 250 ms
+    // probe window; treating it as rejected would leave the application paused
+    // with no resume ownership.
+    let expiries = ManualExpiries()
+    let held = HeldAcknowledgement()
+    let bridge = makeCommandBridge(expiries: expiries) { command, _, acknowledge in
+        #expect(command == .pause)
+        held.hold(acknowledge)
         return true
     }
 
-    #expect(
-        await bridge.send(
-            .pause,
-            toApplicationBundleIdentifier: "com.example.player"
-        )
-    )
+    let send = Task { await bridge.send(.pause, toApplicationBundleIdentifier: "com.example.player") }
+    #expect(await eventually { expiries.pendingCount == 1 })
+    #expect(expiries.advance(by: .milliseconds(400)) == 0)
+    held.acknowledge?(0)
+    // Ends a wait the acknowledgement failed to end, so a defect fails instead of hanging.
+    expiries.advance(by: .seconds(3_600))
+
+    #expect(await send.value)
 }
 
 @MainActor
-@Test("A Pause callback that never arrives still fails closed within a bounded wait")
+@Test("A Pause callback that never arrives still fails closed at the one-second Pause bound")
 func absentPauseAcknowledgementFailsClosedWithinPauseBound() async {
-    let bridge = makeCommandBridge { _, _, _ in true }
+    let expiries = ManualExpiries()
+    let bridge = makeCommandBridge(expiries: expiries) { _, _, _ in true }
 
-    let started = ContinuousClock.now
-    let accepted = await bridge.send(
-        .pause,
-        toApplicationBundleIdentifier: "com.example.player"
-    )
-    let elapsed = ContinuousClock.now - started
+    let send = Task { await bridge.send(.pause, toApplicationBundleIdentifier: "com.example.player") }
+    #expect(await eventually { expiries.pendingCount == 1 })
+    #expect(expiries.advance(by: .milliseconds(999)) == 0)
+    #expect(expiries.advance(by: .milliseconds(1)) == 1)
+    expiries.advance(by: .seconds(3_600))
 
-    #expect(!accepted)
-    #expect(elapsed >= .milliseconds(900))
-    // Bounded, not exact: a busy machine can report the 1 s timeout seconds late.
-    #expect(elapsed < .seconds(10))
+    #expect(await send.value == false)
 }
 
 @MainActor
 @Test("Play acknowledgement keeps the probe window")
 func latePlayAcknowledgementKeepsProbeWindow() async {
-    let bridge = makeCommandBridge { command, _, acknowledge in
+    let expiries = ManualExpiries()
+    let held = HeldAcknowledgement()
+    let bridge = makeCommandBridge(expiries: expiries) { command, _, acknowledge in
         #expect(command == .play)
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400)) {
-            acknowledge(0)
-        }
+        held.hold(acknowledge)
         return true
     }
 
-    #expect(
-        !(await bridge.send(
-            .play,
-            toApplicationBundleIdentifier: "com.example.player"
-        ))
-    )
+    let send = Task { await bridge.send(.play, toApplicationBundleIdentifier: "com.example.player") }
+    #expect(await eventually { expiries.pendingCount == 1 })
+    #expect(expiries.advance(by: .milliseconds(250)) == 1)
+    held.acknowledge?(0)
+    expiries.advance(by: .seconds(3_600))
+
+    #expect(await send.value == false)
 }
 
 @MainActor
@@ -7860,7 +7897,7 @@ func verifiedPauseIsNotResumedOnceSessionHasDisappeared() async {
 
     // The Pause takes effect and is verified on the first pass.
     bridge.sessionPlaybackByApplication = ["com.apple.podcasts": .stopped]
-    _ = await sleepGate.waitUntilCount(1, timeoutMilliseconds: 1_000)
+    _ = await sleepGate.waitUntilCount(1)
     await sleepGate.openPermanently()
     // One session read before the Pause, one as it is dispatched, and one in
     // the verification pass that sees the stop.

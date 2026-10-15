@@ -23,8 +23,7 @@ struct SessionCoordinatorHistoryFailureTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
         let store = HistoryStore(
-            storageURL: directory.appendingPathComponent("transcript-history.json"),
-            clipboardService: MemoryClipboardService()
+            storageURL: directory.appendingPathComponent("transcript-history.json")
         )
         return (store, directory)
     }

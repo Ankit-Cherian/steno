@@ -1762,7 +1762,6 @@ private actor HostedHistory: HistoryStoreProtocol {
         throw HostedEvidenceError.measurementFailed
     }
 
-    func pasteLast() async throws -> TranscriptEntry? { entries.last }
     func count() -> Int { entries.count }
 }
 

@@ -802,7 +802,7 @@ class GateDiagnosticTests(unittest.TestCase):
         (self.scripts / "ci/prepare-runtime.sh").write_text("exit 0\n")
         (self.scripts / "ci/prepare-patched-runtime.py").write_text("print('staged-source')\n")
         for name in ("build-whisper-runtime-helper", "test-whisper-prompt-verification",
-                     "test-whisper-vad-integrity"):
+                     "test-whisper-window-recovery", "test-whisper-vad-integrity"):
             (self.scripts / f"{name}.sh").write_text("exit 0\n")
         (self.scripts / "test-whisper-prompt-scoring.sh").write_text("echo unexpected-later-check\n")
         self.runtime = self.root / "runtime"

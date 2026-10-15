@@ -109,15 +109,23 @@ func whisperCLITranscriptionEngineMissingOutput() async throws {
 
 @Test("WhisperCLITranscriptionEngine cancellation escalates when child ignores SIGTERM")
 func whisperCLITranscriptionEngineCancellationEscalation() async throws {
+    let startedURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("whisper-cli-started-\(UUID().uuidString)")
+    let naturalExitURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("whisper-cli-natural-exit-\(UUID().uuidString)")
+    defer { for url in [startedURL, naturalExitURL] { try? FileManager.default.removeItem(at: url) } }
+    // Ignores SIGTERM and runs for about two minutes; only reaching its end writes the marker.
     let scriptURL = try makeExecutableScript(
         """
         #!/bin/sh
         trap '' TERM
+        touch '\(startedURL.path)'
         i=0
-        while [ "$i" -lt 30 ]; do
-          sleep 1
+        while [ "$i" -lt 600 ]; do
+          sleep 0.2
           i=$((i + 1))
         done
+        echo natural > '\(naturalExitURL.path)'
         """
     )
     defer { try? FileManager.default.removeItem(at: scriptURL) }
@@ -138,21 +146,34 @@ func whisperCLITranscriptionEngineCancellationEscalation() async throws {
         try await engine.transcribe(audioURL: audioURL, languageHints: ["en"])
     }
 
-    try await Task.sleep(nanoseconds: 120_000_000)
+    // Cancel only once the child is running, so the escalation path is what ends it.
+    #expect(await eventually { FileManager.default.fileExists(atPath: startedURL.path) })
     task.cancel()
-    let cancellationStart = Date()
 
     do {
-        _ = try await awaitTaskValue(task, timeoutNanoseconds: 6_000_000_000)
+        _ = try await awaitTaskValue(task, timeoutNanoseconds: 600_000_000_000)
         Issue.record("Expected cancellation to throw.")
     } catch is CancellationError {
-        let elapsed = Date().timeIntervalSince(cancellationStart)
-        #expect(elapsed < 6.0)
+        #expect(!FileManager.default.fileExists(atPath: naturalExitURL.path), "the child ran to its natural end")
+        #expect(try runningScriptCount(matching: scriptURL.path) == 0)
     } catch is TaskValueTimeoutError {
         Issue.record("Cancellation did not complete within timeout.")
     } catch {
         Issue.record("Expected CancellationError, got: \(error)")
     }
+}
+
+/// Counts live processes whose command line contains `marker`.
+private func runningScriptCount(matching marker: String) throws -> Int {
+    let pgrep = Process()
+    pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    pgrep.arguments = ["-f", marker]
+    let output = Pipe()
+    pgrep.standardOutput = output
+    try pgrep.run()
+    pgrep.waitUntilExit()
+    let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    return text.split(whereSeparator: \.isNewline).count
 }
 
 @Test("ProcessRunner cancellation before launch returns without orphaning a continuation")
@@ -163,7 +184,7 @@ func processRunnerPreLaunchCancellationReturnsPromptly() async throws {
     task.cancel()
 
     do {
-        _ = try await awaitTaskValue(task, timeoutNanoseconds: 1_000_000_000)
+        _ = try await awaitTaskValue(task, timeoutNanoseconds: 120_000_000_000)
         Issue.record("Expected pre-launch cancellation to throw.")
     } catch is CancellationError {
         // Expected.

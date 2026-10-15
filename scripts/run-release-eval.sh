@@ -682,7 +682,7 @@ echo "==> xcodegen generate"
 xcodegen generate
 
 echo "==> xcodebuild build"
-xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+xcodebuild build -project Steno.xcodeproj -scheme Steno -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
 
 echo "==> summarize release eval"
 REPO_ROOT="$REPO_ROOT" \

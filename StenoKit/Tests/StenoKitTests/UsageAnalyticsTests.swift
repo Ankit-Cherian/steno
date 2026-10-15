@@ -1592,8 +1592,7 @@ private func makeCoordinator(
             ]
         ),
         historyStore: HistoryStore(
-            storageURL: historyURL,
-            clipboardService: MemoryClipboardService()
+            storageURL: historyURL
         ),
         lexiconService: PersonalLexiconService(),
         styleProfileService: StyleProfileService(),

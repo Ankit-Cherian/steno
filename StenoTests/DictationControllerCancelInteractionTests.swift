@@ -99,10 +99,8 @@ private final class CancelInteractionHarness {
             directory: directory,
             interruptFirstRecording: interruptFirstRecording
         )
-        let clipboard = MemoryClipboardService()
         history = HistoryStore(
-            storageURL: directory.appendingPathComponent("history.json"),
-            clipboardService: clipboard
+            storageURL: directory.appendingPathComponent("history.json")
         )
         coordinator = SessionCoordinator(
             captureService: capture,

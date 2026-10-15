@@ -6,7 +6,8 @@ import Testing
 struct AppPreferencesStoreIsolationTests {
     @Test("New appearance defaults preserve previously stored and legacy accent choices")
     func appearanceCompatibility() throws {
-        #expect(AppPreferences.Appearance().accent == .citron)
+        #expect(AppPreferences.Appearance().accent == .dodger)
+        #expect(AppPreferences.Appearance().mode == .system)
         let legacy = try JSONDecoder().decode(AppPreferences.Appearance.self, from: Data("{}".utf8))
         #expect(legacy.accent == .dodger)
         let blue = AppPreferences.Appearance(accent: .dodger)

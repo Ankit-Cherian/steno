@@ -64,7 +64,7 @@ final class ModelSetupFixture {
             preferencesStore: AppPreferencesStore(storageURL: preferencesURL),
             modelDownloadService: service,
             runtimeRebuildOverride: { nil },
-            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json"), clipboardService: clipboard),
+            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json")),
             usageAnalyticsStore: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
             legacyHistoryURL: directory.appendingPathComponent("legacy.json"),
             systemIntegrationsEnabled: false
@@ -111,13 +111,8 @@ final class ModelSetupFixture {
 }
 
 @MainActor
-func waitForModelSetupCondition(timeout: TimeInterval = 5, _ condition: @MainActor () -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if condition() { return true }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return condition()
+func waitForModelSetupCondition(_ condition: @MainActor () -> Bool) async -> Bool {
+    await eventuallyOnMain { condition() }
 }
 
 @MainActor

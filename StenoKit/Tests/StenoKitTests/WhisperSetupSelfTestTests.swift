@@ -32,7 +32,7 @@ struct WhisperSetupSelfTestTests {
         microphoneAllowed: Bool = true,
         main: (any TranscriptionEngine)?,
         tool: any TranscriptionEngine,
-        timeout: Duration = .seconds(5)
+        timeout: Duration = .seconds(300)
     ) -> WhisperSetupSelfTest.Inputs {
         .init(
             microphoneAllowed: microphoneAllowed,

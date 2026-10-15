@@ -26,8 +26,11 @@ struct PostedKeyEvent: Equatable, Sendable {
 final class FakeKeyPoster: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [PostedKeyEvent] = []
+    /// Runs after each keystroke is recorded, as the user acting at that moment.
+    var afterPost: (@Sendable () -> Void)?
 
     func post(_ keyDown: CGEvent, _ keyUp: CGEvent) {
+        defer { afterPost?() }
         _ = keyUp
         var length = 0
         var buffer = [UniChar](repeating: 0, count: 64)
@@ -116,18 +119,21 @@ final class FakeAccessibilityClient: MacAccessibilityClient, @unchecked Sendable
     private var captureCountStorage = 0
     private var setResultStorage: MacAXSetTextResult = .inserted
     private var settableStorage = true
+    private let trusted: Bool
 
     init(
         focusedElement: String = "field-A",
         secure: Bool = false,
-        focusedBundle: String = productionPathBundleID
+        focusedBundle: String = productionPathBundleID,
+        trusted: Bool = true
     ) {
         focusedElementStorage = focusedElement
         secureStorage = secure
         focusedBundleStorage = focusedBundle
+        self.trusted = trusted
     }
 
-    func isProcessTrusted() -> Bool { true }
+    func isProcessTrusted() -> Bool { trusted }
 
     func captureFocusedTarget(expectedBundleIdentifier: String) throws -> MacAXTargetSnapshot {
         try lock.withLock {
@@ -254,7 +260,9 @@ final class FakePasteboard: RestorableClipboardService, @unchecked Sendable {
     private var plainWritesStorage: [String] = []
     private var concealedWritesStorage: [String] = []
     private var restoreCountStorage = 0
+    private var restoreAttemptCountStorage = 0
     private var externalWriteOnTransientWrite: Item?
+    private var onTransientWriteStorage: (@Sendable () -> Void)?
 
     init(items: [Item] = []) {
         itemsStorage = items
@@ -293,6 +301,7 @@ final class FakePasteboard: RestorableClipboardService, @unchecked Sendable {
 
     func setTransientString(_ text: String) async throws -> Int {
         try Task.checkCancellation()
+        defer { lock.withLock { onTransientWriteStorage }?() }
         return lock.withLock {
             transientWritesStorage.append(text)
             itemsStorage = [Item(representations: [
@@ -315,6 +324,7 @@ final class FakePasteboard: RestorableClipboardService, @unchecked Sendable {
 
     func restore(_ point: ClipboardRestorePoint, ifChangeCountIs changeCount: Int) async -> Bool {
         lock.withLock {
+            restoreAttemptCountStorage += 1
             guard changeCountStorage == changeCount else { return false }
             itemsStorage = point.items.map { item in
                 Item(representations: Dictionary(
@@ -330,6 +340,11 @@ final class FakePasteboard: RestorableClipboardService, @unchecked Sendable {
     /// Another app writes to the clipboard right after Steno's write.
     func simulateExternalWriteAfterNextTransientWrite(_ item: Item) {
         lock.withLock { externalWriteOnTransientWrite = item }
+    }
+
+    /// Runs right after each transient write, as something that changes while the paste is pending.
+    func onTransientWrite(_ action: @escaping @Sendable () -> Void) {
+        lock.withLock { onTransientWriteStorage = action }
     }
 
     /// The user copies something new.
@@ -352,6 +367,8 @@ final class FakePasteboard: RestorableClipboardService, @unchecked Sendable {
         }
     }
     var restoreCount: Int { lock.withLock { restoreCountStorage } }
+    /// Restores Steno tried, including ones it skipped because the clipboard changed.
+    var restoreAttemptCount: Int { lock.withLock { restoreAttemptCountStorage } }
 
     var plainText: String? {
         lock.withLock {
@@ -366,17 +383,6 @@ let copiedImageItem = FakePasteboard.Item(representations: [
     "public.tiff": Data([0x4D, 0x4D, 0x00, 0x2A])
 ])
 
-func pollUntil(
-    timeout: Duration = .seconds(3),
-    _ condition: @Sendable () async -> Bool
-) async -> Bool {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
-        if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return await condition()
-}
 #endif
 
 #if os(macOS)
@@ -401,7 +407,7 @@ func makeProductionCoordinator(
     let audioURL = directory.appendingPathComponent("insertion-\(UUID().uuidString).wav")
     try Data().write(to: audioURL)
     let historyURL = directory.appendingPathComponent("insertion-history-\(UUID().uuidString).json")
-    let historyStore = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let historyStore = HistoryStore(storageURL: historyURL)
     let coordinator = SessionCoordinator(
         captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
         transcriptionEngine: StaticTranscriptionEngine { _, _ in

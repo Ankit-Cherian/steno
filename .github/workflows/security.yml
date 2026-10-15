@@ -135,7 +135,7 @@ jobs:
       - name: Build Swift app for analysis
         run: |
           xcodebuild build -project Steno.xcodeproj -scheme Steno \
-            -destination 'generic/platform=macOS' \
+            -configuration Debug -destination 'generic/platform=macOS' \
             -derivedDataPath build/codeql-swift \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO
       - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4

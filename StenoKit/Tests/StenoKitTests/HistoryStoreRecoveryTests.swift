@@ -217,7 +217,7 @@ struct HistoryFixture {
     }
 
     func store() -> HistoryStore {
-        HistoryStore(storageURL: storageURL, clipboardService: MemoryClipboardService())
+        HistoryStore(storageURL: storageURL)
     }
 
     /// Writes the damaged file and returns its exact bytes.

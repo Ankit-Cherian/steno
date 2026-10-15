@@ -169,6 +169,7 @@ class ReviewedDispositionTests(unittest.TestCase):
         location, identity, paths = GATE.reviewed_identity('cpp/path-injection', 7.5, self.result, self.run)
         self.entry = {'id': 'local-model', 'classification': 'not_actionable_in_supported_deployment',
             'rule': 'cpp/path-injection', 'location': location,
+            'sink_text': 'model', 'sink_line': 'load(model)',
             'identity_sha256': identity,
             'source_sha256': {path: GATE.source_digest(self.root, path) for path in GATE.REVIEW_CONTRACTS},
             'rationale': 'The caller selects its own local model through its inherited pipe.',
@@ -458,6 +459,7 @@ class ReviewedSourceCheckTests(unittest.TestCase):
     """The pull-request check of the receipt's bound sources, without scan output."""
 
     REVISION = '7' * 40
+    GENERATED = b'one\ntwo\n   fixed\n'
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -472,10 +474,11 @@ class ReviewedSourceCheckTests(unittest.TestCase):
         self.patch = GATE.source_digest(self.root, GATE.PATCH)
         self.generated = f'vendor/whisper.cpp/build-steno/patched-source/{self.REVISION}-{self.patch}/source/examples/cli/cli.cpp'
         sources = {path: GATE.source_digest(self.root, path) for path in GATE.REVIEW_CONTRACTS}
-        sources[self.generated] = hashlib.sha256(b'generated upstream source\n').hexdigest()
+        sources[self.generated] = hashlib.sha256(self.GENERATED).hexdigest()
         self.entry = {'id': 'cli-response-file', 'classification': 'not_actionable_in_supported_deployment',
             'rule': 'cpp/path-injection',
             'location': {'path': self.generated, 'startLine': 3, 'startColumn': 4, 'endLine': 3, 'endColumn': 9},
+            'sink_text': 'fixed', 'sink_line': 'fixed',
             'identity_sha256': 'e' * 64, 'source_sha256': sources,
             'rationale': 'The caller selects its own response file.',
             'reassess_when': 'Source, privilege, invocation, and transport changes require review.'}
@@ -499,6 +502,26 @@ class ReviewedSourceCheckTests(unittest.TestCase):
         count = GATE.check_reviewed_sources(root / 'scripts/ci/reviewed-findings.json', root,
                                             root / 'scripts/ci/runtime-lock.json')
         self.assertEqual(count, 4)
+
+    def test_recorded_sinks_hold_in_the_repository_record_and_not_at_the_1_0_1_lines(self):
+        root = Path(__file__).resolve().parents[3]
+        receipt = json.loads((root / 'scripts/ci/reviewed-findings.json').read_text())
+        lock = root / 'scripts/ci/runtime-lock.json'
+        old_lines = {'helper-wave-file': 1366, 'helper-vad-model': 1419, 'helper-asr-model': 2344}
+        for entry in receipt['findings']:
+            self.assertTrue(entry['sink_text'] and entry['sink_line'])
+        self.receipt_path.write_text(json.dumps(receipt))
+        self.assertEqual(GATE.check_reviewed_sources(self.receipt_path, root, lock), 4)
+        for entry in receipt['findings']:
+            if entry['id'] in old_lines:
+                with self.subTest(finding=entry['id']):
+                    moved = deepcopy(receipt)
+                    location, = [e['location'] for e in moved['findings'] if e['id'] == entry['id']]
+                    location['startLine'] = location['endLine'] = old_lines[entry['id']]
+                    self.receipt_path.write_text(json.dumps(moved))
+                    with self.assertRaises(GATE.ScanError) as raised:
+                        GATE.check_reviewed_sources(self.receipt_path, root, lock)
+                    self.assertIn(f"reviewed sink {entry['id']} is not at", str(raised.exception))
 
     def test_unchanged_sources_and_absent_generated_source_pass(self):
         self.assertEqual(self.check(), 1)
@@ -536,7 +559,7 @@ class ReviewedSourceCheckTests(unittest.TestCase):
     def test_existing_generated_source_is_hashed(self):
         target = self.root / self.generated
         target.parent.mkdir(parents=True)
-        target.write_bytes(b'generated upstream source\n')
+        target.write_bytes(self.GENERATED)
         self.assertEqual(self.check(), 1)
         target.write_bytes(b'different generated source\n')
         self.assert_fails(self.generated)
@@ -544,7 +567,7 @@ class ReviewedSourceCheckTests(unittest.TestCase):
     def test_tracked_or_linked_generated_source_fails(self):
         target = self.root / self.generated
         target.parent.mkdir(parents=True)
-        target.write_bytes(b'generated upstream source\n')
+        target.write_bytes(self.GENERATED)
         subprocess.run(['git', '-C', str(self.root), 'add', '-f', self.generated], check=True)
         target.unlink()
         self.assert_fails('must not be tracked')
@@ -552,6 +575,61 @@ class ReviewedSourceCheckTests(unittest.TestCase):
         (self.root / 'vendor/whisper.cpp/build-steno').rename(self.root / 'elsewhere')
         (self.root / 'vendor/whisper.cpp/build-steno').symlink_to(self.root / 'elsewhere')
         self.assert_fails('symlink')
+
+    def helper_entry(self, source, line, start, end, text, whole):
+        """Record a sink in a helper source of the given text, with that source's real hash."""
+        target = self.root / 'runtime-helper/steno_whisper_runtime.cpp'
+        target.write_text(source)
+        self.entry['source_sha256']['runtime-helper/steno_whisper_runtime.cpp'] = GATE.source_digest(self.root, 'runtime-helper/steno_whisper_runtime.cpp')
+        self.entry['location'] = {'path': 'runtime-helper/steno_whisper_runtime.cpp',
+                                  'startLine': line, 'startColumn': start, 'endLine': line, 'endColumn': end}
+        self.entry['sink_text'] = text
+        self.entry['sink_line'] = whole
+
+    def test_a_sink_that_moved_no_longer_matches_its_recorded_range(self):
+        sink = '    } else if (!read_pcm_wave(request.audio_path, samples)) {\n'
+        before = 'int a;\nint b;\n' + sink + 'int c;\n'
+        self.helper_entry(before, 3, 39, 49, 'audio_path', sink.strip())
+        self.assertEqual(self.check(), 1)
+        # New code above the read shifts it; the refreshed file hash alone must not be enough.
+        after = 'int a;\nint extra;\nint more;\nint b;\n' + sink + 'int c;\n'
+        self.helper_entry(after, 3, 39, 49, 'audio_path', sink.strip())
+        self.assert_fails('reviewed sink cli-response-file is not at runtime-helper/steno_whisper_runtime.cpp:3:39-49')
+        self.helper_entry(after, 5, 39, 49, 'audio_path', sink.strip())
+        self.assertEqual(self.check(), 1)
+
+    def test_a_changed_sink_line_or_range_fails(self):
+        sink = '    } else if (!read_pcm_wave(request.audio_path, samples)) {'
+        source = 'int a;\n' + sink + '\n'
+        self.helper_entry(source, 2, 39, 49, 'audio_path', sink.strip())
+        self.assertEqual(self.check(), 1)
+        for name, args in (('column', (2, 38, 48, 'audio_path', sink.strip())),
+                           ('text', (2, 39, 49, 'video_path', sink.strip())),
+                           ('line', (2, 39, 49, 'audio_path', 'read_pcm_wave(request.audio_path, samples)')),
+                           ('past the end', (9, 39, 49, 'audio_path', sink.strip()))):
+            with self.subTest(change=name):
+                self.helper_entry(source, *args)
+                self.assert_fails('is not at')
+        # Indentation is not part of the review; a rewrapped statement is.
+        self.helper_entry('int a;\n        ' + sink.strip() + '\n', 2, 43, 53, 'audio_path', sink.strip())
+        self.assertEqual(self.check(), 1)
+        self.helper_entry('int a;\n' + sink.replace('samples', 'samples, extra') + '\n', 2, 39, 49, 'audio_path', sink.strip())
+        self.assert_fails('is not at')
+
+    def test_sink_text_is_required_and_a_multi_line_range_is_refused(self):
+        for field in ('sink_text', 'sink_line'):
+            with self.subTest(field=field):
+                original = self.entry.pop(field)
+                with self.assertRaises(GATE.ScanError):
+                    self.check()
+                self.entry[field] = original
+        self.entry['sink_text'] = ''
+        with self.assertRaises(GATE.ScanError):
+            self.check()
+        self.entry['sink_text'] = 'fixed'
+        self.helper_entry('a\nb\n', 1, 1, 2, 'a', 'a')
+        self.entry['location']['endLine'] = 2
+        self.assert_fails('on one line')
 
     def test_generated_source_is_never_inferred_without_a_lock(self):
         # Full mode, after a scan, always hashes the generated file itself.

@@ -24,9 +24,8 @@ struct DictationControllerIdleAudioStressTests {
         let capture = IdleAudioCapture(directory: directory)
         let engine = IdleAudioEngine(previewGate: previewGate)
         let transport = IdleAudioTransport()
-        let clipboard = MemoryClipboardService()
         let historyURL = directory.appendingPathComponent("history.json")
-        let history = HistoryStore(storageURL: historyURL, clipboardService: clipboard)
+        let history = HistoryStore(storageURL: historyURL)
         let coordinator = SessionCoordinator(
             captureService: capture,
             transcriptionEngine: engine,
@@ -86,7 +85,7 @@ struct DictationControllerIdleAudioStressTests {
             #expect(await engine.finals() == expected)
             #expect(await capture.cancelledCount() == 0)
             #expect(await media.ends == (mediaCase.returnsToken ? 2 : 0))
-            let reloaded = HistoryStore(storageURL: historyURL, clipboardService: clipboard)
+            let reloaded = HistoryStore(storageURL: historyURL)
             let entries = await reloaded.recent(limit: 10)
             #expect(entries.count == 2)
             #expect(Set(entries.map(\.rawText)) == Set(expected))
@@ -317,9 +316,5 @@ private func idleAudioWAV(_ pcm: Data, finalized: Bool) -> Data {
 }
 
 private func idleAudioEventually(_ condition: @escaping @Sendable () async -> Bool) async -> Bool {
-    for _ in 0..<600 {
-        if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return false
+    await eventually(condition)
 }

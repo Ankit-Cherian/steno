@@ -140,6 +140,7 @@ run_fast_checks() {
   run_check cancellation python3 "$ROOT_DIR/scripts/ci/test-native-cancellation.py" \
     --whisper-root "$PATCHED_SOURCE" --build-dir "$STENO_WHISPER_BUILD_DIR" --backend "$BACKEND"
   run_check prompt-verification bash "$ROOT_DIR/scripts/test-whisper-prompt-verification.sh"
+  run_check window-recovery bash "$ROOT_DIR/scripts/test-whisper-window-recovery.sh"
   run_check vad-integrity bash "$ROOT_DIR/scripts/test-whisper-vad-integrity.sh"
 
   python3 - "$OUTPUT/silence.wav" <<'PY'

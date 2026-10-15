@@ -18,11 +18,7 @@ private final class RerunTestHotkeyService: HotkeyService {
 
 @MainActor
 private func waitUntil(_ condition: @MainActor () async -> Bool) async -> Bool {
-    for _ in 0..<400 {
-        if await condition() { return true }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+    await eventuallyOnMain(condition)
 }
 
 @MainActor
@@ -34,8 +30,7 @@ func controllerRerunAndRestore() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let historyStore = HistoryStore(
-        storageURL: directory.appendingPathComponent("history.json"),
-        clipboardService: MemoryClipboardService()
+        storageURL: directory.appendingPathComponent("history.json")
     )
     // What live dictation saved in VS Code (IDE profile: no sentence capitalization), in Notes
     // under older rules, and for a spoken lowercase directive.
@@ -77,13 +72,13 @@ func controllerRerunAndRestore() async throws {
 
     controller.status = ""
     controller.retryCleanup(for: vsCode)
-    #expect(await waitUntil { controller.status == "Cleanup re-run with current rules." })
+    #expect(await waitUntil { controller.status == "Cleanup gave the same words." })
     #expect(await stored(vsCode)?.originalCleanText == nil)
     #expect(await stored(vsCode)?.cleanText == "npm install Steno")
 
     controller.status = ""
     controller.retryCleanup(for: directive)
-    #expect(await waitUntil { controller.status == "Cleanup re-run with current rules." })
+    #expect(await waitUntil { controller.status == "Cleanup gave the same words." })
     #expect(await stored(directive)?.cleanText == "hello there")
 
     controller.status = ""

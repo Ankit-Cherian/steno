@@ -22,7 +22,7 @@ struct HistoryStoreDeleteAllTests {
             .appendingPathComponent("HistoryDeleteAll-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("transcript-history.json")
-        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        let store = HistoryStore(storageURL: url)
 
         for (index, age) in [120.0, 45, 2].enumerated() {
             try await store.append(entry: Self.entry("Fictional note \(index)", daysAgo: age))
@@ -33,7 +33,7 @@ struct HistoryStoreDeleteAllTests {
         try await store.deleteAll()
 
         #expect(await store.recent(limit: 1_000).isEmpty)
-        let reopened = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        let reopened = HistoryStore(storageURL: url)
         #expect(await reopened.recent(limit: 1_000).isEmpty)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -50,7 +50,7 @@ struct HistoryStoreDeleteAllTests {
             .appendingPathComponent("HistoryDeleteAll-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("transcript-history.json")
-        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        let store = HistoryStore(storageURL: url)
 
         try await store.deleteAll()
         let kept = Self.entry("Fictional follow-up", daysAgo: 0)
@@ -65,7 +65,7 @@ struct HistoryStoreDeleteAllTests {
             .appendingPathComponent("HistoryDeleteAll-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("transcript-history.json")
-        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        let store = HistoryStore(storageURL: url)
 
         let deletedTexts = ["Fictional deleted alpha", "Fictional deleted beta", "Fictional deleted gamma"]
         for (index, text) in deletedTexts.enumerated() {
@@ -115,7 +115,7 @@ struct HistoryStoreDeleteAllTests {
         }
         // The current file is damaged too; Delete all replaces it.
         try Data("[{\"rawText\": \"Fictional text from a damaged file\"".utf8).write(to: url)
-        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        let store = HistoryStore(storageURL: url)
         _ = await store.recent(limit: 10)
 
         try await store.deleteAll()
@@ -136,7 +136,6 @@ struct HistoryStoreDeleteAllTests {
         let previousURL = StorageFilePreservation.previousCopyURL(for: url)
         let store = HistoryStore(
             storageURL: url,
-            clipboardService: MemoryClipboardService(),
             removeFile: { candidate in
                 // Stands in for a crash or a stubborn file after the write.
                 if candidate.lastPathComponent == previousURL.lastPathComponent {
@@ -180,7 +179,6 @@ struct HistoryStoreDeleteAllTests {
         }
         let store = HistoryStore(
             storageURL: url,
-            clipboardService: MemoryClipboardService(),
             removeFile: { candidate in
                 if candidate.lastPathComponent == stubborn {
                     throw CocoaError(.fileWriteNoPermission)

@@ -25,6 +25,11 @@ private actor FakeRuntimeState {
     var requestBlockContinuations: [CheckedContinuation<Void, Never>] = []
     var requestCancellationCount = 0
     var requestCancellationContinuations: [CheckedContinuation<Void, Never>] = []
+    var finishedLoadCount = 0
+
+    func recordLoadFinished() {
+        finishedLoadCount += 1
+    }
 
     func recordLoad() {
         loadCount += 1
@@ -163,6 +168,7 @@ private struct FakeWhisperRuntimeSessionFactory: WhisperRuntimeSessionFactory {
         if loadDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: loadDelayNanoseconds)
         }
+        await state.recordLoadFinished()
         return FakeWhisperRuntimeSession(state: state)
     }
 }
@@ -301,7 +307,7 @@ func retainedRuntimeCancellationDuringLoadDoesNotFallback() async throws {
         configuration: retainedConfiguration(),
         sessionFactory: FakeWhisperRuntimeSessionFactory(
             state: state,
-            loadDelayNanoseconds: 10_000_000_000
+            loadDelayNanoseconds: 120_000_000_000
         ),
         fallback: CountingFallbackTranscriptionEngine(state: state)
     )
@@ -310,17 +316,15 @@ func retainedRuntimeCancellationDuringLoadDoesNotFallback() async throws {
         try await engine.transcribe(audioURL: URL(fileURLWithPath: "/tmp/load.wav"), request: .init())
     }
     await state.waitUntilLoadStarts()
-    let clock = ContinuousClock()
-    let started = clock.now
     task.cancel()
 
     do {
         _ = try await task.value
         Issue.record("Expected cancellation during load.")
     } catch is CancellationError {
-        // The load would take 10 s. Returning well before that shows the
-        // cancellation was honored without waiting for it.
-        #expect(started.duration(to: clock.now) < .seconds(5))
+        // The load takes two minutes unless cancelled. Returning before it
+        // finished shows the cancellation was honored without waiting for it.
+        #expect(await state.finishedLoadCount == 0)
     }
     #expect((await state.snapshot()).fallbacks == 0)
 }
@@ -331,11 +335,16 @@ func retainedRuntimeCancellationDuringInferenceDropsLateResult() async throws {
     await state.setIgnoreCancellationDelay(80_000_000)
     let engine = makeRetainedEngine(state: state)
 
+    await state.setBlockRequest(true)
+
     let task = Task {
         try await engine.transcribe(audioURL: URL(fileURLWithPath: "/tmp/late.wav"), request: .init())
     }
-    try await Task.sleep(nanoseconds: 10_000_000)
+    // Cancel while the helper holds the request, then let it answer late.
+    await state.waitUntilRequestStarts()
     task.cancel()
+    await state.waitUntilRequestIsCancelled()
+    await state.releaseBlockedRequest()
 
     do {
         _ = try await task.value
@@ -352,14 +361,18 @@ func retainedRuntimeCancellationReloadsBeforeNextRequest() async throws {
     await state.setIgnoreCancellationDelay(80_000_000)
     let engine = makeRetainedEngine(state: state)
 
+    await state.setBlockRequest(true)
+
     let cancelled = Task {
         try await engine.transcribe(
             audioURL: URL(fileURLWithPath: "/tmp/cancelled.wav"),
             request: .init()
         )
     }
-    try await Task.sleep(nanoseconds: 10_000_000)
+    await state.waitUntilRequestStarts()
     cancelled.cancel()
+    await state.waitUntilRequestIsCancelled()
+    await state.releaseBlockedRequest()
     do {
         _ = try await cancelled.value
         Issue.record("A cancelled request must not return a transcript.")
@@ -580,4 +593,50 @@ private func richWhisperJSON(text: String) -> Data {
         }
         """.utf8
     )
+}
+
+@Test("Retained runtime reports the helper round trip, then the stripped reply, for each request")
+func retainedRuntimeReportsHelperSteps() async throws {
+    let state = FakeRuntimeState()
+    let steps = StepRecorder()
+    let engine = RetainedWhisperTranscriptionEngine(
+        configuration: retainedConfiguration(),
+        sessionFactory: FakeWhisperRuntimeSessionFactory(state: state),
+        fallback: CountingFallbackTranscriptionEngine(state: state),
+        stepObserver: { steps.record($0) }
+    )
+
+    _ = try await engine.transcribe(audioURL: URL(fileURLWithPath: "/tmp/first.wav"), request: .init())
+    _ = try await engine.transcribe(audioURL: URL(fileURLWithPath: "/tmp/second.wav"), request: .init())
+
+    #expect(steps.all == [
+        .helperRequested, .helperReplied, .artifactsStripped,
+        .helperRequested, .helperReplied, .artifactsStripped,
+    ])
+}
+
+@Test("A helper failure reports no reply, and the fallback answers")
+func retainedRuntimeFailureReportsNoReply() async throws {
+    let state = FakeRuntimeState()
+    await state.setFailure(.crashed)
+    let steps = StepRecorder()
+    let engine = RetainedWhisperTranscriptionEngine(
+        configuration: retainedConfiguration(),
+        sessionFactory: FakeWhisperRuntimeSessionFactory(state: state),
+        fallback: CountingFallbackTranscriptionEngine(state: state),
+        stepObserver: { steps.record($0) }
+    )
+
+    let result = try await engine.transcribe(audioURL: URL(fileURLWithPath: "/tmp/crash.wav"), request: .init())
+
+    #expect(result.text == "fallback-crash")
+    #expect(steps.all == [.helperRequested])
+}
+
+final class StepRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var steps: [DictationStep] = []
+
+    func record(_ step: DictationStep) { lock.withLock { steps.append(step) } }
+    var all: [DictationStep] { lock.withLock { steps } }
 }

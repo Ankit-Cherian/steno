@@ -64,10 +64,8 @@ final class TranscriptionCancelHarness {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         capture = TranscriptionCancelCapture(directory: directory)
         engine = FirstTranscriptionBlocksEngine()
-        let clipboard = MemoryClipboardService()
         history = HistoryStore(
-            storageURL: directory.appendingPathComponent("history.json"),
-            clipboardService: clipboard
+            storageURL: directory.appendingPathComponent("history.json")
         )
         coordinator = SessionCoordinator(
             captureService: capture,
@@ -205,9 +203,5 @@ func cancelTestWAV(seconds: Double) -> Data {
 }
 
 func cancelTestEventually(_ condition: @escaping @Sendable () async -> Bool) async -> Bool {
-    for _ in 0..<600 {
-        if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return false
+    await eventually(condition)
 }

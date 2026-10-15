@@ -36,7 +36,7 @@ private final class PermissionFixture {
             mediaInterruption: IsolatedTestMediaService(),
             preferencesStore: AppPreferencesStore(storageURL: directory.appendingPathComponent("preferences.json")),
             runtimeRebuildOverride: { nil },
-            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json"), clipboardService: clipboard),
+            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json")),
             usageAnalyticsStore: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
             legacyHistoryURL: directory.appendingPathComponent("legacy.json"),
             systemIntegrationsEnabled: false,

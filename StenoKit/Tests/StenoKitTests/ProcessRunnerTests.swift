@@ -13,6 +13,8 @@ func processRunnerFinalDrainWaitsForReadAndAppend() async throws {
     let captured = DispatchSemaphore(value: 0)
     let releaseRead = DispatchSemaphore(value: 0)
     let readerFinished = DispatchSemaphore(value: 0)
+    // Each wait ends as soon as it is signalled; the bound only stops a defect hanging the run.
+    let hangGuard = DispatchTimeInterval.seconds(120)
 
     let result = await withCheckedContinuation { continuation in
         DispatchQueue.global().async {
@@ -20,12 +22,12 @@ func processRunnerFinalDrainWaitsForReadAndAppend() async throws {
                 accumulator.appendReading {
                     let bytes = pipe.fileHandleForReading.availableData
                     captured.signal()
-                    _ = releaseRead.wait(timeout: .now() + 2)
+                    _ = releaseRead.wait(timeout: .now() + hangGuard)
                     return bytes
                 }
                 readerFinished.signal()
             }
-            let readStarted = captured.wait(timeout: .now() + 2) == .success
+            let readStarted = captured.wait(timeout: .now() + hangGuard) == .success
             // Hold the consumed bytes across final drainage. Only the independent
             // queue can release this fixture; no cooperative worker blocks here.
             DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) {
@@ -34,7 +36,7 @@ func processRunnerFinalDrainWaitsForReadAndAppend() async throws {
             let output = accumulator.consumeReading {
                 pipe.fileHandleForReading.readDataToEndOfFile()
             }
-            let completed = readerFinished.wait(timeout: .now() + 2) == .success
+            let completed = readerFinished.wait(timeout: .now() + hangGuard) == .success
             continuation.resume(returning: (readStarted, completed, output))
         }
     }

@@ -31,8 +31,7 @@ func historyAndInsightsLoadExpandedCapacity() async throws {
     let controller = makeTestDictationController(
         hotkey: InsightsTestHotkeyService(),
         historyStore: HistoryStore(
-            storageURL: historyURL,
-            clipboardService: MemoryClipboardService()
+            storageURL: historyURL
         ),
         usageAnalyticsStore: UsageAnalyticsStore(
             storageURL: directory.appendingPathComponent("usage.json")
@@ -58,8 +57,7 @@ func insightsRefreshBackfillsAllRecoverableHistory() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let currentHistory = HistoryStore(
-        storageURL: directory.appendingPathComponent("current-history.json"),
-        clipboardService: MemoryClipboardService()
+        storageURL: directory.appendingPathComponent("current-history.json")
     )
     try await currentHistory.append(
         entry: TranscriptEntry(
@@ -129,8 +127,7 @@ func unreadableLegacyHistoryDoesNotBlockInsights() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let currentHistory = HistoryStore(
-        storageURL: directory.appendingPathComponent("current-history.json"),
-        clipboardService: MemoryClipboardService()
+        storageURL: directory.appendingPathComponent("current-history.json")
     )
     try await currentHistory.append(
         entry: TranscriptEntry(
@@ -178,8 +175,7 @@ func currentHistoryWinsOverDuplicateLegacySession() async throws {
 
     let sharedID = UUID(uuidString: "40000000-0000-0000-0000-000000000001")!
     let currentHistory = HistoryStore(
-        storageURL: directory.appendingPathComponent("current-history.json"),
-        clipboardService: MemoryClipboardService()
+        storageURL: directory.appendingPathComponent("current-history.json")
     )
     try await currentHistory.append(
         entry: TranscriptEntry(
@@ -246,8 +242,7 @@ func corruptAnalyticsAreQuarantinedAndRebuilt() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let currentHistory = HistoryStore(
-        storageURL: directory.appendingPathComponent("current-history.json"),
-        clipboardService: MemoryClipboardService()
+        storageURL: directory.appendingPathComponent("current-history.json")
     )
     try await currentHistory.append(
         entry: TranscriptEntry(
@@ -299,8 +294,7 @@ func analyticsWriteWarningSurvivesRefresh() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let historyStore = HistoryStore(
-        storageURL: directory.appendingPathComponent("current-history.json"),
-        clipboardService: MemoryClipboardService()
+        storageURL: directory.appendingPathComponent("current-history.json")
     )
     let controller = makeTestDictationController(
         hotkey: InsightsTestHotkeyService(),
@@ -347,8 +341,7 @@ func cleanupRetryRefreshesUsageAnalytics() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let historyStore = HistoryStore(
-        storageURL: directory.appendingPathComponent("current-history.json"),
-        clipboardService: MemoryClipboardService()
+        storageURL: directory.appendingPathComponent("current-history.json")
     )
     let entry = TranscriptEntry(
         createdAt: Date(),
@@ -406,8 +399,7 @@ func overlappingForcedInsightsRefreshIsCoalesced() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let history = HistoryStore(
-        storageURL: directory.appendingPathComponent("history.json"),
-        clipboardService: MemoryClipboardService()
+        storageURL: directory.appendingPathComponent("history.json")
     )
     try await history.append(
         entry: TranscriptEntry(
@@ -498,7 +490,7 @@ func appUpgradeRetainsExistingUsageLedger() async throws {
     // Each launch uses a fresh store, with no transcript history to reconstruct totals.
     for _ in 0..<2 {
         let controller = makeTestDictationController(hotkey: InsightsTestHotkeyService(),
-            historyStore: HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService()),
+            historyStore: HistoryStore(storageURL: historyURL),
             usageAnalyticsStore: UsageAnalyticsStore(storageURL: analyticsURL),
             legacyHistoryURL: directory.appendingPathComponent("missing-legacy.json"))
         await controller.refreshUsageAnalytics(now: now, calendar: insightTestCalendar())
@@ -656,16 +648,9 @@ private final class InsightsNoopMediaInterruptionService: MediaInterruptionServi
 
 @MainActor
 private func waitForInsightsCondition(
-    attempts: Int = 400,
     _ condition: @MainActor () -> Bool
 ) async -> Bool {
-    for _ in 0..<attempts {
-        if condition() {
-            return true
-        }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+    await eventuallyOnMain { condition() }
 }
 
 private func insightTestCalendar() -> Calendar {

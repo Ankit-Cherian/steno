@@ -186,7 +186,8 @@ func manifestBindsHelperMonitorGapThreshold() {
 func helperDiscoveryFindsDirectChild() async throws {
     let child = Process()
     child.executableURL = URL(fileURLWithPath: "/bin/sleep")
-    child.arguments = ["2"]
+    // Outlives any probe delay; the defer ends it.
+    child.arguments = ["600"]
     try child.run()
     defer {
         if child.isRunning { child.terminate() }
@@ -194,9 +195,9 @@ func helperDiscoveryFindsDirectChild() async throws {
     }
 
     var observed: [Int32] = []
-    for _ in 0..<20 where observed.isEmpty {
+    for _ in 0..<12_000 where !observed.contains(child.processIdentifier) {
         observed = LiveContextProcessProbe.childProcessIDs(named: "sleep")
-        if observed.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        if !observed.contains(child.processIdentifier) { try await Task.sleep(for: .milliseconds(10)) }
     }
     #expect(observed.contains(child.processIdentifier))
 }

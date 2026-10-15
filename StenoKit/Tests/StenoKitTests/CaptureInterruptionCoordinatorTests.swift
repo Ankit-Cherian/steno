@@ -66,8 +66,7 @@ private struct InterruptedCaptureFixture {
         }
         let inserted = self.inserted
         history = HistoryStore(
-            storageURL: directory.appendingPathComponent("history.json"),
-            clipboardService: MemoryClipboardService()
+            storageURL: directory.appendingPathComponent("history.json")
         )
         coordinator = SessionCoordinator(
             captureService: InterruptingCaptureService(audioURL: audioURL, interruption: interruption),

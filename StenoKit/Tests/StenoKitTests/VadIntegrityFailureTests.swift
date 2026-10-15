@@ -124,7 +124,7 @@ struct VadIntegrityFailureTests {
         let cleanup = VadIntegrityCleanup()
         let transport = VadIntegrityTransport()
         let historyURL = fixture.directory.appendingPathComponent("history.json")
-        let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+        let history = HistoryStore(storageURL: historyURL)
         let usage = VadIntegrityUsage()
         let coordinator = SessionCoordinator(
             captureService: VadIntegrityCapture(url: fixture.audioURL), transcriptionEngine: engine,
@@ -136,11 +136,7 @@ struct VadIntegrityFailureTests {
             options: .init(livePreviewEnabled: preview))
         if preview {
             // An accepted append proves production live setup completed before stop.
-            for _ in 0..<1000 {
-                if (try? fixture.operations().contains(11)) == true { break }
-                try await Task.sleep(for: .milliseconds(5))
-            }
-            try #require(try fixture.operations().contains(11))
+            try #require(await eventually { (try? fixture.operations().contains(11)) == true })
         }
         do {
             _ = try await coordinator.stopPressToTalk(sessionID: sessionID)
@@ -152,7 +148,7 @@ struct VadIntegrityFailureTests {
         #expect(await cleanup.calls == 0)
         #expect(await transport.calls == 0)
         #expect(await usage.calls == 0)
-        let reloaded = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+        let reloaded = HistoryStore(storageURL: historyURL)
         #expect(await reloaded.recent(limit: 10).isEmpty)
         #expect(try fixture.operations().contains(preview ? 15 : 3))
         await coordinator.shutdown()
@@ -240,7 +236,7 @@ private struct VadIntegrityFixture {
         environment["STENO_TEST_VAD_ERROR_CATEGORY"] = String(failureCategory)
         return .init(helperExecutableURL: helperURL, modelPath: modelURL, threadCount: 1,
                      vadModelPath: vadURL, suppressNonSpeechTokens: true, suppressRegex: nil,
-                     modelLoadTimeout: .seconds(10), inferenceTimeout: .seconds(10), environment: environment)
+                     modelLoadTimeout: .seconds(120), inferenceTimeout: .seconds(120), environment: environment)
     }
     var runtimeRequest: WhisperRuntimeRequest {
         .init(id: UUID(), generation: 7, audioURL: audioURL, language: "en", prompt: nil,

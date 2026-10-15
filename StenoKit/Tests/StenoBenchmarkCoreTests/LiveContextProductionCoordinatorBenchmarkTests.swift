@@ -23,7 +23,8 @@ func productionCoordinatorStopBenchmarkMeasuresWholeCompletionPath() async throw
             publicFixtureAttested: true,
             alternatingTrialCount: 2,
             languageHints: ["en-US"],
-            liveStartTimeout: .seconds(1)
+            // Only a broken live start reaches this; a loaded machine can take seconds.
+            liveStartTimeout: .seconds(120)
         )
         await completion.markReturned()
         return result

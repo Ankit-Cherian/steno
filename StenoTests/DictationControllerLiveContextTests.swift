@@ -122,7 +122,8 @@ func exactTargetDriftUsesTruthfulCopiedStatus() async {
             status: .copiedOnly,
             method: .clipboardPaste,
             insertedText: "final words",
-            errorMessage: "Exact editor target is unavailable: selectionChanged."
+            errorMessage: "Exact editor target is unavailable: selectionChanged.",
+            copyReason: .fieldChanged
         )
     )
     let controller = makeTestDictationController(
@@ -612,13 +613,7 @@ private final class GatedLiveContextMediaInterruptionService: MediaInterruptionS
 
 @MainActor
 private func waitForLiveContextCondition(
-    timeout: TimeInterval = 2,
     _ condition: @escaping @MainActor () async -> Bool
 ) async -> Bool {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if await condition() { return true }
-        try? await Task.sleep(nanoseconds: 10_000_000)
-    }
-    return await condition()
+    await eventuallyOnMain(condition)
 }

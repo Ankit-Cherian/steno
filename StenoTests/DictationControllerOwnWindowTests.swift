@@ -19,8 +19,7 @@ struct DictationControllerOwnWindowTests {
         let typing = TranscriptionCancelTransport()
         let clipboard = MemoryClipboardService()
         let history = HistoryStore(
-            storageURL: directory.appendingPathComponent("history.json"),
-            clipboardService: MemoryClipboardService()
+            storageURL: directory.appendingPathComponent("history.json")
         )
         // The test controller dictates into this bundle; here it stands for
         // Steno itself, with nothing focused that can take text.
@@ -54,7 +53,7 @@ struct DictationControllerOwnWindowTests {
         controller.pressToTalkStart()
         try #require(await cancelTestEventually { await capture.startedCount() == 1 })
         controller.pressToTalkStop()
-        try #require(await waitForShortcutCondition(attempts: 1_000) {
+        try #require(await waitForShortcutCondition {
             controller.recordingLifecycleState == .idle && !controller.lastTranscript.isEmpty
         })
 
@@ -62,7 +61,7 @@ struct DictationControllerOwnWindowTests {
         #expect(await clipboard.latestValue == controller.lastTranscript)
         #expect(controller.status == "Transcript copied to clipboard. Paste with Cmd+V.")
         #expect(controller.lastError.isEmpty)
-        #expect(presenter.hostedEvidenceShownStates().last == .copiedOnly)
+        #expect(presenter.hostedEvidenceShownStates().last == .result(.copied(.noTextField), showsWords: true))
         #expect(!presenter.hostedEvidenceShownStates().contains(.inserted))
         let entry = try #require(await history.recent(limit: 1).first)
         #expect(entry.insertionStatus == .copiedOnly)

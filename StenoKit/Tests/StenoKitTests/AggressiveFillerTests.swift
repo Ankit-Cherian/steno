@@ -33,21 +33,21 @@ func aggressiveCleanupIsLinear() async throws {
     let text = String(repeating: unit, count: 77)
     #expect(text.count >= 10_000)
 
-    // Best of several runs, so other tests running in parallel don't decide the result. The
-    // quadratic version took about a second on a fast machine, where this takes a few
-    // milliseconds. The bound leaves room for a slow, busy machine.
-    var fastest = Duration.seconds(60)
-    var cleaned = ""
-    for _ in 0..<5 {
-        let start = ContinuousClock.now
-        cleaned = try await clean(text, structure: .paragraph)
-        fastest = min(fastest, ContinuousClock.now - start)
-    }
-
-    #expect(fastest < .milliseconds(500), "took \(fastest)")
+    let cleaned = try await clean(text, structure: .paragraph)
     #expect(cleaned.contains(" um ") == false)
     #expect(cleaned.contains(" uh ") == false)
     #expect(cleaned.contains("basically") == false)
+
+    // Eight times the text costs about eight times the work when cleanup is
+    // linear (7.5 to 8 measured) and up to sixty-four times when part of it is
+    // quadratic. Comparing the sizes by thread CPU time keeps load out of it.
+    let small = String(repeating: unit, count: 16)
+    let large = String(repeating: unit, count: 128)
+    let ratio = try await cpuTimeRatio(
+        small: { _ = try await clean(small, structure: .paragraph) },
+        large: { _ = try await clean(large, structure: .paragraph) }
+    )
+    #expect(ratio < 16, "8x the text took \(ratio)x the time")
 }
 
 @Test("The ranker's edit penalty matches a full word-level Levenshtein table")

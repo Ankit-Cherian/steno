@@ -291,7 +291,7 @@ func sessionCoordinatorLocalSuccessOutcome() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let coordinator = SessionCoordinator(
         captureService: capture,
@@ -337,7 +337,7 @@ func sessionCoordinatorLocalFallbackOnPrimaryFailure() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let lexicon = PersonalLexiconService()
     await lexicon.upsert(term: "stenoh", preferred: "Steno", scope: .global)
@@ -410,7 +410,7 @@ func sessionCoordinatorCommandPassthroughStaysLocalOnly() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let coordinator = SessionCoordinator(
         captureService: capture,
@@ -446,8 +446,7 @@ func sessionCoordinatorExplicitHandsFreeSetter() async throws {
         historyStore: HistoryStore(
             storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("history-tests", isDirectory: true)
-                .appendingPathComponent("history-\(UUID().uuidString).json"),
-            clipboardService: MemoryClipboardService()
+                .appendingPathComponent("history-\(UUID().uuidString).json")
         ),
         lexiconService: PersonalLexiconService(),
         styleProfileService: StyleProfileService()
@@ -475,7 +474,7 @@ func sessionCoordinatorForwardsTranscriptionContext() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let lexicon = PersonalLexiconService()
     await lexicon.upsert(
@@ -526,7 +525,7 @@ func sessionCoordinatorCancelSkipsHistoryAndInsertion() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let coordinator = SessionCoordinator(
         captureService: capture,
@@ -568,8 +567,7 @@ func sessionCoordinatorSplitCaptureEndAndCompletion() async throws {
         historyStore: HistoryStore(
             storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("history-tests", isDirectory: true)
-                .appendingPathComponent("history-\(UUID().uuidString).json"),
-            clipboardService: MemoryClipboardService()
+                .appendingPathComponent("history-\(UUID().uuidString).json")
         ),
         lexiconService: PersonalLexiconService(),
         styleProfileService: StyleProfileService()
@@ -603,8 +601,7 @@ func sessionCoordinatorCancelDuringCaptureEndPreventsCompletion() async throws {
         historyStore: HistoryStore(
             storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("history-tests", isDirectory: true)
-                .appendingPathComponent("history-\(UUID().uuidString).json"),
-            clipboardService: MemoryClipboardService()
+                .appendingPathComponent("history-\(UUID().uuidString).json")
         ),
         lexiconService: PersonalLexiconService(),
         styleProfileService: StyleProfileService()
@@ -647,7 +644,7 @@ func sessionCoordinatorCancellationAfterCaptureCloseHasNoSideEffects() async thr
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
     let coordinator = SessionCoordinator(
         captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
         transcriptionEngine: StaticTranscriptionEngine { _, _ in
@@ -705,8 +702,7 @@ func sessionCoordinatorReleasesTranscriptionResources() async throws {
         historyStore: HistoryStore(
             storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("history-tests", isDirectory: true)
-                .appendingPathComponent("history-\(UUID().uuidString).json"),
-            clipboardService: MemoryClipboardService()
+                .appendingPathComponent("history-\(UUID().uuidString).json")
         ),
         lexiconService: PersonalLexiconService(),
         styleProfileService: StyleProfileService()
@@ -734,8 +730,7 @@ func sessionCoordinatorRejectsCaptureThatFinishesDuringRuntimeUnload() async thr
         insertionService: InsertionService(transports: []),
         historyStore: HistoryStore(
             storageURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("history-\(UUID().uuidString).json"),
-            clipboardService: MemoryClipboardService()
+                .appendingPathComponent("history-\(UUID().uuidString).json")
         ),
         lexiconService: PersonalLexiconService(),
         styleProfileService: StyleProfileService()
@@ -771,8 +766,7 @@ func sessionCoordinatorConcurrentShutdownCallersAwaitCompletion() async throws {
         insertionService: InsertionService(transports: []),
         historyStore: HistoryStore(
             storageURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("history-\(UUID().uuidString).json"),
-            clipboardService: MemoryClipboardService()
+                .appendingPathComponent("history-\(UUID().uuidString).json")
         ),
         lexiconService: PersonalLexiconService(),
         styleProfileService: StyleProfileService()
@@ -809,8 +803,7 @@ func sessionCoordinatorCancellationDuringInsertionHasNoLaterSideEffects() async 
     let usageCounter = UsageEventCounter()
     let history = HistoryStore(
         storageURL: FileManager.default.temporaryDirectory
-            .appendingPathComponent("history-\(UUID().uuidString).json"),
-        clipboardService: MemoryClipboardService()
+            .appendingPathComponent("history-\(UUID().uuidString).json")
     )
     let coordinator = SessionCoordinator(
         captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
@@ -866,8 +859,7 @@ func sessionCoordinatorCancellationAfterInsertionCommitCompletes() async throws 
     let insertionState = CommittedInsertionState()
     let history = HistoryStore(
         storageURL: FileManager.default.temporaryDirectory
-            .appendingPathComponent("history-\(UUID().uuidString).json"),
-        clipboardService: MemoryClipboardService()
+            .appendingPathComponent("history-\(UUID().uuidString).json")
     )
     let coordinator = SessionCoordinator(
         captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),

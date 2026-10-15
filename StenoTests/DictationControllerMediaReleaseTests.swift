@@ -44,10 +44,10 @@ func unsupportedSystemDictationSendsNoMediaCommand() async {
 
 // MARK: - Transcription does not wait for the media resume
 
-/// Transcription must begin promptly after capture stops, whatever the paused
-/// application does next. The production resume ladder alone lasts over two
-/// seconds when playback is never observed again.
-private let transcriptionStartBound: Duration = .milliseconds(350)
+// Transcription must begin promptly after capture stops, whatever the paused
+// application does next. The production resume ladder alone lasts over two
+// seconds when playback is never observed again, so the tests hold it open and
+// show transcription starts while it is still running.
 
 struct MediaReleaseScenario: CustomTestStringConvertible, Sendable {
     let label: String
@@ -105,12 +105,14 @@ func transcriptionStartsPromptlyWhileMediaResumes(scenario: MediaReleaseScenario
     try? await Task.sleep(nanoseconds: scenario.holdMilliseconds * 1_000_000)
     controller.pressToTalkStop()
 
+    // The resume cannot finish until the test opens it, so transcription
+    // starting first shows it does not wait for the resume.
     #expect(await events.waitForCount("transcription.start", 1))
+    #expect(events.count("media.release.end") == 0)
+    await harness.resume.open()
     #expect(await events.waitForCount("media.release.end", 1))
     let names = events.names()
-    guard let stoppedAt = events.instant(of: "capture.stop"),
-          let transcribedAt = events.instant(of: "transcription.start"),
-          let releaseBegin = events.index(of: "media.release.begin"),
+    guard let releaseBegin = events.index(of: "media.release.begin"),
           let releaseEnd = events.index(of: "media.release.end"),
           let transcription = events.index(of: "transcription.start"),
           let captureStop = events.index(of: "capture.stop")
@@ -119,8 +121,6 @@ func transcriptionStartsPromptlyWhileMediaResumes(scenario: MediaReleaseScenario
         await controller.teardownAndWait()
         return
     }
-    let wait = transcribedAt - stoppedAt
-    #expect(wait < transcriptionStartBound, "Transcription waited \(wait) after stop: \(names)")
     // The resume starts before transcription and after capture closed; it
     // finishes on its own schedule.
     #expect(captureStop < releaseBegin)
@@ -151,21 +151,19 @@ func quickTapReleaseDoesNotHoldUpTranscription() async {
     // Key-up lands while beginInterruption is still probing media state.
     controller.pressToTalkStop()
 
+    // Media setup itself (one probe plus Pause) may finish first; the resume
+    // ladder must not, and it is held until the test opens it.
     #expect(await events.waitForCount("transcription.start", 1))
+    #expect(events.count("media.release.end") == 0)
+    await harness.resume.open()
     #expect(await events.waitForCount("media.release.end", 1))
-    guard let stoppedAt = events.instant(of: "capture.stop"),
-          let transcribedAt = events.instant(of: "transcription.start"),
-          let releaseBegin = events.index(of: "media.release.begin"),
+    guard let releaseBegin = events.index(of: "media.release.begin"),
           let transcription = events.index(of: "transcription.start")
     else {
         Issue.record("Missing lifecycle events: \(events.names())")
         await controller.teardownAndWait()
         return
     }
-    // Media setup itself (one probe plus Pause) may finish first; the resume
-    // ladder must not.
-    let wait = transcribedAt - stoppedAt
-    #expect(wait < .milliseconds(600), "Transcription waited \(wait) after stop: \(events.names())")
     #expect(releaseBegin < transcription)
     #expect(harness.driver.commands.first == .pause)
     #expect(harness.driver.commands.contains(.play))
@@ -191,18 +189,14 @@ func cancelThenImmediatePressIsNotBlockedByResume() async {
         await controller.teardownAndWait()
         return
     }
-    let cancelledAt = ContinuousClock.now
     controller.cancelActiveRecording()
     controller.pressToTalkStart()
 
+    // The cancelled session's resume is held, so the new capture starting
+    // shows the press did not wait for it.
     #expect(await events.waitForCount("capture.start", 2))
-    guard let restartedAt = events.instant(of: "capture.start", occurrence: 2) else {
-        Issue.record("Second capture never started: \(events.names())")
-        await controller.teardownAndWait()
-        return
-    }
-    let wait = restartedAt - cancelledAt
-    #expect(wait < transcriptionStartBound, "New press waited \(wait) after Cancel: \(events.names())")
+    #expect(events.count("media.release.end") == 0)
+    await harness.resume.open()
 
     // The new session owns its own token and never inherits the cancelled
     // session's release.
@@ -244,7 +238,7 @@ func inFlightResumeNeverPlaysForNewerCapture() async {
     controller.pressToTalkStop()
     #expect(await events.waitForCount("media.command.play", 1))
     #expect(await waitForIdle(controller))
-    // The first session finished while its resume is still verifying.
+    // The first session finished while its resume, held by the test, is still verifying.
     #expect(events.count("media.release.end") == 0)
 
     controller.pressToTalkStart()
@@ -252,15 +246,17 @@ func inFlightResumeNeverPlaysForNewerCapture() async {
     let secondBegin = await waitForAny(["media.begin.token", "media.begin.none"], total: 2, in: events)
     #expect(secondBegin)
     let playsWhenNewCaptureOwnsMedia = harness.driver.commands.filter { $0 == .play }.count
-    // Joining cancels the stale resume ladder, so its release finishes now.
-    #expect(await events.waitForCount("media.release.end", 1, attempts: 200))
-    try? await Task.sleep(nanoseconds: 400_000_000)
+    // Joining cancels the stale resume ladder, so its release finishes now,
+    // although its waits are still held.
+    #expect(await events.waitForCount("media.release.end", 1))
     #expect(harness.driver.commands.filter { $0 == .play }.count == playsWhenNewCaptureOwnsMedia)
     #expect(controller.isRecording)
 
     controller.pressToTalkStop()
     #expect(await waitForIdle(controller))
-    try? await Task.sleep(nanoseconds: 400_000_000)
+    // Let the newer session's resume, if it paused anything, run to its end before counting Plays.
+    await harness.resume.open()
+    #expect(await events.waitForCount("media.release.end", harness.media.begunTokens.count))
     // The app never produced output again, so nothing verifies a new Pause
     // and no Play is owed to the newer capture either.
     #expect(harness.driver.commands.filter { $0 == .play }.count == playsWhenNewCaptureOwnsMedia)
@@ -271,14 +267,9 @@ func inFlightResumeNeverPlaysForNewerCapture() async {
 func waitForAny(
     _ names: Set<String>,
     total: Int,
-    in events: MediaReleaseEventLog,
-    attempts: Int = 800
+    in events: MediaReleaseEventLog
 ) async -> Bool {
-    for _ in 0..<attempts {
-        if names.map({ events.count($0) }).reduce(0, +) >= total { return true }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+    await eventually { names.map({ events.count($0) }).reduce(0, +) >= total }
 }
 
 @MainActor
@@ -302,18 +293,12 @@ func pausedAppQuitWithConcurrentResume() async {
     try? await Task.sleep(nanoseconds: 500_000_000)
     controller.pressToTalkStop()
 
+    // Transcription starts while the held resume is still running.
     #expect(await events.waitForCount("transcription.start", 1))
-    guard let stoppedAt = events.instant(of: "capture.stop"),
-          let transcribedAt = events.instant(of: "transcription.start")
-    else {
-        Issue.record("Missing lifecycle events: \(events.names())")
-        await controller.teardownAndWait()
-        return
-    }
-    #expect(transcribedAt - stoppedAt < transcriptionStartBound)
     #expect(events.count("media.release.end") == 0)
 
     // Quitting Steno waits for the in-flight resume to finish.
+    await harness.resume.open()
     await controller.teardownAndWait()
     #expect(events.count("media.release.end") == 1)
     #expect(harness.media.endedTokens == harness.media.begunTokens)
@@ -334,6 +319,9 @@ final class MediaReleaseHarness {
     let driver: ScriptedMediaDriver
     let media: ObservedMediaService
     let controller: DictationController
+    /// Holds every wait of the media resume until the test opens it, so the
+    /// test decides whether the resume is still running.
+    let resume = ResumeHold()
 
     init(snapshots: [MediaInterruptionSnapshot], snapshotDelayMilliseconds: UInt64) {
         driver = ScriptedMediaDriver(
@@ -341,11 +329,15 @@ final class MediaReleaseHarness {
             snapshots: snapshots,
             snapshotDelayNanoseconds: snapshotDelayMilliseconds * 1_000_000
         )
+        let resume = resume
         let service = MacMediaInterruptionService(
             driver: driver,
             verificationDelays: MacMediaInterruptionService.defaultVerificationDelays,
             resumeVerificationDelays: productionResumeDelays,
-            sleep: { try? await Task.sleep(nanoseconds: $0) },
+            sleep: { nanoseconds in
+                if ResumeHold.isResuming { await resume.wait() }
+                try? await Task.sleep(nanoseconds: nanoseconds)
+            },
             systemSupportsMediaPausing: true
         )
         media = ObservedMediaService(inner: service, events: events)
@@ -385,8 +377,47 @@ final class ObservedMediaService: MediaInterruptionService {
     func endInterruption(token: MediaInterruptionToken) async {
         endedTokens.append(token.id)
         events.append("media.release.begin")
-        await inner.endInterruption(token: token)
+        await ResumeHold.$isResuming.withValue(true) {
+            await inner.endInterruption(token: token)
+        }
         events.append("media.release.end")
+    }
+}
+
+/// A gate for the media resume's waits. The resume's sleeps run with
+/// `isResuming` set, so pause verification during capture is never held.
+/// A held wait still ends at once when its task is cancelled, as a sleep does.
+actor ResumeHold {
+    @TaskLocal static var isResuming = false
+
+    private var isOpen = false
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+    func wait() async {
+        guard !isOpen else { return }
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if isOpen || Task.isCancelled {
+                    continuation.resume()
+                } else {
+                    waiters[id] = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.release(id) }
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters.values
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
+
+    private func release(_ id: UUID) {
+        waiters.removeValue(forKey: id)?.resume()
     }
 }
 
@@ -442,12 +473,8 @@ func silentOutput() -> MediaInterruptionSnapshot {
 }
 
 @MainActor
-func waitForIdle(_ controller: DictationController, attempts: Int = 600) async -> Bool {
-    for _ in 0..<attempts {
-        if controller.recordingLifecycleState == .idle { return true }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+func waitForIdle(_ controller: DictationController) async -> Bool {
+    await eventuallyOnMain { controller.recordingLifecycleState == .idle }
 }
 
 /// Synchronous so a wrapper can record the instant a call begins without
@@ -478,12 +505,8 @@ final class MediaReleaseEventLog: @unchecked Sendable {
         }
     }
 
-    func waitForCount(_ name: String, _ count: Int, attempts: Int = 1_200) async -> Bool {
-        for _ in 0..<attempts {
-            if self.count(name) >= count { return true }
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
-        return false
+    func waitForCount(_ name: String, _ count: Int) async -> Bool {
+        await eventually { self.count(name) >= count }
     }
 }
 

@@ -174,7 +174,7 @@ private func runPromptTrial(
     try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: scratch) }
     let historyURL = scratch.appendingPathComponent("history.json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
     let capture = try PromptStreamingCapture(audio: audio, directory: scratch)
     let observation = PromptObservation()
     let observedEngine = PromptObservedEngine(base: engine, observation: observation)
@@ -211,7 +211,7 @@ private func runPromptTrial(
         try await coordinator.endPressToTalkCapture(sessionID: sessionID)
         let result = try await coordinator.completePressToTalk(sessionID: sessionID)
         // Reopen from disk to prove actual persistence, not just actor memory.
-        let reloaded = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+        let reloaded = HistoryStore(storageURL: historyURL)
         let entries = await reloaded.recent(limit: 10)
         var receipt = await observation.receipt(fixture: fixture, audio: audio, enabled: enabled)
         receipt.status = result.status.rawValue

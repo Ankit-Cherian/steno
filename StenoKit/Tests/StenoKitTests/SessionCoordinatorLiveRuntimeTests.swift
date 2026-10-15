@@ -230,8 +230,7 @@ private func makeLiveCoordinator(
         ]),
         historyStore: HistoryStore(
             storageURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("steno-live-runtime-history-\(UUID().uuidString).json"),
-            clipboardService: MemoryClipboardService()
+                .appendingPathComponent("steno-live-runtime-history-\(UUID().uuidString).json")
         ),
         lexiconService: PersonalLexiconService(),
         styleProfileService: StyleProfileService(),
@@ -252,9 +251,9 @@ private actor OutcomeBox {
     func set(_ outcome: CompletionOutcome) { value = outcome }
 }
 
+/// The completion's outcome, or `.hung` if it has none at the hang-guard ceiling.
 private func outcome(
-    of task: Task<InsertResult, Error>,
-    within duration: Duration
+    of task: Task<InsertResult, Error>
 ) async -> CompletionOutcome {
     let box = OutcomeBox()
     Task {
@@ -268,7 +267,7 @@ private func outcome(
         }
     }
     let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: duration)
+    let deadline = clock.now.advanced(by: eventualityCeiling)
     while clock.now < deadline {
         if let value = await box.value { return value }
         try? await Task.sleep(for: .milliseconds(5))
@@ -282,24 +281,20 @@ private func startLiveDictation(_ coordinator: SessionCoordinator) async throws 
         appContext: .unknown,
         options: SessionStartOptions(livePreviewEnabled: true)
     )
-    for _ in 0..<1_000 {
-        if await coordinator.liveHypothesisSchedulingEvaluationWatermark(sessionID: sessionID) != nil {
-            break
-        }
-        try await Task.sleep(for: .milliseconds(2))
+    _ = await eventually {
+        await coordinator.liveHypothesisSchedulingEvaluationWatermark(sessionID: sessionID) != nil
     }
     return sessionID
 }
 
 /// One ordinary dictation, cancelled only the way DictationController does on failure.
 private func dictate(
-    _ coordinator: SessionCoordinator,
-    within duration: Duration = .seconds(3)
+    _ coordinator: SessionCoordinator
 ) async throws -> (SessionID, CompletionOutcome) {
     let sessionID = try await startLiveDictation(coordinator)
     try await coordinator.endPressToTalkCapture(sessionID: sessionID)
     let task = Task { try await coordinator.completePressToTalk(sessionID: sessionID) }
-    let result = await outcome(of: task, within: duration)
+    let result = await outcome(of: task)
     if result == .hung { task.cancel() }
     return (sessionID, result)
 }
@@ -409,7 +404,7 @@ func cancelledCompletionCancelsLiveSessionOnEngine() async throws {
         withUnsafeCurrentTask { $0?.cancel() }
         return try await coordinator.completePressToTalk(sessionID: sessionID)
     }
-    #expect(await outcome(of: completion, within: .seconds(2)) == .cancelled)
+    #expect(await outcome(of: completion) == .cancelled)
     // DictationController's failure path.
     await coordinator.cancel(sessionID: sessionID)
 
@@ -436,7 +431,7 @@ func cancelledCompletionAtEveryCheckpointKeepsEngineUsable() async throws {
         let canceller = CheckpointCanceller(cancelAt: checkpoint)
         await coordinator.setCompletionCheckpointObserver { canceller.observe($0) }
         let firstTask = Task { try await coordinator.completePressToTalk(sessionID: first) }
-        let firstOutcome = await outcome(of: firstTask, within: .seconds(3))
+        let firstOutcome = await outcome(of: firstTask)
         await coordinator.setCompletionCheckpointObserver(nil)
         await coordinator.cancel(sessionID: first)
 
@@ -472,7 +467,7 @@ func cancelledCompletionDuringTailAppendKeepsEngineUsable() async throws {
         let firstTask = Task { try await coordinator.completePressToTalk(sessionID: first) }
         try await Task.sleep(for: .milliseconds(cancelAfter))
         firstTask.cancel()
-        _ = await outcome(of: firstTask, within: .seconds(2))
+        _ = await outcome(of: firstTask)
         await coordinator.cancel(sessionID: first)
 
         let (second, secondOutcome) = try await dictate(coordinator)
@@ -544,9 +539,17 @@ func queuedPreviewNeverCollidesWithAppend() async throws {
         )
         let sessionID = try await startLiveDictation(coordinator)
         try await Task.sleep(for: .seconds(2))
+        // Previews kept coming; how many fit in two seconds depends on the machine.
+        let streaming = try #require(factory.sessions.first)
+        let previewsKeptComing = await eventually {
+            let hypotheses = await streaming.hypotheses
+            let snapshots = await events.snapshots
+            return hypotheses >= 2 && snapshots >= 2
+        }
+        #expect(previewsKeptComing, "trial \(trial)")
         try await coordinator.endPressToTalkCapture(sessionID: sessionID)
         let completion = Task { try await coordinator.completePressToTalk(sessionID: sessionID) }
-        let final = await outcome(of: completion, within: .seconds(20))
+        let final = await outcome(of: completion)
 
         let runtime = try #require(factory.sessions.first)
         #expect(await events.unavailable[sessionID] == nil, "trial \(trial)")
@@ -613,7 +616,7 @@ func stopBetweenPollAndAppendKeepsLiveFinal() async throws {
     try await Task.sleep(for: .milliseconds(20))
     await gate.release()
 
-    let final = await outcome(of: completion, within: .seconds(5))
+    let final = await outcome(of: completion)
     let runtime = try #require(factory.sessions.first)
     #expect(final == .finished("Helper final"))
     #expect(await runtime.rejectedAppends.isEmpty)
