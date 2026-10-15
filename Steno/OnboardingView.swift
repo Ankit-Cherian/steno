@@ -1,532 +1,300 @@
+import StenoKit
 import SwiftUI
 
+/// First-run guide: Welcome, Permissions (with the speech model), and a first dictation that ends on
+/// "You're set up". The dictation is not inserted anywhere; its History entry is shown instead.
 struct OnboardingView: View {
     @EnvironmentObject private var controller: DictationController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var currentStep: OnboardingStep = .welcome
-    @State private var whisperCLIPath = ""
-    @State private var modelPath = ""
-    @State private var showAdvancedSetup = false
-    private var bundledRuntime: BundledWhisperRuntime.ResolvedPaths? {
-        controller.isIsolatedPreview ? nil : BundledWhisperRuntime.resolvedPaths()
-    }
+    @State private var step: OnboardingStep
+    /// When the first-dictation step opened; the first History entry after it is the result.
+    @State private var firstDictationStartedAt: Date?
+    /// Whether a dictation has been tried on the first-dictation step; the controller's status
+    /// can still hold the result of one made before the step opened.
+    @State private var attemptedOnFirstDictationStep = false
+    @State private var previewEntry: TranscriptEntry?
+    /// Accessibility and Input Monitoring report only allowed or not, so Allow… stays until asked here.
+    @State private var askedPermissions: Set<OnboardingPermission> = []
 
-    init(initialStep: Int = 0) {
-        _currentStep = State(initialValue: OnboardingStep(rawValue: initialStep) ?? .welcome)
+    /// `previewTriedDictation` renders the first-dictation step as if a dictation had been tried
+    /// there, for render tests of its results.
+    init(initialStep: Int = 0, previewFirstDictation: TranscriptEntry? = nil, previewTriedDictation: Bool = false) {
+        _step = State(initialValue: OnboardingStep(rawValue: min(max(initialStep, 0), 2)) ?? .welcome)
+        _previewEntry = State(initialValue: previewFirstDictation)
+        _attemptedOnFirstDictationStep = State(initialValue: previewTriedDictation)
     }
 
     var body: some View {
-        let theme = StenoDesign.theme(for: controller.preferences)
-
-        VStack(spacing: 0) {
-            HStack {
-                Color.clear.frame(width: 64, height: 1)
-                Image("StenoMark")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 36, height: 36)
-                    .accessibilityHidden(true)
-                Spacer()
-                Text("Setup")
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(theme.textDim)
-            }
-            .padding(.horizontal, 18)
-            .frame(height: StenoDesign.titleBarHeight)
-            .background(theme.titleBarGradient)
-
-            Divider().overlay(theme.line)
-
-            onboardingLayout(theme: theme)
-
-        }
-        .frame(
-            minWidth: StenoDesign.windowMinWidth,
-            idealWidth: StenoDesign.windowIdealWidth,
-            minHeight: StenoDesign.windowMinHeight,
-            idealHeight: StenoDesign.windowIdealHeight
-        )
-        .background(theme.ink0)
-        .animation(
-            reduceMotion ? nil : .easeOut(duration: 0.2),
-            value: currentStep
-        )
-        .onAppear {
-            whisperCLIPath = controller.preferences.dictation.whisperCLIPath
-            modelPath = controller.preferences.dictation.modelPath
-            showAdvancedSetup = !whisperCLIPathValid || !modelPathValid
-        }
-        .onChange(of: controller.preferences.dictation.whisperCLIPath) { newValue in
-            whisperCLIPath = newValue
-        }
-        .onChange(of: controller.preferences.dictation.modelPath) { newValue in
-            modelPath = newValue
-        }
-    }
-
-    private func onboardingLayout(theme: StenoTheme) -> some View {
-        ManuscriptOnboardingLayout(
-            progress: progressBar,
-            content: stepContent,
-            navigation: navigationBar,
-            theme: theme
-        )
-    }
-
-    private var stepContent: some View {
-        Group {
-            switch currentStep {
-            case .welcome: welcomeStep
-            case .permissions: permissionsStep
-            case .whisperSetup: whisperSetupStep
-            case .featureTour: featureTourStep
-            }
-        }
-        .id(currentStep)
-        .transition(stepTransition)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: - Progress Bar
-
-    private var progressBar: some View {
-        let theme = StenoDesign.theme(for: controller.preferences)
-
-        return HStack(spacing: StenoDesign.md) {
-            ForEach(OnboardingStep.allCases, id: \.self) { step in
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(step.title)
-                        .font(.system(size: 12, weight: step == currentStep ? .semibold : .regular))
-                        .foregroundStyle(step == currentStep ? theme.text : theme.textDim)
-                        .lineLimit(1)
-
-                    RoundedRectangle(cornerRadius: StenoDesign.radiusTiny)
-                        .fill(step.rawValue <= currentStep.rawValue ? theme.accent : theme.line)
-                        .frame(height: 3)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Setup progress")
-        .accessibilityValue("Step \(currentStep.rawValue + 1) of \(OnboardingStep.allCases.count): \(currentStep.name)")
-    }
-
-    // MARK: - Step Transition
-
-    private var stepTransition: AnyTransition {
-        if reduceMotion {
-            return .opacity
-        }
-        return .opacity.combined(with: .offset(y: 7))
-    }
-
-    // MARK: - Step 1: Welcome
-
-    private var welcomeStep: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            stepHeading(
-                "Welcome to Steno",
-                description: "Dictate into the app you’re using."
+        content
+            .frame(
+                minWidth: StenoDesign.windowMinWidth,
+                idealWidth: StenoDesign.windowIdealWidth,
+                minHeight: StenoDesign.windowMinHeight,
+                idealHeight: StenoDesign.windowIdealHeight
             )
-
-            VStack(alignment: .leading, spacing: StenoDesign.lg) {
-                featureRow(icon: "mic", title: "Recording", detail: "Hold Option while speaking, or use hands-free dictation.")
-                Divider().overlay(StenoDesign.border)
-                featureRow(icon: "waveform", title: "Speech model", detail: "Choose the recognition model that fits your Mac.")
-                Divider().overlay(StenoDesign.border)
-                featureRow(icon: "text.cursor", title: "Text insertion", detail: "Click a text field before you start. Completed dictation is inserted there, or copied if the field is a password field or you moved to another one.")
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: step)
+            .onAppear { markFirstDictationStartIfNeeded() }
+            .onChange(of: step) { _ in markFirstDictationStartIfNeeded() }
+            .onChange(of: controller.recordingLifecycleState) { state in
+                if step == .firstDictation, state != .idle { attemptedOnFirstDictationStep = true }
             }
-        }
     }
 
-    private func stepHeading(_ title: String, description: String) -> some View {
-        VStack(alignment: .leading, spacing: StenoDesign.sm) {
-            StenoPageTitle(title)
-                .foregroundStyle(StenoDesign.textPrimary)
-
-            Text(description)
-                .font(StenoDesign.subheadline())
-                .foregroundStyle(StenoDesign.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func featureRow(icon: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: StenoDesign.md) {
-            Image(systemName: icon)
-                .font(.system(size: StenoDesign.iconLG))
-                .foregroundStyle(StenoDesign.theme(for: controller.preferences).accent)
-                .frame(width: StenoDesign.xl)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: StenoDesign.xxs) {
-                Text(title)
-                    .font(StenoDesign.bodyEmphasis())
-                    .foregroundStyle(StenoDesign.textPrimary)
-                Text(detail)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-    }
-
-    // MARK: - Step 2: Permissions
-
-    private var permissionsStep: some View {
-        VStack(alignment: .leading, spacing: StenoDesign.lg) {
-            stepHeading(
-                "Permissions",
-                description: "Allow the access needed to record and insert dictation."
-            )
-
-            VStack(spacing: StenoDesign.sm) {
-                PermissionStatusCard(
-                    title: "Microphone",
-                    description: "Required to capture audio for transcription.",
-                    status: controller.microphonePermissionStatus,
-                    onRequest: { controller.requestMicrophonePermission() },
-                    onOpenSettings: { controller.openMicrophoneSettings() }
-                )
-
-                PermissionStatusCard(
-                    title: "Accessibility",
-                    description: "Lets Steno type or paste into the app you're using.",
-                    status: controller.accessibilityPermissionStatus,
-                    onRequest: { controller.requestAccessibilityPermission() },
-                    onOpenSettings: { controller.openAccessibilitySettings() }
-                )
-
-                PermissionStatusCard(
-                    title: "Input monitoring",
-                    description: "Lets Steno detect its shortcuts while other apps are focused. For Hold Option to talk, Steno notices each key press and mouse click, never which key or button.",
-                    status: controller.inputMonitoringPermissionStatus,
-                    onRequest: { controller.requestInputMonitoringPermission() },
-                    onOpenSettings: { controller.openInputMonitoringSettings() }
-                )
-            }
-
-            if controller.microphonePermissionStatus != .granted {
-                Label("Allow microphone access to start dictating. You can also finish setup later.", systemImage: "info.circle")
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    // MARK: - Step 3: Whisper Setup
-
-    private var whisperSetupStep: some View {
-        VStack(alignment: .leading, spacing: StenoDesign.lg) {
-            stepHeading("Choose your speech model", description: whisperSetupDescription)
-
-            VStack(alignment: .leading, spacing: StenoDesign.md) {
-                if let recommendedModel = controller.recommendedWhisperModel {
-                    recommendedModelCard(recommendedModel)
+    /// One centred column per step and a quiet footer, with no pager dots.
+    private var content: some View {
+        GroveSettingsContent(accent: controller.preferences.appearance.accent) {
+            VStack(spacing: 0) {
+                GroveOnboardingColumn {
+                    groveStep
+                        .id(step)
+                        .transition(reduceMotion ? .identity : .opacity)
                 }
-
-                DisclosureGroup("Custom model setup", isExpanded: $showAdvancedSetup) {
-                    VStack(alignment: .leading, spacing: StenoDesign.md) {
-                        VStack(alignment: .leading, spacing: StenoDesign.xs) {
-                            Text("whisper-cli path")
-                                .font(StenoDesign.bodyEmphasis())
-                                .foregroundStyle(StenoDesign.textPrimary)
-                            TextField("Path to whisper-cli binary", text: $whisperCLIPath)
-                                .textFieldStyle(.roundedBorder)
-                                .accessibilityLabel("whisper-cli path")
-                            pathValidationLabel(valid: whisperCLIPathValid)
-                        }
-
-                        VStack(alignment: .leading, spacing: StenoDesign.xs) {
-                            Text("Model path")
-                                .font(StenoDesign.bodyEmphasis())
-                                .foregroundStyle(StenoDesign.textPrimary)
-                            TextField("Path to model file", text: $modelPath)
-                                .textFieldStyle(.roundedBorder)
-                                .accessibilityLabel("Model path")
-                            pathValidationLabel(valid: modelPathValid)
-                        }
-                    }
-                    .padding(.top, StenoDesign.sm)
+                .padding(.horizontal, 44)
+                .padding(.top, step == .welcome ? 0 : 30)
+                if step != .welcome {
+                    groveFooter
+                        .frame(height: 32)
+                        .frame(maxWidth: GroveOnboardingMetrics.columnWidth)
+                        .padding(.horizontal, 44)
+                        .padding(.bottom, 28)
                 }
-                .font(StenoDesign.bodyEmphasis())
-                .cardStyle()
-            }
-
-            if bundledRuntime != nil {
-                Label("Small is included and ready to use. You can choose another model later in Settings \u{2192} Speech model.", systemImage: "shippingbox")
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-    }
-
-    private var whisperCLIPathValid: Bool {
-        controller.isIsolatedPreview || FileManager.default.fileExists(atPath: whisperCLIPath)
-    }
-
-    private var modelPathValid: Bool {
-        controller.isIsolatedPreview || FileManager.default.fileExists(atPath: modelPath)
-    }
-
-    private func pathValidationLabel(valid: Bool) -> some View {
-        HStack(spacing: StenoDesign.xs) {
-            Image(systemName: valid ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .font(StenoDesign.caption())
-                .foregroundStyle(valid ? StenoDesign.success : StenoDesign.error)
-            Text(valid ? "File found" : "File not found")
-                .font(StenoDesign.caption())
-                .foregroundStyle(valid ? StenoDesign.textSecondary : StenoDesign.error)
-        }
-    }
-
-    private var whisperSetupDescription: String {
-        if bundledRuntime != nil {
-            return "The included Small model is ready to use. You can choose a larger local model for a different balance of speed and accuracy."
-        }
-
-        return "Choose a recommended model or review your custom model files. You can change the model later in Speech model settings."
     }
 
     @ViewBuilder
-    private func recommendedModelCard(_ option: WhisperModelOption) -> some View {
-        VStack(alignment: .leading, spacing: StenoDesign.sm) {
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: StenoDesign.xxs) {
-                    Text("Based on your Mac")
-                        .font(StenoDesign.heading3())
-                        .foregroundStyle(StenoDesign.textPrimary)
-
-                    if let hardwareSummary = controller.currentHardwareSummary {
-                        Text(hardwareSummary)
-                            .font(StenoDesign.caption())
-                            .foregroundStyle(StenoDesign.textSecondary)
-                    }
-                }
-
-                Spacer()
-
-                StenoBadge(
-                    text: option.title,
-                    tone: .accent,
-                    theme: StenoDesign.theme(for: controller.preferences),
-                    icon: "cpu",
-                    compact: true
-                )
-            }
-
-            Text(controller.recommendedWhisperModelNote ?? option.summary)
-                .font(StenoDesign.subheadline())
-                .foregroundStyle(StenoDesign.textSecondary)
-
-            HStack(spacing: StenoDesign.sm) {
-                if option.isInstalled {
-                    Button {
-                        if !option.isActive {
-                            controller.activateWhisperModel(option.modelID)
-                        }
-                    } label: {
-                        Text(option.isActive ? "Using \(option.title)" : "Use \(option.title)")
-                            .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(StenoDesign.theme(for: controller.preferences).accent)
-                    .disabled(option.isActive)
-                } else {
-                    Button {
-                        controller.downloadWhisperModel(option.modelID)
-                    } label: {
-                        if controller.activeModelDownloadID == option.modelID {
-                            HStack(spacing: StenoDesign.xs) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
-                                    .accessibilityHidden(true)
-                                Text("Downloading \(option.title)…")
-                                    .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
-                            }
-                        } else {
-                            Text("Download \(option.title)")
-                                .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(StenoDesign.theme(for: controller.preferences).accent)
-                    .disabled(controller.activeModelDownloadID != nil)
-                }
-
-                if bundledRuntime != nil {
-                    Text("You can continue with the included Small model.")
-                        .font(StenoDesign.caption())
-                        .foregroundStyle(StenoDesign.textSecondary)
-                }
-            }
-
-            if !controller.modelDownloadMessage.isEmpty {
-                ModelActionMessage(
-                    message: controller.modelDownloadMessage,
-                    isError: controller.modelDownloadMessageIsError
-                )
-            }
-        }
-        .cardStyle()
-    }
-
-    // MARK: - Step 4: Feature Tour
-
-    private var featureTourStep: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            stepHeading(
-                "Your first dictation",
-                description: "Open an app and click where you want your words to go."
-            )
-
-            VStack(alignment: .leading, spacing: StenoDesign.lg) {
-                tipRow(number: "1", text: "Hold Option to dictate (press-to-talk).")
-                tipRow(number: "2", text: "Speak naturally. Release Option to finish and insert your words.")
-                tipRow(number: "3", text: "Find your completed dictations in History, ready to copy.")
-                tipRow(number: "4", text: "In Recording settings, choose a hands-free key and optional live preview.")
-            }
-        }
-    }
-
-    private func tipRow(number: String, text: String) -> some View {
-        HStack(alignment: .top, spacing: StenoDesign.md) {
-            Text(number)
-                .font(.system(size: 22, weight: .regular, design: .serif))
-                .foregroundStyle(StenoDesign.theme(for: controller.preferences).accent)
-                .frame(width: 24, alignment: .leading)
-
-            Text(text)
-                .font(StenoDesign.body())
-                .foregroundStyle(StenoDesign.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 3)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-    }
-
-    // MARK: - Navigation Bar
-
-    private var navigationBar: some View {
-        HStack {
-            if currentStep != .welcome {
-                Button("Back") {
-                    goBack()
-                }
-                .buttonStyle(.bordered)
-                .keyboardShortcut("[", modifiers: .command)
-                .help("Previous step (Command-[)")
-            }
-
-            Spacer()
-
-            if currentStep != .welcome && currentStep != .featureTour && canSkip {
-                Button("Set up later") {
-                    goForward()
-                }
-                .buttonStyle(.bordered)
-                .help("Continue setup without completing this step")
-                .accessibilityLabel("Set up later, skipping \(currentStep.name.lowercased())")
-            }
-
-            if currentStep == .featureTour {
-                Button {
-                    completeOnboarding()
-                } label: {
-                    Text("Open Steno")
-                        .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(StenoDesign.theme(for: controller.preferences).accent)
-                .keyboardShortcut(.defaultAction)
-                .accessibilityLabel("Open Steno and finish setup")
-            } else {
-                Button {
-                    goForward()
-                } label: {
-                    Text("Continue")
-                        .foregroundStyle(StenoDesign.theme(for: controller.preferences).accentInk)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(StenoDesign.theme(for: controller.preferences).accent)
-                .disabled(!canContinue)
-                .keyboardShortcut(.defaultAction)
-                .accessibilityLabel("Continue to next step")
-            }
-        }
-    }
-
-    // MARK: - Navigation Logic
-
-    private var canContinue: Bool {
-        switch currentStep {
+    private var groveStep: some View {
+        switch step {
         case .welcome:
-            return true
+            GroveOnboardingWelcome(onStart: goForward, nextName: step.next?.name ?? "")
         case .permissions:
-            return controller.microphonePermissionStatus == .granted
-        case .whisperSetup:
-            return whisperCLIPathValid && modelPathValid
-        case .featureTour:
-            return true
+            grovePermissions
+        case .firstDictation:
+            GroveOnboardingFirstDictation(
+                phase: phase,
+                entry: firstDictation,
+                handsFreeKeyName: HandsFreeKeyName.name(for: controller.preferences.hotkeys.handsFreeGlobalKeyCode),
+                optionHold: controller.preferences.hotkeys.optionPressToTalkEnabled,
+                onOpenMicrophoneSettings: { controller.openMicrophoneSettings() }
+            )
         }
     }
 
-    private var canSkip: Bool {
-        switch currentStep {
-        case .welcome, .featureTour:
-            return false
-        case .permissions, .whisperSetup:
-            return true
+    private var grovePermissions: some View {
+        GrovePermissionsStep(
+            rows: OnboardingPermission.allCases.map { permission in
+                GrovePermissionsStep.Row(
+                    permission: permission,
+                    state: grovePermissionState(permission)
+                )
+            },
+            speechModelReady: speechModelReady,
+            onAllow: { request($0) },
+            onOpenSettings: { openSettings(for: $0) },
+            onOpenSpeechModelSettings: { SettingsRouter.shared.open(.engine) }
+        )
+        .onAppear { controller.refreshPermissionStatuses(reinstallHotkeysOnlyIfChanged: true) }
+    }
+
+    private func status(of permission: OnboardingPermission) -> PermissionDiagnostics.AccessStatus {
+        switch permission {
+        case .microphone: controller.microphonePermissionStatus
+        case .accessibility: controller.accessibilityPermissionStatus
+        case .inputMonitoring: controller.inputMonitoringPermissionStatus
         }
+    }
+
+    /// Microphone reports undetermined and denied apart; the other two report only allowed or
+    /// not, so Allow… stays until they have been asked here.
+    private func hasBeenAsked(_ permission: OnboardingPermission) -> Bool {
+        permission == .microphone || askedPermissions.contains(permission)
+    }
+
+    private func grovePermissionState(_ permission: OnboardingPermission) -> GroveOnboardingPermissionRow.State {
+        GroveOnboardingPermissionRow.state(
+            status: status(of: permission),
+            hasBeenAsked: hasBeenAsked(permission),
+            isNext: nextToAllow == permission,
+            nextTitle: nextToAllow?.title ?? ""
+        )
+    }
+
+    private func request(_ permission: OnboardingPermission) {
+        switch permission {
+        case .microphone:
+            controller.requestMicrophonePermission()
+        case .accessibility:
+            askedPermissions.insert(.accessibility)
+            controller.requestAccessibilityPermission()
+        case .inputMonitoring:
+            askedPermissions.insert(.inputMonitoring)
+            controller.requestInputMonitoringPermission()
+        }
+    }
+
+    private func openSettings(for permission: OnboardingPermission) {
+        switch permission {
+        case .microphone: controller.openMicrophoneSettings()
+        case .accessibility: controller.openAccessibilitySettings()
+        case .inputMonitoring: controller.openInputMonitoringSettings()
+        }
+    }
+
+    private var allPermissionsGranted: Bool { nextToAllow == nil }
+
+    private var groveFooter: some View {
+        HStack(spacing: 18) {
+            switch step {
+            case .welcome:
+                EmptyView()
+            case .permissions:
+                Button("Back") { goBack() }
+                    .buttonStyle(.groveText)
+                    .groveFocusEffectsOff()
+                    .padding(.leading, -8)
+                    .keyboardShortcut("[", modifiers: .command)
+                    .help("Previous step (⌘[)")
+                Spacer()
+                Group {
+                    if allPermissionsGranted {
+                        Button("Continue") { goForward() }
+                            .buttonStyle(.grove(.primary, .large))
+                            .groveFocusEffectsOff()
+                    } else {
+                        Button("Continue") { goForward() }
+                            .buttonStyle(GroveFocusedButtonStyle(look: GroveMutedPillStyle(), cornerRadius: 16))
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .accessibilityLabel("Continue to \(step.next?.name ?? "")")
+            case .firstDictation:
+                Button("Back") { goBack() }
+                    .buttonStyle(.groveText)
+                    .groveFocusEffectsOff()
+                    .padding(.leading, -8)
+                    .keyboardShortcut("[", modifiers: .command)
+                    .help("Previous step (⌘[)")
+                if firstDictation == nil {
+                    Button("Skip for Now") { controller.completeOnboarding() }
+                        .buttonStyle(.groveText)
+                        .groveFocusEffectsOff()
+                        .accessibilityLabel("Skip the first dictation and finish setup")
+                }
+                Spacer()
+                if firstDictation != nil {
+                    Button("Start Dictating") { controller.completeOnboarding() }
+                        .buttonStyle(.grove(.primary, .large))
+                        .groveFocusEffectsOff()
+                        .keyboardShortcut(.defaultAction)
+                        .accessibilityLabel("Start dictating, finish setup")
+                }
+            }
+        }
+    }
+
+    /// The first permission still to allow, which gets the filled button.
+    private var nextToAllow: OnboardingPermission? {
+        if controller.microphonePermissionStatus != .granted { return .microphone }
+        if controller.accessibilityPermissionStatus != .granted { return .accessibility }
+        if controller.inputMonitoringPermissionStatus != .granted { return .inputMonitoring }
+        return nil
+    }
+
+    private var speechModelReady: Bool {
+        controller.isIsolatedPreview || FileManager.default.fileExists(atPath: controller.preferences.dictation.modelPath)
+    }
+
+    // MARK: First dictation
+
+    /// The History entry this step's dictation created.
+    private var firstDictation: TranscriptEntry? {
+        if let previewEntry { return previewEntry }
+        guard step == .firstDictation, let start = firstDictationStartedAt,
+              let latest = controller.recentEntries.first, latest.createdAt >= start
+        else { return nil }
+        return latest
+    }
+
+    private var phase: OnboardingDictationPhase {
+        OnboardingDictationPhase.derive(
+            entry: firstDictation,
+            microphone: controller.microphonePermissionStatus,
+            lifecycle: controller.recordingLifecycleState,
+            isRecording: controller.isRecording,
+            status: attemptedOnFirstDictationStep ? controller.status : ""
+        )
     }
 
     private func goForward() {
-        guard let nextIndex = OnboardingStep(rawValue: currentStep.rawValue + 1) else { return }
-        currentStep = nextIndex
+        if let next = step.next { step = next }
     }
 
     private func goBack() {
-        guard let prevIndex = OnboardingStep(rawValue: currentStep.rawValue - 1) else { return }
-        currentStep = prevIndex
+        if let previous = OnboardingStep(rawValue: step.rawValue - 1) { step = previous }
     }
 
-    private func completeOnboarding() {
-        // Save paths if changed
-        if whisperCLIPath != controller.preferences.dictation.whisperCLIPath {
-            controller.preferences.dictation.whisperCLIPath = whisperCLIPath
+    private func markFirstDictationStartIfNeeded() {
+        if step == .firstDictation, firstDictationStartedAt == nil {
+            firstDictationStartedAt = Date()
         }
-        if modelPath != controller.preferences.dictation.modelPath {
-            controller.preferences.dictation.updateModelPath(modelPath)
-        }
-
-        controller.completeOnboarding()
     }
 }
 
-// MARK: - Onboarding Step Enum
-
-private enum OnboardingStep: Int, CaseIterable {
-    case welcome = 0
-    case permissions = 1
-    case whisperSetup = 2
-    case featureTour = 3
-
-    var title: String { "\(rawValue + 1) · \(name)" }
+enum OnboardingStep: Int, CaseIterable {
+    case welcome
+    case permissions
+    case firstDictation
 
     var name: String {
         switch self {
-        case .welcome: return "Welcome"
-        case .permissions: return "Permissions"
-        case .whisperSetup: return "Speech model"
-        case .featureTour: return "First dictation"
+        case .welcome: "Welcome"
+        case .permissions: "Permissions"
+        case .firstDictation: "First dictation"
         }
+    }
+
+    var next: OnboardingStep? { OnboardingStep(rawValue: rawValue + 1) }
+}
+
+enum OnboardingPermission: Hashable, CaseIterable {
+    case microphone, accessibility, inputMonitoring
+
+    var title: String {
+        switch self {
+        case .microphone: "Microphone"
+        case .accessibility: "Accessibility"
+        case .inputMonitoring: "Input Monitoring"
+        }
+    }
+}
+
+/// Where the first dictation is, from the controller's state.
+enum OnboardingDictationPhase: Equatable {
+    case waiting
+    case listening(handsFree: Bool)
+    case transcribing
+    case noSpeech
+    case microphoneOff
+    case done
+
+    static func derive(
+        entry: TranscriptEntry?,
+        microphone: PermissionDiagnostics.AccessStatus,
+        lifecycle: RecordingLifecycleState,
+        isRecording: Bool,
+        status: String
+    ) -> OnboardingDictationPhase {
+        if entry != nil { return .done }
+        switch lifecycle {
+        case .recordingPressToTalk: return .listening(handsFree: false)
+        case .recordingHandsFree: return .listening(handsFree: true)
+        case .transcribing: return .transcribing
+        case .idle: break
+        }
+        if isRecording { return .listening(handsFree: false) }
+        if microphone == .denied { return .microphoneOff }
+        if status == "No speech detected." { return .noSpeech }
+        return .waiting
     }
 }

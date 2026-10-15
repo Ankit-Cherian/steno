@@ -1,10 +1,6 @@
 import Foundation
 import SwiftUI
 
-enum StenoDesignDirection: String, CaseIterable, Sendable {
-    case manuscript
-}
-
 enum StenoAppearanceMode: String, Codable, Sendable, CaseIterable {
     case system
     case dark
@@ -44,7 +40,7 @@ enum StenoAccentStyle: String, Codable, Sendable, CaseIterable, Identifiable {
         case .terracotta:
             return "Terracotta"
         case .dodger:
-            return "Blue"
+            return "Cobalt"
         case .cyan:
             return "Cyan"
         case .violet:

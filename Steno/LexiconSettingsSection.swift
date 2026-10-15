@@ -5,150 +5,175 @@ struct LexiconSettingsSection: View {
     @Binding var preferences: AppPreferences
     @State private var newTerm: String = ""
     @State private var newPreferred: String = ""
-    @State private var newAliases: String = ""
-    @State private var newBundleID: String = ""
-    @State private var newGlobal = true
+    @State private var newScope: Scope = .global
     @State private var rejectionMessage: String?
     @State private var pendingEntry: LexiconEntry?
     @State private var pendingReview: LexiconEntryReview?
+    @Environment(\.quillTheme) private var theme
 
     var body: some View {
-        settingsCardWithSubtitle(
-            "Your corrections",
-            subtitle: "Replace a recurring misheard word with the spelling you prefer."
-        ) {
-            VStack(spacing: StenoDesign.sm) {
-                if preferences.lexiconEntries.isEmpty {
-                    Text("No corrections yet. Example: \u{201C}stenoh\u{201D} \u{2192} \u{201C}Steno\u{201D}")
-                        .font(StenoDesign.callout())
-                        .foregroundStyle(StenoDesign.textSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 6)
-                } else {
-                    ForEach(preferences.lexiconEntries.indices, id: \.self) { index in
-                        let entry = preferences.lexiconEntries[index]
-                        lexiconEntryRow(
-                            entry: entry,
-                            status: LexiconEntryValidator.status(of: entry, in: preferences.lexiconEntries)
-                        ) {
-                            preferences.lexiconEntries.remove(at: index)
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsPageHeader(
+                section: .corrections,
+                intro: "Replace a word Steno keeps mishearing with the spelling you want. Fix a Word can also add corrections here."
+            )
+            SettingsCard {
+                addRow
+                ForEach(Array(preferences.lexiconEntries.enumerated()), id: \.offset) { index, entry in
+                    entryRow(entry, index: index)
                 }
             }
-
-            Divider()
-
-            HStack(spacing: StenoDesign.sm) {
-                settingsTextField("Misheard word", prompt: "stenoh", text: $newTerm)
-                settingsTextField("Correct word", prompt: "Steno", text: $newPreferred)
-            }
-
-            settingsTextField("Aliases · optional", prompt: "Separate variants with commas", text: $newAliases)
-
-            HStack {
-                ScopePickerRow(isGlobal: $newGlobal, bundleID: $newBundleID)
-                Spacer()
-                Button {
-                    addCorrection()
-                } label: {
-                    Label("Add correction", systemImage: "plus")
-                }
-                .buttonStyle(.bordered)
-                .fixedSize()
-                .disabled(trimmed(newTerm).isEmpty || trimmed(newPreferred).isEmpty)
-            }
-
             if let rejectionMessage {
-                Text(rejectionMessage)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.error)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                SettingsCautionLine(text: rejectionMessage).padding(.top, 8)
             }
+            SettingsFootnote(text: "To catch other ways Steno hears a word, add them after it, separated by commas.")
+                .padding(.top, -4)
         }
         .onChange(of: newTerm) { _ in rejectionMessage = nil }
-        .onChange(of: newBundleID) { _ in rejectionMessage = nil }
-        .onChange(of: newGlobal) { _ in rejectionMessage = nil }
-        .confirmationDialog(
-            "Save this correction?",
+        .onChange(of: newScope) { _ in rejectionMessage = nil }
+        .alert(
+            alertTitle,
             isPresented: Binding(
                 get: { pendingEntry != nil },
                 set: { if !$0 { pendingEntry = nil; pendingReview = nil } }
             ),
-            titleVisibility: .visible,
             presenting: pendingEntry
         ) { entry in
-            Button("Save correction") { save(entry) }
             Button("Cancel", role: .cancel) {}
+            Button(pendingReview?.commonWords.isEmpty == false ? Self.commonWordConfirmTitle(entry.scope) : "Save Correction") { save(entry) }
+                .keyboardShortcut(.defaultAction)
         } message: { entry in
             Text(pendingReview.map { confirmationMessage(for: entry, review: $0) } ?? "")
         }
     }
 
-    @ViewBuilder
-    private func lexiconEntryRow(
-        entry: LexiconEntry,
-        status: LexiconEntryStatus,
-        onRemove: @escaping () -> Void
-    ) -> some View {
-        let statusText = statusDescription(status)
-        HStack(alignment: .top, spacing: StenoDesign.sm) {
-            VStack(alignment: .leading, spacing: StenoDesign.xxs) {
-                Text("\u{201C}\(entry.term)\u{201D} \u{2192} \u{201C}\(entry.preferred)\u{201D}")
-                    .font(StenoDesign.callout())
-                    .lineLimit(2)
+    static let columns: (scope: CGFloat, action: CGFloat) = (120, 80)
 
-                if entry.aliases.isEmpty == false {
-                    Text("Aliases: \(entry.aliases.joined(separator: ", "))")
-                        .font(StenoDesign.caption())
-                        .foregroundStyle(StenoDesign.textSecondary)
-                        .lineLimit(2)
-                }
-
-                Text(statusText.text)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(statusText.isProblem ? StenoDesign.warning : StenoDesign.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: StenoDesign.sm)
-            scopeBadge(entry.scope)
-            Button("Remove", role: .destructive, action: onRemove)
-                .buttonStyle(.link)
-                .accessibilityLabel("Remove entry")
-                .accessibilityValue(entry.term)
+    private var addRow: some View {
+        HStack(spacing: 12) {
+            TextField("Misheard word", text: $newTerm, prompt: Text("Misheard word"))
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Misheard word, with other ways it's heard separated by commas")
+                .onSubmit(addCorrection)
+            arrow
+            TextField("Correct word", text: $newPreferred, prompt: Text("Correct word"))
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Correct word")
+                .onSubmit(addCorrection)
+            ScopeMenu(scope: $newScope, problem: $rejectionMessage, knownBundleIDs: knownBundleIDs)
+                .frame(width: Self.columns.scope, alignment: .leading)
+            Button("Add", action: addCorrection)
+                .settingsButton(.primary)
+                .disabled(trimmed(newTerm).isEmpty || trimmed(newPreferred).isEmpty)
+                .frame(width: Self.columns.action, alignment: .trailing)
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, StenoDesign.sm)
-        .background(StenoDesign.surfaceSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: StenoDesign.radiusSmall))
+        .settingsRowInset(vertical: 11)
     }
 
-    private func statusDescription(_ status: LexiconEntryStatus) -> (text: String, isProblem: Bool) {
+    private var arrow: some View {
+        Image(systemName: "arrow.right")
+            .font(.system(size: 11.5))
+            .foregroundStyle(theme.ink3)
+            .frame(width: 18)
+            .accessibilityHidden(true)
+    }
+
+    private func entryRow(_ entry: LexiconEntry, index: Int) -> some View {
+        let status = statusDescription(LexiconEntryValidator.status(of: entry, in: preferences.lexiconEntries))
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(entry.term).font(.system(size: 13))
+                    if !entry.aliases.isEmpty {
+                        Text("also \(entry.aliases.joined(separator: ", "))")
+                            .settingsFont(.caption)
+                            .foregroundStyle(theme.ink3)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                arrow
+                Text(entry.preferred)
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                // An app that is not installed is named by its bundle ID, whose end is the part
+                // that differs, so a long one is cut in the middle and shown in full on hover.
+                Text(AppIdentity.scopeTitle(entry.scope))
+                    .settingsFont(.caption)
+                    .foregroundStyle(theme.ink3)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .frame(width: Self.columns.scope, alignment: .leading)
+                    .help(AppIdentity.scopeTitle(entry.scope))
+                Button("Remove") {
+                    preferences.lexiconEntries.remove(at: index)
+                }
+                .settingsButton(.quiet)
+                .accessibilityLabel("Remove \(entry.term)")
+                .frame(width: Self.columns.action, alignment: .trailing)
+            }
+            .foregroundStyle(theme.ink)
+            if let problem = status {
+                SettingsCautionLine(text: problem)
+            }
+        }
+        .settingsRowInset(vertical: 11)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var knownBundleIDs: [String] {
+        var seen: Set<String> = []
+        return (preferences.lexiconEntries.map(\.scope) + preferences.snippets.map(\.scope)).compactMap { scope in
+            guard case .app(let bundleID) = scope, !bundleID.isEmpty, seen.insert(bundleID).inserted else { return nil }
+            return bundleID
+        }
+    }
+
+    /// A problem that stops an entry from applying; nil when it works.
+    private func statusDescription(_ status: LexiconEntryStatus) -> String? {
         switch status {
         case .active(let kept) where kept.isEmpty:
-            return ("Active", false)
+            return nil
         case .active(let kept):
-            return ("Active. Steno keeps \(quotedList(kept)) as spoken.", false)
+            return "Steno keeps \(quotedList(kept)) as spoken."
         case .keptAsSpoken(let forms):
-            return ("Never applies: Steno always keeps \(quotedList(forms)) as spoken.", true)
+            return "Never applies: Steno always keeps \(quotedList(forms)) as spoken."
         case .missingApp:
-            return ("Never applies: no app is set. Remove it and add it again with a bundle ID.", true)
+            return "Never applies: no app is set. Remove it and add it again for an app."
         case .conflict(let winner):
-            return ("Not used: \u{201C}\(winner.term)\u{201D} \u{2192} \u{201C}\(winner.preferred)\u{201D} already corrects the same words.", true)
+            return "Not used: “\(winner.term)” → “\(winner.preferred)” already corrects the same words."
         }
+    }
+
+    private var alertTitle: String {
+        guard let review = pendingReview, !review.commonWords.isEmpty else { return "Save this correction?" }
+        let isSingle = review.commonWords.count == 1
+        let scope = pendingEntry.map { $0.scope == .global ? "every dictation" : "every dictation in \(AppIdentity.name(for: bundleID(of: $0.scope)))" } ?? "every dictation"
+        return "\(quotedList(review.commonWords)) \(isSingle ? "is a common word" : "are common words"). Fix \(isSingle ? "it" : "them") in \(scope)?"
+    }
+
+    /// Names where the correction applies, as the question does: every dictation, or one app's.
+    static func commonWordConfirmTitle(_ scope: Scope) -> String {
+        switch scope {
+        case .global: "Fix in Every Dictation"
+        case .app(let bundleID): "Fix in \(AppIdentity.name(for: bundleID))"
+        }
+    }
+
+    private func bundleID(of scope: Scope) -> String {
+        if case .app(let bundleID) = scope { return bundleID }
+        return ""
     }
 
     private func addCorrection() {
-        let bundleID = trimmed(newBundleID)
+        let spoken = parseList(newTerm)
+        guard let term = spoken.first, !trimmed(newPreferred).isEmpty else { return }
         let entry = LexiconEntry(
-            term: trimmed(newTerm),
+            term: term,
             preferred: trimmed(newPreferred),
-            scope: newGlobal ? .global : .app(bundleID: bundleID),
-            aliases: parseAliases(newAliases)
+            scope: newScope,
+            aliases: Array(spoken.dropFirst())
         )
         let review = LexiconEntryValidator.review(entry, existing: preferences.lexiconEntries)
-
         if let rejection = review.rejection {
             rejectionMessage = message(for: rejection)
             return
@@ -172,43 +197,34 @@ struct LexiconSettingsSection: View {
         pendingReview = nil
         newTerm = ""
         newPreferred = ""
-        newAliases = ""
-        newBundleID = ""
-        newGlobal = true
     }
 
     private func message(for rejection: LexiconEntryReview.Rejection) -> String {
         switch rejection {
-        case .blankTerm:
-            return "Enter the misheard word."
-        case .blankSpelling:
-            return "Enter the correct word."
-        case .missingApp:
-            return "Enter the app\u{2019}s bundle ID, or turn on All apps."
-        case .duplicate(let existing):
-            return "\u{201C}\(existing.term)\u{201D} already has a correction here. Remove it first to change it."
+        case .blankTerm: "Enter the misheard word."
+        case .blankSpelling: "Enter the correct word."
+        case .missingApp: "Choose an app, or use All Apps."
+        case .duplicate(let existing): "“\(existing.term)” already has a correction here. Remove it first to change it."
         }
     }
 
     private func confirmationMessage(for entry: LexiconEntry, review: LexiconEntryReview) -> String {
         var sentences: [String] = []
-        if review.commonWords.isEmpty == false {
-            let isSingle = review.commonWords.count == 1
-            sentences.append(
-                "\(quotedList(review.commonWords)) \(isSingle ? "is a common word" : "are common words"). "
-                    + "Steno will type \u{201C}\(entry.preferred)\u{201D} every time you say \(isSingle ? "it" : "them")."
-            )
+        if !review.commonWords.isEmpty {
+            let place = entry.scope == .global ? "in every app" : "in \(AppIdentity.name(for: bundleID(of: entry.scope)))"
+            let said = review.commonWords.map { "Every “\($0)” you say" }.joined(separator: " and ")
+            sentences.append("\(said) will become “\(entry.preferred)”, \(place). You can remove it here at any time.")
         }
-        if review.keptSpokenForms.isEmpty == false {
+        if !review.keptSpokenForms.isEmpty {
             sentences.append(
-                "Steno always keeps \(quotedList(review.keptSpokenForms)) as spoken, so \(review.keptSpokenForms.count == 1 ? "it" : "they") won\u{2019}t be replaced."
+                "Steno always keeps \(quotedList(review.keptSpokenForms)) as spoken, so \(review.keptSpokenForms.count == 1 ? "it" : "they") won’t be replaced."
             )
         }
         return sentences.joined(separator: " ")
     }
 
     private func quotedList(_ words: [String]) -> String {
-        let quoted = words.map { "\u{201C}\($0)\u{201D}" }
+        let quoted = words.map { "“\($0)”" }
         guard quoted.count > 1, let last = quoted.last else { return quoted.first ?? "" }
         return quoted.dropLast().joined(separator: ", ") + " and " + last
     }
@@ -217,12 +233,69 @@ struct LexiconSettingsSection: View {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func parseAliases(_ text: String) -> [String] {
+    /// "stenoh, steno, stenno" is the misheard word followed by other ways it's heard.
+    private func parseList(_ text: String) -> [String] {
         var seen: Set<String> = []
         return text
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .filter { seen.insert($0.lowercased()).inserted }
+    }
+}
+
+/// All Apps, an app already used elsewhere in these settings, or another app chosen from disk.
+struct ScopeMenu: View {
+    @Binding var scope: Scope
+    /// Set when the app chosen from disk cannot be used, and cleared by any other choice.
+    @Binding var problem: String?
+    let knownBundleIDs: [String]
+
+    var body: some View {
+        Menu {
+            Button("All Apps") { problem = nil; scope = .global }
+            if !knownBundleIDs.isEmpty {
+                Divider()
+                ForEach(knownBundleIDs, id: \.self) { bundleID in
+                    Button("Only in \(AppIdentity.name(for: bundleID))") { problem = nil; scope = .app(bundleID: bundleID) }
+                }
+            }
+            Divider()
+            Button("Choose an App…") {
+                switch AppIdentity.chooseApp() {
+                case .cancelled: problem = nil
+                case .noIdentifier: problem = AppIdentity.noIdentifierMessage
+                case .app(let bundleID):
+                    problem = nil
+                    scope = .app(bundleID: bundleID)
+                }
+            }
+        } label: {
+            Text(scope == .global ? "All Apps" : AppIdentity.name(for: bundleID))
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .padding(.horizontal, 9)
+        .frame(height: 28)
+        .modifier(PopUpChrome())
+        .accessibilityLabel("Apps")
+        .accessibilityValue(scope == .global ? "All Apps" : AppIdentity.name(for: bundleID))
+    }
+
+    private var bundleID: String {
+        if case .app(let bundleID) = scope { return bundleID }
+        return ""
+    }
+}
+
+/// The paper fill and control border of a pop-up button.
+private struct PopUpChrome: ViewModifier {
+    @Environment(\.quillTheme) private var theme
+
+    func body(content: Content) -> some View {
+        content
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(theme.paper))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(theme.controlBorder.opacity(0.6), lineWidth: 1))
     }
 }

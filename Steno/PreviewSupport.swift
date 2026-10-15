@@ -13,6 +13,10 @@ enum IsolatedAppPreview {
             || NSClassFromString("XCTestCase") != nil
     }
 
+    /// The preview's window titles, so it is never mistaken for the real Steno.
+    static let windowTitle = "Steno Preview (test data)"
+    static let settingsWindowTitle = "Steno Preview Settings (test data)"
+
     static var isRequested: Bool {
         ProcessInfo.processInfo.arguments.contains("--isolated-ui-preview")
             || Bundle.main.object(forInfoDictionaryKey: "StenoIsolatedReview") as? Bool == true
@@ -30,7 +34,7 @@ enum IsolatedAppPreview {
             overlay: WaveformOverlayPresenter(observeAccessibilityChanges: false),
             mediaInterruption: PreviewMediaInterruptionService(),
             preferencesStore: AppPreferencesStore(storageURL: storageDirectory.appendingPathComponent("preferences.json")),
-            historyStore: HistoryStore(storageURL: storageDirectory.appendingPathComponent("history.json"), clipboardService: clipboard),
+            historyStore: HistoryStore(storageURL: storageDirectory.appendingPathComponent("history.json")),
             usageAnalyticsStore: UsageAnalyticsStore(storageURL: storageDirectory.appendingPathComponent("usage.json")),
             legacyHistoryURL: storageDirectory.appendingPathComponent("legacy.json"),
             systemIntegrationsEnabled: false,
@@ -85,12 +89,15 @@ struct IsolatedReviewControls: View {
     @State private var state: ReviewState = .ready
     @StateObject private var overlayReview = OverlayReviewPlayer()
 
-    private enum ReviewState: String, CaseIterable {
+    enum ReviewState: String, CaseIterable {
         case ready = "Populated"
         case recording = "Listening"
         case finishing = "Transcribing"
         case recovery = "Recovery"
         case empty = "Empty"
+        case worstCase = "Worst case"
+        case one = "One dictation"
+        case thousand = "1,000 dictations"
         case onboarding = "Onboarding"
     }
 
@@ -102,10 +109,21 @@ struct IsolatedReviewControls: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
-            Button(overlayReview.isRunning ? "Hide overlay" : "Preview overlay") {
-                if overlayReview.isRunning { overlayReview.stop() }
-                else { overlayReview.start(appearance: controller.preferences.appearance) }
+            Menu("Preview overlay") {
+                ForEach(OverlayReviewPlayer.Sample.allCases) { sample in
+                    Button(sample.rawValue) {
+                        overlayReview.updateAppearance(controller.preferences.appearance)
+                        overlayReview.show(sample)
+                    }
+                }
+                Divider()
+                Picker("Grove form", selection: $overlayReview.form) {
+                    ForEach(OverlayReviewPlayer.Form.allCases) { Text($0.rawValue).tag($0) }
+                }
+                Divider()
+                Button("Hide overlay") { overlayReview.stop() }
             }
+            .fixedSize()
             .accessibilityIdentifier("isolated-preview-overlay")
             Picker("Review state", selection: $state) {
                 ForEach(ReviewState.allCases, id: \.self) { state in
@@ -122,25 +140,41 @@ struct IsolatedReviewControls: View {
         .onChange(of: controller.preferences.appearance) { appearance in
             overlayReview.updateAppearance(appearance)
         }
+        .onAppear {
+            // A populated preview shows the window's sample dictations, records and usage.
+            if !controller.recentEntries.isEmpty { WindowSampleData.install(on: controller) }
+        }
         .onDisappear { overlayReview.stop() }
     }
 
     private func stage(_ state: ReviewState) {
+        Self.stage(state, on: controller)
+    }
+
+    /// Puts an isolated preview controller into `state` with the sample data. Never touches
+    /// real History, Settings or Insights.
+    static func stage(_ state: ReviewState, on controller: DictationController) {
         controller.preferences.general.showOnboarding = state == .onboarding
         controller.stageIsolatedPreviewLifecycle(.idle)
         controller.lastError = ""
         controller.hotkeyRegistrationMessage = ""
         controller.microphonePermissionStatus = .granted
-        controller.recentEntries = state == .empty ? [] : IsolatedAppPreview.entries
-        controller.lastTranscript = controller.recentEntries.first?.cleanText ?? ""
-        let fixture = IsolatedAppPreview.makeController(populated: state != .empty)
-        controller.usageAnalyticsSnapshot = fixture.usageAnalyticsSnapshot
+        if state == .empty {
+            controller.recentEntries = []
+            controller.lastTranscript = ""
+            controller.usageAnalyticsSnapshot = WindowSampleData.usageSnapshot(weeks: [])
+        } else {
+            WindowSampleData.install(on: controller)
+        }
         switch state {
+        case .worstCase: controller.recentEntries = WindowSampleData.worstCaseEntries()
+        case .one: controller.recentEntries = WindowSampleData.oneEntry()
+        case .thousand: controller.recentEntries = WindowSampleData.thousandEntries()
         case .recording: controller.stageIsolatedPreviewLifecycle(.recordingHandsFree)
         case .finishing: controller.stageIsolatedPreviewLifecycle(.transcribing)
         case .recovery:
             controller.lastError = "The editor closed before insertion. Your words are safe in History."
-            controller.recentEntries = [IsolatedAppPreview.entries[3]]
+            controller.recentEntries = controller.recentEntries.filter { $0.id == WindowSampleData.bookingID }
         default: break
         }
     }
