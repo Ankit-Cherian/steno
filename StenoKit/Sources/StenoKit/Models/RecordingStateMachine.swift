@@ -103,6 +103,16 @@ public struct RecordingStateMachine: Sendable, Equatable {
         }
     }
 
+    /// Work that finishes like a dictation without recording: Undo restoring
+    /// a discarded recording, or Paste Last Dictation inserting earlier text.
+    /// A press meanwhile is refused as still finishing, and Cancel ends it.
+    /// Only possible while idle.
+    public mutating func beginWorkWithoutRecording() -> Bool {
+        guard state == .idle else { return false }
+        state = .transcribing
+        return true
+    }
+
     public mutating func markTranscriptionCompleted() {
         state = .idle
     }

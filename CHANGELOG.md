@@ -7,11 +7,107 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-### Tests
-- Pull requests now run only the checks their changes need. App and test changes run the package and hosted tests on macOS 15 and 26; code the runtime job executes adds that job; changes to the C++ helper add the C/C++ scan; changes to the workflows, CI scripts or `project.yml`, and any unrecognized path, run everything. Every push to `main`, the weekly schedules and every release still run everything, and both required gates fail if a run reports less than it should.
-- The Swift CodeQL scan no longer blocks pull requests. It runs on `main` after every merge, weekly, and in the release before anything is signed.
-- A seconds-long check on every run confirms that each file bound by the reviewed C/C++ findings still has its reviewed content, so a change to one of those files without an updated record fails within minutes instead of after a full scan.
-- The release workflow's draft and publish jobs allow 30 minutes instead of 10, with a 10-minute limit on their artifact download, after a stalled download cancelled the 1.0.1 draft job before it had written anything.
+## [1.1.0] - 2026-10-15
+
+The design decisions behind 1.1, and the reason for each, are recorded in [the 1.1 design record](docs/design/1.1-design-record.md).
+
+Steno 1.1 redesigns every window, panel and overlay, and adds a microphone choice, a record of how each dictation was written, Fix a Word, Undo after discarding a long recording, and Copy and Paste Last Dictation. It asks for the same three permissions as before: Microphone, Accessibility and Input Monitoring.
+
+If you are upgrading from 1.0.1, the main window now has Today, History and Insights in its toolbar, and Settings opens in its own window.
+
+### Added
+- Choose which microphone Steno records from in Settings › Microphone, or from Microphone in the menu bar panel. **Follow the system input**, which is on by default, uses whichever input macOS is set to. If the chosen microphone is not connected, Settings says so and names the system input that Steno uses until it's back, and dictation uses the system input without interrupting you. **Test Microphone** shows the input level for up to 5 seconds against a target band, isn't saved and doesn't pause media. It isn't available during a dictation, and when a test can't start, the reason shows under the button.
+- The input level is shown while you dictate: as voice bars in the island, on Today's live stage and in the menu bar icon.
+- **How it was written** in History shows how long the text took after you stopped, and each timed step: how long you were heard and on which microphone, how long transcription took and with which model, what cleanup changed, and where the text went. Times of a minute or more read in minutes and seconds, and a dictation too long to compare with its cleaned-up text says Not compared. Open it from **How It Was Written** on Today's latest dictation, from a dictation's context menu, or with Cmd+I. Dictations saved before 1.1 say that their steps weren't recorded.
+- **Fix a Word** corrects a misheard word in a saved dictation. Start it from the button on Today's latest dictation or in History, from a dictation's context menu in History, or with Cmd+E. Then click the word, or choose **Choose from a List…** to pick it with the keyboard or VoiceOver.
+- Fix a Word applies a fix to **Just this dictation**, or to **This and future dictations**, which also adds the correction to Word Corrections. When the misheard word is a common word, **This and future dictations** asks for confirmation first, including for a change of capitals only. Confirming, or pressing Return, applies the fix. If the same correction is already in Word Corrections, it is kept as you set it up, with its other spellings.
+- After a fix, a note offers **Copy Corrected Text** and **Undo**, and the dictation shows a Fixed label. Only Steno's saved copy changes. The app the text went into keeps the original words.
+- Fix a Word works with Chinese, Japanese and Thai text, finds a word next to an apostrophe or inside quotes, and keeps a right-to-left word and its correction in order. A word fixed at the start of a sentence is saved to Word Corrections without its capital, so later dictations don't capitalize it mid-sentence; a name keeps the capitals you typed. A word or its correction can be up to 80 characters, and a dictation keeps up to 50 fixes. When a fix or its Undo can't be made, Fix a Word says why.
+- Undo after discarding a long recording. When you discard a recording that ran for more than 30 seconds, the island, Today and the menu bar panel offer Undo for 5 seconds. Undo transcribes the recording and inserts it as if you had pressed Stop. If a different app is in front by then, Steno copies the text instead and says the app changed. Starting a new dictation ends the Undo window. A tap of Option or an Option keyboard shortcut does not.
+- Copy Last Dictation and Paste Last Dictation in the menu bar panel. The copy button on the latest dictation copies it again.
+- **Paste Last Dictation** inserts the latest dictation into the app in front, without saving anything new to History or Insights. It isn't available while a dictation is in progress, and the menu bar panel shows it as unavailable then. When it can't paste, the island says why, such as "Finish this dictation first" or "No dictation to paste yet".
+- Paste Last Dictation can have a global shortcut, Control-Option-V or Control-Option-Command-V, chosen in Settings › Recording. No shortcut is set by default, and Steno doesn't offer a shortcut that collides with the hands-free key.
+- When History couldn't save the newest dictation, the panel's latest dictation says it wasn't saved, and Copy Last Dictation and Paste Last Dictation both use it.
+- **After inserting** in Settings › Recording chooses what the island shows after a successful insertion. **Only when it matters**, the default, shows a brief check. It says where the text went for every paste, and for other insertions until it has said where the text went 20 times. **Always say where** always says where it went. **Show nothing** shows nothing for an insertion that wasn't a paste, though VoiceOver still announces it.
+- Whatever **After inserting** is set to, a paste always says where it went, because Steno can't confirm where a paste lands. Copies and problems always show.
+- When the island says where the text went, it also shows the first line of what was inserted.
+- New menu commands. The Edit menu has Search History (Cmd+F). A new Dictation menu has Fix a Word… (Cmd+E) and How It Was Written (Cmd+I). The View menu has Today, History and Insights (Cmd+1 to Cmd+3).
+
+### Changed
+- Steno has a new design, applied to every window, panel and overlay, with a forest green accent and a voice quill as the app icon. The quill also appears in the Dock, the About panel, the menu bar, Settings and the setup guide.
+- A new install follows the system's light or dark appearance. 1.0.1 started new installs in dark. Saved appearance choices are kept.
+- The main window has Today, History and Insights in its toolbar, with a status label that names a problem and opens the Settings page that fixes it. The window is at least 960 × 640 points.
+- Today starts with the **Dictate** area, which names the shortcuts that work and the microphone in use. Clicking it dictates in the window and copies the words when you stop. While you dictate it shows the live words, with Discard (Esc) and Stop (Space). Below it are today's latest dictation with Copy, Fix a Word and How It Was Written, and up to 12 earlier dictations from today, then a line such as "7 more in History" that opens History at the first one left out. When the latest dictation is from an earlier day, it names the day.
+- History shows the list and the selected dictation side by side. The menu in the search field filters by All, Inserted, Copied or Not Inserted, and holds Delete All History…. A search that matches nothing says so. Clean Up Again keeps Fix a Word changes when cleanup gives the same words, and says so. A dictation shows Copy, Fix a Word, Clean Up Again and Delete, How it was written, up to three dictations from the half hour before it, and its words before cleanup.
+- A long dictation on Today and in History stops at 12 lines, with **Show All** and its word count when that hides words.
+- Hebrew and Arabic dictations start at the right edge in Today, History, the island and the setup guide.
+- Insights opens with a sentence on this month's words and the typing time they saved, counted against typing at 40 words a minute. Below it are a calendar of the last six months with the busiest day, and the four apps that received the most words, with each app's share of all words. Choosing a day on the calendar shows how much you dictated that day, and Insights keeps that day when you switch sections and come back.
+- Settings opens in its own window, with pages grouped under Dictation, Text and This Mac, and a search field. Changes stay unsaved until **Save Changes**, and the bar at the bottom counts them and names a few. Appearance offers System, Light and Dark.
+- Cleanup settings use plainer names. Structure is now Layout, with As spoken, Paragraphs and Bullets. The filler levels are Light, Balanced and Thorough, which were Minimal, Balanced and Aggressive. Saved choices carry over and work as before.
+- Cleanup settings for a specific app, and word corrections limited to one app, now let you choose the app instead of typing its bundle ID. If the chosen app can't be used, the page says why.
+- The menu bar icon is the quill, and shows the input level while you dictate. Clicking it opens a panel with Steno's status, Dictate or Stop, the latest dictation, Paste Last Dictation, earlier dictations, the microphone, Open Steno, Settings and Quit.
+- The island, the overlay that shows while you dictate, grows out of the notch on a single built-in display with a notch, and is a capsule at the top of the screen otherwise. While you speak it shows voice bars, with the time and Stop during hands-free dictation, and then the result, which stays while the pointer rests on it. With the live transcript on, it shows up to three lines of words.
+- The setup guide has three steps: a welcome, the three permissions asked for one at a time, and a first dictation in a practice box that reports how long it took.
+- Insertion messages are shorter and say what happened. A copy shows "Copied" with its reason, such as App changed, Field changed or Password field, and a Cmd+V hint. VoiceOver says, for example, "App changed. Copied. Press Command V." A dictation that wasn't inserted says "Couldn't insert. Saved in History." or "Not pasted. Saved in History." and offers Copy. When macOS doesn't let Steno bring the original app back to the front, the text is copied with the reason App changed. A recording that can't start or finish says "Couldn't start recording." or "Couldn't finish recording.", and a microphone that stops before anything is heard says "Microphone stopped. No speech was heard." The full message is in the window.
+- A dictation that fails shows its message once, in a strip under the toolbar, and its Open Settings button opens the page that fixes it.
+- When Input Monitoring is off, Today and the menu bar panel say the shortcuts need it, instead of naming keys that can't work.
+
+### Accessibility
+- Every control in the main window, Settings and the setup guide shows a focus ring when it has keyboard focus, on macOS 14 and later, including the Dictate area. On the dark green glass the ring is mint, so it stands out. History's list is one Tab stop, and the arrow keys move through it.
+- Fix a Word's **Choose from a List…** lets you pick a word without clicking it, for VoiceOver and the keyboard. VoiceOver names each of the form's controls once, including the word list and the Correct spelling field.
+- The main window, Settings and the setup guide follow the system text size, up to 1.35 times the default.
+- Space starts a dictation from the Dictate area only when that area has keyboard focus, so a stray Space elsewhere in the window doesn't turn on the microphone.
+- Controls have names that match what they show, for VoiceOver and Voice Control. Rows in Today, History and the half hour before a dictation open with VoiceOver, calendar days are read in words, and the Settings window takes the name of the page it shows. VoiceOver reads the words of a dictation on Today and in History, and the input level of Test Microphone as a percentage.
+- Fix a Word announces to VoiceOver a fix or an Undo it couldn't make.
+- Increase Contrast and Reduce Transparency are followed in the window, the island and the menu bar panel. With Increase Contrast, panel edges and card outlines reach 3:1 contrast. The time and app under a selected or pressed dictation reach 4.5:1.
+- Clear search and History's search options take clicks across at least 24 points, and each calendar day answers clicks across half the gap around it.
+- With Reduce Motion, the island cross-fades instead of changing shape, the quill and the voice bars show the level by brightness, and the menu bar icon stops changing.
+
+### Security
+- A dictation from a password field stays marked as private every time Steno puts it on the clipboard again. That covers Copy in History, on Today, in the menu bar panel and in the island, Copy Last Dictation and Paste Last Dictation. It also covers Fix a Word's **Copy Corrected Text**, the **Copy Dictation** button shown when History can't be saved, and the copy Undo makes when another app is in front. Words you select and copy, drag or send to a Service are marked too. Clipboard managers leave all of these out. 1.0.1 marked only the first copy.
+- The island never shows the words of a dictation from a password field.
+- With paste-only insertion, a password field is refused before anything is written to the clipboard, and the copy Steno keeps is marked as private. 1.0.1 wrote the dictation for the paste first.
+- When the field you dictated into becomes a password field right before Steno pastes, Steno doesn't paste, and the copy it keeps on the clipboard is marked as private.
+- On a dictation from a password field, Fix a Word offers only **Just this dictation**, so its words never become a Word Correction or reach later recognition.
+- Delete All History, and deleting a dictation, also forget a dictation that History couldn't save, so deleted words can't come back through Copy Last Dictation, Paste Last Dictation or the island's Copy.
+- The Paste Last Dictation shortcut never reaches the app in front: its key press, and the key's repeats while it is held, even after Control and Option are let go, are taken by Steno. Pressed while Option is held, the shortcut pastes and never starts a dictation.
+- Steno's line in the system log for each insertion gives the outcome, the method and how long each step took. It never holds the dictated text or names the app.
+- While the menu bar panel is open, a key typed in another app only closes the panel, or for the arrow keys moves into it. Steno reads which key it was, never the text it types.
+
+### Performance
+- The first recording after Steno opens no longer waits while macOS prepares its audio components. Steno now loads them at launch, off the main thread, without opening the microphone. When the system's audio component service wasn't running, that wait was measured at 1.8 seconds before any audio was captured, 1.6 seconds of it the service starting up.
+- The result shows on the island as soon as the text is inserted or copied, before History and Insights are saved. With 1,000 dictations in History, the measured median time from insertion to the result appearing fell from 32.5 ms to 0.5 ms.
+- While you dictate, only Today's live stage redraws as the words change. The rest of the window, History and Insights don't, and Today lists at most 12 of today's dictations however long History is.
+- History searches its dictations once per change of the search or filter, builds only the rows on screen, and redraws only the row whose contents changed.
+- The Insights calendar is drawn as one view instead of about 180 separate day buttons, which took most of the time Insights needed to open.
+
+### Removed
+- The accent color setting. Your saved accent is kept and 1.0.x still reads it, but 1.1 doesn't use it.
+
+### Fixed
+- In a long recording, a 30-second stretch could come back as one phrase repeated many times, as a copy of the stretch before it, or with most of its words missing. Steno now transcribes such a stretch again in shorter pieces and keeps the new text only when it is clearly better, so a phrase you really did repeat is kept. This applies to the included transcription helper, not the fallback tool.
+- If Steno missed the release of Option during a long hold, the recording could keep running. 1.0.1 re-read the Option key once a second, but only while Steno still believed Option was held, so a recording whose press Steno had lost track of kept running. Steno now also checks the Option key itself twice a second for as long as an Option recording runs, and ends the recording within about a second of the release. The recording is transcribed as usual.
+- With **Pause while holding to dictate** turned off in Settings › Media, a dictation started by holding Option could run without showing as recording: no island, no one-hour limit and no check for a missed release. It now shows as recording as soon as Steno can tell Option is held.
+- The one-minute warning now always appears before Steno stops a recording at the one-hour limit. If the check runs late, the warning still comes first and the recording stops a minute after it, slightly past the hour.
+- Pressing Stop immediately after starting a dictation no longer reports a transcription failure. What was recorded is transcribed.
+- A dictation key pressed while Steno was releasing its speech model, around sleep or when the Mac ran low on memory, did nothing you could see. The island now says the speech model is still loading.
+- Two automatic pastes in quick succession no longer leave your own clipboard replaced by a dictation. Steno puts it back after the second paste.
+- When another app changed the clipboard right before Steno pasted, so nothing was pasted, Steno said the dictation was copied and History listed it as Copied, though it wasn't on the clipboard. The island now says "Not pasted. Saved in History.", and Today, History and How It Was Written list it as Not Inserted.
+- Quitting Steno right after stopping a dictation, while an app was still answering Steno's request to pause its media, could leave that app paused. Steno now waits for the answer and resumes the app if it saw it stop. A pause still unanswered for an Option dictation is not resumed at quit.
+- Saved word corrections and text shortcuts never applied in Chinese, Japanese or Thai text, which has no spaces between words, or to a word written against such text. They now do.
+- History counted a run of Chinese, Japanese or Thai text without spaces as one word. Word counts on Today and in History now use the system's word breaking.
+- Switching away from History and back cleared its search and filter and lost the selected dictation. History now returns to the dictation and filter you left.
+- The Insights calendar could leave a month unnamed when the calendar's first week also held the 1st of the next month, so a calendar starting on April 29 read Apr, Jun, Jul.
+- With the pointer on the very top row of pixels of a display, the island could appear on a different display.
+- A click right beside the island, where it draws nothing, was lost instead of reaching the app underneath. 1.0.1 had the same problem. Those clicks now reach the app, and the island's own controls work as before.
+
+### Known issues
+- Choosing a specific microphone, and falling back to the system input when it is unplugged, has not yet been tested with an external USB or Bluetooth microphone.
+- In a long recording, words spoken right where one 30-second stretch of audio ends and the next begins can be dropped or misheard. Steno transcribes the stretches separately, without overlap.
+- Media playing in Safari is still not paused during dictation. Settings › Media says so.
+- The Paste Last Dictation shortcut does nothing while a password field has focus, because macOS blocks global shortcuts there. Use **Paste Last Dictation** in the menu bar panel instead.
+- The media pausing issues listed for 1.0.1 still apply.
+- Going back to 1.0.1 removes from History the record of Fix a Word changes, the How It Was Written details and the private marker on password-field copies, the next time 1.0.1 saves History. The corrected words themselves stay.
 
 ## [1.0.1] - 2026-10-02
 

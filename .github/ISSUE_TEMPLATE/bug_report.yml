@@ -7,27 +7,29 @@ body:
       value: |
         This issue and its attachments are public. Use synthetic examples and remove private transcripts, audio, editor content, credentials, and personal file paths from logs or screenshots. Do not upload your history or settings files.
 
+        Do not attach recordings, or transcripts with personal content.
+
         Report vulnerabilities through [the security policy](https://github.com/Ankit-Cherian/steno/blob/main/SECURITY.md), not this form.
   - type: input
     id: app-version
     attributes:
       label: Steno Version and Build
-      description: Include the version and build number. If you built from source, include the commit and note any local changes.
-      placeholder: "e.g., 1.0.0 (3), built from source"
+      description: Shown in Settings › General. If you built from source, include the commit and note any local changes.
+      placeholder: "e.g., Steno 1.1.0 (5), or built from source at a commit"
     validations:
       required: true
   - type: input
     id: macos-version
     attributes:
       label: macOS Version
-      placeholder: "e.g., macOS 14.3"
+      placeholder: "e.g., macOS 15.6"
     validations:
       required: true
   - type: textarea
     id: description
     attributes:
       label: Description
-      description: What happened? For transcription issues, say whether it affected live preview, the final transcript, insertion, or history.
+      description: What happened? For transcription issues, say whether it affected the live transcript, the final text, insertion, or History.
     validations:
       required: true
   - type: textarea
@@ -57,15 +59,27 @@ body:
     id: permissions
     attributes:
       label: Permissions Granted
+      description: Check each permission that is on in System Settings › Privacy & Security.
       options:
         - label: Microphone
         - label: Accessibility
         - label: Input Monitoring
+  - type: dropdown
+    id: recording-start
+    attributes:
+      label: How the Recording Started
+      description: For recording or transcription issues.
+      options:
+        - Hold Option
+        - The hands-free key
+        - The Dictate area in the main window
+        - Dictate in the menu bar
+        - Not about a recording
   - type: input
     id: transcription-setup
     attributes:
       label: Transcription Setup
-      description: For transcription issues, include the selected model, language, push-to-talk or toggle mode, and approximate recording duration. Do not include model file paths.
+      description: For transcription issues, include the speech model from Settings › Speech Model, whether Show live transcript was on, and the approximate recording duration. Do not include model file paths.
   - type: textarea
     id: logs
     attributes:

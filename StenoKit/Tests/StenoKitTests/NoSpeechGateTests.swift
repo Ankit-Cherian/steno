@@ -25,7 +25,7 @@ func noSpeechGateEmptyTranscript() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let coordinator = SessionCoordinator(
         captureService: capture,
@@ -62,7 +62,7 @@ func noSpeechGateWhitespaceTranscript() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let coordinator = SessionCoordinator(
         captureService: capture,
@@ -103,7 +103,7 @@ func noSpeechGateNonEmptyTranscriptProceeds() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let coordinator = SessionCoordinator(
         captureService: capture,
@@ -145,7 +145,7 @@ func noSpeechGatePromptEchoTermsTranscript() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let lexicon = PersonalLexiconService()
     await lexicon.upsert(term: "TURSO", preferred: "TURSO", scope: .global)
@@ -195,7 +195,7 @@ func noSpeechGatePromptEchoAppOnlyTranscript() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let coordinator = SessionCoordinator(
         captureService: capture,
@@ -241,7 +241,7 @@ func promptContaminationStripsRepeatedMetadataLabels() async throws {
     let historyURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
-    let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+    let history = HistoryStore(storageURL: historyURL)
 
     let lexicon = PersonalLexiconService()
     await lexicon.upsert(term: "TURSO", preferred: "TURSO", scope: .global)
@@ -285,8 +285,7 @@ func noSpeechGatePreservesSpokenTerms(_ text: String) async throws {
 
     let recorder = InsertCallRecorder()
     let history = HistoryStore(
-        storageURL: directory.appendingPathComponent("history.json"),
-        clipboardService: MemoryClipboardService()
+        storageURL: directory.appendingPathComponent("history.json")
     )
     let lexicon = PersonalLexiconService()
     await lexicon.upsert(term: "TURSO", preferred: "TURSO", scope: .global)

@@ -705,5 +705,4 @@ private actor ProductionBenchmarkHistoryStore: HistoryStoreProtocol {
         )
     }
 
-    func pasteLast() async throws -> TranscriptEntry? { entries.first }
 }

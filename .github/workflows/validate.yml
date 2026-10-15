@@ -73,7 +73,6 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       TEST_RUNNER_STENO_UI_RENDER_OUTPUT: ${{ github.workspace }}/build/ci/renders/app
-      TEST_RUNNER_STENO_OVERLAY_ACCENT_RENDER_OUTPUT: ${{ github.workspace }}/build/ci/renders/accents
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,10 +92,12 @@ jobs:
           cp "$(cat build/ci/coverage-path.txt)" build/ci/package-coverage.json
       - name: Native prompt verification policy
         run: bash scripts/test-whisper-prompt-verification.sh
+      - name: Native window recovery policy
+        run: bash scripts/test-whisper-window-recovery.sh
       - name: Build macOS app
         run: |
           xcodebuild build -project Steno.xcodeproj -scheme Steno \
-            -destination 'platform=macOS' -derivedDataPath build/ci/DerivedData \
+            -configuration Debug -destination 'platform=macOS' -derivedDataPath build/ci/DerivedData \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci/app-build.log
       - name: Hosted tests and production-view renders
         run: |
@@ -106,7 +107,6 @@ jobs:
             -resultBundlePath build/ci/HostedTests.xcresult \
             -enableCodeCoverage YES CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci/hosted-tests.log
           test -s build/ci/renders/app/render-matrix.csv
-          test -s build/ci/renders/accents/overlay-accent-render-receipt.csv
       - name: Upload test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

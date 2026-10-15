@@ -112,6 +112,50 @@ func wordTermsMatchNextToApostrophesAndHyphens() async {
     #expect(result.text == "Steno's menu is Steno-based")
 }
 
+@Test("A correction applies in Chinese, Japanese and Thai, where words have no spaces between them")
+func correctionsApplyInUnspacedScripts() async {
+    let cases: [(term: String, text: String, expected: String)] = [
+        ("斯特诺", "我们用斯特诺写邮件。", "我们用Steno写邮件。"),
+        ("ステノ", "今日はステノで書きました。", "今日はStenoで書きました。"),
+        ("สเตโน", "ฉันใช้สเตโนเขียนอีเมล", "ฉันใช้Stenoเขียนอีเมล"),
+        // A word from a spaced script, written against Japanese with no space.
+        ("steno", "私はstenoを使います。", "私はStenoを使います。"),
+    ]
+    for (term, text, expected) in cases {
+        let result = await applyVocabulary(text, entries: [LexiconEntry(term: term, preferred: "Steno", scope: .global)])
+        #expect(result.text == expected, "\(term) in \(text)")
+    }
+}
+
+@Test("A Thai correction never splits a letter from the vowel or tone mark written on it")
+func thaiCorrectionKeepsMarksWithTheirLetter() async {
+    let entry = LexiconEntry(term: "บา", preferred: "Ba", scope: .global)
+    // "บ้าน": the tone mark sits on บ, so บา is not in it as written.
+    let result = await applyVocabulary("ไปบ้านบา", entries: [entry])
+    #expect(result.text == "ไปบ้านBa")
+    let marked = await applyVocabulary("ส่งให้กิน", entries: [LexiconEntry(term: "ก", preferred: "K", scope: .global)])
+    #expect(marked.text == "ส่งให้กิน")
+}
+
+@Test("Fix a Word's correction for later dictations applies to a later Chinese dictation")
+func wordFixCorrectionAppliesToLaterChineseDictation() async throws {
+    let entry = TranscriptEntry(appBundleID: "com.apple.Notes", rawText: "我们用斯特诺写邮件。", cleanText: "我们用斯特诺写邮件。",
+                                audioURL: nil, insertionStatus: .inserted)
+    let fixed = try entry.applyingWordFix(original: "斯特诺", occurrence: 0, replacement: "Steno", appliesToFuture: true)
+    let correction = try #require(fixed.futureCorrectionForLastFix())
+    let later = await applyVocabulary("明天把斯特诺的设置发给我。", entries: [correction])
+    #expect(later.text == "明天把Steno的设置发给我。")
+}
+
+@Test("In spaced languages a term still matches only as a whole word")
+func spacedLanguagesStillMatchWholeWords() async {
+    let entry = LexiconEntry(term: "steno", preferred: "Steno", scope: .global)
+    let result = await applyVocabulary("stenography xsteno steno_kit steno2 open steno now", entries: [entry])
+    #expect(result.text == "stenography xsteno steno_kit steno2 open Steno now")
+    let cyrillic = await applyVocabulary("стено стенограф", entries: [LexiconEntry(term: "стено", preferred: "Стено", scope: .global)])
+    #expect(cyrillic.text == "Стено стенограф")
+}
+
 @Test("Entries that can never apply are ignored")
 func unusableEntriesAreIgnored() async {
     let entries = [

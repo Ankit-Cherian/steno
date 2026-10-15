@@ -7,17 +7,29 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var accent: StenoAccentStyle
         var recordHeroStyle: StenoRecordHeroStyle
         var atmosphereIntensity: Int
+        /// Since 1.1. Absent means numbered lines, the default.
+        var showsLineNumbers: Bool?
 
+        /// Whether transcript pages number their lines.
+        var lineNumbersVisible: Bool {
+            get { showsLineNumbers ?? true }
+            set { showsLineNumbers = newValue }
+        }
+
+        /// Defaults for new preferences only (since 1.1: follow the system, cobalt accent).
+        /// Saved files decode through `init(from:)`, which keeps the 1.0 fallbacks.
         init(
-            mode: StenoAppearanceMode = .dark,
-            accent: StenoAccentStyle = .citron,
+            mode: StenoAppearanceMode = .system,
+            accent: StenoAccentStyle = .dodger,
             recordHeroStyle: StenoRecordHeroStyle = .pill,
-            atmosphereIntensity: Int = 100
+            atmosphereIntensity: Int = 100,
+            showsLineNumbers: Bool? = nil
         ) {
             self.mode = mode
             self.accent = accent
             self.recordHeroStyle = recordHeroStyle
             self.atmosphereIntensity = atmosphereIntensity
+            self.showsLineNumbers = showsLineNumbers
         }
 
         /// Files written before appearance settings existed keep the original accent.
@@ -33,6 +45,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 fallback: .pill
             ) ?? .pill
             atmosphereIntensity = try container.decodeIfPresent(Int.self, forKey: .atmosphereIntensity) ?? 100
+            showsLineNumbers = try? container.decodeIfPresent(Bool.self, forKey: .showsLineNumbers)
         }
 
         mutating func normalize() {
@@ -44,11 +57,20 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var launchAtLoginEnabled: Bool
         var showDockIcon: Bool
         var showOnboarding: Bool
+        /// Successful insertions that said where the text went, counted up to
+        /// `DictationResultPresentation.wordsNoticeLimit`. Nil means none yet.
+        var successNoticesShown: Int?
 
-        init(launchAtLoginEnabled: Bool, showDockIcon: Bool, showOnboarding: Bool) {
+        init(
+            launchAtLoginEnabled: Bool,
+            showDockIcon: Bool,
+            showOnboarding: Bool,
+            successNoticesShown: Int? = nil
+        ) {
             self.launchAtLoginEnabled = launchAtLoginEnabled
             self.showDockIcon = showDockIcon
             self.showOnboarding = showOnboarding
+            self.successNoticesShown = successNoticesShown
         }
 
         init(from decoder: Decoder) throws {
@@ -56,6 +78,40 @@ struct AppPreferences: Codable, Sendable, Equatable {
             launchAtLoginEnabled = try container.decodeIfPresent(Bool.self, forKey: .launchAtLoginEnabled) ?? false
             showDockIcon = try container.decodeIfPresent(Bool.self, forKey: .showDockIcon) ?? true
             showOnboarding = try container.decodeIfPresent(Bool.self, forKey: .showOnboarding) ?? false
+            // A counter that can't be read starts again rather than resetting this section.
+            successNoticesShown = (try? container.decodeIfPresent(Int.self, forKey: .successNoticesShown)) ?? nil
+        }
+    }
+
+    /// Recording behaviour added in 1.1. Every field is optional, so files
+    /// written by this version stay readable by 1.0.x.
+    struct Recording: Codable, Sendable, Equatable {
+        /// The Core Audio UID of the chosen microphone. Nil follows the system
+        /// input.
+        var inputDeviceID: String?
+        /// The After inserting setting: "matters" (the default when nil),
+        /// "always" or "nothing".
+        var afterInserting: String?
+        /// The Paste Last Dictation shortcut as `GlobalShortcut` text. Nil
+        /// means unassigned, the default.
+        var pasteLastShortcut: String?
+
+        init(
+            inputDeviceID: String? = nil,
+            afterInserting: String? = nil,
+            pasteLastShortcut: String? = nil
+        ) {
+            self.inputDeviceID = inputDeviceID
+            self.afterInserting = afterInserting
+            self.pasteLastShortcut = pasteLastShortcut
+        }
+
+        var successNoticeStyle: SuccessNoticeStyle {
+            SuccessNoticeStyle(preferenceValue: afterInserting)
+        }
+
+        var pasteLastGlobalShortcut: GlobalShortcut? {
+            GlobalShortcut(preferenceValue: pasteLastShortcut)
         }
     }
 
@@ -273,6 +329,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var dictation: Dictation
     var insertion: Insertion
     var media: Media
+    var recording = Recording()
 
     var lexiconEntries: [LexiconEntry]
     var globalStyleProfile: StyleProfile
@@ -342,6 +399,9 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         insertion.orderedMethods = normalized
         dictation.threadCount = max(1, min(16, dictation.threadCount))
+        if recording.inputDeviceID?.isEmpty == true {
+            recording.inputDeviceID = nil
+        }
     }
 }
 
@@ -358,6 +418,7 @@ extension AppPreferences {
         dictation = Self.section(.dictation, in: container) ?? defaults.dictation
         insertion = Self.section(.insertion, in: container) ?? defaults.insertion
         media = Self.section(.media, in: container) ?? defaults.media
+        recording = Self.section(.recording, in: container) ?? defaults.recording
         lexiconEntries = Self.section(.lexiconEntries, in: container, as: LossyArray<LexiconEntry>.self)?
             .elements ?? defaults.lexiconEntries
         globalStyleProfile = Self.section(.globalStyleProfile, in: container) ?? defaults.globalStyleProfile

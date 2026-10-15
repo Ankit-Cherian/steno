@@ -28,7 +28,7 @@ private func seededController(
 
     let controller = makeTestDictationController(
         hotkey: HistoryTestHotkeyService(),
-        historyStore: HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService()),
+        historyStore: HistoryStore(storageURL: historyURL),
         usageAnalyticsStore: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
         legacyHistoryURL: directory.appendingPathComponent("absent-legacy.json")
     )
@@ -47,11 +47,11 @@ func historyShowsEntriesOlderThanAMonth() async throws {
     await controller.refreshHistory()
 
     #expect(controller.recentEntries.map(\.id) == entries.map(\.id))
-    let listed = HistoryTab.entries(controller.recentEntries, matching: "", filter: .all)
+    let listed = HistoryRules.entries(controller.recentEntries, matching: "", filter: .all)
     #expect(listed.map(\.id) == entries.map(\.id))
-    let found = HistoryTab.entries(controller.recentEntries, matching: "note 4", filter: .all)
+    let found = HistoryRules.entries(controller.recentEntries, matching: "note 4", filter: .all)
     #expect(found.map(\.id) == [entries[4].id])
-    let inserted = HistoryTab.entries(controller.recentEntries, matching: "archived", filter: .inserted)
+    let inserted = HistoryRules.entries(controller.recentEntries, matching: "archived", filter: .inserted)
     #expect(inserted.count == entries.count)
 }
 

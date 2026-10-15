@@ -155,3 +155,33 @@ func exactTargetTimeoutIsReportedAsTimeout() async throws {
     #expect(pasteboard.plainText == "slow app")
 }
 #endif
+
+#if os(macOS)
+@Test(
+    "A target another app has replaced at the front is copied as app changed, not as not responding",
+    arguments: [defaultInsertionOrder, [InsertionMethod.clipboardPaste]]
+)
+func productionPathReportsAnotherAppInFront(order: [InsertionMethod]) async {
+    let keys = FakeKeyPoster()
+    let activator = FakeApplicationActivator()
+    let accessibility = FakeAccessibilityClient()
+    // A newly launched app took the front during the dictation, and macOS
+    // declines Steno's request to bring the target back.
+    activator.switchToOtherApp("com.example.JustLaunched", targetRefusesActivation: true)
+    accessibility.focusOtherApp("com.example.JustLaunched")
+    let service = makeProductionInsertionService(
+        order: order,
+        clipboard: FakePasteboard(),
+        keys: keys,
+        activator: activator,
+        accessibility: accessibility
+    )
+
+    let result = await service.insert(text: "meant for the editor", target: productionPathContext)
+
+    #expect(result.status == .copiedOnly)
+    #expect(result.copyReason == .appChanged)
+    #expect(result.errorMessage == "Another app was in front—final text copied.")
+    #expect(keys.events.isEmpty)
+}
+#endif

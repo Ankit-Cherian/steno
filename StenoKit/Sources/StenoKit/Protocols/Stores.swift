@@ -27,9 +27,6 @@ public protocol HistoryStoreProtocol: Sendable {
         profile: StyleProfile,
         lexicon: PersonalLexicon
     ) async throws -> CleanTranscript
-
-    /// Retrieves the most recent transcript entry for paste-last functionality.
-    func pasteLast() async throws -> TranscriptEntry?
 }
 
 /// Persists privacy-preserving per-session usage metrics without transcript text.
@@ -78,6 +75,29 @@ public protocol InsertionServiceProtocol: Sendable {
         editorTarget: EditorTargetHandle?,
         insertionGuard: InsertionTargetGuard?,
         clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization
+    ) async -> InsertResult
+
+    /// Like the refusal-checked insert, for text meant for a secure field:
+    /// `concealsCopy` marks every copy of it as concealed.
+    func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?,
+        insertionGuard: InsertionTargetGuard?,
+        clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization,
+        concealsCopy: Bool
+    ) async -> InsertResult
+
+    /// Puts `text` on the clipboard without activating any app or sending a
+    /// keystroke, for a dictation whose target is no longer in front. The
+    /// result is `.copiedOnly` with `reason`, or `.failed` when nothing was copied.
+    /// `concealed` marks the copy for a dictation meant for a secure field.
+    func copyWithoutInserting(
+        text: String,
+        reason: InsertionCopyReason,
+        concealed: Bool,
         commitAuthorization: InsertionCommitAuthorization
     ) async -> InsertResult
     #endif
@@ -144,6 +164,44 @@ public extension InsertionServiceProtocol {
             editorTarget: editorTarget,
             clipboardRecoveryText: clipboardRecoveryText,
             commitAuthorization: commitAuthorization
+        )
+    }
+
+    /// Services that cannot conceal a copy insert as before.
+    func insert(
+        text: String,
+        target: AppContext,
+        editorTarget: EditorTargetHandle?,
+        insertionGuard: InsertionTargetGuard?,
+        clipboardRecoveryText: String,
+        commitAuthorization: InsertionCommitAuthorization,
+        concealsCopy: Bool
+    ) async -> InsertResult {
+        await insert(
+            text: text,
+            target: target,
+            editorTarget: editorTarget,
+            insertionGuard: insertionGuard,
+            clipboardRecoveryText: clipboardRecoveryText,
+            commitAuthorization: commitAuthorization
+        )
+    }
+
+    /// Services without a clipboard path copy nothing.
+    func copyWithoutInserting(
+        text: String,
+        reason: InsertionCopyReason,
+        concealed: Bool,
+        commitAuthorization: InsertionCommitAuthorization
+    ) async -> InsertResult {
+        _ = reason
+        _ = concealed
+        _ = commitAuthorization
+        return InsertResult(
+            status: .failed,
+            method: .none,
+            insertedText: text,
+            errorMessage: "No clipboard is available to copy the text."
         )
     }
     #endif

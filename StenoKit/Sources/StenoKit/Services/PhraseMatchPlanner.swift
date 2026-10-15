@@ -10,22 +10,34 @@ enum PhraseMatchPlanner {
         var payload: Payload
     }
 
-    private static let wordCharacter = #"[\p{L}\p{N}_]"#
+    private static let unspaced = "[" + WordFixLocator.unspacedScalars
+        .map { String(format: "\\x{%X}-\\x{%X}", $0.lowerBound, $0.upperBound) }.joined() + "]"
+    /// A letter, digit or underscore of a script that puts spaces between words. Chinese,
+    /// Japanese and Thai letters are left out: next to one of them, a word can start or end.
+    private static let wordCharacter = "[[\\p{L}\\p{N}_]--\(unspaced)]"
     private static let tokenJoiner = #"[.@/]"#
 
     /// A case-insensitive pattern for `phrase` with lookaround boundaries rather than `\b`, so
     /// phrases such as `C++`, `C#`, `.NET`, `v1.2` or `;sig` match on their own but never inside a
     /// longer token, an email address or a path. Whitespace inside the phrase matches any run of
     /// whitespace. Returns nil for a blank phrase.
+    ///
+    /// Chinese, Japanese, Thai and the other scripts written without spaces have no visible edge
+    /// between words, so a phrase that starts or ends in one of them matches next to any letter
+    /// on that side, as Fix a Word finds the word. It never ends before a combining mark, which
+    /// belongs to the letter before it.
     static func regex(for phrase: String) -> NSRegularExpression? {
         let parts = phrase.split(whereSeparator: \.isWhitespace).map {
             NSRegularExpression.escapedPattern(for: String($0))
         }
-        guard parts.isEmpty == false else { return nil }
+        guard parts.isEmpty == false, let first = phrase.first(where: { !$0.isWhitespace }),
+              let last = phrase.last(where: { !$0.isWhitespace }) else { return nil }
         let body = parts.joined(separator: #"\s+"#)
-        let pattern = "(?<!\(wordCharacter))(?<![\\p{L}\\p{N}]\(tokenJoiner))"
+        let start = WordFixLocator.isUnspaced(first) ? "" : "(?<!\(wordCharacter))"
+        let end = WordFixLocator.isUnspaced(last) ? #"(?!\p{M})"# : "(?!\(wordCharacter))"
+        let pattern = start + "(?<![\\p{L}\\p{N}]\(tokenJoiner))"
             + body
-            + "(?!\(wordCharacter))(?!\(tokenJoiner)[\\p{L}\\p{N}])"
+            + end + "(?!\(tokenJoiner)[\\p{L}\\p{N}])"
         return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }
 

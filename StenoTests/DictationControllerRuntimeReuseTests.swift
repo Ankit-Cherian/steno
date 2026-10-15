@@ -22,7 +22,7 @@ struct DictationControllerRuntimeReuseTests {
             mediaInterruption: IsolatedTestMediaService(),
             preferencesStore: AppPreferencesStore(storageURL: directory.appendingPathComponent("preferences.json")),
             transcriptionEngineFactory: { settings in engines.build(settings) },
-            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json"), clipboardService: clipboard),
+            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json")),
             usageAnalyticsStore: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
             legacyHistoryURL: directory.appendingPathComponent("legacy.json"),
             systemIntegrationsEnabled: false
@@ -76,7 +76,7 @@ struct DictationControllerRuntimeReuseTests {
             mediaInterruption: IsolatedTestMediaService(),
             preferencesStore: AppPreferencesStore(storageURL: directory.appendingPathComponent("preferences.json")),
             transcriptionEngineFactory: { settings in engines.build(settings) },
-            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json"), clipboardService: clipboard),
+            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json")),
             usageAnalyticsStore: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
             legacyHistoryURL: directory.appendingPathComponent("legacy.json"),
             systemIntegrationsEnabled: false
@@ -123,7 +123,7 @@ extension DictationControllerRuntimeReuseTests {
             mediaInterruption: IsolatedTestMediaService(),
             preferencesStore: AppPreferencesStore(storageURL: directory.appendingPathComponent("preferences.json")),
             transcriptionEngineFactory: { settings in engines.build(settings) },
-            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json"), clipboardService: clipboard),
+            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json")),
             usageAnalyticsStore: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
             legacyHistoryURL: directory.appendingPathComponent("legacy.json"),
             systemIntegrationsEnabled: false

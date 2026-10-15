@@ -3,150 +3,166 @@ import StenoKit
 
 struct CleanupStyleSettingsSection: View {
     @Binding var preferences: AppPreferences
-    @State private var newStyleBundleID: String = ""
-    @State private var newStyleProfile: StyleProfile = .init(
-        name: "App Override",
-        tone: .professional,
-        structureMode: .paragraph,
-        fillerPolicy: .balanced,
-        commandPolicy: .transform
-    )
+    /// Why the last app chosen was not added, or nil.
+    @State private var appProblem: String?
+    @Environment(\.quillTheme) private var theme
+
+    static let layouts: [(StructureMode, String)] = [(.natural, "As spoken"), (.paragraph, "Paragraphs"), (.bullets, "Bullets")]
+    static let fillers: [(FillerPolicy, String)] = [(.minimal, "Light"), (.balanced, "Balanced"), (.aggressive, "Thorough")]
+    static let commands: [(CommandPolicy, String)] = [(.transform, "Clean up"), (.passthrough, "Keep as spoken")]
 
     var body: some View {
-        settingsCardWithSubtitle(
-            "Default style",
-            subtitle: "Applies to every app unless you add an override below."
-        ) {
-            VStack(alignment: .leading, spacing: 0) {
-                pickerRow(
-                    "Structure",
-                    description: "How the output text is formatted",
-                    selection: effectiveStructure($preferences.globalStyleProfile.structureMode),
-                    options: StructureMode.selectableCases
-                )
-                Divider()
-                pickerRow(
-                    "Filler removal",
-                    description: "Minimal and Balanced preserve your spoken words, including phrases such as “like” and “you know.” Aggressive removal is an explicit opt-in and can remove more fillers.",
-                    selection: $preferences.globalStyleProfile.fillerPolicy
-                )
-                Divider()
-                pickerRow(
-                    "Commands",
-                    description: "Whether /slash commands pass through raw",
-                    selection: $preferences.globalStyleProfile.commandPolicy
-                )
-            }
-
-            DisclosureGroup(
-                "Per-app overrides (\(preferences.appStyleProfiles.count) configured)"
-            ) {
-                VStack(alignment: .leading, spacing: StenoDesign.sm) {
-                    if preferences.appStyleProfiles.isEmpty {
-                        Text("No app overrides yet. Add a bundle ID to customize cleanup per app.")
-                            .foregroundStyle(StenoDesign.textSecondary)
-                    } else {
-                        ForEach(preferences.appStyleProfiles.keys.sorted(), id: \.self) { bundleID in
-                            entryRow(
-                                leading: bundleID,
-                                trailing: preferences.appStyleProfiles[bundleID]?.name ?? "Profile"
-                            ) {
-                                preferences.appStyleProfiles.removeValue(forKey: bundleID)
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    TextField("Bundle ID", text: $newStyleBundleID)
-                        .textFieldStyle(.roundedBorder)
-
-                    HStack(spacing: StenoDesign.sm) {
-                        Picker("Structure", selection: $newStyleProfile.structureMode) {
-                            ForEach(StructureMode.selectableCases, id: \.self) { mode in
-                                Text(mode.rawValue.capitalized).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                    }
-                    HStack(spacing: StenoDesign.sm) {
-                        enumPicker("Filler", selection: $newStyleProfile.fillerPolicy)
-                        enumPicker("Commands", selection: $newStyleProfile.commandPolicy)
-                    }
-
-                    HStack {
-                        Spacer()
-                        Button {
-                            guard !newStyleBundleID.isEmpty else { return }
-                            preferences.appStyleProfiles[newStyleBundleID] = newStyleProfile
-                            newStyleBundleID = ""
-                            newStyleProfile = .init(
-                                name: "App Override",
-                                tone: .professional,
-                                structureMode: .paragraph,
-                                fillerPolicy: .balanced,
-                                commandPolicy: .transform
-                            )
-                        } label: {
-                            Label("Add override", systemImage: "plus")
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(newStyleBundleID.isEmpty)
-                    }
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsPageHeader(
+                section: .cleanup,
+                intro: "What Steno cleans up before inserting. The original words are always saved in History."
+            )
+            SettingsCard(title: "Everywhere") {
+                SettingsRow(label: "Layout", help: "How the text is arranged.") {
+                    layoutPicker(effective($preferences.globalStyleProfile.structureMode), style: .segmented)
                 }
-                .padding(.top, StenoDesign.sm)
+                SettingsRow(
+                    label: "Filler words",
+                    help: "Light and Balanced keep every filler word. Thorough removes um, uh, I mean, basically, sort of and kind of, and can change meaning, so check the result."
+                ) {
+                    fillerPicker($preferences.globalStyleProfile.fillerPolicy, style: .segmented)
+                }
+                SettingsRow(
+                    label: "Slash commands",
+                    help: "For a dictation that starts with “/”. Keep as spoken leaves the command as you said it; Clean up treats it like any other text."
+                ) {
+                    Picker("Slash commands", selection: $preferences.globalStyleProfile.commandPolicy) {
+                        ForEach(Self.commands, id: \.0) { Text($0.1).tag($0.0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                }
+            }
+            .padding(.top, -16)
+            SettingsCard(title: "For specific apps") {
+                ForEach(appBundleIDs, id: \.self) { bundleID in
+                    appRow(bundleID)
+                }
+                HStack {
+                    Button {
+                        addApp()
+                    } label: {
+                        Label("Add an App…", systemImage: "plus")
+                    }
+                    .settingsButton(.secondary)
+                    Spacer()
+                }
+                .settingsRowInset(vertical: 11)
+                if let appProblem {
+                    SettingsCautionLine(text: appProblem).settingsRowInset(vertical: 6)
+                }
             }
         }
+    }
+
+    private var appBundleIDs: [String] {
+        preferences.appStyleProfiles.keys.sorted {
+            AppIdentity.name(for: $0).localizedCaseInsensitiveCompare(AppIdentity.name(for: $1)) == .orderedAscending
+        }
+    }
+
+    private func appRow(_ bundleID: String) -> some View {
+        HStack(spacing: 10) {
+            AppIconTile(bundleID: bundleID)
+            Text(AppIdentity.name(for: bundleID))
+                .settingsFont(.label)
+                .foregroundStyle(theme.ink)
+            Spacer(minLength: 8)
+            layoutPicker(profileBinding(bundleID, \.structureMode, effective: true), style: .menu)
+            fillerPicker(profileBinding(bundleID, \.fillerPolicy), style: .menu)
+            Button("Remove") { preferences.appStyleProfiles.removeValue(forKey: bundleID) }
+                .settingsButton(.quiet)
+                .accessibilityLabel("Remove \(AppIdentity.name(for: bundleID))")
+        }
+        .settingsRowInset(vertical: 10)
+        .accessibilityElement(children: .contain)
+    }
+
+    private enum PickerKind { case segmented, menu }
+
+    @ViewBuilder
+    private func layoutPicker(_ selection: Binding<StructureMode>, style: PickerKind) -> some View {
+        let picker = Picker("Layout", selection: selection) {
+            ForEach(Self.layouts, id: \.0) { Text($0.1).tag($0.0) }
+        }
+        .labelsHidden()
+        .fixedSize()
+        if style == .segmented { picker.pickerStyle(.segmented) } else { picker.pickerStyle(.menu) }
+    }
+
+    @ViewBuilder
+    private func fillerPicker(_ selection: Binding<FillerPolicy>, style: PickerKind) -> some View {
+        let picker = Picker("Filler words", selection: selection) {
+            ForEach(Self.fillers, id: \.0) { Text($0.1).tag($0.0) }
+        }
+        .labelsHidden()
+        .fixedSize()
+        if style == .segmented { picker.pickerStyle(.segmented) } else { picker.pickerStyle(.menu) }
     }
 
     /// Shows a saved Email or Command structure as the structure it behaves like. The saved value
     /// changes only when another structure is picked.
-    private func effectiveStructure(_ binding: Binding<StructureMode>) -> Binding<StructureMode> {
+    private func effective(_ binding: Binding<StructureMode>) -> Binding<StructureMode> {
+        Binding(get: { binding.wrappedValue.effective }, set: { binding.wrappedValue = $0 })
+    }
+
+    private func profileBinding<Value>(
+        _ bundleID: String,
+        _ keyPath: WritableKeyPath<StyleProfile, Value>,
+        effective: Bool = false
+    ) -> Binding<Value> {
         Binding(
-            get: { binding.wrappedValue.effective },
-            set: { binding.wrappedValue = $0 }
+            get: {
+                let value = preferences.appStyleProfiles[bundleID]?[keyPath: keyPath]
+                    ?? preferences.globalStyleProfile[keyPath: keyPath]
+                if effective, let mode = value as? StructureMode, let shown = mode.effective as? Value {
+                    return shown
+                }
+                return value
+            },
+            set: { preferences.appStyleProfiles[bundleID]?[keyPath: keyPath] = $0 }
         )
     }
 
-    private func longestOption<T: RawRepresentable>(in options: [T]) -> String where T.RawValue == String {
-        options
-            .map { $0.rawValue.capitalized }
-            .max(by: { $0.count < $1.count }) ?? ""
-    }
-
-    @ViewBuilder
-    private func pickerRow<T: Hashable & CaseIterable & RawRepresentable>(
-        _ label: String,
-        description: String,
-        selection: Binding<T>,
-        options: [T] = Array(T.allCases)
-    ) -> some View where T.RawValue == String {
-        VStack(alignment: .leading, spacing: StenoDesign.xxs) {
-            HStack(spacing: StenoDesign.sm) {
-                Text(label)
-                    .frame(width: 100, alignment: .leading)
-                ZStack(alignment: .leading) {
-                    // Invisible sizing text — widest option sets minimum width
-                    Text(longestOption(in: options))
-                        .padding(.horizontal, 28)
-                        .opacity(0)
-                        .accessibilityHidden(true)
-                    Picker(label, selection: selection) {
-                        ForEach(options, id: \.self) { value in
-                            Text(value.rawValue.capitalized).tag(value)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                }
-                .fixedSize()
-                Spacer()
+    private func addApp() {
+        switch AppIdentity.chooseApp() {
+        case .cancelled:
+            appProblem = nil
+        case .noIdentifier:
+            appProblem = AppIdentity.noIdentifierMessage
+        case .app(let bundleID):
+            guard preferences.appStyleProfiles[bundleID] == nil else {
+                appProblem = "\(AppIdentity.name(for: bundleID)) already has an override."
+                return
             }
-            Text(description)
-                .font(StenoDesign.caption())
-                .foregroundStyle(StenoDesign.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            appProblem = nil
+            var profile = preferences.globalStyleProfile
+            profile.name = "App Override"
+            preferences.appStyleProfiles[bundleID] = profile
         }
-        .padding(.vertical, 12)
+    }
+}
+
+/// An app's own icon, with no tile behind it.
+struct AppIconTile: View {
+    let bundleID: String
+    @Environment(\.quillTheme) private var theme
+
+    var body: some View {
+        ZStack {
+            if let icon = AppIdentity.icon(for: bundleID) {
+                Image(nsImage: icon).resizable().frame(width: 18, height: 18)
+            } else {
+                Image(systemName: "app").font(.system(size: 12)).foregroundStyle(theme.ink3)
+            }
+        }
+        .frame(width: 22, height: 22)
+        .accessibilityHidden(true)
     }
 }

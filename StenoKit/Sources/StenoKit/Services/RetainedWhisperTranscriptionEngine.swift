@@ -36,7 +36,7 @@ public enum LiveTranscriptionFinalizationError: Error, LocalizedError, Equatable
     case authoritativeFallbackExhausted
 
     public var errorDescription: String? {
-        "This dictation couldn't be transcribed. Try again, and if it keeps failing, use Test setup in Settings > Speech model."
+        "This dictation couldn't be transcribed. Try again, and if it keeps failing, use Test setup in Settings > Speech Model."
     }
 }
 
@@ -159,6 +159,7 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
     private var configuration: RetainedWhisperTranscriptionConfiguration
     private let sessionFactory: any WhisperRuntimeSessionFactory
     private let fallback: any TranscriptionEngine
+    private let stepObserver: DictationStepObserver
     private var session: (any WhisperRuntimeSession)?
     private var sessionIdentity: RetainedWhisperTranscriptionConfiguration.LoadIdentity?
     private var sessionShutdownTask: Task<Void, Never>?
@@ -184,20 +185,24 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
     init(
         configuration: RetainedWhisperTranscriptionConfiguration,
         sessionFactory: any WhisperRuntimeSessionFactory,
-        fallback: any TranscriptionEngine
+        fallback: any TranscriptionEngine,
+        stepObserver: @escaping DictationStepObserver = { _ in }
     ) {
         self.configuration = configuration
         self.sessionFactory = sessionFactory
         self.fallback = fallback
+        self.stepObserver = stepObserver
     }
 
     public init(
         configuration: RetainedWhisperTranscriptionConfiguration,
-        fallback: any TranscriptionEngine
+        fallback: any TranscriptionEngine,
+        stepObserver: @escaping DictationStepObserver = { _ in }
     ) {
         self.configuration = configuration
         self.sessionFactory = ProcessWhisperStreamingRuntimeSessionFactory()
         self.fallback = fallback
+        self.stepObserver = stepObserver
     }
 
     public func startLiveTranscription(
@@ -745,7 +750,9 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
                 bestOf: configuration.bestOf
             )
 
+            stepObserver(.helperRequested)
             let data = try await runtimeSession.transcribe(runtimeRequest)
+            stepObserver(.helperReplied)
             try Task.checkCancellation()
             guard activeRequestID == requestID, generation == requestGeneration else {
                 throw RetainedWhisperRuntimeError.staleResponse
@@ -753,6 +760,7 @@ public actor RetainedWhisperTranscriptionEngine: LiveTranscriptionEngine {
             guard let transcript = WhisperTranscriptDecoder.decodeRichJSON(data) else {
                 throw RetainedWhisperRuntimeError.invalidResponse
             }
+            stepObserver(.artifactsStripped)
             return transcript
         } catch is CancellationError {
             beginSessionShutdown()

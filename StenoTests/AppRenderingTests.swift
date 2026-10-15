@@ -21,7 +21,6 @@ struct AppRenderingTests {
         controller.downloadWhisperModel(.smallEn)
         controller.copyEntry(entries[0])
         controller.pasteEntry(entries[0])
-        controller.pasteLastTranscript()
         controller.deleteEntry(entries[0])
         controller.retryCleanup(for: entries[0])
         var preferences = controller.preferences
@@ -41,120 +40,90 @@ struct AppRenderingTests {
 
     @Test("Production views render with synthetic content across window and accessibility states")
     func renderMatrix() async throws {
-        AppFontRegistry.registerIfNeeded()
+        typealias Harness = GroveRenderHarness
         let root = ProcessInfo.processInfo.environment["STENO_UI_RENDER_OUTPUT"]
             .map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("StenoUIRendering", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        var receipt: [String] = ["surface,appearance,width,height,populated,accessibility,png_bytes"]
+        let pngs = root.appendingPathComponent("render-matrix", isDirectory: true)
+        try FileManager.default.createDirectory(at: pngs, withIntermediateDirectories: true)
+        var receipt = ["surface,appearance,width,height,populated,accessibility,png_bytes"]
+        func write(_ data: Data, _ name: String, _ variant: Harness.Variant, _ size: CGSize, populated: Bool, accessible: Bool) throws {
+            #expect(data.count > 8_000, "\(name)")
+            try data.write(to: pngs.appendingPathComponent(name + ".png"))
+            receipt.append("\(name),\(variant.scheme),\(size.width),\(size.height),\(populated),\(accessible),\(data.count)")
+        }
         let sizes: [(String, CGSize)] = [
-            ("minimum", CGSize(width: StenoDesign.windowMinWidth, height: StenoDesign.windowMinHeight)),
-            ("default", CGSize(width: StenoDesign.windowIdealWidth, height: StenoDesign.windowIdealHeight)),
-            ("large", CGSize(width: 1440, height: 1000))
+            ("minimum", CGSize(width: MainWindowMetrics.minWidth, height: MainWindowMetrics.minHeight)),
+            ("default", CGSize(width: MainWindowMetrics.idealWidth, height: MainWindowMetrics.idealHeight)),
+            ("large", CGSize(width: 1440, height: 1000)),
         ]
-        let previousDirection = StenoDesign.reviewDirectionOverride
-        defer { StenoDesign.reviewDirectionOverride = previousDirection }
-        for direction in StenoDesignDirection.allCases {
-            StenoDesign.reviewDirectionOverride = direction
-            let root = root.appendingPathComponent(direction.rawValue, isDirectory: true)
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        for appearance in [ColorScheme.light, .dark] {
+        let minimum = sizes[0].1
+        let settingsSize = GroveSettingsRenderingTests.windowSize
+        let settingsBase = SettingsWindowRenderingTests()
+
+        for variant in [Harness.Variant.light, .dark] {
             for populated in [false, true] {
-                let controller = IsolatedAppPreview.makeController(populated: populated)
-                controller.preferences.appearance.mode = appearance == .light ? .light : .dark
-                controller.preferences.appearance.accent = .dodger
+                let controller = Harness.sampleController(variant, populated: populated)
                 for (sizeName, size) in sizes {
                     for tab in StenoTab.allCases {
-                        let name = "\(tab.rawValue.lowercased())-\(appearance)-\(populated ? "populated" : "empty")-\(sizeName)"
-                        let data = try await render(ContentView(initialTab: tab), controller: controller,
-                            appearance: appearance, size: size, accessibility: false)
-                        try data.write(to: root.appendingPathComponent(name + ".png"))
-                        receipt.append("\(direction.rawValue)/\(name),\(appearance),\(size.width),\(size.height),\(populated),false,\(data.count)")
+                        let name = "\(tab.rawValue.lowercased())-\(variant.scheme)-\(populated ? "populated" : "empty")-\(sizeName)"
+                        let data = try await Harness.render(ContentView(initialTab: tab), controller: controller, variant: variant, size: size)
+                        try write(data, name, variant, size, populated: populated, accessible: false)
                     }
-                }
-                for section in SettingsSection.allCases {
-                    let name = "settings-\(section.rawValue)-\(appearance)-\(populated ? "populated" : "empty")-accessible"
-                    let size = sizes[0].1
-                    let data = try await render(ContentView(initialTab: .settings, initialSettingsSection: section),
-                        controller: controller, appearance: appearance, size: size, accessibility: true)
-                    try data.write(to: root.appendingPathComponent(name + ".png"))
-                    receipt.append("\(direction.rawValue)/\(name),\(appearance),\(size.width),\(size.height),\(populated),true,\(data.count)")
                 }
                 await controller.teardownAndWait()
             }
-        }
-        for step in 0...3 {
-            let controller = IsolatedAppPreview.makeController(populated: false)
-            controller.microphonePermissionStatus = step == 1 ? .denied : .unknown
-            for appearance in [ColorScheme.light, .dark] {
-                controller.preferences.appearance.mode = appearance == .light ? .light : .dark
-                controller.preferences.appearance.accent = .dodger
-                let name = "onboarding-\(step)-\(appearance)"
-                let data = try await render(OnboardingView(initialStep: step), controller: controller,
-                    appearance: appearance, size: sizes[0].1, accessibility: true)
-                try data.write(to: root.appendingPathComponent(name + ".png"))
-                receipt.append("\(direction.rawValue)/\(name),\(appearance),\(sizes[0].1.width),\(sizes[0].1.height),false,true,\(data.count)")
+
+            // Settings at the largest window text and Increase Contrast.
+            let accessible: Harness.Variant = variant == .light ? .contrast : .contrastDark
+            for section in SettingsSection.allCases {
+                let controller = settingsBase.makeController(variant == .light ? .light : .dark)
+                let view = SettingsView(session: settingsBase.session(for: controller, section: section))
+                    .environment(\.controlActiveState, .active)
+                let data = try await Harness.render(view, controller: controller, variant: accessible, size: settingsSize, textSize: .xxxLarge)
+                try write(data, "settings-\(section.rawValue)-\(variant.scheme)-accessible", variant, settingsSize, populated: true, accessible: true)
+                await controller.teardownAndWait()
             }
-            await controller.teardownAndWait()
-        }
-        for state in ["recording", "finishing", "permission", "copied", "recovery"] {
-            let controller = IsolatedAppPreview.makeController()
-            switch state {
-            case "recording": controller.stageIsolatedPreviewLifecycle(.recordingHandsFree)
-            case "finishing": controller.stageIsolatedPreviewLifecycle(.transcribing)
-            case "permission": controller.microphonePermissionStatus = .denied
-            case "copied": controller.recentEntries = [IsolatedAppPreview.entries[1]]
-            default:
-                controller.lastError = "The editor closed before insertion. Your words are safe in History."
-                controller.hotkeyRegistrationMessage = "The recording shortcut is unavailable. Review Recording settings."
-                controller.recentEntries = [IsolatedAppPreview.entries[3]]
+
+            for (name, step, entry) in [("welcome", 0, nil), ("permissions", 1, nil), ("first-dictation", 2, nil),
+                                         ("done", 2, SettingsPreviewData.firstDictation)] as [(String, Int, TranscriptEntry?)] {
+                let controller = settingsBase.makeController(variant == .light ? .light : .dark, populated: false)
+                if step == 1 { controller.permissionPreview(microphone: .granted, accessibility: .denied, inputMonitoring: .denied) }
+                let view = OnboardingView(initialStep: step, previewFirstDictation: entry)
+                let data = try await Harness.render(view, controller: controller, variant: variant, size: minimum)
+                try write(data, "setup-\(name)-\(variant.scheme)", variant, minimum, populated: false, accessible: false)
+                await controller.teardownAndWait()
             }
-            for appearance in [ColorScheme.light, .dark] {
-                controller.preferences.appearance.mode = appearance == .light ? .light : .dark
-                controller.preferences.appearance.accent = .dodger
-                let name = "record-\(state)-\(appearance)"
-                let data = try await render(ContentView(), controller: controller,
-                    appearance: appearance, size: sizes[0].1, accessibility: true)
-                try data.write(to: root.appendingPathComponent(name + ".png"))
-                receipt.append("\(direction.rawValue)/\(name),\(appearance),\(sizes[0].1.width),\(sizes[0].1.height),true,true,\(data.count)")
-            }
-            await controller.teardownAndWait()
-        }
-        for appearance in [ColorScheme.light, .dark] {
+
             for state in ["insights-loading", "insights-error", "history-long", "permissions-denied", "inactive-window"] {
-                let controller = IsolatedAppPreview.makeController(populated: state == "history-long" || state == "inactive-window")
-                controller.preferences.appearance.mode = appearance == .light ? .light : .dark
-                controller.preferences.appearance.accent = .dodger
-                let content: AnyView
+                let controller = Harness.sampleController(variant, populated: state == "history-long" || state == "inactive-window")
+                let view: AnyView
+                var size = minimum
                 switch state {
                 case "insights-loading":
                     controller.isLoadingUsageAnalytics = true
-                    content = AnyView(ContentView(initialTab: .insights))
+                    view = AnyView(ContentView(initialTab: .insights))
                 case "insights-error":
                     controller.usageAnalyticsError = "The local activity file could not be read. Try again."
-                    content = AnyView(ContentView(initialTab: .insights))
+                    view = AnyView(ContentView(initialTab: .insights))
                 case "history-long":
-                    content = AnyView(HistoryTab(initialSelectedEntryID: controller.recentEntries[2].id)
-                        .foregroundStyle(StenoDesign.theme(for: controller.preferences).text)
-                        .background(StenoDesign.theme(for: controller.preferences).ink0))
+                    view = AnyView(ContentView(initialTab: .history, initialState: .init(historyEntryID: WindowSampleData.latestID)))
                 case "permissions-denied":
-                    controller.microphonePermissionStatus = .denied
-                    controller.accessibilityPermissionStatus = .denied
-                    controller.inputMonitoringPermissionStatus = .denied
-                    content = AnyView(ContentView(initialTab: .settings, initialSettingsSection: .permissions))
-                default: content = AnyView(ContentView())
+                    controller.permissionPreview(microphone: .denied, accessibility: .denied, inputMonitoring: .denied)
+                    size = settingsSize
+                    view = AnyView(SettingsView(session: settingsBase.session(for: controller, section: .permissions))
+                        .environment(\.controlActiveState, .active))
+                default:
+                    view = AnyView(ContentView().environment(\.controlActiveState, .inactive))
                 }
-                let name = "\(state)-\(appearance)"
-                let data = try await render(content, controller: controller, appearance: appearance,
-                    size: sizes[0].1, accessibility: true, active: state != "inactive-window")
-                try data.write(to: root.appendingPathComponent(name + ".png"))
-                receipt.append("\(direction.rawValue)/\(name),\(appearance),\(sizes[0].1.width),\(sizes[0].1.height),true,true,\(data.count)")
+                let data = try await Harness.render(view, controller: controller, variant: variant, size: size)
+                try write(data, "\(state)-\(variant.scheme)", variant, size, populated: true, accessible: false)
                 await controller.teardownAndWait()
             }
         }
-        }
         try receipt.joined(separator: "\n").write(to: root.appendingPathComponent("render-matrix.csv"), atomically: true, encoding: .utf8)
-        #expect(receipt.count == 117)
+        // 1 header + 2 appearances × (2 fills × 3 sizes × 3 tabs + 11 Settings sections + 4 setup steps + 5 states).
+        #expect(receipt.count == 77)
     }
 
     @Test("Recording overlay renders every outcome and bounded long previews offscreen")
@@ -173,12 +142,14 @@ struct AppRenderingTests {
         ]
         for (name, state) in states {
             let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
+            presenter.appearance = .grove
             let data = try #require(presenter.hostedEvidenceRenderPNG(state: state))
             try data.write(to: root.appendingPathComponent("overlay-\(name).png"))
             #expect(data.count > 500)
         }
         for pointSize in [13.0, 22.0] {
             let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
+            presenter.appearance = .grove
             presenter.setHostedAccessibilityPreferences(OverlayAccessibilityPreferences(
                 reduceMotion: true, reduceTransparency: true, increaseContrast: true,
                 preferredBodyPointSize: pointSize))
@@ -204,30 +175,6 @@ struct AppRenderingTests {
         }
     }
 
-    @Test("Wordmark alternatives render in the production sidebar without duplicate chrome")
-    func renderWordmarkComparisons() async throws {
-        AppFontRegistry.registerIfNeeded()
-        #expect(NSFont(name: "Fraunces", size: 32)?.familyName == "Fraunces")
-        #expect(NSFont(name: "Fraunces-Italic", size: 32)?.familyName == "Fraunces")
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["STENO_UI_RENDER_OUTPUT"]
-            ?? FileManager.default.temporaryDirectory.appendingPathComponent("StenoUIRendering").path)
-            .appendingPathComponent("wordmark-comparison", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let previous = StenoDesign.wordmarkReviewStyle
-        defer { StenoDesign.wordmarkReviewStyle = previous }
-        for style in StenoDesign.WordmarkReviewStyle.allCases {
-            StenoDesign.wordmarkReviewStyle = style
-            for appearance in [ColorScheme.light, .dark] {
-                let controller = IsolatedAppPreview.makeController()
-                controller.preferences.appearance.mode = appearance == .light ? .light : .dark
-                let data = try await render(ContentView(), controller: controller, appearance: appearance,
-                    size: CGSize(width: 1120, height: 760), accessibility: false)
-                try data.write(to: root.appendingPathComponent("\(style.rawValue)-\(appearance).png"))
-                await controller.teardownAndWait()
-            }
-        }
-    }
-
     @Test("Focused text, settings, and permission states render at minimum accessible size")
     func renderFocusedPolishStates() async throws {
         AppFontRegistry.registerIfNeeded()
@@ -235,10 +182,7 @@ struct AppRenderingTests {
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("StenoUIRendering").path)
             .appendingPathComponent("focused-polish", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let size = CGSize(width: StenoDesign.windowMinWidth, height: StenoDesign.windowMinHeight)
-        let previousDirection = StenoDesign.reviewDirectionOverride
-        defer { StenoDesign.reviewDirectionOverride = previousDirection }
-        StenoDesign.reviewDirectionOverride = .manuscript
+        let size = CGSize(width: MainWindowMetrics.minWidth, height: MainWindowMetrics.minHeight)
         var receipt = ["surface,appearance,width,height,accessibility,png_bytes"]
         let transcripts = [
             ("short", "Keep this sentence."),
@@ -280,10 +224,8 @@ struct AppRenderingTests {
                 #expect(draftState.hasConflictingUpdate == (state == "conflict"))
                 #expect((draftState.preferences != controller.preferences) == (state != "clean"))
                 #expect((!draftState.hasConflictingUpdate && draftState.preferences != controller.preferences) == (state == "dirty"))
-                let theme = StenoDesign.theme(for: controller.preferences)
                 let name = "settings-\(state)-\(appearance)-minimum-accessible"
-                let data = try await render(SettingsView(previewDraftState: draftState)
-                    .foregroundStyle(theme.text).background(theme.ink0),
+                let data = try await render(SettingsView(previewDraftState: draftState),
                     controller: controller, appearance: appearance, size: size, accessibility: true)
                 try data.write(to: root.appendingPathComponent(name + ".png"))
                 receipt.append("\(name),\(appearance),\(size.width),\(size.height),true,\(data.count)")
@@ -296,7 +238,7 @@ struct AppRenderingTests {
             controller.accessibilityPermissionStatus = .unknown
             controller.inputMonitoringPermissionStatus = .unknown
             let name = "permissions-unknown-\(appearance)-minimum-accessible"
-            let data = try await render(ContentView(initialTab: .settings, initialSettingsSection: .permissions),
+            let data = try await render(settingsPage(.permissions, controller: controller),
                 controller: controller, appearance: appearance, size: size, accessibility: true)
             try data.write(to: root.appendingPathComponent(name + ".png"))
             receipt.append("\(name),\(appearance),\(size.width),\(size.height),true,\(data.count)")
@@ -307,6 +249,16 @@ struct AppRenderingTests {
         }
         #expect(receipt.count == 15)
         try receipt.joined(separator: "\n").write(to: root.appendingPathComponent("focused-polish.csv"), atomically: true, encoding: .utf8)
+    }
+
+    /// Settings left the main window; its pages render on their own.
+    private func settingsPage(_ section: SettingsSection, controller: DictationController) -> some View {
+        let session = SettingsSession(
+            previewDraft: SettingsDraftState(saved: controller.preferences),
+            section: section,
+            microphone: .preview(devices: SettingsPreviewData.devices, testingAt: nil)
+        )
+        return SettingsView(session: session)
     }
 
     func render<V: View>(

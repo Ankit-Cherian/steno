@@ -3,143 +3,147 @@ import AppKit
 import Testing
 @testable import StenoKit
 
-@Suite("Exact overlay transcript viewport")
+@Suite("Live card transcript layout")
 struct OverlayTranscriptViewportTests {
-    @Test("Short passages retain every sentence, space, and punctuation until capacity is full")
-    func fillsCapacityBeforeTurningThePage() {
-        let text = " First. Second. Third.  \n"
-        var viewport = OverlayTranscriptViewport()
-        let result = viewport.update(text) { $0.count <= 40 }
-        #expect(result.sourceText == text)
-        #expect(result.visibleText == text)
-        #expect(result.pageRanges == [0..<text.count])
-    }
 
-    @Test("Incremental additions preserve the page origin until its capacity is full")
-    func stableOriginAcrossAppends() {
-        var viewport = OverlayTranscriptViewport()
-        let text = "One complete sentence. Then another sentence with a longer final portion."
-        var prefix = ""
-        var previous = viewport.snapshot
-        for character in text {
-            prefix.append(character)
-            let result = viewport.update(prefix) { $0.count <= 28 }
-            if (previous.visibleText + String(character)).count <= 28 {
-                #expect(result.visibleRange.lowerBound == previous.visibleRange.lowerBound)
-            }
-            #expect(result.visibleText.count <= 28)
-            assertExactPartition(result)
-            previous = result
+    private func layout(_ text: String, stable: Int? = nil, width: CGFloat = 404, lines: Int = 4) -> OverlayTranscriptLayout {
+        OverlayTranscriptLayout.make(source: text, stableCount: stable ?? text.count, width: width, maximumLines: lines) { wet in
+            var attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 15)]
+            if wet { attributes[.overlayWetInk] = true }
+            return attributes
         }
     }
 
-    @Test("Revisions before the old page boundary invalidate all stale ranges")
-    func backtracksAndEarlierCorrections() {
-        var viewport = OverlayTranscriptViewport()
-        _ = viewport.update(String(repeating: "Earlier sentence. ", count: 7) + "Their result is green.") { $0.count <= 36 }
+    @Test("A short passage is shown whole, with every space and mark")
+    func shortPassageShownWhole() {
+        let text = " First. Second. Third.  "
+        let result = layout(text)
+        #expect(result.snapshot.sourceText == text)
+        #expect(result.snapshot.visibleText == text)
+        #expect(result.snapshot.pageRanges == [0..<text.count])
+        #expect(result.visibleLineCount == 1)
+        #expect(!result.hasPeekLine)
+    }
+
+    @Test("Blank lines and runs of spaces draw as one space and take no row; ranges stay exact")
+    func whitespaceCollapses() {
+        let text = "  \n\nHi Dana,\n\n\nThanks for the notes.   \n"
+        let result = layout(text)
+        #expect(result.visibleLineCount == 1, "one line of words, not five rows")
+        #expect(result.snapshot.sourceText == text)
+        assertExactPartition(result.snapshot)
+        let drawn = result.drawnText.string.replacingOccurrences(of: "\u{200B}", with: "")
+        #expect(drawn.trimmingCharacters(in: .whitespaces) == "Hi Dana, Thanks for the notes.")
+    }
+
+    @Test("Right-to-left words are set flush right; Latin, CJK and emoji keep the left edge")
+    func rightToLeft() {
+        #expect(layout("سأتصل بك بعد الاجتماع لنراجع العقد معًا قبل يوم الخميس").isRightToLeft)
+        #expect(layout("אני אתקשר אליך אחרי הפגישה").isRightToLeft)
+        #expect(!layout("Remind me to call the venue").isRightToLeft)
+        #expect(!layout("明天上午十点开会").isRightToLeft)
+        #expect(!layout("👩🏽‍💻 see you at 7").isRightToLeft)
+    }
+
+    @Test("The newest live words: whitespace collapses, wide characters count double, an hour reads only its end")
+    func newestLiveWords() {
+        let shown = LiveWordsText.newest(stable: "Hi Dana,\n\n\nThanks ", tail: "for   the notes.", limit: 120)
+        #expect(shown.stable + shown.tail == "Hi Dana, Thanks for the notes.")
+        let cjk = LiveWordsText.newest(stable: String(repeating: "明天上午十点开会，", count: 40), tail: "", limit: 20)
+        #expect(cjk.stable.hasPrefix("…") && cjk.stable.count <= 11)
+        let hour = String(repeating: "word ", count: 40_000)
+        let tail = LiveWordsText.newest(stable: hour, tail: "and the newest", limit: 60)
+        #expect((tail.stable + tail.tail).hasSuffix("and the newest") && tail.stable.hasPrefix("…"))
+        // A cut keeps the space between the settled words and the part that may change.
+        let cut = LiveWordsText.newest(stable: String(repeating: "Send the revised draft electronically. ", count: 10),
+                                       tail: "The second set", limit: 60)
+        #expect((cut.stable + cut.tail).hasSuffix("electronically. The second set"))
+    }
+
+    @Test("Long passages keep the newest four lines and one faded line above them")
+    func newestLinesAtTheBottom() {
+        let text = String(repeating: "Earlier words remain part of the source. ", count: 12) + "Newest words."
+        let result = layout(text)
+        #expect(result.visibleLineCount == 4)
+        #expect(result.hasPeekLine)
+        #expect(result.snapshot.visibleText.hasSuffix("Newest words."))
+        #expect(result.drawnText.string.hasSuffix(result.snapshot.visibleText))
+        assertExactPartition(result.snapshot)
+    }
+
+    @Test("Each update replaces the text; an earlier hypothesis is never stitched in")
+    func revisionsReplaceWithoutStitching() {
+        _ = layout(String(repeating: "Earlier sentence. ", count: 20) + "Their result is green.")
         let corrected = "The result is blue. It is not green."
-        let result = viewport.update(corrected) { $0.count <= 36 }
-        #expect(result.visibleText == corrected)
-        #expect(!result.sourceText.contains("Earlier"))
-        #expect(result.visibleRange.lowerBound == 0)
-        assertExactPartition(result)
-        let erased = viewport.update("") { $0.count <= 36 }
-        #expect(erased.visibleText.isEmpty)
-        #expect(erased.pageRanges.isEmpty)
+        let result = layout(corrected)
+        #expect(result.snapshot.visibleText == corrected)
+        #expect(!result.drawnText.string.contains("Earlier"))
+        #expect(result.snapshot.visibleRange.lowerBound == 0)
+        let erased = layout("")
+        #expect(erased.snapshot == .empty)
+        #expect(erased.lines.isEmpty)
     }
 
-    @Test("A rewrite within the current page replaces spelling without stitching old words")
-    func revisesCurrentPageInPlace() {
-        var viewport = OverlayTranscriptViewport()
-        let first = viewport.update("The first sentence. Their word is green") { $0.count <= 24 }
-        let corrected = viewport.update("The first sentence. Their word is blue") { $0.count <= 24 }
-        #expect(corrected.visibleRange.lowerBound == first.visibleRange.lowerBound)
-        #expect(corrected.visibleText == "Their word is blue")
-        assertExactPartition(corrected)
+    @Test("Words the model may still change carry the wet-ink attribute, settled words do not")
+    func wetInkMarksOnlyTheTail() {
+        let stable = "Move the planning meeting from Thursday to Friday. Send the updated agenda "
+        let tail = "before lunch so every"
+        let result = layout(stable + tail, stable: stable.count)
+        let drawn = result.drawnText
+        var wetText = ""
+        drawn.enumerateAttribute(.overlayWetInk, in: NSRange(location: 0, length: drawn.length)) { value, range, _ in
+            if value as? Bool == true { wetText += (drawn.string as NSString).substring(with: range) }
+        }
+        #expect(wetText == tail)
     }
 
-    @Test("A replaced rolling window and new session cannot reuse an old page origin")
-    func continuityEpochAndReset() {
-        var viewport = OverlayTranscriptViewport()
-        _ = viewport.update("An earlier sentence. A current passage.", continuityEpoch: 1) { $0.count <= 23 }
-        let replacement = viewport.update("An earlier sentence. A current passage.", continuityEpoch: 2) { $0.count <= 80 }
-        #expect(replacement.visibleRange.lowerBound == 0)
-        viewport.reset()
-        #expect(viewport.snapshot.sourceText.isEmpty)
-        let fresh = viewport.update("New session.") { $0.count <= 23 }
-        #expect(fresh.visibleText == "New session.")
-        #expect(fresh.pageRanges == [0..<12])
-    }
-
-    @Test("Large initial hypotheses and coalesced bursts retain all source ranges without a reading backlog")
-    func burstDeliveryRetainsAnExactCurrentSuffix() {
-        var viewport = OverlayTranscriptViewport()
-        let initial = String(repeating: "Complete phrase. ", count: 50) + "Newest words."
-        let result = viewport.update(initial) { $0.count <= 50 }
-        #expect(result.pageRanges.count > 1)
-        #expect(result.visibleText.hasSuffix("Newest words."))
-        #expect(result.sourceText == initial)
-        assertExactPartition(result)
-        let burst = initial + String(repeating: " More speech arrives.", count: 100)
-        let next = viewport.update(burst) { $0.count <= 50 }
-        #expect(next.sourceText == burst)
-        #expect(next.visibleText.hasSuffix("More speech arrives."))
-        assertExactPartition(next)
-    }
-
-    @Test("Page boundaries never split extended graphemes or alter multilingual source text", arguments: [
-        "👨‍👩‍👧‍👦👩🏽‍💻🇮🇳", "e\u{301}a\u{308}", "第一句。第二句。", "مرحبا بالعالم ", "antidisestablishmentarianism"
+    @Test("Line cuts never split extended graphemes or alter multilingual text", arguments: [
+        "👨‍👩‍👧‍👦👩🏽‍💻🇮🇳", "e\u{301}a\u{308} ", "第一句。第二句。", "مرحبا بالعالم ", "antidisestablishmentarianism"
     ])
     func unicodeAndUnbrokenText(fragment: String) {
         let text = String(repeating: fragment, count: 60)
-        var viewport = OverlayTranscriptViewport()
-        let result = viewport.update(text) { $0.count <= 17 }
-        #expect(result.visibleText.count <= 17)
-        #expect(result.sourceText == text)
-        #expect(!result.visibleText.contains("�"))
-        assertExactPartition(result)
+        let result = layout(text, width: 180)
+        #expect(result.snapshot.sourceText == text)
+        #expect(!result.snapshot.visibleText.isEmpty)
+        #expect(!result.snapshot.visibleText.contains("\u{FFFD}"))
+        #expect(result.visibleLineCount <= 4)
+        assertExactPartition(result.snapshot)
     }
 
-    @Test("Backtracking exactly to a page origin returns to content rather than an empty page")
-    func exactBoundaryBacktrack() {
-        var viewport = OverlayTranscriptViewport()
-        let result = viewport.update("abcdefghijklmno") { $0.count <= 5 }
-        let backtrack = String(result.sourceText.prefix(result.visibleRange.lowerBound))
-        let revised = viewport.update(backtrack) { $0.count <= 5 }
-        #expect(!revised.visibleText.isEmpty)
-        #expect(revised.visibleText == "fghij")
-        assertExactPartition(revised)
+    @Test("A very large hypothesis typesets only its end")
+    func boundedLayoutWork() {
+        let source = String(repeating: "word ", count: 4_000) + "last"
+        let result = layout(source)
+        #expect(result.drawnText.length <= OverlayTranscriptLayout.typesetCharacterLimit)
+        #expect(result.snapshot.visibleText.hasSuffix("last"))
+        assertExactPartition(result.snapshot)
     }
 
-    @Test("Maximum payload paging never repeatedly measures an entire remaining hypothesis")
-    func boundedLayoutWorkForLargeInitialSnapshot() {
-        let source = String(repeating: "x", count: 16_384)
-        var viewport = OverlayTranscriptViewport()
-        var largestMeasurement = 0
-        let result = viewport.update(source) {
-            largestMeasurement = max(largestMeasurement, $0.count)
-            return $0.count <= 144
-        }
-        #expect(largestMeasurement <= 1_024)
-        #expect(result.visibleText.count <= 144)
-        assertExactPartition(result)
+    @Test("Trailing whitespace never becomes a blank newest line")
+    func trailingWhitespaceDoesNotAddALine() {
+        let text = "The exact words." + String(repeating: " ", count: 400)
+        let result = layout(text, width: 180)
+        #expect(result.snapshot.visibleText.hasPrefix("The exact words."))
+        assertExactPartition(result.snapshot)
     }
 
-    @Test("Native layout fits long tokens, RTL, emoji, paragraphs, and large preferred text", arguments: [240.0, 400.0, 720.0], [15.0, 26.0, 52.0])
+    @Test("Native layout keeps every visible line within the measure", arguments: [240.0, 400.0, 720.0], [15.0, 26.0, 52.0])
     @MainActor
     func nativeLayout(width: Double, pointSize: Double) {
-        let size = CGSize(width: width, height: pointSize * 5.6 + 2)
         let font = NSFont.systemFont(ofSize: pointSize)
         let fixtures = [String(repeating: "UnbrokenIdentifier", count: 40), String(repeating: "👨‍👩‍👧‍👦", count: 100),
                         String(repeating: "مرحبا بالعالم. ", count: 20), String(repeating: "第一句。第二句。\n", count: 20)]
         for source in fixtures {
-            var viewport = OverlayTranscriptViewport()
-            let result = viewport.update(source) {
-                OverlayTranscriptTypesetter.fits(OverlayTranscriptTypesetter.attributed($0, font: font, color: .black), in: size)
+            let result = OverlayTranscriptLayout.make(source: source, stableCount: source.count, width: width, maximumLines: 4) { _ in
+                [.font: font]
             }
-            #expect(!result.visibleText.isEmpty)
-            #expect(OverlayTranscriptTypesetter.fits(OverlayTranscriptTypesetter.attributed(result.visibleText, font: font, color: .black), in: size))
-            assertExactPartition(result)
+            #expect(!result.snapshot.visibleText.isEmpty)
+            #expect(result.visibleLineCount <= 4)
+            for line in result.lines {
+                let used = CTLineGetTypographicBounds(line, nil, nil, nil) - CTLineGetTrailingWhitespaceWidth(line)
+                #expect(used <= width + 0.5)
+            }
+            assertExactPartition(result.snapshot)
         }
     }
 
@@ -147,6 +151,7 @@ struct OverlayTranscriptViewportTests {
     @MainActor
     func presenterGrowthAndLifecycle() {
         let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
+        presenter.appearance = .quill
         presenter.hostedEvidencePrepareOffscreen()
         presenter.show(state: .listening(handsFree: false, elapsedSeconds: 0))
         let compact = presenter.hostedEvidencePanelSize()
@@ -228,19 +233,17 @@ struct OverlayTranscriptViewportTests {
         presenter.hide()
     }
 
-    @Test("Trailing whitespace never replaces readable speech with a blank page")
+    @Test("Trailing whitespace and blank lines never replace readable speech with a blank card")
     @MainActor
     func trailingWhitespaceDoesNotPage() {
-        let font = NSFont.systemFont(ofSize: 15)
-        let size = CGSize(width: 180, height: 42)
-        var viewport = OverlayTranscriptViewport()
         let text = "The exact words." + String(repeating: " \n\t", count: 80)
-        let result = viewport.update(text) {
-            OverlayTranscriptTypesetter.fits(OverlayTranscriptTypesetter.attributed($0, font: font, color: .black), in: size)
+        let result = OverlayTranscriptLayout.make(source: text, stableCount: text.count, width: 180, maximumLines: 2) { _ in
+            [.font: NSFont.systemFont(ofSize: 15)]
         }
-        #expect(result.visibleText == text)
-        #expect(result.pageRanges.count == 1)
-        assertExactPartition(result)
+        #expect(result.snapshot.visibleText == text)
+        #expect(result.snapshot.pageRanges.count == 1)
+        #expect(result.visibleLineCount == 1)
+        assertExactPartition(result.snapshot)
     }
 
     @Test("Production overlay states render offscreen with synthetic passage sequences")
@@ -277,7 +280,7 @@ struct OverlayTranscriptViewportTests {
                 let session = makeSession()
                 let updates = texts.enumerated().map { makeSnapshot(session, $0.element, revision: UInt64($0.offset + 1)) }
                 var size = CGSize.zero
-                var viewport = OverlayTranscriptViewport().snapshot
+                var viewport = OverlayTranscriptViewportSnapshot.empty
                 presenter.setHostedEvidenceHandler { event in
                     if case .previewRendered = event {
                         size = presenter.hostedEvidencePanelSize()
@@ -300,16 +303,18 @@ struct OverlayTranscriptViewportTests {
         try (receipt.joined(separator: "\n") + "\n").write(to: output.appendingPathComponent("production-render-receipt.csv"), atomically: true, encoding: .utf8)
     }
 
-    @Test("Long terminal failures wrap in a wider panel with the full explanation preserved")
+    @Test("Long terminal failures use the problem width and keep the full explanation for reading and VoiceOver")
     @MainActor
     func terminalFailurePresentation() throws {
         let message = "The document closed. Your words are ready to copy. Open a document and try again."
         let presenter = WaveformOverlayPresenter(observeAccessibilityChanges: false)
+        presenter.appearance = .quill
         presenter.hostedEvidencePrepareOffscreen()
         presenter.updateAppearance(NSAppearance(named: .aqua))
         presenter.show(state: .failure(message: message))
-        #expect(presenter.hostedEvidencePanelSize().width >= 440)
-        #expect(presenter.hostedEvidenceUserFacingStrings().contains("Error: " + message))
+        #expect(presenter.hostedEvidenceCapsuleSize().width == 340)
+        #expect(presenter.hostedEvidenceUserFacingStrings().contains(message))
+        #expect(presenter.hostedEvidenceAnnouncementLog().last == message)
         #expect(presenter.hostedEvidenceTerminalPresentationIsCompact())
         let data = try #require(presenter.hostedEvidenceRenderPNG(state: .failure(message: message)))
         let output = ProcessInfo.processInfo.environment["STENO_OVERLAY_RENDER_OUTPUT"]

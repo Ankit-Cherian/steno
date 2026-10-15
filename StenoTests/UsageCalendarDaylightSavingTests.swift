@@ -34,11 +34,7 @@ func calendarWeeksSurviveSkippedMidnight(zone: String, year: Int, month: Int, da
             isInCurrentStreak: row.isInCurrentStreak
         )
     }
-    let view = UsageCalendarView(
-        days: days,
-        theme: StenoDesign.theme(for: AppPreferences.default),
-        calendar: calendar
-    )
+    let view = UsageCalendar(days: days, calendar: calendar)
 
     let cells = view.weeks.flatMap(\.cells)
     let inRange = cells.filter(\.isInRange).map(\.date)

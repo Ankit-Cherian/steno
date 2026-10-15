@@ -279,7 +279,7 @@ func pressWhileFinishingShowsCue() async {
         coordinator: ShortcutTestCoordinator(events: events, completionGate: gate)
     )
     defer { controller.teardown() }
-    let notice = "Still finishing. Try again."
+    let notice = "Still finishing the last one"
     func overlayText() -> String? { presenter.hostedEvidenceUserFacingStrings().first }
 
     hotkey.press([.option])
@@ -288,19 +288,19 @@ func pressWhileFinishingShowsCue() async {
     hotkey.press([])
     #expect(await waitForShortcutEvent("transcription.start", in: events))
     #expect(controller.recordingLifecycleState == .transcribing)
-    #expect(overlayText() == "Transcribing...")
+    #expect(overlayText() == "Transcribing\u{2026}")
 
     OptionShortcut.optionArrow.perform(on: hotkey)
     try? await Task.sleep(for: .milliseconds(50))
-    #expect(overlayText() == "Transcribing...")
+    #expect(overlayText() == "Transcribing\u{2026}")
 
     hotkey.press([.option])
-    #expect(overlayText() == "Transcribing...")
+    #expect(overlayText() == "Transcribing\u{2026}")
     hotkey.holdPastConfirmationWindow()
     #expect(overlayText() == notice)
     #expect(controller.status.hasPrefix("Still finishing the previous dictation."))
     hotkey.press([])
-    #expect(await waitForShortcutCondition(attempts: 1_000) { overlayText() == "Transcribing..." })
+    #expect(await waitForShortcutCondition { overlayText() == "Transcribing\u{2026}" })
 
     controller.toggleHandsFree()
     #expect(overlayText() == notice)
@@ -325,7 +325,11 @@ func recordingLimitStopsAndTranscribes(handsFree: Bool) async {
         coordinator: ShortcutTestCoordinator(events: events)
     )
     defer { controller.teardown() }
-    controller.recordingDurationLimit = RecordingDurationLimit(maximumSeconds: 3, warningLeadSeconds: 2)
+    // The clock moves only when the test moves it, so each check of the limit
+    // sees the phase the test chose, however late the once-a-second check runs.
+    controller.recordingDurationLimit = RecordingDurationLimit(maximumSeconds: 3_600, warningLeadSeconds: 1_800)
+    var skipped: TimeInterval = 0
+    controller.recordingLimitClock = { Date().addingTimeInterval(skipped) }
 
     if handsFree {
         controller.toggleHandsFree()
@@ -336,11 +340,14 @@ func recordingLimitStopsAndTranscribes(handsFree: Bool) async {
     }
     #expect(await waitForShortcutCondition { controller.isRecording })
 
-    #expect(await waitForShortcutCondition(attempts: 1_000) {
+    skipped = 1_800
+    #expect(await waitForShortcutCondition {
         presenter.hostedEvidenceUserFacingStrings().first?.hasPrefix("Stops in") == true
     })
     #expect(controller.status == "Recording stops automatically in one minute.")
-    #expect(await waitForShortcutEvent("transcription.start", in: events, attempts: 1_000))
+    #expect(controller.isRecording)
+    skipped = 3_600
+    #expect(await waitForShortcutEvent("transcription.start", in: events))
     #expect(await waitForShortcutCondition { controller.lastTranscript == "Nearby words" })
     #expect(await events.count(of: "capture.cancel") == 0)
 
@@ -354,6 +361,46 @@ func recordingLimitStopsAndTranscribes(handsFree: Bool) async {
         #expect(controller.status == statusBeforeRelease)
         #expect(controller.status != "No active Option recording.")
     }
+}
+
+@MainActor
+@Test("A length-limit check that runs late, past the limit, still warns before it stops", arguments: [false, true])
+func lateLimitCheckStillWarnsFirst(handsFree: Bool) async {
+    let events = ShortcutEventLog()
+    let presenter = makeShortcutTestPresenter()
+    let hotkey = FilteringHotkeyService()
+    let controller = makeTestDictationController(
+        hotkey: hotkey,
+        overlay: presenter,
+        coordinator: ShortcutTestCoordinator(events: events)
+    )
+    defer { controller.teardown() }
+    controller.recordingDurationLimit = RecordingDurationLimit(maximumSeconds: 3_600, warningLeadSeconds: 1_800)
+    var skipped: TimeInterval = 0
+    controller.recordingLimitClock = { Date().addingTimeInterval(skipped) }
+
+    if handsFree {
+        controller.toggleHandsFree()
+    } else {
+        hotkey.press([.option])
+        hotkey.holdPastConfirmationWindow()
+    }
+    #expect(await waitForShortcutCondition { controller.isRecording })
+
+    // The first check after the jump finds the limit already passed.
+    skipped = 3_700
+    #expect(await waitForShortcutCondition {
+        presenter.hostedEvidenceUserFacingStrings().first?.hasPrefix("Stops in") == true
+    }, "\(presenter.hostedEvidenceUserFacingStrings())")
+    #expect(controller.status == "Recording stops automatically in one minute.")
+    #expect(controller.isRecording)
+    #expect(await events.count(of: "transcription.start") == 0)
+
+    // The stop comes the full warning lead after the warning.
+    skipped = 3_700 + 1_800
+    #expect(await waitForShortcutEvent("transcription.start", in: events))
+    #expect(await waitForShortcutCondition { controller.lastTranscript == "Nearby words" })
+    #expect(await events.count(of: "capture.cancel") == 0)
 }
 
 // MARK: - Turning off Hold Option to talk
@@ -378,7 +425,7 @@ func disablingOptionHoldStopsRecording() async {
     draft.hotkeys.optionPressToTalkEnabled = false
     controller.applySettingsDraft(preferences: draft)
 
-    #expect(await waitForShortcutEvent("transcription.start", in: events, attempts: 1_000))
+    #expect(await waitForShortcutEvent("transcription.start", in: events))
     #expect(await waitForShortcutCondition { controller.lastTranscript == "Nearby words" })
     #expect(await waitForShortcutCondition { controller.recordingLifecycleState == .idle })
     #expect(await events.count(of: "capture.cancel") == 0)
@@ -478,16 +525,9 @@ final class FilteringHotkeyService: HotkeyService {
 
 func waitForShortcutEvent(
     _ event: String,
-    in log: ShortcutEventLog,
-    attempts: Int = 400
+    in log: ShortcutEventLog
 ) async -> Bool {
-    for _ in 0..<attempts {
-        if await log.snapshot().contains(event) {
-            return true
-        }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+    await eventually { await log.snapshot().contains(event) }
 }
 
 @MainActor
@@ -498,9 +538,22 @@ func makeShortcutTestPresenter() -> WaveformOverlayPresenter {
 }
 
 extension OverlayState {
+    /// A failure line, or a result the overlay presents as a problem.
     var isFailure: Bool {
-        if case .failure = self { return true }
-        return false
+        switch self {
+        case .failure:
+            return true
+        case .result(let result, _):
+            switch result {
+            case .inserted, .copied:
+                return false
+            case .notPasted, .failed, .microphoneDisconnected, .transcriptionFailed,
+                 .microphoneAccessOff, .shortcutsUnavailable, .speechModelMissing:
+                return true
+            }
+        default:
+            return false
+        }
     }
 
     var isListening: Bool {
@@ -617,14 +670,7 @@ final class StatusReportingHotkeyService: HotkeyService {
 
 @MainActor
 func waitForShortcutCondition(
-    attempts: Int = 400,
     _ condition: @MainActor () async -> Bool
 ) async -> Bool {
-    for _ in 0..<attempts {
-        if await condition() {
-            return true
-        }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+    await eventuallyOnMain(condition)
 }

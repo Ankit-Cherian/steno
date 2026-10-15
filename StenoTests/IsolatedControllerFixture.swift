@@ -17,11 +17,18 @@ func makeTestDictationController(
     historyStore: HistoryStore? = nil,
     usageAnalyticsStore: (any UsageAnalyticsStoreServicing)? = nil,
     legacyHistoryURL: URL? = nil,
-    workspaceNotificationCenter: NotificationCenter? = nil
+    workspaceNotificationCenter: NotificationCenter? = nil,
+    inputLevelMeter: InputLevelMeter? = nil,
+    makeMicrophoneTester: (@MainActor (@escaping @MainActor () -> Bool) -> any MicrophoneTesting)? = nil,
+    audioInputDevices: (@MainActor () -> [AudioInputDevice])? = nil,
+    clipboardService: MemoryClipboardService = MemoryClipboardService(),
+    isOptionHeld: (@MainActor () -> Bool)? = nil,
+    permissionStatusReader: (@MainActor () -> PermissionStatusSnapshot)? = nil,
+    audioComponentWarmup: (@Sendable () async -> Duration)? = nil
 ) -> DictationController {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("StenoControllerTests-\(UUID().uuidString)", isDirectory: true)
-    let clipboard = MemoryClipboardService()
+    let clipboard = clipboardService
     return DictationController(
         hotkey: hotkey,
         clipboardService: clipboard,
@@ -32,7 +39,7 @@ func makeTestDictationController(
         runtimeRebuildOverride: runtimeRebuildOverride ?? { nil },
         overlayDismissDelay: overlayDismissDelay,
         overlayDismissAction: overlayDismissAction,
-        historyStore: historyStore ?? HistoryStore(storageURL: directory.appendingPathComponent("history.json"), clipboardService: clipboard),
+        historyStore: historyStore ?? HistoryStore(storageURL: directory.appendingPathComponent("history.json")),
         usageAnalyticsStore: usageAnalyticsStore ?? UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
         legacyHistoryURL: legacyHistoryURL ?? directory.appendingPathComponent("legacy.json"),
         systemIntegrationsEnabled: false,
@@ -40,7 +47,13 @@ func makeTestDictationController(
             AppContext(bundleIdentifier: "com.example.steno-test-editor", appName: "Test Editor", inputFieldDescription: "Fixture document")
         },
         targetDisplayPointProvider: { CGPoint(x: 400, y: 300) },
-        workspaceNotificationCenter: workspaceNotificationCenter
+        workspaceNotificationCenter: workspaceNotificationCenter,
+        permissionStatusReader: permissionStatusReader ?? { .current() },
+        isOptionHeld: isOptionHeld,
+        inputLevelMeter: inputLevelMeter,
+        makeMicrophoneTester: makeMicrophoneTester,
+        audioInputDevices: audioInputDevices,
+        audioComponentWarmup: audioComponentWarmup
     )
 }
 

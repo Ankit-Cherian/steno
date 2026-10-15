@@ -397,19 +397,35 @@ public struct InsertionTargetGuard: Sendable {
         self.lookup = lookup
     }
 
+    /// True when the field focused at the start was secure.
+    public var startFieldIsSecure: Bool {
+        refusedAtStart == .secureOrProtectedElement
+    }
+
     /// Call after the target app is frontmost and before the first side
     /// effect that could land in the focused field.
     public func evaluate(for target: AppContext) -> Decision {
         if let refusedAtStart {
             return .refuse(refusedAtStart)
         }
-        switch lookup(target) {
+        let startedAt = InsertionTrace.now()
+        let current = lookup(target)
+        let decision = decide(current)
+        InsertionTrace.note(
+            "field check \(InsertionTrace.describe(current.map { _ in })), \(decision == .proceed ? "proceed" : "refuse")",
+            since: startedAt
+        )
+        return decision
+    }
+
+    private func decide(_ current: Result<EditorTargetHandle, EditorTargetUnavailableReason>) -> Decision {
+        switch current {
         case .failure(.secureOrProtectedElement):
             return .refuse(.secureOrProtectedElement)
         case .failure(.bundleIdentifierMismatch) where startTarget != nil:
             // The start field belonged to the target app; the focused element
             // now belongs to another one.
-            return .refuse(.targetChanged)
+            return .refuse(.bundleIdentifierMismatch)
         case .failure:
             return .proceed
         case .success(let current):
@@ -424,6 +440,8 @@ public struct InsertionTargetGuard: Sendable {
         switch reason {
         case .secureOrProtectedElement:
             return "Secure text field—final text copied instead of typed."
+        case .bundleIdentifierMismatch, .applicationNotFrontmost:
+            return ClipboardInsertionTransport.anotherAppInFrontReason
         default:
             return "The focused field changed—final text copied."
         }
@@ -482,8 +500,15 @@ public actor EditorTargetHandle {
 
     static func capture(
         target: AppContext,
-        client: any MacAccessibilityClient
+        client: any MacAccessibilityClient,
+        ownBundleIdentifier: String? = Bundle.main.bundleIdentifier
     ) -> Result<EditorTargetHandle, EditorTargetUnavailableReason> {
+        // Asking Accessibility about our own windows from off the main thread makes AppKit
+        // answer on this thread, which is unsafe for our views. Steno's own fields are never
+        // insertion targets that need guarding.
+        if let ownBundleIdentifier, target.bundleIdentifier == ownBundleIdentifier {
+            return .failure(.applicationUnavailable)
+        }
         guard client.isProcessTrusted() else {
             return .failure(.accessibilityPermissionMissing)
         }

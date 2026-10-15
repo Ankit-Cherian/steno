@@ -154,7 +154,8 @@ public actor UsageAnalyticsStore: UsageAnalyticsRecording {
         var url: URL
     }
 
-    private let storageURL: URL
+    /// The file this store reads and writes.
+    public nonisolated let storageURL: URL
     private let eventSegmentsDirectoryURL: URL
     private var archive: Archive?
     private var needsSegmentCompaction = false
@@ -353,19 +354,7 @@ public actor UsageAnalyticsStore: UsageAnalyticsRecording {
                 .appendingPathComponent("usage-analytics.json")
         }
 
-        let appSupport: URL
-        if let resolved = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first {
-            appSupport = resolved
-        } else {
-            appSupport = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support", isDirectory: true)
-        }
-        return appSupport
-            .appendingPathComponent("Steno", isDirectory: true)
-            .appendingPathComponent("usage-analytics.json")
+        return StenoStorageRoot.release().usageAnalyticsURL
     }
 
     private func loadArchive() throws -> Archive {

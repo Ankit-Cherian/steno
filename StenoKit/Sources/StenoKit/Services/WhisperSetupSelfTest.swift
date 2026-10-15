@@ -31,6 +31,8 @@ public enum WhisperSetupSelfTest {
         public var mainEngine: (any TranscriptionEngine)?
         public var toolEngine: any TranscriptionEngine
         public var stageTimeout: Duration
+        /// Where the test clip is written.
+        public var temporaryDirectory: URL
 
         public init(
             microphoneAllowed: Bool,
@@ -39,7 +41,8 @@ public enum WhisperSetupSelfTest {
             vadModelPath: String,
             mainEngine: (any TranscriptionEngine)?,
             toolEngine: any TranscriptionEngine,
-            stageTimeout: Duration = .seconds(150)
+            stageTimeout: Duration = .seconds(150),
+            temporaryDirectory: URL = FileManager.default.temporaryDirectory
         ) {
             self.microphoneAllowed = microphoneAllowed
             self.modelPath = modelPath
@@ -48,6 +51,7 @@ public enum WhisperSetupSelfTest {
             self.mainEngine = mainEngine
             self.toolEngine = toolEngine
             self.stageTimeout = stageTimeout
+            self.temporaryDirectory = temporaryDirectory
         }
     }
 
@@ -91,7 +95,7 @@ public enum WhisperSetupSelfTest {
             stages.append(.init(title: "Speech model", outcome: .passed, detail: "\(modelName) found."))
         }
 
-        let directory = FileManager.default.temporaryDirectory
+        let directory = inputs.temporaryDirectory
             .appendingPathComponent("StenoSetupCheck-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let clipURL = directory.appendingPathComponent("setup-check.wav")

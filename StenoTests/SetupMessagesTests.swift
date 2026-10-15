@@ -11,7 +11,7 @@ struct SetupMessagesTests {
         #expect(DictationController.startupPathWarning(cliExists: true, modelExists: true) == nil)
         for (cli, model) in [(false, false), (false, true), (true, false)] {
             let warning = DictationController.startupPathWarning(cliExists: cli, modelExists: model)
-            #expect(warning?.hasSuffix("Check Settings \u{2192} Speech model.") == true)
+            #expect(warning?.hasSuffix("Check Settings \u{2192} Speech Model.") == true)
             #expect(warning?.contains("Engine") == false)
         }
     }
@@ -21,7 +21,7 @@ struct SetupMessagesTests {
         let missing = EngineSettingsSection.vadModelPathMessage(path: "/gone/vad.bin", fileExists: { _ in false }, includedModelAvailable: true)
         let empty = EngineSettingsSection.vadModelPathMessage(path: "", fileExists: { _ in false }, includedModelAvailable: false)
         #expect(missing?.contains("use the included one") == true)
-        #expect(empty?.contains("turn off voice activity detection") == true)
+        #expect(empty?.contains("turn off Skip silence") == true)
         for message in [missing, empty].compactMap({ $0 }) {
             #expect(!message.contains("./"))
             #expect(!message.contains(".sh"))
@@ -49,5 +49,5 @@ func startupWarningSurvivesRuntimeRebuild() async throws {
 
     try #require(!FileManager.default.fileExists(atPath: controller.preferences.dictation.modelPath),
                  "this check needs a host without a bundled or development runtime")
-    #expect(controller.status.hasSuffix("Check Settings \u{2192} Speech model."))
+    #expect(controller.status.hasSuffix("Check Settings \u{2192} Speech Model."))
 }

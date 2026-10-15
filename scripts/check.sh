@@ -126,7 +126,7 @@ echo '==> Package tests'
 swift test --package-path StenoKit
 
 echo '==> Build the app'
-xcodebuild build -project Steno.xcodeproj -scheme Steno -destination 'platform=macOS' \
+xcodebuild build -project Steno.xcodeproj -scheme Steno -configuration Debug -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA" CODE_SIGNING_ALLOWED=NO
 
 echo '==> Hosted tests'

@@ -19,7 +19,7 @@ enum HistoryCleanupRerun {
         let policy = DictationContinuationPolicy()
         let plan = policy.prepareDirective(in: entry.rawText)
         if plan.kind != .none,
-           directiveWasApplied(plan, toCleanText: entry.originalCleanText ?? entry.cleanText) == false {
+           directiveWasApplied(plan, toCleanText: entry.liveCleanText) == false {
             throw HistoryStoreError.directiveCannotBeReplayed
         }
 

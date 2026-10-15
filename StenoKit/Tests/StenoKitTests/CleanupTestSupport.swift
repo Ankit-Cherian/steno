@@ -63,7 +63,7 @@ func dictateThroughCoordinator(
         insertionService: InsertionService(transports: [
             ClosureInsertionTransport(method: .direct) { inserted, _ in await recorder.record(inserted) }
         ]),
-        historyStore: HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService()),
+        historyStore: HistoryStore(storageURL: historyURL),
         lexiconService: PersonalLexiconService(entries: entries),
         styleProfileService: StyleProfileService(globalProfile: profile, appProfiles: [:]),
         snippetService: SnippetService(snippets: []),

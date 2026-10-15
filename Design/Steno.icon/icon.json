@@ -1,19 +1,39 @@
 {
   "fill": {
-    "automatic-gradient": "extended-srgb:0.07451,0.14510,0.22353,1.00000"
+    "linear-gradient": [
+      "srgb:0.18039,0.41569,0.29412,1.00000",
+      "srgb:0.07451,0.19608,0.13333,1.00000"
+    ],
+    "orientation": {
+      "start": {
+        "x": 0.5,
+        "y": 0.0
+      },
+      "stop": {
+        "x": 0.5,
+        "y": 1.0
+      }
+    }
   },
   "groups": [
     {
       "layers": [
         {
-          "image-name": "Artwork.png",
-          "name": "Ribbon S"
+          "glass": true,
+          "image-name": "barbs.svg",
+          "name": "Barbs"
+        },
+        {
+          "glass": true,
+          "image-name": "shaft.svg",
+          "name": "Shaft and nib"
         }
       ],
       "shadow": {
-        "kind": "neutral",
-        "opacity": 0
+        "kind": "layer-color",
+        "opacity": 0.3
       },
+      "specular": true,
       "translucency": {
         "enabled": false,
         "value": 0
@@ -21,9 +41,9 @@
     }
   ],
   "supported-platforms": {
-    "squares": "shared",
     "circles": [
       "watchOS"
-    ]
+    ],
+    "squares": "shared"
   }
 }

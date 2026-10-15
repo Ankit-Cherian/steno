@@ -24,6 +24,10 @@ public protocol AudioCaptureService: Sendable {
     /// Returns, once, how a recording returned by `endCapture` was cut short,
     /// if it was. The audio that was captured is still valid to transcribe.
     func takeCaptureInterruption(sessionID: SessionID) async -> CaptureInterruption?
+
+    /// Returns, once, the name of the microphone a recording returned by `endCapture` used, when
+    /// it is known.
+    func takeInputDeviceName(sessionID: SessionID) async -> String?
 }
 
 public extension AudioCaptureService {
@@ -33,6 +37,11 @@ public extension AudioCaptureService {
     }
 
     func takeCaptureInterruption(sessionID: SessionID) async -> CaptureInterruption? {
+        _ = sessionID
+        return nil
+    }
+
+    func takeInputDeviceName(sessionID: SessionID) async -> String? {
         _ = sessionID
         return nil
     }

@@ -731,8 +731,7 @@ public enum BenchmarkRunner {
                 let historyStore = TimedHistoryStore(
                     base: HistoryStore(
                         storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
-                            .appendingPathComponent("benchmark-history-\(UUID().uuidString).json"),
-                        clipboardService: MemoryClipboardService()
+                            .appendingPathComponent("benchmark-history-\(UUID().uuidString).json")
                     ),
                     recorder: timingRecorder
                 )
@@ -1016,9 +1015,5 @@ private struct TimedHistoryStore: HistoryStoreProtocol {
         lexicon: PersonalLexicon
     ) async throws -> CleanTranscript {
         try await base.retry(entryID: entryID, using: cleanupEngine, profile: profile, lexicon: lexicon)
-    }
-
-    func pasteLast() async throws -> TranscriptEntry? {
-        try await base.pasteLast()
     }
 }

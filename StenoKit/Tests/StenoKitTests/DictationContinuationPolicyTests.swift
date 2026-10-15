@@ -96,7 +96,7 @@ func directiveLowercasesFirstCasedGraphemeOnly() {
     let examples: [(String, String)] = [
         ("\"Hello NASA\"", "\"hello NASA\""),
         ("42 😀 Hello NASA", "42 😀 hello NASA"),
-        ("Sarah Chen", "sarah Chen"),
+        ("Sarah Example", "sarah Example"),
         ("NASA launch", "nASA launch"),
         ("ÉCOLE déjà", "éCOLE déjà"),
         ("E\u{301}COLE", "e\u{301}COLE"),
@@ -174,7 +174,7 @@ func automaticContinuationPreservesUnsafeOpenings() {
         "NASA agrees",
         "eBay works",
         "StenoKit works",
-        "Sarah Chen",
+        "Sarah Example",
         "Https://example.com",
         "This_value",
         "This/path",

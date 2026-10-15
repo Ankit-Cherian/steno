@@ -64,6 +64,36 @@ func defaultSettingsFocusDriftCopiesOnly() async throws {
     #expect(scenario.pasteboard.plainText == "Meant for field a")
 }
 
+@Test("Default settings: switching to another app during transcription is reported as App changed")
+func defaultSettingsAppSwitchReportsAppChanged() async throws {
+    let scenario = GuardScenario()
+
+    let result = try await scenario.run("meant for the editor") {
+        scenario.activator.switchToOtherApp("com.apple.Notes", targetRefusesActivation: true)
+        scenario.accessibility.focusOtherApp("com.apple.Notes")
+    }
+
+    #expect(result.status == .copiedOnly)
+    #expect(result.copyReason == .appChanged)
+    #expect(result.errorMessage == "Another app was in front\u{2014}final text copied.")
+    #expect(scenario.keys.events.isEmpty)
+    #expect(scenario.accessibility.writes.isEmpty)
+    #expect(scenario.pasteboard.plainText == "Meant for the editor")
+}
+
+@Test("Default settings: another field in the same app is still reported as Field changed")
+func defaultSettingsSameAppFieldChangeReportsFieldChanged() async throws {
+    let scenario = GuardScenario()
+
+    let result = try await scenario.run("meant for field a") {
+        scenario.accessibility.focus("field-B")
+    }
+
+    #expect(result.status == .copiedOnly)
+    #expect(result.copyReason == .fieldChanged)
+    #expect(result.errorMessage == "The focused field changed\u{2014}final text copied.")
+}
+
 @Test("Default settings: a secure field at the start copies instead of typing")
 func defaultSettingsSecureFieldCopiesOnly() async throws {
     let scenario = GuardScenario(accessibility: FakeAccessibilityClient(secure: true))
@@ -284,8 +314,7 @@ func editorLookupRunsAfterCaptureStarts() async throws {
         ]),
         historyStore: HistoryStore(
             storageURL: URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("guard-order-\(UUID().uuidString).json"),
-            clipboardService: MemoryClipboardService()
+                .appendingPathComponent("guard-order-\(UUID().uuidString).json")
         ),
         lexiconService: PersonalLexiconService(),
         styleProfileService: StyleProfileService(),

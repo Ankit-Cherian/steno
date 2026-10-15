@@ -26,17 +26,27 @@ func brokenWhisperHelperInputSuppressesSIGPIPE() throws {
 
 @Test("Stale Foundation process state cannot block shutdown forever")
 func staleFoundationProcessStateHasABoundedWait() async {
-    let clock = ContinuousClock()
-    let started = clock.now
+    // Each poll sleeps at least 1 ms, so a 25 ms bound allows at most 26 polls
+    // however slow the machine is. Without a bound the state would be polled
+    // until the stand-in gives up and reports the process gone.
+    let polls = PollCounter()
 
     await WhisperProcessExitWaiter.wait(
         timeout: .milliseconds(25),
         pollInterval: .milliseconds(1)
     ) {
-        true
+        polls.increment() < 1_000
     }
 
-    #expect(started.duration(to: clock.now) < .seconds(2))
+    #expect(polls.count <= 26)
+}
+
+private final class PollCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    /// Records a poll and returns how many came before it.
+    func increment() -> Int { lock.withLock { defer { value += 1 }; return value } }
 }
 
 @Test("A helper exit after accepting transcription falls back exactly once")
@@ -133,11 +143,9 @@ func stalledWhisperHelperLoadFallsBackExactlyOnce() async throws {
     // enters user code. When the helper did publish its startup marker, prove
     // that the timed-out process was reaped; otherwise fallback is the only
     // observable contract available for a process that never initialized.
-    if FileManager.default.fileExists(atPath: pidURL.path) {
-        let pid = try #require(Int32(
-            String(contentsOf: pidURL, encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        ))
+    // The watchdog can also land between the helper creating the file and writing it.
+    if let text = try? String(contentsOf: pidURL, encoding: .utf8),
+       let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
         #expect(kill(pid, 0) == -1)
         #expect(errno == ESRCH)
     }
@@ -155,12 +163,14 @@ func stalledWhisperHelperInferenceFallsBackExactlyOnce() async throws {
     let pidURL = directory.appendingPathComponent("helper.pid")
     try Data([0]).write(to: modelURL)
     let markerURL = directory.appendingPathComponent("inference.received")
+    let naturalExitURL = directory.appendingPathComponent("natural.exit")
     try fakeInferenceStalledHelperSource.write(to: helperURL, atomically: true, encoding: .utf8)
     #expect(chmod(helperURL.path, S_IRWXU) == 0)
 
     var environment = ProcessInfo.processInfo.environment
     environment["STENO_TEST_HELPER_PID_FILE"] = pidURL.path
     environment["STENO_TEST_HELPER_MARKER_FILE"] = markerURL.path
+    environment["STENO_TEST_HELPER_NATURAL_EXIT_FILE"] = naturalExitURL.path
     let fallbackState = ProcessFallbackState()
     let engine = RetainedWhisperTranscriptionEngine(
         configuration: RetainedWhisperTranscriptionConfiguration(
@@ -170,22 +180,21 @@ func stalledWhisperHelperInferenceFallsBackExactlyOnce() async throws {
             vadModelPath: nil,
             suppressNonSpeechTokens: true,
             suppressRegex: nil,
-            modelLoadTimeout: .seconds(5),
+            modelLoadTimeout: .seconds(120),
             inferenceTimeout: .milliseconds(500),
             environment: environment
         ),
         fallback: ProcessFallbackEngine(state: fallbackState)
     )
 
-    let clock = ContinuousClock()
-    let started = clock.now
     let result = try await engine.transcribe(
         audioURL: directory.appendingPathComponent("unused.wav"),
         request: .init()
     )
     await engine.shutdown()
 
-    #expect(started.duration(to: clock.now) < .seconds(7))
+    // The inference watchdog ended the helper; it never reached its own end.
+    #expect(!FileManager.default.fileExists(atPath: naturalExitURL.path))
     #expect(result.text == "fallback")
     #expect(await fallbackState.count == 1)
     // The helper loaded and was stalled in inference, not at load.
@@ -294,8 +303,10 @@ func wedgedWhisperHelperShutdownIsBoundedAndReaped() async throws {
     try fakeWedgedHelperSource.write(to: helperURL, atomically: true, encoding: .utf8)
     #expect(chmod(helperURL.path, S_IRWXU) == 0)
 
+    let naturalExitURL = directory.appendingPathComponent("natural.exit")
     var environment = ProcessInfo.processInfo.environment
     environment["STENO_TEST_HELPER_PID_FILE"] = pidURL.path
+    environment["STENO_TEST_HELPER_NATURAL_EXIT_FILE"] = naturalExitURL.path
     let factory = ProcessWhisperRuntimeSessionFactory()
     let session = try await factory.makeSession(
         configuration: RetainedWhisperTranscriptionConfiguration(
@@ -313,11 +324,10 @@ func wedgedWhisperHelperShutdownIsBoundedAndReaped() async throws {
         String(contentsOf: pidURL, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     ))
-    let clock = ContinuousClock()
-    let started = clock.now
     await session.shutdown()
 
-    #expect(started.duration(to: clock.now) < .seconds(2))
+    // Shutdown ended the helper; it did not wait for the helper to give up on its own.
+    #expect(!FileManager.default.fileExists(atPath: naturalExitURL.path))
     #expect(kill(pid, 0) == -1)
     #expect(errno == ESRCH)
 }
@@ -453,10 +463,14 @@ import time
 def park():
     # Stand-in for a wedged helper. Exit once orphaned, and never outlive
     # the test run, so an interrupted run cannot leave a helper behind.
+    # Reaching the deadline means nothing ended the helper; say so for the test.
     parent = os.getppid()
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 120
     while os.getppid() == parent and time.monotonic() < deadline:
         time.sleep(0.1)
+    if os.getppid() == parent and os.environ.get("STENO_TEST_HELPER_NATURAL_EXIT_FILE"):
+        with open(os.environ["STENO_TEST_HELPER_NATURAL_EXIT_FILE"], "w", encoding="utf-8") as handle:
+            handle.write("natural")
     os._exit(0)
 
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -495,10 +509,14 @@ import time
 def park():
     # Stand-in for a wedged helper. Exit once orphaned, and never outlive
     # the test run, so an interrupted run cannot leave a helper behind.
+    # Reaching the deadline means nothing ended the helper; say so for the test.
     parent = os.getppid()
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 120
     while os.getppid() == parent and time.monotonic() < deadline:
         time.sleep(0.1)
+    if os.getppid() == parent and os.environ.get("STENO_TEST_HELPER_NATURAL_EXIT_FILE"):
+        with open(os.environ["STENO_TEST_HELPER_NATURAL_EXIT_FILE"], "w", encoding="utf-8") as handle:
+            handle.write("natural")
     os._exit(0)
 
 with open(os.environ["STENO_TEST_HELPER_PID_FILE"], "w", encoding="utf-8") as handle:
@@ -1426,8 +1444,8 @@ func idleHelperExitStartsNewHelper() async throws {
             vadModelPath: nil,
             suppressNonSpeechTokens: true,
             suppressRegex: nil,
-            modelLoadTimeout: .seconds(10),
-            inferenceTimeout: .seconds(10),
+            modelLoadTimeout: .seconds(120),
+            inferenceTimeout: .seconds(120),
             environment: environment
         ),
         fallback: ProcessFallbackEngine(state: fallbackState)
@@ -1464,8 +1482,12 @@ func streamingRuntimeAppendIsFramedBeforeConcurrentFinish() async throws {
     let fixture = try StreamingRuntimeFixture(helperSource: fakeStreamingFrameOrderHelperSource)
     defer { fixture.remove() }
     // Hold each AudioAppend just before its write.
+    let heldURL = fixture.directory.appendingPathComponent("append.held")
     let session = try await fixture.makeSession(
-        extraEnvironment: ["STENO_TEST_APPEND_WRITE_DELAY_MS": "300"]
+        extraEnvironment: [
+            "STENO_TEST_APPEND_WRITE_DELAY_MS": "1000",
+            "STENO_TEST_APPEND_WRITE_HELD_FILE": heldURL.path
+        ]
     )
     let streamID = UUID()
     let configuration = streamingConfiguration()
@@ -1483,7 +1505,8 @@ func streamingRuntimeAppendIsFramedBeforeConcurrentFinish() async throws {
             generation: 0
         )
     }
-    try await Task.sleep(for: .milliseconds(50))
+    // Finish once the append is held just before its write.
+    #expect(await eventually { FileManager.default.fileExists(atPath: heldURL.path) })
     _ = try? await session.finishStream(
         id: streamID,
         generation: 0,
@@ -1586,26 +1609,21 @@ private struct StreamingRuntimeFixture {
                 vadModelPath: vadModelURL,
                 suppressNonSpeechTokens: true,
                 suppressRegex: nil,
-                modelLoadTimeout: .seconds(10),
-                inferenceTimeout: .seconds(10),
+                modelLoadTimeout: .seconds(120),
+                inferenceTimeout: .seconds(120),
                 environment: environment
             )
         )
     }
 
     func waitForMarker(contents expectedContents: String? = nil) async throws {
-        for _ in 0..<1_000 {
-            if FileManager.default.fileExists(atPath: markerURL.path) {
-                if let expectedContents {
-                    let contents = try? String(contentsOf: markerURL, encoding: .utf8)
-                    if contents == expectedContents { return }
-                } else {
-                    return
-                }
-            }
-            try await Task.sleep(for: .milliseconds(10))
+        let markerURL = markerURL
+        let written = await eventually {
+            guard FileManager.default.fileExists(atPath: markerURL.path) else { return false }
+            guard let expectedContents else { return true }
+            return (try? String(contentsOf: markerURL, encoding: .utf8)) == expectedContents
         }
-        throw RetainedWhisperRuntimeError.helperUnavailable
+        guard written else { throw RetainedWhisperRuntimeError.helperUnavailable }
     }
 
     func remove() {
@@ -1636,10 +1654,14 @@ import time
 def park():
     # Stand-in for a wedged helper. Exit once orphaned, and never outlive
     # the test run, so an interrupted run cannot leave a helper behind.
+    # Reaching the deadline means nothing ended the helper; say so for the test.
     parent = os.getppid()
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 120
     while os.getppid() == parent and time.monotonic() < deadline:
         time.sleep(0.1)
+    if os.getppid() == parent and os.environ.get("STENO_TEST_HELPER_NATURAL_EXIT_FILE"):
+        with open(os.environ["STENO_TEST_HELPER_NATURAL_EXIT_FILE"], "w", encoding="utf-8") as handle:
+            handle.write("natural")
     os._exit(0)
 
 with open(os.environ["STENO_TEST_HELPER_PID_FILE"], "w", encoding="utf-8") as handle:
@@ -1961,11 +1983,7 @@ raise SystemExit(0)
 
 /// Waits briefly for a helper process to exit and be reaped.
 private func helperHasExited(_ pid: Int32) async -> Bool {
-    for _ in 0..<300 {
-        if kill(pid, 0) == -1, errno == ESRCH { return true }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return false
+    await eventually { kill(pid, 0) == -1 && errno == ESRCH }
 }
 private let fakeStreamingFrameOrderHelperSource = fakeStreamingProtocolPrelude + "\n" + #"""
 start = read_frame()

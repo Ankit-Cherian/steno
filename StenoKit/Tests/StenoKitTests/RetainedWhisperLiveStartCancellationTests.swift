@@ -32,7 +32,8 @@ private actor SlowStartRuntime: WhisperStreamingRuntimeSession {
 
     func startStream(id: UUID, generation: UInt64, configuration: WhisperStreamConfiguration) async throws -> LiveTranscriptionRuntimeIdentity {
         await log.enterStart()
-        try await Task.sleep(for: .seconds(5))
+        // Long enough that only cancellation ends it on any machine.
+        try await Task.sleep(for: .seconds(120))
         return LiveTranscriptionRuntimeIdentity(
             protocolVersion: 2, runtimeIdentifier: "runtime", modelIdentifier: "model", vadIdentifier: "vad",
             currentASRContextCount: 1, peakASRContextCount: 1
@@ -83,9 +84,8 @@ func cancelledLiveStartKeepsWarmHelper() async throws {
             sessionID: SessionID(), controllerGeneration: UUID(), request: .init()
         )
     }
-    for _ in 0..<400 where !(await log.startEntered) {
-        try await Task.sleep(for: .milliseconds(5))
-    }
+    // Cancel while the start is in flight, not before it began.
+    try #require(await eventually { await log.startEntered })
     start.cancel()
     await #expect(throws: CancellationError.self) { _ = try await start.value }
 

@@ -24,79 +24,25 @@ struct HistoryDeleteAllAvailabilityTests {
         }
         let controller = makeTestDictationController(
             hotkey: DeleteAllTestHotkeyService(),
-            historyStore: HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService()),
+            historyStore: HistoryStore(storageURL: historyURL),
             usageAnalyticsStore: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
             legacyHistoryURL: directory.appendingPathComponent("absent-legacy.json")
         )
         return Fixture(directory: directory, historyURL: historyURL, controller: controller)
     }
 
-    /// Renders the History tab and returns the pixels of the right half of
-    /// its header row, where the Delete all button sits. A disabled button
-    /// draws with different fill, border and text colors.
-    private func deleteAllHeaderPixels(controller: DictationController) async throws -> [UInt8] {
-        AppFontRegistry.registerIfNeeded()
-        let size = CGSize(width: StenoDesign.windowIdealWidth, height: StenoDesign.windowIdealHeight)
-        let theme = StenoDesign.theme(for: controller.preferences)
-        let hosting = NSHostingView(rootView: HistoryTab()
-            .environmentObject(controller)
-            .foregroundStyle(theme.text)
-            .background(theme.ink0)
-            .environment(\.colorScheme, .light)
-            .frame(width: size.width, height: size.height))
-        let window = NSWindow(
-            contentRect: CGRect(origin: .zero, size: size),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .aqua)
-        window.contentView = hosting
-        defer {
-            window.contentView = nil
-            window.close()
+    /// Chooses Delete All History… in History's options menu and says whether its
+    /// confirmation appeared, which a disabled item would not show.
+    private func deleteAllOffersConfirmation(controller: DictationController) async throws -> Bool {
+        let feedback = GroveFeedback()
+        feedback.announce = { _ in }
+        let host = TransitionHost(controller: controller) {
+            GroveRenderHarness.window(.history, controller: controller, feedback: feedback) { GroveHistoryView() }
         }
-        hosting.frame = CGRect(origin: .zero, size: size)
-        hosting.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(40))
-        hosting.layoutSubtreeIfNeeded()
-        let bitmap = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
-        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
-        let data = try #require(bitmap.bitmapData)
-        let scale = CGFloat(bitmap.pixelsWide) / size.width
-        let rows = Int(70 * scale)
-        let firstColumn = bitmap.pixelsWide / 2
-        let bytesPerPixel = bitmap.bitsPerPixel / 8
-        var pixels: [UInt8] = []
-        for row in 0..<rows {
-            let rowStart = row * bitmap.bytesPerRow
-            let start = rowStart + firstColumn * bytesPerPixel
-            let end = rowStart + bitmap.pixelsWide * bytesPerPixel
-            pixels.append(contentsOf: UnsafeBufferPointer(start: data + start, count: end - start))
-        }
-        return pixels
-    }
-
-    /// The header as drawn with a saved transcript listed, when the button
-    /// has always been available.
-    private func headerPixelsWithListedTranscript() async throws -> [UInt8] {
-        let entry = TranscriptEntry(
-            appBundleID: "com.example.Editor",
-            rawText: "fictional listed note",
-            cleanText: "Fictional listed note.",
-            durationMS: 2_000,
-            audioURL: nil,
-            insertionStatus: .inserted
-        )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let fixture = try makeFixture(historyData: try encoder.encode([entry]))
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        defer { fixture.controller.teardown() }
-        await fixture.controller.refreshHistory()
-        #expect(fixture.controller.recentEntries.count == 1)
-        return try await deleteAllHeaderPixels(controller: fixture.controller)
+        defer { host.close() }
+        _ = await host.settle(timeout: .seconds(10)) { host.views(NSPopUpButton.self).contains { $0.menu?.indexOfItem(withTitle: "Delete All History…") ?? -1 >= 0 } }
+        try await host.choose(menuItem: "Delete All History…")
+        return await host.settle(timeout: .seconds(10)) { host.node(named: "Delete all History?") != nil }
     }
 
     @Test("Delete all history is available when the History file couldn't be read")
@@ -109,10 +55,9 @@ struct HistoryDeleteAllAvailabilityTests {
         await fixture.controller.refreshHistory()
         #expect(fixture.controller.recentEntries.isEmpty)
 
-        let available = try await headerPixelsWithListedTranscript()
-        #expect(try await deleteAllHeaderPixels(controller: fixture.controller) == available)
+        #expect(try await deleteAllOffersConfirmation(controller: fixture.controller))
 
-        await HistoryTab.deleteAllHistory(using: fixture.controller)
+        await HistoryRules.deleteAllHistory(using: fixture.controller)
         let remaining = try FileManager.default.contentsOfDirectory(at: fixture.directory, includingPropertiesForKeys: nil)
         for file in remaining where !file.lastPathComponent.hasPrefix(".") {
             let contents = try Data(contentsOf: file)
@@ -129,14 +74,13 @@ struct HistoryDeleteAllAvailabilityTests {
         await fixture.controller.refreshHistory()
         #expect(fixture.controller.recentEntries.isEmpty)
 
-        let available = try await headerPixelsWithListedTranscript()
-        #expect(try await deleteAllHeaderPixels(controller: fixture.controller) == available)
+        #expect(try await deleteAllOffersConfirmation(controller: fixture.controller))
     }
 
-    @Test("The Delete all confirmation names the transcripts, or History when none are listed")
+    @Test("The Delete all confirmation names the dictations, or History when none are listed")
     func deleteAllConfirmationTitle() {
-        #expect(HistoryTab.deleteAllConfirmationTitle(listedCount: 3) == "Delete all 3 transcripts?")
-        #expect(HistoryTab.deleteAllConfirmationTitle(listedCount: 0) == "Delete all history?")
+        #expect(HistoryRules.deleteAllConfirmationTitle(listedCount: 3) == "Delete all 3 dictations?")
+        #expect(HistoryRules.deleteAllConfirmationTitle(listedCount: 0) == "Delete all History?")
     }
 
     @Test("After Delete all, no deleted transcript stays offered for copying")
@@ -151,7 +95,7 @@ struct HistoryDeleteAllAvailabilityTests {
             recoverableText: "Fictional latest transcript"
         )
 
-        await HistoryTab.deleteAllHistory(using: fixture.controller)
+        await HistoryRules.deleteAllHistory(using: fixture.controller)
 
         #expect(fixture.controller.status == "History deleted.")
         #expect(fixture.controller.lastTranscript.isEmpty)
@@ -171,7 +115,7 @@ struct HistoryDeleteAllAvailabilityTests {
         )
         fixture.controller.storageNotice = notice
 
-        await HistoryTab.deleteAllHistory(using: fixture.controller)
+        await HistoryRules.deleteAllHistory(using: fixture.controller)
 
         #expect(fixture.controller.storageNotice == notice)
     }
@@ -188,7 +132,7 @@ struct HistoryDeleteAllAvailabilityTests {
             fileURL: keptCopy
         )
 
-        await HistoryTab.deleteAllHistory(using: fixture.controller)
+        await HistoryRules.deleteAllHistory(using: fixture.controller)
 
         #expect(!FileManager.default.fileExists(atPath: keptCopy.path))
         #expect(fixture.controller.storageNotice == nil)

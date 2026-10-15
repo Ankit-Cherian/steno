@@ -46,7 +46,7 @@ private final class LaunchAtLoginFixture {
             preferencesStore: AppPreferencesStore(storageURL: preferencesURL),
             launchAtLoginService: service,
             runtimeRebuildOverride: { nil },
-            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json"), clipboardService: clipboard),
+            historyStore: HistoryStore(storageURL: directory.appendingPathComponent("history.json")),
             usageAnalyticsStore: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json")),
             legacyHistoryURL: directory.appendingPathComponent("legacy.json"),
             systemIntegrationsEnabled: false,

@@ -148,6 +148,12 @@ public struct InsertResult: Sendable, Codable, Equatable {
     /// keystroke. Steno can't confirm the paste landed, so the status stays
     /// `.copiedOnly`; this flag lets the UI say it was pasted.
     public var pasteAttempted: Bool?
+    /// Why a `.copiedOnly` result was copied instead of inserted. Nil when
+    /// the copy was a sent paste or the configured method.
+    public var copyReason: InsertionCopyReason?
+    /// True when the text was copied with the concealed marker, because it
+    /// was meant for a secure field. Copies made of it later stay concealed.
+    public var copyIsConcealed: Bool?
 
     public init(
         status: InsertionStatus,
@@ -156,7 +162,9 @@ public struct InsertResult: Sendable, Codable, Equatable {
         errorMessage: String? = nil,
         cleanupOutcome: CleanupOutcome? = nil,
         usageAnalyticsWarning: String? = nil,
-        pasteAttempted: Bool? = nil
+        pasteAttempted: Bool? = nil,
+        copyReason: InsertionCopyReason? = nil,
+        copyIsConcealed: Bool? = nil
     ) {
         self.status = status
         self.method = method
@@ -165,6 +173,8 @@ public struct InsertResult: Sendable, Codable, Equatable {
         self.cleanupOutcome = cleanupOutcome
         self.usageAnalyticsWarning = usageAnalyticsWarning
         self.pasteAttempted = pasteAttempted
+        self.copyReason = copyReason
+        self.copyIsConcealed = copyIsConcealed
     }
 }
 

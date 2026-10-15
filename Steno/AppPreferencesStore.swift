@@ -20,8 +20,9 @@ enum AppPreferencesStoreError: Error, LocalizedError, Equatable {
 /// A file that can't be read is moved aside before it is replaced, and a file
 /// that is only partly readable is kept as a copy.
 actor AppPreferencesStore {
-    private let storageURL: URL
-    private let migratesLegacyStorage: Bool
+    nonisolated let storageURL: URL
+    /// The earlier app folder to copy once, or nil when nothing migrates.
+    private let legacyMigration: (source: URL, destination: URL)?
     private var hasPreparedStorageDirectory = false
     /// The file present at load couldn't be read; it must not be overwritten in place.
     private var loadFailed = false
@@ -31,13 +32,26 @@ actor AppPreferencesStore {
     private var noticeHandler: (@Sendable (StorageRecoveryNotice) -> Void)?
     private static let logger = Logger(subsystem: "io.stenoapp.steno", category: "AppPreferencesStore")
 
+    /// An explicit `storageURL` never migrates. Without one, the store uses the
+    /// released app's folder.
     init(storageURL: URL? = nil) {
-        self.storageURL = storageURL ?? Self.defaultStorageURL()
-        self.migratesLegacyStorage = storageURL == nil
+        if let storageURL {
+            self.storageURL = storageURL
+            self.legacyMigration = nil
+        } else {
+            let root = StenoStorageRoot.release()
+            self.storageURL = root.preferencesURL
+            self.legacyMigration = root.legacyMigration
+        }
+    }
+
+    init(root: StenoStorageRoot) {
+        self.storageURL = root.preferencesURL
+        self.legacyMigration = root.legacyMigration
     }
 
     func load() -> AppPreferences {
-        if migratesLegacyStorage { Self.migrateIfNeeded() }
+        if let legacyMigration { Self.migrateIfNeeded(legacyMigration) }
         loadFailed = false
         unpreservedOriginal = nil
         guard FileManager.default.fileExists(atPath: storageURL.path) else {
@@ -62,7 +76,7 @@ actor AppPreferencesStore {
             )
             loadFailed = true
             report(StorageRecoveryNotice(
-                message: "Steno couldn't read your settings file, so it's using default settings. The file hasn't been changed.",
+                message: "Steno couldn’t read your settings file. It’s using default settings, and the file hasn’t been changed.",
                 fileURL: storageURL
             ))
             return .default
@@ -80,7 +94,7 @@ actor AppPreferencesStore {
             if loadFailed, FileManager.default.fileExists(atPath: storageURL.path) {
                 let movedURL = try StorageFilePreservation.moveAside(storageURL, label: "unreadable")
                 report(StorageRecoveryNotice(
-                    message: "Steno couldn't read your earlier settings file, so it kept it as “\(movedURL.lastPathComponent)” and saved your new settings.",
+                    message: "Steno couldn’t read your earlier settings file. It kept the file as “\(movedURL.lastPathComponent)” and saved your new settings.",
                     fileURL: movedURL
                 ))
             }
@@ -159,27 +173,10 @@ actor AppPreferencesStore {
         hasPreparedStorageDirectory = true
     }
 
-    private static func defaultStorageURL() -> URL {
-        let appSupport: URL
-        if let resolved = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            appSupport = resolved
-        } else {
-            appSupport = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support", isDirectory: true)
-            logger.fault(
-                "Application Support directory lookup failed. Falling back to \(appSupport.path, privacy: .private)."
-            )
-        }
-        return appSupport
-            .appendingPathComponent("Steno", isDirectory: true)
-            .appendingPathComponent("preferences.json")
-    }
-
-    private static func migrateIfNeeded() {
+    private static func migrateIfNeeded(_ migration: (source: URL, destination: URL)) {
         let fm = FileManager.default
-        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
-        let oldDir = appSupport.appendingPathComponent("WhisperClone", isDirectory: true)
-        let newDir = appSupport.appendingPathComponent("Steno", isDirectory: true)
+        let oldDir = migration.source
+        let newDir = migration.destination
 
         if fm.fileExists(atPath: oldDir.path) && !fm.fileExists(atPath: newDir.path) {
             do {

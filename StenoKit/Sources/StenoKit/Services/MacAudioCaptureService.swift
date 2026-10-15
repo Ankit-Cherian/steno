@@ -39,9 +39,12 @@ public enum MacAudioCaptureError: Error, LocalizedError {
 @MainActor
 protocol CaptureRecorder: AnyObject {
     var isRecording: Bool { get }
+    var isMeteringEnabled: Bool { get set }
     func prepareToRecord() -> Bool
     func record() -> Bool
     func stop()
+    func updateMeters()
+    func averagePower(forChannel channelNumber: Int) -> Float
 }
 
 extension AVAudioRecorder: CaptureRecorder {}
@@ -54,13 +57,32 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
     private var recorderErrors: [SessionID: MacAudioCaptureError] = [:]
     private var recordingStartedAt: [SessionID: TimeInterval] = [:]
     private var inputDeviceNames: [SessionID: String] = [:]
+    /// Names of microphones used by recordings that ended, newest last, until taken. Kept short:
+    /// a session that never completes doesn't take its name.
+    private var finishedInputDeviceNames: [(sessionID: SessionID, name: String)] = []
     private var stoppingSessionIDs: Set<SessionID> = []
     private var interruptions: [SessionID: CaptureInterruption] = [:]
+    private var meteredSessionID: SessionID?
 
-    private let recordingDirectory: URL
-    private let makeRecorder: @MainActor (URL, [String: Any]) throws -> any CaptureRecorder
-    private let inputDeviceName: @MainActor () -> String?
+    /// The folder recordings are written to.
+    public let recordingDirectory: URL
+    private let makeRecorder: @MainActor (URL, [String: Any], AudioDeviceID?) throws -> any CaptureRecorder
+    private let resolveInputDevice: @MainActor (String) -> AudioDeviceID?
+    private let inputDeviceName: @MainActor (AudioDeviceID?) -> String?
     private let uptime: @MainActor () -> TimeInterval
+
+    /// The level of the recording in progress. It runs only while a capture
+    /// is recording and reads 0 when none is.
+    public let inputLevelMeter: InputLevelMeter
+
+    /// The UID of the input to record from, or nil to follow the system
+    /// input. Read when each capture begins.
+    public var preferredInputDeviceID: String?
+
+    /// The input the most recent capture used. `.missing` means the chosen
+    /// device was not connected or could not record, and the system input
+    /// recorded instead.
+    public private(set) var lastInputSelection: InputDeviceSelection = .systemInput
 
     /// Called when a recording stops by itself while its session is still
     /// active, for example because the microphone was disconnected. The
@@ -69,24 +91,41 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
     public var onRecorderStoppedEarly: (@MainActor (SessionID) -> Void)?
 
     public override convenience init() {
+        self.init(recordingDirectory: FileManager.default.temporaryDirectory)
+    }
+
+    /// Records into `recordingDirectory`. The default is the system temporary folder.
+    public convenience init(recordingDirectory: URL) {
         self.init(
-            recordingDirectory: FileManager.default.temporaryDirectory,
-            makeRecorder: { url, settings in try AVAudioRecorder(url: url, settings: settings) },
-            inputDeviceName: { MacAudioCaptureService.defaultInputDeviceName() },
+            recordingDirectory: recordingDirectory,
+            makeRecorder: { url, settings, deviceID in
+                if let deviceID {
+                    return PinnedDeviceCaptureRecorder(url: url, settings: settings, deviceID: deviceID)
+                }
+                return try AVAudioRecorder(url: url, settings: settings)
+            },
+            resolveInputDevice: { AudioInputDevices.deviceID(forUID: $0) },
+            inputDeviceName: { deviceID in
+                deviceID.flatMap(AudioInputDevices.name(of:)) ?? MacAudioCaptureService.defaultInputDeviceName()
+            },
             uptime: { ProcessInfo.processInfo.systemUptime }
         )
     }
 
     init(
         recordingDirectory: URL,
-        makeRecorder: @escaping @MainActor (URL, [String: Any]) throws -> any CaptureRecorder,
-        inputDeviceName: @escaping @MainActor () -> String?,
-        uptime: @escaping @MainActor () -> TimeInterval
+        makeRecorder: @escaping @MainActor (URL, [String: Any], AudioDeviceID?) throws -> any CaptureRecorder,
+        resolveInputDevice: @escaping @MainActor (String) -> AudioDeviceID? = { _ in nil },
+        inputDeviceName: @escaping @MainActor (AudioDeviceID?) -> String?,
+        uptime: @escaping @MainActor () -> TimeInterval,
+        inputLevelMeter: InputLevelMeter = InputLevelMeter()
     ) {
         self.recordingDirectory = recordingDirectory
         self.makeRecorder = makeRecorder
+        self.resolveInputDevice = resolveInputDevice
         self.inputDeviceName = inputDeviceName
         self.uptime = uptime
+        self.inputLevelMeter = inputLevelMeter
         super.init()
     }
 
@@ -108,32 +147,80 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
             }
         }
 
-        let recorder: any CaptureRecorder
-        do {
-            recorder = try makeRecorder(fileURL, settings)
-        } catch {
-            throw MacAudioCaptureError.failedToCreateRecorder
-        }
-        (recorder as? AVAudioRecorder)?.delegate = self
-        guard recorder.prepareToRecord() else {
-            throw MacAudioCaptureError.failedToPrepareRecorder
+        // Following the system input, the default, adds no lookup here.
+        var selection = InputDeviceSelection.systemInput
+        var deviceID: AudioDeviceID?
+        if let preferred = preferredInputDeviceID, !preferred.isEmpty {
+            deviceID = resolveInputDevice(preferred)
+            selection = deviceID == nil ? .missing(id: preferred) : .device(id: preferred)
         }
 
-        guard recorder.record() else {
-            throw MacAudioCaptureError.failedToStartRecording
+        let recorder: any CaptureRecorder
+        do {
+            recorder = try startRecorder(url: fileURL, settings: settings, deviceID: deviceID)
+        } catch where deviceID != nil {
+            // The chosen device could not record. The system input keeps the
+            // dictation rather than losing it.
+            try? FileManager.default.removeItem(at: fileURL)
+            selection = .missing(id: selection.deviceID ?? "")
+            deviceID = nil
+            recorder = try startRecorder(url: fileURL, settings: settings, deviceID: nil)
         }
 
         shouldCleanup = false
+        lastInputSelection = selection
         recorders[sessionID] = recorder
         outputURLs[sessionID] = fileURL
         recorderSessionIDs[ObjectIdentifier(recorder)] = sessionID
         recorderErrors[sessionID] = nil
         recordingStartedAt[sessionID] = uptime()
+        // Started after recording has, so metering never delays it.
+        meteredSessionID = sessionID
+        inputLevelMeter.start { [weak recorder] in
+            guard let recorder, recorder.isRecording else { return nil }
+            recorder.updateMeters()
+            return recorder.averagePower(forChannel: 0)
+        }
         // Read after recording has started so the lookup never delays it. It
         // names the device if the recording later stops by itself.
-        if let name = inputDeviceName() {
+        if let name = inputDeviceName(deviceID) {
             inputDeviceNames[sessionID] = name
         }
+    }
+
+    private func startRecorder(
+        url: URL,
+        settings: [String: Any],
+        deviceID: AudioDeviceID?
+    ) throws -> any CaptureRecorder {
+        let recorder: any CaptureRecorder
+        do {
+            recorder = try makeRecorder(url, settings, deviceID)
+        } catch {
+            throw MacAudioCaptureError.failedToCreateRecorder
+        }
+        (recorder as? AVAudioRecorder)?.delegate = self
+        (recorder as? PinnedDeviceCaptureRecorder)?.onStoppedByItself = { [weak self] recorder in
+            self?.recorderDidFinish(recorder, successfully: false)
+        }
+        // Metering is a flag on the recorder; it costs nothing at start.
+        recorder.isMeteringEnabled = true
+        guard recorder.prepareToRecord() else {
+            recorder.stop()
+            throw MacAudioCaptureError.failedToPrepareRecorder
+        }
+
+        guard recorder.record() else {
+            recorder.stop()
+            throw MacAudioCaptureError.failedToStartRecording
+        }
+        return recorder
+    }
+
+    private func stopMetering(sessionID: SessionID) {
+        guard meteredSessionID == sessionID else { return }
+        meteredSessionID = nil
+        inputLevelMeter.stop()
     }
 
     public func endCapture(sessionID: SessionID) async throws -> URL {
@@ -144,6 +231,7 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
 
         stoppingSessionIDs.insert(sessionID)
         recorder.stop()
+        stopMetering(sessionID: sessionID)
         let elapsedSeconds = recordingStartedAt.removeValue(forKey: sessionID).map { uptime() - $0 }
         let deviceName = inputDeviceNames.removeValue(forKey: sessionID)
         defer {
@@ -185,6 +273,12 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
             try? FileManager.default.removeItem(at: fileURL)
             throw error
         }
+        if let deviceName {
+            finishedInputDeviceNames.append((sessionID, deviceName))
+            if finishedInputDeviceNames.count > 8 {
+                finishedInputDeviceNames.removeFirst()
+            }
+        }
         return fileURL
     }
 
@@ -197,8 +291,16 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
         interruptions.removeValue(forKey: sessionID)
     }
 
+    public func takeInputDeviceName(sessionID: SessionID) async -> String? {
+        guard let index = finishedInputDeviceNames.firstIndex(where: { $0.sessionID == sessionID }) else {
+            return nil
+        }
+        return finishedInputDeviceNames.remove(at: index).name
+    }
+
     public func cancelCapture(sessionID: SessionID) async {
         interruptions[sessionID] = nil
+        finishedInputDeviceNames.removeAll { $0.sessionID == sessionID }
         guard let recorder = recorders.removeValue(forKey: sessionID),
               let fileURL = outputURLs.removeValue(forKey: sessionID) else {
             return
@@ -206,6 +308,7 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
 
         stoppingSessionIDs.insert(sessionID)
         recorder.stop()
+        stopMetering(sessionID: sessionID)
         stoppingSessionIDs.remove(sessionID)
         recorderSessionIDs.removeValue(forKey: ObjectIdentifier(recorder))
         recorderErrors[sessionID] = nil
@@ -223,6 +326,9 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
             return
         }
         let stoppedBySteno = stoppingSessionIDs.contains(sessionID)
+        if !stoppedBySteno {
+            stopMetering(sessionID: sessionID)
+        }
         guard !stoppedBySteno || !successfully else { return }
         if interruptions[sessionID] == nil {
             interruptions[sessionID] = CaptureInterruption(

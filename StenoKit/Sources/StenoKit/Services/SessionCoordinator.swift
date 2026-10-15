@@ -171,6 +171,8 @@ public actor SessionCoordinator {
     private final class CaptureStopRequestFlag: @unchecked Sendable {
         private let lock = NSLock()
         private var requestedAt: ContinuousClock.Instant?
+        /// When the stop was first requested, on the clock the dictation record's step times use.
+        private var recordClockRequestedAt: ContinuousClock.Instant?
 
         func markRequested(at instant: ContinuousClock.Instant) -> ContinuousClock.Instant {
             lock.withLock {
@@ -178,8 +180,13 @@ public actor SessionCoordinator {
                     return requestedAt
                 }
                 requestedAt = instant
+                recordClockRequestedAt = ContinuousClock.now
                 return instant
             }
+        }
+
+        var recordClockStopRequestedAt: ContinuousClock.Instant? {
+            lock.withLock { recordClockRequestedAt }
         }
 
         var isRequested: Bool {
@@ -190,6 +197,7 @@ public actor SessionCoordinator {
     private struct CaptureStopReceipt: Sendable {
         var audioURL: URL
         var monotonicEndedAt: ContinuousClock.Instant
+        var recordClockStopRequestedAt: ContinuousClock.Instant?
         var interruption: CaptureInterruption?
     }
 
@@ -220,6 +228,7 @@ public actor SessionCoordinator {
 
         func stop() async throws -> CaptureStopReceipt {
             let monotonicEndedAt = requestFlag.markRequested(at: monotonicNow())
+            let recordClockStopRequestedAt = requestFlag.recordClockStopRequestedAt
             if isCancelled {
                 throw CancellationError()
             }
@@ -240,6 +249,7 @@ public actor SessionCoordinator {
                             CaptureStopReceipt(
                                 audioURL: audioURL,
                                 monotonicEndedAt: monotonicEndedAt,
+                                recordClockStopRequestedAt: recordClockStopRequestedAt,
                                 interruption: await captureService.takeCaptureInterruption(
                                     sessionID: sessionID
                                 )
@@ -398,6 +408,7 @@ public actor SessionCoordinator {
         var audioURL: URL
         var captureDurationMS: Int
         var captureInterruption: CaptureInterruption?
+        var recordClockStopRequestedAt: ContinuousClock.Instant?
     }
 
     private struct CleanupExecutionResult: Sendable {
@@ -415,10 +426,13 @@ public actor SessionCoordinator {
     private let styleProfileService: StyleProfileService
     private let snippetService: SnippetService
     private let usageRecorder: (any UsageAnalyticsRecording)?
+    /// Settings each dictation's record names.
+    private let recordSettings: DictationRecordSettings
     private let now: @Sendable () -> Date
     private let monotonicNow: @Sendable () -> ContinuousClock.Instant
     private let liveSnapshotHandler: @Sendable (LiveTranscriptionSnapshot) async -> Void
     private let liveUnavailableHandler: @Sendable (SessionID, LiveTranscriptUnavailableReason) async -> Void
+    private let stepObserver: DictationStepObserver
     #if os(macOS)
     private let editorTargetCapture: @Sendable (AppContext) -> Result<EditorTargetHandle, EditorTargetUnavailableReason>
     #endif
@@ -453,11 +467,13 @@ public actor SessionCoordinator {
         snippetService: SnippetService = SnippetService(),
         fallbackCleanupEngine: CleanupEngine = RuleBasedCleanupEngine(),
         usageRecorder: (any UsageAnalyticsRecording)? = nil,
+        recordSettings: DictationRecordSettings = DictationRecordSettings(),
         now: @escaping @Sendable () -> Date = Date.init,
         monotonicNow: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now },
         liveSnapshotHandler: @escaping @Sendable (LiveTranscriptionSnapshot) async -> Void = { _ in },
         liveUnavailableHandler: @escaping @Sendable (SessionID, LiveTranscriptUnavailableReason) async -> Void = { _, _ in },
-        editorTargetCapture: @escaping @Sendable (AppContext) -> Result<EditorTargetHandle, EditorTargetUnavailableReason> = EditorTargetHandle.capture
+        editorTargetCapture: @escaping @Sendable (AppContext) -> Result<EditorTargetHandle, EditorTargetUnavailableReason> = EditorTargetHandle.capture,
+        stepObserver: @escaping DictationStepObserver = { _ in }
     ) {
         self.captureService = captureService
         self.transcriptionEngine = transcriptionEngine
@@ -469,10 +485,12 @@ public actor SessionCoordinator {
         self.snippetService = snippetService
         self.fallbackCleanupEngine = fallbackCleanupEngine
         self.usageRecorder = usageRecorder
+        self.recordSettings = recordSettings
         self.now = now
         self.monotonicNow = monotonicNow
         self.liveSnapshotHandler = liveSnapshotHandler
         self.liveUnavailableHandler = liveUnavailableHandler
+        self.stepObserver = stepObserver
         #if os(macOS)
         self.editorTargetCapture = editorTargetCapture
         #endif
@@ -649,6 +667,19 @@ public actor SessionCoordinator {
         liveAppendWaitObserver = observer
     }
 
+    /// Replaces the clock of the busy-append grace period, so a test can
+    /// measure the period without depending on how busy the machine is.
+    struct LiveAppendGraceClock: Sendable {
+        var now: @Sendable () -> ContinuousClock.Instant
+        var sleep: @Sendable (Duration) async throws -> Void
+    }
+
+    private var liveAppendGraceClock: LiveAppendGraceClock?
+
+    func setLiveAppendGraceClock(_ clock: LiveAppendGraceClock?) {
+        liveAppendGraceClock = clock
+    }
+
     private var livePumpPollObserver: (@Sendable () async -> Void)?
 
     /// Runs on the pump after a poll returns and before its frames are appended.
@@ -731,6 +762,7 @@ public actor SessionCoordinator {
             }
             throw error
         }
+        stepObserver(.captureClosed)
         let audioURL = captureStopReceipt.audioURL
         let captureDurationMS = Self.durationMilliseconds(
             from: active.monotonicStartedAt,
@@ -747,7 +779,8 @@ public actor SessionCoordinator {
             active: capturedActive,
             audioURL: audioURL,
             captureDurationMS: captureDurationMS,
-            captureInterruption: captureStopReceipt.interruption
+            captureInterruption: captureStopReceipt.interruption,
+            recordClockStopRequestedAt: captureStopReceipt.recordClockStopRequestedAt
         )
         transferredCapture = true
     }
@@ -757,20 +790,109 @@ public actor SessionCoordinator {
         sessionID: SessionID,
         languageHints: [String] = ["en-US"]
     ) async throws -> InsertResult {
+        try await completePressToTalk(sessionID: sessionID, languageHints: languageHints, copyingBecause: nil)
+    }
+
+    /// Transcribes audio whose capture has already ended. With a
+    /// `copyReason`, the text is copied instead of inserted: no app is
+    /// activated and no keystroke is sent. History and usage are recorded
+    /// as for any dictation.
+    public func completePressToTalk(
+        sessionID: SessionID,
+        languageHints: [String] = ["en-US"],
+        copyingBecause copyReason: InsertionCopyReason?
+    ) async throws -> InsertResult {
+        try await completePressToTalk(
+            sessionID: sessionID,
+            languageHints: languageHints,
+            copyingBecause: copyReason,
+            whenDelivered: nil
+        )
+    }
+
+    /// As above. `whenDelivered` receives the result as soon as the text is inserted or copied,
+    /// before History and the usage ledger are written, so the result can be shown without
+    /// waiting for them. It is not called when nothing was delivered, and it must return at once:
+    /// the writes wait for it. The returned result is the same with any History or usage warning
+    /// added.
+    public func completePressToTalk(
+        sessionID: SessionID,
+        languageHints: [String] = ["en-US"],
+        copyingBecause copyReason: InsertionCopyReason?,
+        whenDelivered: (@Sendable (InsertResult) -> Void)?
+    ) async throws -> InsertResult {
         // A recording the recorder cut short is still transcribed; the result
         // says so, including when nothing in it was recognized as speech.
-        let captureInterruption = capturedSessions[sessionID]?.captureInterruption
+        let captureWarning = capturedSessions[sessionID]?.captureInterruption?.message
+        var deliverWithWarning: (@Sendable (InsertResult) -> Void)?
+        if let whenDelivered {
+            deliverWithWarning = { delivered in
+                var delivered = delivered
+                delivered.captureWarning = captureWarning
+                whenDelivered(delivered)
+            }
+        }
         var result = try await completeCapturedPressToTalk(
             sessionID: sessionID,
-            languageHints: languageHints
+            languageHints: languageHints,
+            copyReason: copyReason,
+            whenDelivered: deliverWithWarning
         )
-        result.captureWarning = captureInterruption?.message
+        result.captureWarning = captureWarning
         return result
+    }
+
+    /// Whether a recording whose capture has ended is still held, waiting to
+    /// be completed or canceled.
+    public func holdsCapturedRecording(sessionID: SessionID) -> Bool {
+        capturedSessions[sessionID] != nil
+    }
+
+    /// Inserts text that is not a new dictation, such as Paste Last
+    /// Dictation, into `target` through the same transports and refusal-only
+    /// target check as a dictation: a secure field gets a copy instead. It
+    /// is attempted once and records nothing in History or Insights.
+    public func insertText(_ text: String, into target: AppContext) async -> InsertResult {
+        await insertText(text, into: target, concealed: false)
+    }
+
+    /// `concealed` says the text was meant for a secure field, so every copy
+    /// of it, including a refusal or recovery copy, is marked concealed.
+    public func insertText(_ text: String, into target: AppContext, concealed: Bool) async -> InsertResult {
+        guard !isShutDown else {
+            return InsertResult(status: .failed, method: .none, insertedText: text, errorMessage: "Steno is shutting down.")
+        }
+        #if os(macOS)
+        let insertionGuard = InsertionTargetGuard(
+            startCapture: editorTargetCapture(target),
+            lookup: editorTargetCapture
+        )
+        let authorization = InsertionCommitAuthorization()
+        let insertionService = self.insertionService
+        return await withTaskCancellationHandler {
+            await insertionService.insert(
+                text: text,
+                target: target,
+                editorTarget: nil,
+                insertionGuard: insertionGuard,
+                clipboardRecoveryText: text,
+                commitAuthorization: authorization,
+                concealsCopy: concealed
+            )
+        } onCancel: {
+            // As for a dictation: a cancel before the commit point stops it.
+            authorization.invalidate()
+        }
+        #else
+        return await insertionService.insert(text: text, target: target)
+        #endif
     }
 
     private func completeCapturedPressToTalk(
         sessionID: SessionID,
-        languageHints: [String]
+        languageHints: [String],
+        copyReason: InsertionCopyReason?,
+        whenDelivered: (@Sendable (InsertResult) -> Void)?
     ) async throws -> InsertResult {
         guard let pendingCaptured = capturedSessions[sessionID] else {
             throw SessionCoordinatorError.sessionNotFound
@@ -799,6 +921,9 @@ public actor SessionCoordinator {
         // must release that stream here, or the engine refuses every later
         // session.
         var liveFinishInvoked = false
+        // Step timings for the dictation record use their own clock reads, separate from the
+        // capture clock that measures recording length.
+        var transcriptionStartedAt = ContinuousClock.now
         let request: TranscriptionRequest
         var rawTranscript: RawTranscript
         do {
@@ -813,6 +938,8 @@ public actor SessionCoordinator {
                 )
             }
             try checkCompletionOwnership(sessionID: sessionID)
+            transcriptionStartedAt = ContinuousClock.now
+            stepObserver(.transcriptionStarted)
             rawTranscript = try await authoritativeTranscript(
                 captured: captured,
                 request: request,
@@ -827,6 +954,8 @@ public actor SessionCoordinator {
             }
             throw error
         }
+        let transcriptionMS = Self.durationMilliseconds(from: transcriptionStartedAt, to: ContinuousClock.now)
+        stepObserver(.transcribed)
         try checkCompletionOwnership(sessionID: sessionID)
 
         // Recognized text with no letter or digit, such as a lone "." from a
@@ -846,6 +975,7 @@ public actor SessionCoordinator {
             rawTranscript.text = sanitizedPromptContamination
         }
 
+        let cleanupStartedAt = ContinuousClock.now
         // Capture what the user actually dictated before a command or snippet
         // trigger can transform it into a different insertion payload.
         let spokenText = rawTranscript.text
@@ -892,6 +1022,8 @@ public actor SessionCoordinator {
                 to: cleanedTranscript.text
             ))
         }
+        let cleanupMS = Self.durationMilliseconds(from: cleanupStartedAt, to: ContinuousClock.now)
+        stepObserver(.cleanedUp)
 
         #if os(macOS)
         let validatedContext = await revalidatedContinuationContext(for: active)
@@ -904,8 +1036,18 @@ public actor SessionCoordinator {
         ).text
         try checkCompletionOwnership(sessionID: sessionID)
         let insertionCommitAuthorization = active.commitAuthorization
+        let insertionService = self.insertionService
+        let insertionStartedAt = ContinuousClock.now
         var insertResult = await withTaskCancellationHandler {
-            await insertionService.insert(
+            if let copyReason {
+                return await insertionService.copyWithoutInserting(
+                    text: cleanedTranscript.text,
+                    reason: copyReason,
+                    concealed: active.insertionGuard?.startFieldIsSecure == true,
+                    commitAuthorization: insertionCommitAuthorization
+                )
+            }
+            return await insertionService.insert(
                 text: insertionPayload,
                 target: active.appContext,
                 editorTarget: active.editorTarget,
@@ -922,17 +1064,25 @@ public actor SessionCoordinator {
             insertionCommitAuthorization.invalidate()
         }
         #else
+        let insertionStartedAt = ContinuousClock.now
         var insertResult = await insertionService.insert(
             text: cleanedTranscript.text,
             target: active.appContext
         )
         #endif
+        let insertionFinishedAt = ContinuousClock.now
+        stepObserver(.inserted)
+        let insertionMS = Self.durationMilliseconds(from: insertionStartedAt, to: insertionFinishedAt)
         let insertionCommitted = insertResult.status == .inserted || insertResult.status == .copiedOnly
         if !insertionCommitted {
             try checkCompletionOwnership(sessionID: sessionID)
         }
         insertResult.cleanupOutcome = cleanupResult.outcome
+        if insertionCommitted, let whenDelivered {
+            whenDelivered(insertResult)
+        }
 
+        let cleanupComparison = CleanupChangeRecord.compare(from: historyRawText, to: cleanedTranscript.text)
         let entry = TranscriptEntry(
             createdAt: active.startedAt,
             appBundleID: active.appContext.bundleIdentifier,
@@ -942,7 +1092,33 @@ public actor SessionCoordinator {
             // Audio artifacts are ephemeral; do not persist paths that are deleted on return.
             audioURL: nil,
             insertionStatus: insertResult.status,
-            pasteAttempted: insertResult.pasteAttempted
+            pasteAttempted: insertResult.pasteAttempted,
+            concealedCopy: insertResult.copyIsConcealed,
+            record: DictationRecord(
+                schemaVersion: DictationRecord.currentSchemaVersion,
+                attemptID: sessionID,
+                outcome: DictationRecord.outcomeName(for: insertResult),
+                copyReason: DictationRecord.copyReasonName(for: insertResult),
+                recordingMS: captured.captureDurationMS,
+                transcriptionMS: transcriptionMS,
+                cleanupMS: cleanupMS,
+                insertionMS: insertionMS,
+                endToEndMS: captured.recordClockStopRequestedAt.map {
+                    Self.durationMilliseconds(from: $0, to: insertionFinishedAt)
+                },
+                microphoneName: await captureService.takeInputDeviceName(sessionID: sessionID),
+                modelName: recordSettings.modelName,
+                modelID: recordSettings.modelID,
+                language: request.languageHints.first,
+                vadEnabled: recordSettings.vadEnabled,
+                cleanupStyle: profile.fillerPolicy.rawValue,
+                insertionMethod: DictationRecord.insertionMethodName(for: insertResult),
+                appName: active.appContext.appName,
+                appBundleID: active.appContext.bundleIdentifier,
+                cleanupChanges: cleanupComparison.changes,
+                cleanupChangeCount: cleanupComparison.changeCount,
+                cleanupComparisonSkipped: cleanupComparison.wasSkipped ? true : nil
+            )
         )
         do {
             try await historyStore.append(entry: entry)
@@ -953,6 +1129,7 @@ public actor SessionCoordinator {
             StenoKitDiagnostics.logger.error("Transcript history write failed after insertion.")
             insertResult.historyWarning = error.localizedDescription
         }
+        stepObserver(.historySaved)
         if !insertionCommitted {
             try checkCompletionOwnership(sessionID: sessionID)
         }
@@ -970,6 +1147,7 @@ public actor SessionCoordinator {
                 StenoKitDiagnostics.logger.error("Usage analytics event write failed.")
                 insertResult.usageAnalyticsWarning = "This session’s exact usage details couldn’t be saved. Insights may show an estimate."
             }
+            stepObserver(.usageRecorded)
         }
 
         return insertResult
@@ -1426,11 +1604,19 @@ public actor SessionCoordinator {
         }
         #endif
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .milliseconds(150))
+        var now: @Sendable () -> ContinuousClock.Instant = { clock.now }
+        var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        #if DEBUG
+        if let liveAppendGraceClock {
+            now = liveAppendGraceClock.now
+            sleep = liveAppendGraceClock.sleep
+        }
+        #endif
+        let deadline = now().advanced(by: .milliseconds(150))
         while !activity.isIdle {
             try checkCompletionOwnership(sessionID: sessionID)
-            guard clock.now < deadline else { return false }
-            try await Task.sleep(for: .milliseconds(5))
+            guard now() < deadline else { return false }
+            try await sleep(.milliseconds(5))
         }
         return true
     }

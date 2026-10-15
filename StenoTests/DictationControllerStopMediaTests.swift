@@ -38,7 +38,8 @@ func quitRightAfterKeyUpReleasesMedia() async {
 @Test("Stopping does not wait for an unanswered media Pause, and the late Pause is still resumed")
 func stopDoesNotWaitForUnansweredPause() async {
     let events = MediaReleaseEventLog()
-    let driver = SlowPauseMediaDriver(events: events, pauseAcknowledgementDelay: .milliseconds(900))
+    let acknowledgement = ShortcutGate()
+    let driver = SlowPauseMediaDriver(events: events, pauseAcknowledgement: acknowledgement)
     let service = MacMediaInterruptionService(
         driver: driver,
         verificationDelays: MacMediaInterruptionService.defaultVerificationDelays,
@@ -59,18 +60,13 @@ func stopDoesNotWaitForUnansweredPause() async {
         await controller.teardownAndWait()
         return
     }
-    try? await Task.sleep(for: .milliseconds(200))
-    let keyUp = ContinuousClock.now
     controller.pressToTalkStop()
 
-    #expect(await events.waitForCount("transcription.start", 1))
-    if let transcribedAt = events.instant(of: "transcription.start") {
-        let wait = transcribedAt - keyUp
-        #expect(wait < .milliseconds(300), "Transcription waited \(wait) after key-up: \(events.names())")
-    }
-    // The Pause was still unanswered when transcription began.
-    #expect(events.index(of: "transcription.start")! < events.index(of: "media.pause.acknowledged")
-        ?? Int.max)
+    // The player has not answered, and only the test lets it answer, so
+    // transcription starting proves stop did not wait for the Pause.
+    #expect(await events.waitForCount("transcription.start", 1), "\(events.names())")
+    #expect(events.count("media.pause.acknowledged") == 0)
+    await acknowledgement.open()
 
     // Once the Pause is accepted, Steno owns that pause and resumes exactly
     // that app, once.
@@ -84,19 +80,62 @@ func stopDoesNotWaitForUnansweredPause() async {
     await controller.teardownAndWait()
 }
 
-/// Answers Pause only after a delay, like a player that is slow to acknowledge.
+@MainActor
+@Test("Quitting after Stop, while the media Pause is still unanswered, still resumes that app")
+func quitWhilePauseUnansweredAfterStopResumes() async {
+    let events = MediaReleaseEventLog()
+    let acknowledgement = ShortcutGate()
+    let driver = SlowPauseMediaDriver(events: events, pauseAcknowledgement: acknowledgement)
+    let service = MacMediaInterruptionService(
+        driver: driver,
+        verificationDelays: MacMediaInterruptionService.defaultVerificationDelays,
+        resumeVerificationDelays: productionResumeDelays,
+        sleep: { try? await Task.sleep(nanoseconds: $0) },
+        systemSupportsMediaPausing: true
+    )
+    let media = ObservedMediaService(inner: service, events: events)
+    let controller = makeTestDictationController(
+        hotkey: MediaReleaseHotkeyService(),
+        mediaInterruption: media,
+        coordinator: MediaReleaseCoordinator(events: events)
+    )
+
+    controller.pressToTalkStart()
+    guard await events.waitForCount("media.command.pause", 1) else {
+        Issue.record("Pause was never sent: \(events.names())")
+        await controller.teardownAndWait()
+        return
+    }
+    controller.pressToTalkStop()
+    #expect(await events.waitForCount("transcription.start", 1), "\(events.names())")
+    #expect(events.count("media.pause.acknowledged") == 0)
+
+    // The player answers 100 ms into the quit.
+    Task {
+        try? await Task.sleep(for: .milliseconds(100))
+        await acknowledgement.open()
+    }
+    await controller.teardownAndWait()
+
+    // The accepted Pause is resumed before the quit returns.
+    #expect(driver.commands.filter { $0 == .pause }.count == 1)
+    #expect(driver.commands.filter { $0 == .play }.count == 1, "\(events.names())")
+    #expect(driver.playedApplications == [["com.apple.podcasts"]])
+}
+
+/// Answers Pause only once the test opens its gate, like a player that is slow to acknowledge.
 /// Its playback stops once it has acknowledged, and restarts on Play.
 @MainActor
 final class SlowPauseMediaDriver: MediaInterruptionDriving {
     private let events: MediaReleaseEventLog
-    private let pauseAcknowledgementDelay: Duration
+    private let pauseAcknowledgement: ShortcutGate
     private var pausedApplications: Set<String> = []
     private(set) var commands: [SemanticMediaCommand] = []
     private(set) var playedApplications: [[String]] = []
 
-    init(events: MediaReleaseEventLog, pauseAcknowledgementDelay: Duration) {
+    init(events: MediaReleaseEventLog, pauseAcknowledgement: ShortcutGate) {
         self.events = events
-        self.pauseAcknowledgementDelay = pauseAcknowledgementDelay
+        self.pauseAcknowledgement = pauseAcknowledgement
     }
 
     func snapshot() async -> MediaInterruptionSnapshot {
@@ -124,7 +163,7 @@ final class SlowPauseMediaDriver: MediaInterruptionDriving {
     private func acknowledgePause(_ applications: [String]) async -> MediaCommandDispatchResult {
         commands.append(.pause)
         events.append("media.command.pause")
-        try? await Task.sleep(for: pauseAcknowledgementDelay)
+        await pauseAcknowledgement.wait()
         events.append("media.pause.acknowledged")
         pausedApplications.formUnion(applications)
         return MediaCommandDispatchResult(acceptedApplicationBundleIdentifiers: applications)

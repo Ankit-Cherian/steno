@@ -255,8 +255,8 @@ def validate_receipt_sources(receipt, root, revision=None):
         raise ScanError('disposition receipt must contain one to four individual findings')
     pending = {}
     for entry in entries:
-        exact_keys(entry, ('id', 'classification', 'rule', 'location', 'identity_sha256', 'source_sha256', 'rationale', 'reassess_when'), 'reviewed finding')
-        for field in ('id', 'rationale', 'reassess_when'):
+        exact_keys(entry, ('id', 'classification', 'rule', 'location', 'sink_text', 'sink_line', 'identity_sha256', 'source_sha256', 'rationale', 'reassess_when'), 'reviewed finding')
+        for field in ('id', 'sink_text', 'sink_line', 'rationale', 'reassess_when'):
             if not isinstance(entry[field], str) or not entry[field].strip():
                 raise ScanError(f'reviewed finding requires {field}')
         if entry['classification'] != 'not_actionable_in_supported_deployment':
@@ -286,6 +286,41 @@ def validate_receipt_sources(receipt, root, revision=None):
     return pending
 
 
+def check_sink_text(receipt, root):
+    """Require each recorded source range to still contain its reviewed sink.
+
+    The identity of a finding binds its location, and a shifted file keeps
+    passing the source hashes once they are re-recorded. This compares the
+    text the review named with the text now at that range, and with the line
+    that holds it, so a moved sink cannot hide behind a refreshed hash. A
+    generated source that is absent
+    from the checkout is pinned by its revision and patch digest instead.
+    """
+    for entry in array_value(receipt['findings'], 'reviewed findings'):
+        location = entry['location']
+        if location['startLine'] != location['endLine']:
+            raise ScanError(f"reviewed sink must lie on one line: {entry['id']}")
+        target = root
+        for part in location['path'].split('/'):
+            target = target / part
+            if target.is_symlink():
+                raise ScanError(f"reviewed source cannot traverse a symlink: {location['path']}")
+        if not target.exists() and GENERATED_SOURCE.fullmatch(location['path']):
+            continue
+        try:
+            lines = target.read_bytes().decode('utf-8').split('\n')
+        except (OSError, UnicodeDecodeError) as error:
+            raise ScanError(f"cannot read reviewed source: {location['path']}") from error
+        line = location['startLine']
+        text = lines[line - 1] if line <= len(lines) else ''
+        found = text[location['startColumn'] - 1:location['endColumn'] - 1]
+        if found != entry['sink_text'] or text.strip() != entry['sink_line']:
+            raise ScanError(
+                f"reviewed sink {entry['id']} is not at {location['path']}:{line}:"
+                f"{location['startColumn']}-{location['endColumn']}; expected {entry['sink_text']!r} in "
+                f"{entry['sink_line']!r}, found {found!r} in {text.strip()!r}")
+
+
 def apply_dispositions(records, receipt, root, reviewed):
     pending = validate_receipt_sources(receipt, root)
     blocked = []
@@ -297,6 +332,8 @@ def apply_dispositions(records, receipt, root, reviewed):
         location, digest, paths = reviewed_identity(identifier, severity, result, run)
         entry = pending.get(digest)
         if entry is None:
+            # Show the identity before a mismatch aborts the gate, so a moved finding can be re-recorded.
+            print(f'Security gate unmatched finding: {text} identity_sha256={digest}', file=sys.stderr)
             blocked.append(text)
             continue
         if digest in consumed:
@@ -450,13 +487,16 @@ def read_json(path, label):
 
 
 def check_reviewed_sources(dispositions, source_root, runtime_lock):
-    """Check the review receipt's bound sources without scan output."""
+    """Check the review receipt's bound sources and recorded sinks without scan output."""
     lock = object_value(read_json(runtime_lock, 'runtime lock'), 'runtime lock')
     revision = object_value(lock.get('whisper'), 'runtime lock whisper').get('revision')
     if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ScanError('runtime lock has no exact whisper revision')
     receipt = read_json(dispositions, 'disposition receipt')
-    return len(validate_receipt_sources(receipt, source_root.resolve(), revision))
+    root = source_root.resolve()
+    pending = validate_receipt_sources(receipt, root, revision)
+    check_sink_text(receipt, root)
+    return len(pending)
 
 
 def main():

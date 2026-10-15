@@ -78,6 +78,41 @@ def setting(text, key):
     return re.findall(rf'^\s*{key}:\s*[\"\']?([^\"\'\s#]+)[\"\']?\s*(?:#.*)?$', text, re.M)
 
 
+def release_bundle_identifiers(project):
+    """The bundle identifiers the Release configuration builds, one per target that sets one.
+
+    A target's Release override wins over its base setting; overrides for other
+    configurations (such as Acceptance) are never shipped. An identifier found anywhere
+    else in the file is counted too, so an unfamiliar layout can only add identifiers.
+    """
+    base, release, other = {}, {}, []
+    stack = []
+    for line in project.splitlines():
+        match = re.match(r'^( *)([A-Za-z0-9_.-]+):\s*(.*?)\s*(?:#.*)?$', line)
+        if not match:
+            continue
+        indent, key, value = len(match.group(1)), match.group(2), match.group(3)
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        path = [name for _, name in stack]
+        stack.append((indent, key))
+        if key != 'PRODUCT_BUNDLE_IDENTIFIER':
+            continue
+        identifier = value.strip('"\'')
+        if len(path) >= 3 and path[0] == 'targets' and path[2] == 'settings':
+            target, rest = path[1], path[3:]
+            if rest in ([], ['base']):
+                base[target] = identifier
+                continue
+            if len(rest) == 2 and rest[0] == 'configs':
+                if rest[1].lower() == 'release':
+                    release[target] = identifier
+                continue
+        other.append(identifier)
+    shipped = {**base, **release}
+    return sorted(set(shipped.values()) | set(other))
+
+
 def latest_release_tag(repository):
     """Read the latest published release; public data, so a token is optional."""
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
@@ -174,11 +209,11 @@ def validate_plan(repo, version, previous_tag, accept_entitlements_change=False,
         check(target in (None, head), f"v{version} {'is absent' if target is None else 'already points at HEAD'} ({where})",
               f"v{version} already exists ({where}) at {target}, not HEAD {head}")
 
-    identifiers = setting(project, 'PRODUCT_BUNDLE_IDENTIFIER')
-    previous_identifiers = setting(previous_project, 'PRODUCT_BUNDLE_IDENTIFIER')
+    identifiers = release_bundle_identifiers(project)
+    previous_identifiers = release_bundle_identifiers(previous_project)
     check(bool(identifiers) and identifiers == previous_identifiers,
-          f"bundle identifiers are unchanged from {previous_tag}",
-          f"bundle identifiers changed from {previous_identifiers} to {identifiers}; "
+          f"Release bundle identifiers are unchanged from {previous_tag}",
+          f"Release bundle identifiers changed from {previous_identifiers} to {identifiers}; "
           "macOS ties microphone and accessibility permissions to the app's identity")
 
     entitlements_changed = show(head, DISTRIBUTION_ENTITLEMENTS) != show(previous, DISTRIBUTION_ENTITLEMENTS)

@@ -21,7 +21,7 @@ struct HistoryStoreDeleteTests {
             .appendingPathComponent("HistoryDelete-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("transcript-history.json")
-        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        let store = HistoryStore(storageURL: url)
 
         let deleted = Self.entry("Fictional deleted note")
         let kept = Self.entry("Fictional kept note")
@@ -38,7 +38,7 @@ struct HistoryStoreDeleteTests {
             #expect(contents.range(of: Data("Fictional deleted note".utf8)) == nil, "\(file.lastPathComponent) still holds the deleted text")
             #expect(contents.range(of: Data("Fictional kept note".utf8)) != nil, "\(file.lastPathComponent) lost a kept entry")
         }
-        let reopened = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        let reopened = HistoryStore(storageURL: url)
         #expect(await reopened.recent(limit: 10).map(\.id).contains(kept.id))
     }
 
@@ -48,7 +48,7 @@ struct HistoryStoreDeleteTests {
             .appendingPathComponent("HistoryDelete-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("transcript-history.json")
-        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        let store = HistoryStore(storageURL: url)
 
         let deleted = Self.entry("Fictional deleted note")
         try await store.append(entry: deleted)
@@ -86,7 +86,7 @@ struct HistoryStoreDeleteTests {
         try Data(copy.utf8).write(to: originalCopy)
         try Data(copy.utf8).write(to: unreadableCopy)
 
-        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        let store = HistoryStore(storageURL: url)
         try await store.append(entry: deleted)
         try await store.append(entry: kept)
         _ = await store.takeRecoveryNotices()
@@ -115,7 +115,7 @@ struct HistoryStoreDeleteTests {
         let damagedCopy = directory.appendingPathComponent("transcript-history.unreadable-20260101T000000Z.json")
         try damaged.write(to: damagedCopy)
 
-        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        let store = HistoryStore(storageURL: url)
         try await store.append(entry: deleted)
         try await store.append(entry: Self.entry("Fictional kept note"))
         _ = await store.takeRecoveryNotices()
@@ -127,7 +127,7 @@ struct HistoryStoreDeleteTests {
         let notices = await store.takeRecoveryNotices()
         #expect(notices.count == 1)
         #expect(notices.first?.message.contains("damaged copy") == true)
-        #expect(notices.first?.message.contains("Delete all history") == true)
+        #expect(notices.first?.message.contains("Delete All History") == true)
         #expect(notices.first?.fileURL?.lastPathComponent == damagedCopy.lastPathComponent)
     }
 

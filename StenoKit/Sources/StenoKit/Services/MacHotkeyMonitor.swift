@@ -7,6 +7,8 @@ import AppKit
 private final class TapContext: @unchecked Sendable {
     var filter = HandsFreeKeyFilter(keyCode: nil)
     var onToggle: (() -> Void)?
+    var shortcutFilter = GlobalShortcutFilter(shortcut: nil)
+    var onShortcut: (() -> Void)?
     var machPort: CFMachPort?
     /// Timestamp of the last tap re-enable, used to debounce rapid
     /// disable/re-enable cycles that can occur when the system times out the tap.
@@ -53,11 +55,22 @@ public final class MacHotkeyMonitor: HotkeyService {
             updateHandsFreeStatus()
         }
     }
+    public var pasteLastShortcut: GlobalShortcut? {
+        didSet {
+            tapContext.shortcutFilter.shortcut = pasteLastShortcut
+            guard hasStarted, pasteLastShortcut != oldValue else { return }
+            updateHandsFreeStatus()
+        }
+    }
+    public var onPasteLastShortcut: (() -> Void)?
+    public var onPasteLastShortcutStatusChanged: ((HotkeyRegistrationStatus) -> Void)?
+    private var lastReportedShortcutStatus: HotkeyRegistrationStatus = .disabled
 
     private var optionMonitors: [Any] = []
     private var pressFilter = PressToTalkKeyFilter()
     private var confirmationWorkItem: DispatchWorkItem?
-    private var modifierResyncTimer: Timer?
+    /// Internal so tests can read its interval and fire it.
+    private(set) var modifierResyncTimer: Timer?
     private var callbackGeneration: UInt64 = 0
 
     private var hasStarted = false
@@ -70,20 +83,59 @@ public final class MacHotkeyMonitor: HotkeyService {
     private let optionFlag: NSEvent.ModifierFlags
     private let modifierResyncInterval: TimeInterval
     private let currentModifierFlags: @MainActor () -> NSEvent.ModifierFlags
+    private let makeEventTap: @MainActor (UnsafeMutableRawPointer) -> CFMachPort?
 
     /// - Parameters:
     ///   - modifierResyncInterval: how often held modifiers are re-read while
     ///     Option is down, so a missed key-up still ends the press.
     ///   - currentModifierFlags: the live modifier state.
-    public init(
+    public convenience init(
         optionFlag: NSEvent.ModifierFlags = .option,
         modifierResyncInterval: TimeInterval = 1,
         currentModifierFlags: @escaping @MainActor () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
     ) {
+        self.init(
+            optionFlag: optionFlag,
+            modifierResyncInterval: modifierResyncInterval,
+            currentModifierFlags: currentModifierFlags,
+            makeEventTap: MacHotkeyMonitor.makeLiveEventTap
+        )
+    }
+
+    /// `makeEventTap` creates the keyboard event tap, or returns nil when
+    /// macOS refuses it.
+    init(
+        optionFlag: NSEvent.ModifierFlags = .option,
+        modifierResyncInterval: TimeInterval = 1,
+        currentModifierFlags: @escaping @MainActor () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags },
+        makeEventTap: @escaping @MainActor (UnsafeMutableRawPointer) -> CFMachPort?
+    ) {
         self.optionFlag = optionFlag
         self.modifierResyncInterval = modifierResyncInterval
         self.currentModifierFlags = currentModifierFlags
+        self.makeEventTap = makeEventTap
         tapContext.filter.keyCode = globalToggleKeyCode
+        tapContext.onShortcut = { [weak self] in
+            MainActor.assumeIsolated { self?.receivePasteLastShortcut() }
+        }
+    }
+
+    /// The Paste Last Dictation shortcut fired. The event tap swallowed its
+    /// key, so the Option filter never saw it: tell the filter a key went
+    /// down, which makes a press holding Option a shortcut, not a dictation.
+    /// The paste is queued behind the discard that key-down may queue, so the
+    /// controller has stopped treating the press as a recording when it runs.
+    /// Internal so tests can drive it without posting keyboard events.
+    func receivePasteLastShortcut() {
+        guard hasStarted else { return }
+        receive(.keyDown, at: ProcessInfo.processInfo.systemUptime)
+        let generation = callbackGeneration
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.hasStarted, self.callbackGeneration == generation else { return }
+                self.onPasteLastShortcut?()
+            }
+        }
     }
 
     public func start() {
@@ -250,30 +302,33 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     // MARK: - CGEventTap (Hands-Free Toggle)
 
-    private func installEventTap() {
-        if let eventTap {
-            // Settings saves and runtime rebuilds recover a tap macOS left disabled.
-            if !CGEvent.tapIsEnabled(tap: eventTap) {
-                tapContext.lastReenableTime = CFAbsoluteTimeGetCurrent()
-                CGEvent.tapEnable(tap: eventTap, enable: true)
-            }
-            return
-        }
-
-        let refcon = Unmanaged.passUnretained(tapContext).toOpaque()
+    private static func makeLiveEventTap(refcon: UnsafeMutableRawPointer) -> CFMachPort? {
         let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
-
-        guard let tap = CGEvent.tapCreate(
+        return CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: eventMask,
             callback: Self.eventTapCallback,
             userInfo: refcon
-        ) else {
-            reportStatus(.unavailable(reason: "Accessibility permission required for global hotkey."))
-            return
+        )
+    }
+
+    /// Returns false when macOS refused the tap.
+    private func installEventTap() -> Bool {
+        if let eventTap {
+            // Settings saves and runtime rebuilds recover a tap macOS left disabled.
+            if !CGEvent.tapIsEnabled(tap: eventTap) {
+                tapContext.lastReenableTime = CFAbsoluteTimeGetCurrent()
+                CGEvent.tapEnable(tap: eventTap, enable: true)
+            }
+            return true
+        }
+
+        let refcon = Unmanaged.passUnretained(tapContext).toOpaque()
+        guard let tap = makeEventTap(refcon) else {
+            return false
         }
 
         // Keep this assignment immediately after tap creation so callback re-enable
@@ -284,8 +339,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-
-        reportStatus(.registered)
+        return true
     }
 
     private func uninstallEventTap() {
@@ -301,13 +355,36 @@ public final class MacHotkeyMonitor: HotkeyService {
         tapContext.machPort = nil
     }
 
+    /// Installs the event tap while the hands-free key or the Paste Last
+    /// Dictation shortcut needs it, and reports each one's status.
     private func updateHandsFreeStatus() {
-        guard globalToggleKeyCode != nil else {
+        guard globalToggleKeyCode != nil || pasteLastShortcut != nil else {
             uninstallEventTap()
             reportStatus(.disabled)
+            reportShortcutStatus(.disabled)
             return
         }
-        installEventTap()
+        let installed = installEventTap()
+        if globalToggleKeyCode == nil {
+            reportStatus(.disabled)
+        } else {
+            reportStatus(installed
+                ? .registered
+                : .unavailable(reason: "Accessibility permission required for global hotkey."))
+        }
+        if pasteLastShortcut == nil {
+            reportShortcutStatus(.disabled)
+        } else {
+            reportShortcutStatus(installed
+                ? .registered
+                : .unavailable(reason: "The Paste Last Dictation shortcut needs Accessibility permission."))
+        }
+    }
+
+    private func reportShortcutStatus(_ status: HotkeyRegistrationStatus) {
+        guard status != lastReportedShortcutStatus else { return }
+        lastReportedShortcutStatus = status
+        onPasteLastShortcutStatusChanged?(status)
     }
 
     /// Settings saves, runtime rebuilds, and permission refreshes reassign the
@@ -358,8 +435,31 @@ public final class MacHotkeyMonitor: HotkeyService {
             // re-entrancy while the tap callback is still unwinding.
             DispatchQueue.main.async { ctx.onToggle?() }
         }
-        // For .defaultTap, nil suppresses delivery to downstream apps.
-        return decision.swallow ? nil : Unmanaged.passUnretained(event)
+        if decision.swallow {
+            // For .defaultTap, nil suppresses delivery to downstream apps.
+            return nil
+        }
+
+        let shortcutDecision = ctx.shortcutFilter.handle(type == .keyDown
+            ? .keyDown(
+                keyCode: keyCode,
+                modifiers: shortcutModifiers(from: event.flags),
+                isRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+            )
+            : .keyUp(keyCode: keyCode))
+        if shortcutDecision.fire {
+            DispatchQueue.main.async { ctx.onShortcut?() }
+        }
+        return shortcutDecision.swallow ? nil : Unmanaged.passUnretained(event)
+    }
+
+    private static func shortcutModifiers(from flags: CGEventFlags) -> GlobalShortcut.Modifiers {
+        var modifiers: GlobalShortcut.Modifiers = []
+        if flags.contains(.maskControl) { modifiers.insert(.control) }
+        if flags.contains(.maskAlternate) { modifiers.insert(.option) }
+        if flags.contains(.maskShift) { modifiers.insert(.shift) }
+        if flags.contains(.maskCommand) { modifiers.insert(.command) }
+        return modifiers
     }
 
     private static func reenableTap(_ ctx: TapContext) {
@@ -385,7 +485,9 @@ public final class MacHotkeyMonitor: HotkeyService {
             // Clear callback state defensively after uninstall.
             tapContext.machPort = nil
             tapContext.onToggle = nil
+            tapContext.onShortcut = nil
             tapContext.filter.keyCode = nil
+            tapContext.shortcutFilter.shortcut = nil
         }
     }
 }

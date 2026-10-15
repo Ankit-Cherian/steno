@@ -549,7 +549,6 @@ private actor CoordinatorHistory: HistoryStoreProtocol {
         _ = lexicon
         throw NSError(domain: "CoordinatorHistory.retry", code: 1)
     }
-    func pasteLast() async throws -> TranscriptEntry? { entries.last }
 }
 
 private actor SnapshotRecorder {
@@ -757,7 +756,7 @@ private final class CoordinatorAXClient: MacAccessibilityClient, @unchecked Send
 
     // Called by the independent blocking-test executor. The held AX call may
     // occupy the cooperative pool, so readiness cannot depend on Task.sleep.
-    func waitUntilCaptureBlocked(timeout: TimeInterval = 1) -> Bool {
+    func waitUntilCaptureBlocked(timeout: TimeInterval = 120) -> Bool {
         captureCondition.lock()
         defer { captureCondition.unlock() }
         let deadline = Date().addingTimeInterval(timeout)
@@ -821,14 +820,9 @@ private func makeCoordinatorWAV(
 }
 
 private func waitUntil(
-    attempts: Int = 200,
     condition: @escaping @Sendable () async -> Bool
 ) async -> Bool {
-    for _ in 0..<attempts {
-        if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return false
+    await eventually(condition)
 }
 
 @Test("Cumulative hypothesis assembler stitches a strong rolling-window overlap")
@@ -1961,12 +1955,14 @@ func liveCoordinatorStopSupersedesBlockedAppend() async throws {
         appContext: .unknown,
         options: SessionStartOptions(livePreviewEnabled: true)
     )
+    #if DEBUG
+    let graceClock = ManualGraceClock()
+    await coordinator.setLiveAppendGraceClock(graceClock.clock)
+    #endif
     #expect(await waitUntil { await engine.appendCalls == 1 })
     try await coordinator.endPressToTalkCapture(sessionID: sessionID)
     #expect(trace.snapshot().contains("end"))
-    let started = ContinuousClock().now
     _ = try await coordinator.completePressToTalk(sessionID: sessionID)
-    let elapsed = ContinuousClock().now - started
     #expect(await engine.finishCalls == 1)
     #expect(await engine.transcribeCalls == 0)
     #expect(await engine.cancelCalls == 0)
@@ -1976,7 +1972,28 @@ func liveCoordinatorStopSupersedesBlockedAppend() async throws {
     #expect(await engine.acceptedSamplesAtFinish == 0)
     #expect(await engine.appendCalls == 1)
     #expect(await engine.maximumConcurrentAppendCalls == 1)
-    #expect(elapsed < .seconds(1))
+    #if DEBUG
+    // Stop waited out the 150 ms grace period for the blocked append, then went on.
+    #expect(graceClock.elapsed == .milliseconds(150))
+    #endif
+}
+
+/// A grace-period clock that moves only when the coordinator sleeps on it.
+private final class ManualGraceClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private let start = ContinuousClock.now
+    private var offset = Duration.zero
+
+    var elapsed: Duration { lock.withLock { offset } }
+
+    #if DEBUG
+    var clock: SessionCoordinator.LiveAppendGraceClock {
+        .init(
+            now: { [self] in start.advanced(by: elapsed) },
+            sleep: { [self] duration in lock.withLock { offset += duration } }
+        )
+    }
+    #endif
 }
 
 @Test("Automatic continuation changes only exact-target insertion payload")

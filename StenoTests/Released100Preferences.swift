@@ -10,15 +10,15 @@ import StenoKit
 enum Released100Preferences {
     struct Preferences: Codable {
         struct Appearance: Codable {
-            var mode: StenoAppearanceMode
-            var accent: StenoAccentStyle
-            var recordHeroStyle: StenoRecordHeroStyle
+            var mode: AppearanceMode
+            var accent: AccentStyle
+            var recordHeroStyle: RecordHeroStyle
             var atmosphereIntensity: Int
 
             init(
-                mode: StenoAppearanceMode = .dark,
-                accent: StenoAccentStyle = .citron,
-                recordHeroStyle: StenoRecordHeroStyle = .pill,
+                mode: AppearanceMode = .dark,
+                accent: AccentStyle = .citron,
+                recordHeroStyle: RecordHeroStyle = .pill,
                 atmosphereIntensity: Int = 100
             ) {
                 self.mode = mode
@@ -29,9 +29,9 @@ enum Released100Preferences {
 
             init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
-                mode = try container.decodeIfPresent(StenoAppearanceMode.self, forKey: .mode) ?? .dark
-                accent = try container.decodeIfPresent(StenoAccentStyle.self, forKey: .accent) ?? .dodger
-                recordHeroStyle = try container.decodeIfPresent(StenoRecordHeroStyle.self, forKey: .recordHeroStyle) ?? .pill
+                mode = try container.decodeIfPresent(AppearanceMode.self, forKey: .mode) ?? .dark
+                accent = try container.decodeIfPresent(AccentStyle.self, forKey: .accent) ?? .dodger
+                recordHeroStyle = try container.decodeIfPresent(RecordHeroStyle.self, forKey: .recordHeroStyle) ?? .pill
                 atmosphereIntensity = try container.decodeIfPresent(Int.self, forKey: .atmosphereIntensity) ?? 100
             }
         }
@@ -158,6 +158,12 @@ enum Released100Preferences {
         var appStyleProfiles: [String: StyleProfile]
         var snippets: [Snippet]
     }
+
+    // Frozen copies of the 1.0.0 appearance enums, so a value added later fails here as it
+    // does in 1.0.x instead of decoding through the live type.
+    enum AppearanceMode: String, Codable { case system, dark, light }
+    enum AccentStyle: String, Codable { case citron, terracotta, dodger, cyan, violet, emerald, rose }
+    enum RecordHeroStyle: String, Codable { case pill, ring }
 
     enum StyleTone: String, Codable { case natural, professional, concise, friendly, technical }
     enum StructureMode: String, Codable { case natural, paragraph, bullets, email, command }

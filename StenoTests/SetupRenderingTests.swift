@@ -45,12 +45,12 @@ struct SetupRenderingTests {
             ]
             var preferences = controller.preferences
             let binding = Binding(get: { preferences }, set: { preferences = $0 })
-            let theme = StenoDesign.theme(for: controller.preferences)
-            let view = ScrollView {
-                EngineSettingsSection(preferences: binding, controller: controller, previewSetupCheckStages: stages)
-                    .padding(24)
+            let view = GroveSettingsContent(accent: controller.preferences.appearance.accent) {
+                ScrollView {
+                    EngineSettingsSection(preferences: binding, controller: controller, previewSetupCheckStages: stages)
+                        .padding(24)
+                }
             }
-            .foregroundStyle(theme.text).background(theme.ink0)
             let data = try await render(view, controller: controller, appearance: appearance, size: CGSize(width: 760, height: 1_000))
             try data.write(to: root.appendingPathComponent("speech-model-\(appearance).png"))
             await controller.teardownAndWait()
@@ -66,7 +66,7 @@ struct SetupRenderingTests {
             controller.preferences.general.launchAtLoginEnabled = true
             controller.launchAtLoginNeedsApproval = true
             controller.launchAtLoginWarning = DictationController.launchAtLoginApprovalMessage
-            let data = try await render(ContentView(initialTab: .settings, initialSettingsSection: .general),
+            let data = try await render(SettingsView(selectedSection: .constant(.general), showsSidebar: true),
                 controller: controller, appearance: appearance,
                 size: CGSize(width: StenoDesign.windowIdealWidth, height: StenoDesign.windowIdealHeight))
             try data.write(to: root.appendingPathComponent("general-approval-\(appearance).png"))
@@ -88,8 +88,7 @@ struct SetupRenderingTests {
             controller.preferences.dictation.updateModelPath("/preview/ggml-medium.en.bin")
             draftState.reconcile(controller.preferences)
             #expect(draftState.conflictCause == .modelChange)
-            let theme = StenoDesign.theme(for: controller.preferences)
-            let data = try await render(SettingsView(previewDraftState: draftState).foregroundStyle(theme.text).background(theme.ink0),
+            let data = try await render(SettingsView(previewDraftState: draftState),
                 controller: controller, appearance: appearance,
                 size: CGSize(width: StenoDesign.windowIdealWidth, height: StenoDesign.windowIdealHeight))
             try data.write(to: root.appendingPathComponent("settings-model-conflict-\(appearance).png"))
@@ -97,27 +96,16 @@ struct SetupRenderingTests {
         }
     }
 
-    @Test("Onboarding speech model step shows a failed download in the error role")
-    func onboardingDownloadFailure() async throws {
+    @Test("Onboarding permissions step shows the included speech model as ready")
+    func onboardingSpeechModelReady() async throws {
         AppFontRegistry.registerIfNeeded()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         for appearance in [ColorScheme.light, .dark] {
             let controller = controller(appearance)
-            controller.previewWhisperModelOptions = [
-                WhisperModelOption(modelID: .smallEn, source: .bundled, path: nil, isInstalled: true, isActive: true, isRecommended: false),
-                WhisperModelOption(modelID: .mediumEn, source: nil, path: nil, isInstalled: false, isActive: false, isRecommended: true),
-                WhisperModelOption(modelID: .largeV3Turbo, source: nil, path: nil, isInstalled: false, isActive: false, isRecommended: false)
-            ]
-            controller.modelDownloadMessage = DictationController.modelDownloadFailureMessage(
-                for: .mediumEn,
-                error: URLError(.notConnectedToInternet, userInfo: [
-                    NSLocalizedDescriptionKey: "The Internet connection appears to be offline."
-                ])
-            )
-            controller.modelDownloadMessageIsError = true
-            let data = try await render(OnboardingView(initialStep: 2), controller: controller, appearance: appearance,
+            let data = try await render(OnboardingView(initialStep: 1),
+                controller: controller, appearance: appearance,
                 size: CGSize(width: StenoDesign.windowIdealWidth, height: StenoDesign.windowIdealHeight))
-            try data.write(to: root.appendingPathComponent("onboarding-download-failed-\(appearance).png"))
+            try data.write(to: root.appendingPathComponent("onboarding-speech-model-ready-\(appearance).png"))
             await controller.teardownAndWait()
         }
     }

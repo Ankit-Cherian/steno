@@ -14,7 +14,8 @@ private func makeTerminalService(
     activator: FakeApplicationActivator = FakeApplicationActivator(
         frontmost: terminalContext.bundleIdentifier,
         running: [terminalContext.bundleIdentifier]
-    )
+    ),
+    restoreDelay: Duration = .milliseconds(50)
 ) -> InsertionService {
     InsertionService(transports: MacInsertionTransportFactory.makeTransports(
         orderedMethods: defaultInsertionOrder,
@@ -24,7 +25,7 @@ private func makeTerminalService(
             activator: activator,
             accessibility: FakeAccessibilityClient(focusedBundle: terminalContext.bundleIdentifier)
         ),
-        clipboardRestoreDelay: .milliseconds(50)
+        clipboardRestoreDelay: restoreDelay
     ))
 }
 
@@ -39,8 +40,49 @@ func pasteRestoresPreviousClipboard() async {
     #expect(keys.commandShortcuts.count == 1)
     #expect(result.method == .clipboardPaste)
     #expect(pasteboard.transientWrites == ["git status"])
-    #expect(await pollUntil { pasteboard.restoreCount == 1 })
+    #expect(await eventually { pasteboard.restoreCount == 1 })
     #expect(pasteboard.items == [copiedImageItem])
+}
+
+@Test("A second auto-paste inside the restore delay still puts the user's own clipboard back")
+func secondPasteInsideRestoreDelayRestoresUsersClipboard() async throws {
+    let pasteboard = FakePasteboard(items: [copiedImageItem])
+    let keys = FakeKeyPoster()
+    // Long enough that a loaded machine still finishes both pastes before the first restore.
+    let service = makeTerminalService(pasteboard: pasteboard, keys: keys, restoreDelay: .seconds(6))
+
+    _ = await service.insert(text: "one", target: terminalContext)
+    _ = await service.insert(text: "two", target: terminalContext)
+
+    // Both pastes were sent before any restore ran.
+    #expect(keys.commandShortcuts.count == 2)
+    #expect(pasteboard.transientWrites == ["one", "two"])
+    try #require(pasteboard.restoreAttemptCount == 0, "a restore ran before the second paste finished")
+
+    #expect(await eventually { pasteboard.restoreCount == 1 })
+    // The first pending restore must neither leave the dictation behind nor restore twice.
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(pasteboard.restoreCount == 1)
+    #expect(pasteboard.items == [copiedImageItem])
+}
+
+@Test("A private item another app writes between two quick pastes is not put back")
+func privateItemBetweenQuickPastesIsNotRestored() async throws {
+    let pasteboard = FakePasteboard(items: [copiedImageItem])
+    let keys = FakeKeyPoster()
+    let service = makeTerminalService(pasteboard: pasteboard, keys: keys, restoreDelay: .milliseconds(600))
+    let secret = FakePasteboard.Item(representations: [
+        "public.utf8-plain-text": Data("hunter2".utf8),
+        "org.nspasteboard.ConcealedType": Data()
+    ])
+
+    _ = await service.insert(text: "one", target: terminalContext)
+    pasteboard.userCopies(secret)
+    _ = await service.insert(text: "two", target: terminalContext)
+
+    try await Task.sleep(for: .milliseconds(1_500))
+    #expect(pasteboard.restoreCount == 0)
+    #expect(pasteboard.plainText == "two")
 }
 
 @Test("A copy-only fallback leaves the dictation on the clipboard")
@@ -86,11 +128,12 @@ func restoreSkipsWhenUserCopiedAfterPaste() async throws {
     let pasteboard = FakePasteboard(items: [copiedImageItem])
     let keys = FakeKeyPoster()
     let service = makeTerminalService(pasteboard: pasteboard, keys: keys)
+    let fresh = FakePasteboard.Item(representations: ["public.utf8-plain-text": Data("fresh copy".utf8)])
+    // The user copies right after the paste, before the restore is due.
+    keys.afterPost = { pasteboard.userCopies(fresh) }
 
     _ = await service.insert(text: "make test", target: terminalContext)
-    let fresh = FakePasteboard.Item(representations: ["public.utf8-plain-text": Data("fresh copy".utf8)])
-    pasteboard.userCopies(fresh)
-    try await Task.sleep(for: .milliseconds(200))
+    #expect(await eventually { pasteboard.restoreAttemptCount == 1 })
 
     #expect(keys.commandShortcuts.count == 1)
     #expect(pasteboard.restoreCount == 0)

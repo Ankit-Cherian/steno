@@ -216,8 +216,7 @@ func mediaResumesImmediatelyAfterCaptureCloses() async {
 
     let resumedBeforeProcessingFinished = await waitForLifecycleEvent(
         "media.release",
-        in: events,
-        attempts: 40
+        in: events
     )
     await processingGate.open()
 
@@ -486,7 +485,34 @@ func wakeNotificationUnloadsRetainedRuntime() async {
         object: nil
     )
 
-    #expect(await waitForLifecycleEvent("runtime.unload", in: events, attempts: 40))
+    #expect(await waitForLifecycleEvent("runtime.unload", in: events))
+    await controller.teardownAndWait()
+}
+
+@MainActor
+@Test("The acceptance sleep trigger runs the app's own sleep observer, once per request")
+func acceptanceSleepTriggerRunsTheSleepObserver() async throws {
+    let events = LifecycleEventLog()
+    let workspace = NotificationCenter()
+    let distributed = NotificationCenter()
+    let controller = makeTestDictationController(
+        hotkey: FakeHotkeyService(),
+        mediaInterruption: FakeMediaInterruptionService(events: events),
+        coordinator: FakeDictationCoordinator(events: events),
+        workspaceNotificationCenter: workspace
+    )
+    let trigger = AcceptanceSleepTrigger(source: distributed, workspaceCenter: workspace)
+
+    distributed.post(name: Notification.Name("io.stenoapp.steno.some-other-request"), object: nil)
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(!(await events.snapshot()).contains("runtime.unload"))
+
+    distributed.post(name: AcceptanceSleepTrigger.notificationName, object: nil)
+    #expect(await waitForLifecycleEvent("runtime.unload", in: events))
+    try await Task.sleep(for: .milliseconds(100))
+    #expect((await events.snapshot()).filter { $0 == "runtime.unload" }.count == 1)
+
+    withExtendedLifetime(trigger) {}
     await controller.teardownAndWait()
 }
 
@@ -1233,11 +1259,14 @@ private final class FakeMediaInterruptionService: MediaInterruptionService {
     }
 }
 
+/// Waits for `event` up to the hang-guard ceiling. A count of `attempts` 5 ms
+/// polls instead bounds a check that the event does not happen.
 private func waitForLifecycleEvent(
     _ event: String,
     in log: LifecycleEventLog,
-    attempts: Int = 400
+    attempts: Int? = nil
 ) async -> Bool {
+    guard let attempts else { return await eventually { await log.snapshot().contains(event) } }
     for _ in 0..<attempts {
         if await log.snapshot().contains(event) {
             return true
@@ -1250,57 +1279,29 @@ private func waitForLifecycleEvent(
 private func waitForLifecycleEventCount(
     _ event: String,
     count: Int,
-    in log: LifecycleEventLog,
-    attempts: Int = 400
+    in log: LifecycleEventLog
 ) async -> Bool {
-    for _ in 0..<attempts {
-        if await log.snapshot().filter({ $0 == event }).count >= count {
-            return true
-        }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+    await eventually { await log.snapshot().filter({ $0 == event }).count >= count }
 }
 
 private func waitForAnyLifecycleEvent(
     _ expectedEvents: Set<String>,
-    in log: LifecycleEventLog,
-    attempts: Int = 400
+    in log: LifecycleEventLog
 ) async -> Bool {
-    for _ in 0..<attempts {
-        if !Set(await log.snapshot()).isDisjoint(with: expectedEvents) {
-            return true
-        }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+    await eventually { !Set(await log.snapshot()).isDisjoint(with: expectedEvents) }
 }
 
 private func waitForAsyncCondition(
-    attempts: Int = 400,
     _ condition: @Sendable () async -> Bool
 ) async -> Bool {
-    for _ in 0..<attempts {
-        if await condition() {
-            return true
-        }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+    await eventually(condition)
 }
 
 @MainActor
 private func waitForCondition(
-    attempts: Int = 400,
     _ condition: @MainActor () -> Bool
 ) async -> Bool {
-    for _ in 0..<attempts {
-        if condition() {
-            return true
-        }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    return false
+    await eventuallyOnMain { condition() }
 }
 
 @MainActor

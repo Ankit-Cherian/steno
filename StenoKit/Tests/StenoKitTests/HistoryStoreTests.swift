@@ -2,14 +2,13 @@ import Foundation
 import Testing
 @testable import StenoKit
 
-@Test("HistoryStore supports append, search, and paste-last recovery")
+@Test("HistoryStore supports append and search")
 func historyStoreRecoveryFlow() async throws {
     let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("history-tests", isDirectory: true)
         .appendingPathComponent("history-\(UUID().uuidString).json")
 
-    let clipboard = MemoryClipboardService()
-    let store = HistoryStore(storageURL: tempURL, clipboardService: clipboard)
+    let store = HistoryStore(storageURL: tempURL)
 
     let first = TranscriptEntry(
         appBundleID: "com.apple.Notes",
@@ -38,12 +37,6 @@ func historyStoreRecoveryFlow() async throws {
     let search = await store.search(query: "notes")
     #expect(search.count == 1)
     #expect(search[0].id == first.id)
-
-    let pasted = try await store.pasteLast()
-    #expect(pasted?.id == second.id)
-
-    let clipboardValue = await clipboard.latestValue
-    #expect(clipboardValue == "Second entry")
     #expect(recent[0].durationMS == 28_000)
 }
 
@@ -67,7 +60,7 @@ func historyStoreDefaultCapacity() async throws {
     encoder.dateEncodingStrategy = .iso8601
     try encoder.encode(existing).write(to: storageURL, options: .atomic)
 
-    let store = HistoryStore(storageURL: storageURL, clipboardService: MemoryClipboardService())
+    let store = HistoryStore(storageURL: storageURL)
     let thousandth = TranscriptEntry(
         appBundleID: "com.example.editor",
         rawText: "Entry one thousand",
@@ -88,7 +81,7 @@ func historyStoreDefaultCapacity() async throws {
         insertionStatus: .inserted
     )
     try await store.append(entry: newest)
-    let reloaded = HistoryStore(storageURL: storageURL, clipboardService: MemoryClipboardService())
+    let reloaded = HistoryStore(storageURL: storageURL)
     let retained = await reloaded.recent(limit: 1_001)
     #expect(retained.count == 1_000)
     #expect(retained.map(\.id) == [newest.id, thousandth.id] + existing.dropLast().map(\.id))

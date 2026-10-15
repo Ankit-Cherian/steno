@@ -409,12 +409,16 @@ PROJECT = """targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.stenoapp.steno
         MARKETING_VERSION: {version}
-        CURRENT_PROJECT_VERSION: {build}
+        CURRENT_PROJECT_VERSION: {build}{configs}
   StenoTests:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: {tests_identifier}
 """
+ACCEPTANCE_CONFIGS = """
+      configs:
+        Acceptance:
+          PRODUCT_BUNDLE_IDENTIFIER: io.stenoapp.steno.acceptance"""
 ENTITLEMENTS = '<plist><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>\n'
 
 
@@ -441,10 +445,11 @@ class ReleasePlanTests(unittest.TestCase):
         return subprocess.check_output(['git', '-C', str(self.repo), *args], text=True).strip()
 
     def commit(self, version, build, changelog, tests_identifier='io.stenoapp.steno.tests',
-               entitlements=ENTITLEMENTS):
+               entitlements=ENTITLEMENTS, configs=''):
         (self.repo / 'Steno').mkdir(exist_ok=True)
         (self.repo / 'project.yml').write_text(PROJECT.format(version=version, build=build,
-                                                              tests_identifier=tests_identifier))
+                                                              tests_identifier=tests_identifier,
+                                                              configs=configs))
         (self.repo / 'CHANGELOG.md').write_text('# Changelog\n\n' + changelog)
         (self.repo / guard.DISTRIBUTION_ENTITLEMENTS).write_text(entitlements)
         self.git('add', '-A')
@@ -500,7 +505,19 @@ class ReleasePlanTests(unittest.TestCase):
     def test_bundle_identifier_change_fails(self):
         self.commit(version='1.0.1', build=4, changelog='## [1.0.1] - 2026-10-02\n',
                     tests_identifier='io.stenoapp.other.tests')
-        self.assert_fails('bundle identifiers changed')
+        self.assert_fails('Release bundle identifiers changed')
+
+    def test_an_identifier_only_another_configuration_builds_passes(self):
+        self.commit(version='1.0.1', build=4, changelog='## [1.0.1] - 2026-10-02\n',
+                    configs=ACCEPTANCE_CONFIGS)
+        passed, errors = self.plan()
+        self.assertEqual(errors, [])
+        self.assertIn('Release bundle identifiers are unchanged from v1.0.0', passed)
+
+    def test_a_release_override_of_the_shipped_identifier_fails(self):
+        self.commit(version='1.0.1', build=4, changelog='## [1.0.1] - 2026-10-02\n',
+                    configs=ACCEPTANCE_CONFIGS + '\n        Release:\n          PRODUCT_BUNDLE_IDENTIFIER: io.stenoapp.renamed')
+        self.assert_fails("['io.stenoapp.renamed', 'io.stenoapp.steno.tests']")
 
     def test_entitlement_change_requires_explicit_acknowledgement(self):
         self.commit(version='1.0.1', build=4, changelog='## [1.0.1] - 2026-10-02\n',
@@ -511,7 +528,7 @@ class ReleasePlanTests(unittest.TestCase):
         self.assertIn('note: distribution entitlements changed from v1.0.0; acknowledged', passed)
 
     def test_checks_read_the_commit_not_the_working_tree(self):
-        (self.repo / 'project.yml').write_text(PROJECT.format(version='9.9.9', build=1, tests_identifier='x'))
+        (self.repo / 'project.yml').write_text(PROJECT.format(version='9.9.9', build=1, tests_identifier='x', configs=''))
         (self.repo / 'CHANGELOG.md').write_text('## [Unreleased]\n\n- Uncommitted.\n')
         self.assertEqual(self.plan()[1], [])
 
@@ -550,6 +567,21 @@ class ReleasePlanTests(unittest.TestCase):
     def test_checked_entitlements_are_the_ones_the_distribution_build_signs_with(self):
         self.assertIn(f'DIST_ENTITLEMENTS="$REPO_ROOT/{guard.DISTRIBUTION_ENTITLEMENTS}"',
                       (ROOT / 'scripts/release-dmg.sh').read_text())
+
+
+class ReleaseIdentifierTests(unittest.TestCase):
+    """The repository's own project.yml: what Release builds, read the way the guard reads it."""
+
+    def test_the_acceptance_identifier_is_never_built_by_release(self):
+        project = (ROOT / 'project.yml').read_text()
+        self.assertIn('PRODUCT_BUNDLE_IDENTIFIER: io.stenoapp.steno.acceptance', project)
+        identifiers = guard.release_bundle_identifiers(project)
+        self.assertEqual(identifiers, ['io.stenoapp.steno', 'io.stenoapp.steno.tests'])
+        self.assertNotIn('io.stenoapp.steno.acceptance', identifiers)
+
+    def test_an_identifier_outside_a_target_setting_is_still_counted(self):
+        project = 'settings:\n  base:\n    PRODUCT_BUNDLE_IDENTIFIER: io.example.project\n'
+        self.assertEqual(guard.release_bundle_identifiers(project), ['io.example.project'])
 
 
 if __name__ == '__main__':

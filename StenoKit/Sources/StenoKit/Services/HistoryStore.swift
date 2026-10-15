@@ -23,6 +23,17 @@ public enum HistoryStoreError: Error, LocalizedError {
     }
 }
 
+public struct CleanupRerunResult: Sendable, Equatable {
+    public var transcript: CleanTranscript
+    /// False when the re-run gave back the words the entry already had and nothing was written.
+    public var changedEntry: Bool
+
+    public init(transcript: CleanTranscript, changedEntry: Bool) {
+        self.transcript = transcript
+        self.changedEntry = changedEntry
+    }
+}
+
 /// Stores transcript history in one JSON file shared by every running copy of
 /// Steno. Only a missing file counts as empty. A file that can't be read is
 /// never overwritten in place: it is moved aside first, and entries that can't
@@ -39,19 +50,17 @@ public actor HistoryStore: HistoryStoreProtocol {
     private var pendingNotices: [StorageRecoveryNotice] = []
     private var noticeHandler: (@Sendable (StorageRecoveryNotice) -> Void)?
     private var hasPreparedStorageDirectory = false
-    private let storageURL: URL
-    private let clipboardService: ClipboardService
+    /// The file this store reads and writes.
+    public nonisolated let storageURL: URL
     private let maxEntries: Int
     private let removeFile: @Sendable (URL) throws -> Void
 
     public init(
         storageURL: URL? = nil,
-        clipboardService: ClipboardService,
         maxEntries: Int = 1_000
     ) {
         self.init(
             storageURL: storageURL,
-            clipboardService: clipboardService,
             maxEntries: maxEntries,
             removeFile: { try FileManager.default.removeItem(at: $0) }
         )
@@ -59,12 +68,10 @@ public actor HistoryStore: HistoryStoreProtocol {
 
     init(
         storageURL: URL?,
-        clipboardService: ClipboardService,
         maxEntries: Int = 1_000,
         removeFile: @escaping @Sendable (URL) throws -> Void
     ) {
         self.storageURL = storageURL ?? Self.defaultStorageURL()
-        self.clipboardService = clipboardService
         self.maxEntries = maxEntries
         self.removeFile = removeFile
     }
@@ -196,6 +203,28 @@ public actor HistoryStore: HistoryStoreProtocol {
         appContext: AppContext,
         snippets: SnippetService?
     ) async throws -> CleanTranscript {
+        try await rerunCleanup(
+            entryID: entryID,
+            using: cleanupEngine,
+            profile: profile,
+            lexicon: lexicon,
+            appContext: appContext,
+            snippets: snippets
+        ).transcript
+    }
+
+    /// Like `retry`, and says whether the entry changed. A re-run that gives back the words live
+    /// dictation produced, on an entry never re-run before, changes and writes nothing, so a Fix a
+    /// Word edit stays. Any other result replaces the clean text and drops the fixes, which
+    /// belonged to the text it replaced.
+    public func rerunCleanup(
+        entryID: UUID,
+        using cleanupEngine: CleanupEngine,
+        profile: StyleProfile,
+        lexicon: PersonalLexicon,
+        appContext: AppContext,
+        snippets: SnippetService?
+    ) async throws -> CleanupRerunResult {
         refreshFromDisk()
         guard let entry = entries.first(where: { $0.id == entryID }) else {
             throw HistoryStoreError.missingEntry
@@ -210,15 +239,20 @@ public actor HistoryStore: HistoryStoreProtocol {
             snippets: snippets
         )
 
+        var changed = false
         try commit { working in
             guard let index = working.firstIndex(where: { $0.id == entryID }) else { return false }
-            let original = working[index].originalCleanText ?? working[index].cleanText
+            let original = working[index].liveCleanText
+            if working[index].originalCleanText == nil, retried.text == original { return false }
             working[index].cleanText = retried.text
             working[index].originalCleanText = retried.text == original ? nil : original
+            // The fixes belonged to the text cleanup just replaced.
+            working[index].fixes = nil
+            changed = true
             return true
         }
 
-        return retried
+        return CleanupRerunResult(transcript: retried, changedEntry: changed)
     }
 
     /// Puts back the clean text live dictation produced before cleanup was re-run. Returns the
@@ -234,23 +268,104 @@ public actor HistoryStore: HistoryStoreProtocol {
             }
             working[index].cleanText = original
             working[index].originalCleanText = nil
+            working[index].fixes = nil
             restored = working[index]
             return true
         }
         return restored
     }
 
-    @discardableResult
-    public func pasteLast() async throws -> TranscriptEntry? {
+    /// Replaces `occurrence` (counting whole-word matches from 0) of `original` in an entry's clean
+    /// text with `replacement` and records the fix. `originalCleanText` is left as it is, so
+    /// "Restore original cleanup" still puts back what live dictation produced.
+    ///
+    /// When `appliesToFuture` is true, the word is also added to `lexicon` as a correction for
+    /// every app, in the casing `TranscriptEntry.futureCorrectionForLastFix()` chooses. The correction is checked first, and nothing changes when the check fails: a
+    /// common word throws `WordFixError.commonWord` until `confirmingCommonWord` is true. The
+    /// caller saves the added correction with the rest of the word corrections.
+    ///
+    /// `expectingText` is the clean text the occurrence was counted in. When the entry's text is
+    /// no longer that, nothing changes and the call throws `WordFixError.dictationChanged`.
+    public func applyWordFix(
+        entryID: UUID,
+        original: String,
+        occurrence: Int,
+        replacement: String,
+        appliesToFuture: Bool,
+        confirmingCommonWord: Bool = false,
+        lexicon: PersonalLexiconService? = nil,
+        expectingText: String? = nil
+    ) async throws -> TranscriptEntry {
         refreshFromDisk()
-        guard let latest = entries.first else {
-            return nil
+        guard let entry = entries.first(where: { $0.id == entryID }) else {
+            throw HistoryStoreError.missingEntry
+        }
+        if let expectingText, entry.cleanText != expectingText { throw WordFixError.dictationChanged }
+        let trial = try entry.applyingWordFix(
+            original: original,
+            occurrence: occurrence,
+            replacement: replacement,
+            appliesToFuture: appliesToFuture
+        )
+        var correction: LexiconEntry?
+        if appliesToFuture {
+            guard let lexicon, let candidate = trial.futureCorrectionForLastFix() else {
+                throw WordFixError.futureCorrectionsUnavailable
+            }
+            correction = try await lexicon.reviewWordCorrection(
+                original: candidate.term,
+                replacement: candidate.preferred,
+                confirmingCommonWord: confirmingCommonWord
+            )
         }
 
-        let text = latest.cleanText.isEmpty ? latest.rawText : latest.cleanText
-        try await clipboardService.setString(text)
-        return latest
+        var fixed: TranscriptEntry?
+        try commit { working in
+            guard let index = working.firstIndex(where: { $0.id == entryID }) else {
+                throw HistoryStoreError.missingEntry
+            }
+            if let expectingText, working[index].cleanText != expectingText {
+                throw WordFixError.dictationChanged
+            }
+            working[index] = try working[index].applyingWordFix(
+                original: original,
+                occurrence: occurrence,
+                replacement: replacement,
+                appliesToFuture: appliesToFuture
+            )
+            fixed = working[index]
+            return true
+        }
+        if let correction, let lexicon {
+            await lexicon.add(correction)
+        }
+        guard let fixed else { throw HistoryStoreError.missingEntry }
+        return fixed
     }
+
+    /// Reverts the most recent fix made with `applyWordFix`. A word correction that fix added for
+    /// future dictations is kept; it can be removed in Word corrections.
+    ///
+    /// `expectingFixCount` is how many fixes the entry had when the undo was offered. When it has
+    /// another number now, an earlier undo or a new fix came first: nothing changes and the call
+    /// throws `WordFixError.fixNoLongerApplies`.
+    public func undoLastWordFix(entryID: UUID, expectingFixCount: Int? = nil) async throws -> TranscriptEntry {
+        var undone: TranscriptEntry?
+        try commit { working in
+            guard let index = working.firstIndex(where: { $0.id == entryID }) else {
+                throw HistoryStoreError.missingEntry
+            }
+            if let expectingFixCount, (working[index].fixes?.count ?? 0) != expectingFixCount {
+                throw WordFixError.fixNoLongerApplies
+            }
+            working[index] = try working[index].undoingLastWordFix()
+            undone = working[index]
+            return true
+        }
+        guard let undone else { throw HistoryStoreError.missingEntry }
+        return undone
+    }
+
 
     /// Applies `change` to the entries currently on disk and writes the result.
     /// Re-reading under a file lock keeps entries another running copy of Steno
@@ -351,10 +466,10 @@ public actor HistoryStore: HistoryStoreProtocol {
         }
         guard let first = untouched.first else { return }
         let subject = untouched.count == 1
-            ? "a damaged copy of the History file that Steno kept earlier still holds"
+            ? "A damaged copy of the History file that Steno kept earlier still holds"
             : "\(untouched.count) damaged copies of the History file that Steno kept earlier still hold"
         report(StorageRecoveryNotice(
-            message: "The transcript was deleted, but \(subject) older text. “Delete all history” removes \(untouched.count == 1 ? "it" : "them").",
+            message: "Dictation deleted. \(subject) older text. Delete All History removes \(untouched.count == 1 ? "it" : "them").",
             fileURL: first
         ))
     }
@@ -473,7 +588,7 @@ public actor HistoryStore: HistoryStoreProtocol {
             if signature != reportedSignature {
                 reportedSignature = signature
                 report(StorageRecoveryNotice(
-                    message: "Steno couldn't read your History file, so older transcripts aren't shown. The file hasn't been changed.",
+                    message: "Steno couldn’t read your History file. Older dictations aren’t shown, and the file hasn’t been changed.",
                     fileURL: storageURL
                 ))
             }
@@ -503,7 +618,7 @@ public actor HistoryStore: HistoryStoreProtocol {
         let skipped = file.issues.skippedCount
         let message = skipped > 0
             ? "\(skipped) History \(skipped == 1 ? "entry" : "entries") couldn't be read and \(skipped == 1 ? "is" : "are") hidden. Steno kept a copy of the original file."
-            : "Some History entries were saved by a newer version of Steno and show a default status. Steno kept a copy of the original file."
+            : "Some History entries were saved by a newer version of Steno, so some of their details are shown as defaults or left out. Steno kept a copy of the original file."
         report(StorageRecoveryNotice(message: message, fileURL: copyURL))
     }
 
@@ -517,7 +632,7 @@ public actor HistoryStore: HistoryStoreProtocol {
         loadFailed = false
         loadedSignature = nil
         report(StorageRecoveryNotice(
-            message: "Steno couldn't read your History file, so it kept it as “\(movedURL.lastPathComponent)” and started a new one.",
+            message: "Steno couldn’t read your History file. It kept the file as “\(movedURL.lastPathComponent)” and started a new one.",
             fileURL: movedURL
         ))
     }
@@ -571,19 +686,6 @@ public actor HistoryStore: HistoryStoreProtocol {
     }
 
     private static func defaultStorageURL() -> URL {
-        let appSupport: URL
-        if let resolved = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            appSupport = resolved
-        } else {
-            appSupport = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support", isDirectory: true)
-            StenoKitDiagnostics.logger.fault(
-                "Application Support directory lookup failed; using the conventional fallback directory."
-            )
-        }
-
-        return appSupport
-            .appendingPathComponent("Steno", isDirectory: true)
-            .appendingPathComponent("transcript-history.json")
+        StenoStorageRoot.release().historyURL
     }
 }

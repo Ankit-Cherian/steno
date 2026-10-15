@@ -2,6 +2,8 @@
 
 ## whisper.cpp
 
+SPDX-License-Identifier: MIT
+
 Steno uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp) for local speech-to-text transcription.
 
 whisper.cpp is licensed under the MIT License:
@@ -30,9 +32,44 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## ggml
+
+SPDX-License-Identifier: MIT
+
+whisper.cpp runs on [ggml](https://github.com/ggml-org/ggml), a tensor library by the same authors. A copy of ggml is part of the whisper.cpp source tree that Steno builds. It has no separate license file there and is covered by the whisper.cpp MIT License and copyright notice above.
+
+## miniaudio
+
+SPDX-License-Identifier: MIT-0
+
+The bundled whisper-cli reads audio files with [miniaudio](https://github.com/mackron/miniaudio) by David Reid, which whisper.cpp compiles in through `examples/common-whisper.cpp`. miniaudio is offered as a choice of public domain or MIT No Attribution. Steno uses it under MIT No Attribution:
+
+```text
+MIT No Attribution
+
+Copyright 2025 David Reid
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## OpenAI Whisper model weights
 
-Steno's canonical Whisper model files are derived from the model weights published by OpenAI. The Whisper code and model weights are released under the MIT License:
+SPDX-License-Identifier: MIT
+
+Steno's Whisper model files are derived from these model weights. The Whisper code and model weights are released under the MIT License:
 
 ```text
 MIT License
@@ -58,9 +95,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+### Optional downloadable models
+
+Settings › Speech Model can download two larger models: Medium (`ggml-medium.en.bin`) and Large V3 Turbo (`ggml-large-v3-turbo.bin`). Both come from the [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) repository on Hugging Face, at a pinned revision. They are the Whisper weights above, converted to the ggml format. The repository's model card lists them under the MIT License, and the MIT License above applies to the weights.
+
 ## Silero VAD model
 
-Steno's canonical voice-activity model is derived from [Silero VAD](https://github.com/snakers4/silero-vad). Silero VAD is released under the MIT License:
+SPDX-License-Identifier: MIT
+
+Steno's voice-activity model is derived from [Silero VAD](https://github.com/snakers4/silero-vad). Silero VAD is released under the MIT License:
 
 ```text
 MIT License
@@ -88,11 +131,13 @@ SOFTWARE.
 
 ## Bundled fonts
 
-Steno bundles [Fraunces](https://github.com/undercasetype/Fraunces) and [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono). Both font families are licensed under the SIL Open Font License, Version 1.1. Their copyright notices and the full license follow.
+SPDX-License-Identifier: OFL-1.1
+
+Steno bundles [Archivo](https://github.com/Omnibus-Type/Archivo) and [Azeret Mono](https://github.com/displaay/azeret). Both font families are licensed under the SIL Open Font License, Version 1.1. Their copyright notices and the full license follow.
 
 ```text
-Copyright 2018 The Fraunces Project Authors (https://github.com/undercasetype/Fraunces)
-Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+Copyright 2020 The Archivo Project Authors (https://github.com/Omnibus-Type/Archivo)
+Copyright 2021 The Azeret Project Authors (https://github.com/displaay/azeret)
 
 SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
 -----------------------------------------------------------

@@ -16,8 +16,7 @@ struct DictationControllerCompletionTests {
 
         let capture = TranscriptionCancelCapture(directory: directory)
         let transport = TranscriptionCancelTransport()
-        let clipboard = MemoryClipboardService()
-        let history = HistoryStore(storageURL: directory.appendingPathComponent("history.json"), clipboardService: clipboard)
+        let history = HistoryStore(storageURL: directory.appendingPathComponent("history.json"))
         let analytics = GatedUsageAnalyticsStore(
             base: UsageAnalyticsStore(storageURL: directory.appendingPathComponent("usage.json"))
         )

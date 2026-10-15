@@ -203,69 +203,84 @@ struct OverlayPresenterPolicyTests {
             reduceTransparency: false,
             increaseContrast: false,
             preferredBodyPointSize: 13
-        ))
+        ), appearance: .quill)
         let accessible = OverlayAccessibilityMetrics(preferences: .init(
             reduceMotion: true,
             reduceTransparency: true,
             increaseContrast: true,
             preferredBodyPointSize: 26
-        ))
+        ), appearance: .quill)
 
         #expect(baseline.textScale == 1)
-        #expect(baseline.backgroundAlpha == 0.94)
-        #expect(baseline.borderWidth == 0.5)
+        #expect(baseline.backgroundAlpha == 1)
+        #expect(baseline.borderWidth == 1)
+        #expect(baseline.edgeAlpha == 0.14)
         #expect(baseline.duration(0.3) == 0.3)
+        #expect(baseline.capsuleHeight == 40)
+        #expect(baseline.controlSize == 28)
+        #expect(baseline.labelFontSize == 13)
         #expect(accessible.textScale == 2)
         #expect(accessible.scaledFontSize(13.5) > baseline.scaledFontSize(13.5))
         #expect(accessible.backgroundAlpha == 1)
-        #expect(accessible.borderWidth == 1.5)
+        #expect(accessible.borderWidth == 1)
+        #expect(accessible.edgeAlpha == 0.48)
         #expect(accessible.innerShadowOpacity == 0)
         #expect(accessible.outerShadowOpacity == 0)
         #expect(accessible.duration(0.3) == 0)
     }
 
+    @Test("Larger text grows the capsule as the board draws it: 17 pt text, 50 pt tall, 34 pt controls")
+    func largerTextCapsule() {
+        let larger = OverlayAccessibilityMetrics(preferences: .init(
+            reduceMotion: false, reduceTransparency: false, increaseContrast: false, preferredBodyPointSize: 17
+        ), appearance: .quill)
+        #expect(larger.labelFontSize == 17)
+        #expect(larger.capsuleHeight == 50)
+        #expect((34...35).contains(larger.controlSize))
+        #expect(larger.transcriptFontSize == 19)
+        #expect((370...385).contains(larger.capsuleWidth(.handsFree)))
+    }
+
     @Test
-    func largePreferredTextExpandsWithinTheScreenAndAdaptsTheVisibleBudget() {
+    func largePreferredTextExpandsWithinTheScreenAndAdaptsTheVisibleLines() {
         let visibleFrameSize = CGSize(width: 800, height: 600)
-        let preferredBodyPointSize: CGFloat = 52
-        let preferredCaptionPointSize: CGFloat = 42.64
-        let textScale = preferredBodyPointSize / OverlayAccessibilityMetrics.baselineBodyPointSize
+        let metrics = OverlayAccessibilityMetrics(preferences: .init(
+            reduceMotion: false, reduceTransparency: false, increaseContrast: false, preferredBodyPointSize: 52
+        ), appearance: .grove)
+        let lines = OverlayPanelLayoutPolicy.transcriptLineCapacity(metrics: metrics, visibleFrameSize: visibleFrameSize)
         let expanded = OverlayPanelLayoutPolicy.panelSize(
-            showsTranscript: true,
-            textScale: textScale,
-            preferredBodyPointSize: preferredBodyPointSize,
-            preferredCaptionPointSize: preferredCaptionPointSize,
-            visibleFrameSize: visibleFrameSize
+            metrics: metrics, showsTranscript: true, transcriptLines: lines, visibleFrameSize: visibleFrameSize
         )
         let compact = OverlayPanelLayoutPolicy.panelSize(
-            showsTranscript: false,
-            textScale: textScale,
-            preferredBodyPointSize: preferredBodyPointSize,
-            preferredCaptionPointSize: preferredCaptionPointSize,
-            visibleFrameSize: visibleFrameSize
-        )
-        let geometry = OverlayPanelLayoutPolicy.contentGeometry(
-            panelSize: expanded,
-            showsTranscript: true,
-            preferredBodyPointSize: preferredBodyPointSize,
-            preferredCaptionPointSize: preferredCaptionPointSize
-        )
-        let estimatedTextWidth = expanded.width - 118
-        let budget = OverlayPanelLayoutPolicy.estimatedVisibleGraphemeBudget(
-            textWidth: estimatedTextWidth,
-            textHeight: geometry.transcriptFrame.height,
-            preferredBodyPointSize: preferredBodyPointSize
+            metrics: metrics, showsTranscript: false, transcriptLines: 1, visibleFrameSize: visibleFrameSize
         )
 
-        #expect(textScale == 4)
+        #expect(metrics.textScale == 4)
         #expect(expanded.width <= visibleFrameSize.width - 32)
         #expect(expanded.height <= visibleFrameSize.height - 32)
-        #expect(geometry.transcriptFrame.height >= preferredBodyPointSize * 3)
-        #expect(geometry.transcriptFrame.maxY <= expanded.height)
-        #expect(budget > 0)
-        #expect(budget < OverlayTranscriptFormatter.maximumVisibleGraphemes)
-        #expect(compact.width < expanded.width)
+        #expect(lines >= 2 && lines < OverlayPanelLayoutPolicy.maximumTranscriptLines)
+        #expect(CGFloat(lines) * metrics.transcriptLineHeight >= 52 * 3)
         #expect(compact.height < expanded.height)
+        #expect(compact.width <= expanded.width)
+    }
+
+    @Test("The panel holds the widest state, so state changes never move or resize the window")
+    func panelHoldsTheWidestState() {
+        let metrics = OverlayAccessibilityMetrics(preferences: .init(
+            reduceMotion: false, reduceTransparency: false, increaseContrast: false, preferredBodyPointSize: 13
+        ), appearance: .quill)
+        let screen = CGSize(width: 1440, height: 900)
+        let compact = OverlayPanelLayoutPolicy.panelSize(metrics: metrics, showsTranscript: false, transcriptLines: 1, visibleFrameSize: screen)
+        let live = OverlayPanelLayoutPolicy.panelSize(metrics: metrics, showsTranscript: true, transcriptLines: 4, visibleFrameSize: screen)
+        let marginWidth = OverlayPanelLayoutPolicy.shadowMargins.horizontal
+        let marginHeight = OverlayPanelLayoutPolicy.shadowMargins.vertical
+        #expect(compact.width == 340 + marginWidth)
+        #expect(compact.height == 40 + marginHeight)
+        #expect(live.width == 440 + marginWidth)
+        // Capsule, 8 pt gap, then exactly four 22 pt lines inside 12 + 14 pt padding.
+        let cardHeight: CGFloat = 12 + 4 * 22 + 14
+        #expect(live.height == 40 + 8 + cardHeight + marginHeight)
+        #expect(OverlayPanelLayoutPolicy.transcriptLineCapacity(metrics: metrics, visibleFrameSize: screen) == 4)
     }
 
     #if os(macOS)
@@ -273,6 +288,7 @@ struct OverlayPresenterPolicyTests {
     @MainActor
     func productionPresenterUsesOneImmediateTranscriptSurfaceAndCalmUnavailableShell() {
         let presenter = WaveformOverlayPresenter()
+        presenter.appearance = .quill
         presenter.hostedEvidencePrepareOffscreen()
         presenter.setLiveTranscriptEnabled(true)
         presenter.prepareWindow()
@@ -319,6 +335,7 @@ struct OverlayPresenterPolicyTests {
     @MainActor
     func productionPresenterFitsNewestSpeechAtLargePreferredTextAndRestoresAppearance() {
         let presenter = WaveformOverlayPresenter()
+        presenter.appearance = .quill
         presenter.hostedEvidencePrepareOffscreen()
         presenter.setLiveTranscriptEnabled(true)
         presenter.setHostedAccessibilityPreferences(.init(
@@ -344,7 +361,6 @@ struct OverlayPresenterPolicyTests {
         let visible = presenter.hostedEvidenceVisibleTranscript()
 
         #expect(!visible.isEmpty)
-        #expect(visible.count <= OverlayTranscriptFormatter.maximumVisibleGraphemes)
         #expect(provisional.hasSuffix(visible))
         #expect(presenter.hostedEvidenceLargeTextTranscriptIsFullyVisible(
             preferredBodyPointSize: 52

@@ -195,6 +195,22 @@ func editorContextEnforcesByteCeiling() async throws {
     #expect(serialized.count <= 8 * 1_024)
 }
 
+@Test("Steno's own window is never queried through Accessibility")
+func ownProcessTargetIsNotQueried() {
+    let client = MockMacAccessibilityClient()
+    client.setCapturedError(.focusedElementUnavailable)
+    let own = AppContext(bundleIdentifier: "io.stenoapp.steno", appName: "Steno")
+
+    let result = EditorTargetHandle.capture(target: own, client: client, ownBundleIdentifier: "io.stenoapp.steno")
+
+    guard case .failure(let reason) = result else {
+        Issue.record("Steno's own window unexpectedly produced a handle")
+        return
+    }
+    #expect(reason == .applicationUnavailable)
+    #expect(client.selectionRequestCount == 0)
+}
+
 @Test("Secure targets fail before any context read")
 func secureEditorTargetFailsClosed() {
     let client = MockMacAccessibilityClient(

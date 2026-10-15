@@ -58,6 +58,10 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     @MainActor
     public func show(state: OverlayState) {
+        if let legacy = state.legacyEquivalent {
+            show(state: legacy)
+            return
+        }
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(finishHide), object: nil)
         ensureWindow()
 
@@ -65,6 +69,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         wasHidden = false
 
         switch state {
+        case .result, .busy, .discarded:
+            return // mapped to a 1.0 state above
         case .listening(let handsFree, _):
             listeningHandsFree = handsFree
             listeningStartDate = Date()

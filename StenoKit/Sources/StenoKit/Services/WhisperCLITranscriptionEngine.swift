@@ -32,17 +32,21 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
         /// loads the model from scratch, so this covers the retained helper's
         /// model-load allowance as well as its minimum inference allowance.
         public var minimumTimeout: Duration
+        /// Where each run writes its transcript files.
+        public var outputDirectory: URL
 
         public init(
             whisperCLIPath: URL,
             modelPath: URL,
             additionalArguments: [String] = [],
-            minimumTimeout: Duration = .seconds(300)
+            minimumTimeout: Duration = .seconds(300),
+            outputDirectory: URL = URL(fileURLWithPath: NSTemporaryDirectory())
         ) {
             self.whisperCLIPath = whisperCLIPath
             self.modelPath = modelPath
             self.additionalArguments = additionalArguments
             self.minimumTimeout = minimumTimeout
+            self.outputDirectory = outputDirectory
         }
 
         /// Longer recordings get the retained helper's allowance of twice
@@ -73,7 +77,7 @@ public struct WhisperCLITranscriptionEngine: TranscriptionEngine, Sendable {
             throw WhisperCLITranscriptionError.cliNotFound(path: config.whisperCLIPath.path)
         }
 
-        let outputBase = URL(fileURLWithPath: NSTemporaryDirectory())
+        let outputBase = config.outputDirectory
             .appendingPathComponent("\(Self.outputFilePrefix)\(UUID().uuidString)")
 
         let txtURL = outputBase.appendingPathExtension("txt")

@@ -62,7 +62,7 @@ struct PromptVerificationRichOutputTests {
             sessionFactory: VerificationJSONSessionFactory(payload: payload),
             fallback: UnexpectedRetainedFallback()
         )
-        let history = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+        let history = HistoryStore(storageURL: historyURL)
         let coordinator = SessionCoordinator(
             captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
             transcriptionEngine: engine,
@@ -121,7 +121,7 @@ struct PromptVerificationRichOutputTests {
             #expect(await observation.insertedTexts().count == 1)
             #expect(await history.recent(limit: 10).count == 1)
 
-            let reloaded = HistoryStore(storageURL: historyURL, clipboardService: MemoryClipboardService())
+            let reloaded = HistoryStore(storageURL: historyURL)
             let persisted = await reloaded.recent(limit: 10)
             #expect(persisted.count == 1)
             #expect(persisted.first?.rawText == expectedRaw.text)

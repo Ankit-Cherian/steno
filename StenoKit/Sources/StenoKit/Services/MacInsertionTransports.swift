@@ -360,9 +360,11 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
     private func activateTargetApp(_ target: AppContext) async throws {
         guard target.bundleIdentifier != "unknown" else { return }
 
+        let startedAt = InsertionTrace.now()
         for attempt in 0..<3 {
             try Task.checkCancellation()
             guard await activateApplication(target.bundleIdentifier) else {
+                InsertionTrace.note("activate: app not running", since: startedAt)
                 throw MacInsertionError.exactTargetUnavailable(.applicationUnavailable)
             }
 
@@ -370,8 +372,16 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
             try await Task.sleep(nanoseconds: delay)
             try Task.checkCancellation()
 
-            if await frontmostApplicationBundleIdentifier() == target.bundleIdentifier {
+            let frontmost = await frontmostApplicationBundleIdentifier()
+            if frontmost == target.bundleIdentifier {
+                InsertionTrace.note("activate: frontmost after \(attempt + 1) tries", since: startedAt)
                 return
+            }
+            if attempt == 2 {
+                InsertionTrace.note(
+                    "activate: not frontmost after 3 tries, \(frontmost == nil ? "nothing" : "another app") in front",
+                    since: startedAt
+                )
             }
         }
         throw MacInsertionError.exactTargetUnavailable(.applicationNotFrontmost)
@@ -392,6 +402,8 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
         // chunks even if the parent task is cancelled mid-insertion.
         let preparedEventPoster = self.preparedEventPoster
         let interChunkPause = self.interChunkPause
+        let typingStartedAt = InsertionTrace.now()
+        defer { InsertionTrace.note("typing \(codeUnitChunks.count) chunks", since: typingStartedAt) }
         try await Task.detached(priority: .userInitiated) {
             guard let source = CGEventSource(stateID: .privateState) else {
                 throw MacInsertionError.eventSourceUnavailable
@@ -559,7 +571,13 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
         if let insertionGuard, case .refuse(let reason) = insertionGuard.evaluate(for: target) {
             throw MacInsertionError.insertionRefused(reason)
         }
-        switch EditorTargetHandle.capture(target: target, client: client) {
+        let captureStartedAt = InsertionTrace.now()
+        let capture = EditorTargetHandle.capture(target: target, client: client)
+        InsertionTrace.note(
+            "focused field \(InsertionTrace.describe(capture.map { _ in }))",
+            since: captureStartedAt
+        )
+        switch capture {
         case .success(let editorTarget):
             try await insert(
                 text: text,
@@ -599,11 +617,20 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
         _ = target
         try Task.checkCancellation()
         guard !text.isEmpty else { return }
-        switch try await editorTarget.replaceSelectedText(
+        let writeStartedAt = InsertionTrace.now()
+        let write = try await editorTarget.replaceSelectedText(
             with: text,
             commitAuthorization: commitAuthorization,
             commitLease: commitLease
-        ) {
+        )
+        InsertionTrace.note("selected text write " + {
+            switch write {
+            case .inserted: "inserted"
+            case .rejected(let reason): "rejected \(reason.rawValue)"
+            case .indeterminate: "indeterminate"
+            }
+        }(), since: writeStartedAt)
+        switch write {
         case .inserted:
             return
         case .rejected(let reason):
@@ -618,7 +645,9 @@ public enum MacPasteHelper {
     private enum ActivationResult {
         case activated
         case appNotFound
-        case focusNotAcquired
+        /// Another app stayed in front: macOS declined to bring the target back.
+        case anotherAppInFront
+        case cancelled
         case unknownTarget
     }
 
@@ -661,7 +690,7 @@ public enum MacPasteHelper {
             return .skipped(reason: "Auto-paste canceled.")
         }
         guard system.accessibility.isProcessTrusted() else {
-            return .skipped(reason: "Accessibility permission is required for auto-paste.")
+            return .skipped(reason: "Accessibility permission is required for auto-paste.", cause: .accessibilityOff)
         }
 
         if editorTarget == nil {
@@ -670,35 +699,51 @@ public enum MacPasteHelper {
             case .activated, .unknownTarget:
                 break
             case .appNotFound:
-                return .skipped(reason: "Target app was not found for auto-paste reactivation.")
-            case .focusNotAcquired:
-                return .skipped(reason: "Could not focus target app before auto-paste.")
+                return .skipped(reason: "Target app was not found for auto-paste reactivation.", cause: .appChanged)
+            case .anotherAppInFront:
+                return .skipped(reason: ClipboardInsertionTransport.anotherAppInFrontReason, cause: .appChanged)
+            case .cancelled:
+                return .skipped(reason: "Auto-paste canceled.")
             }
             if let insertionGuard, case .refuse(let reason) = insertionGuard.evaluate(for: target) {
-                return .skipped(reason: InsertionTargetGuard.refusalMessage(for: reason))
+                return .skipped(
+                    reason: InsertionTargetGuard.refusalMessage(for: reason),
+                    cause: InsertionCopyReason(reason),
+                    copiedConcealed: reason == .secureOrProtectedElement
+                )
             }
-        } else if let editorTarget, case .failure(let reason) = await editorTarget.revalidate() {
-            return .skipped(reason: exactTargetSkipReason(reason))
+        } else if let editorTarget, case .failure(let reason) = await revalidate(editorTarget) {
+            return .skipped(
+                reason: exactTargetSkipReason(reason),
+                cause: InsertionCopyReason(reason),
+                copiedConcealed: reason == .secureOrProtectedElement
+            )
         }
 
         let pasteKeyCode = await system.pasteKeyCode()
+        let pasteStartedAt = InsertionTrace.now()
         for attempt in 0..<2 {
             guard !Task.isCancelled else {
                 return .skipped(reason: "Auto-paste canceled.")
             }
-            if let editorTarget, case .failure(let reason) = await editorTarget.revalidate() {
-                return .skipped(reason: exactTargetSkipReason(reason))
+            if let editorTarget, case .failure(let reason) = await revalidate(editorTarget) {
+                return .skipped(
+                    reason: exactTargetSkipReason(reason),
+                    cause: InsertionCopyReason(reason),
+                    copiedConcealed: reason == .secureOrProtectedElement
+                )
             }
             // Another app may have written to the clipboard since Steno's
             // write. Pasting now would insert its content instead.
             guard clipboardStillHoldsText() else {
-                return .skipped(reason: ClipboardInsertionTransport.clipboardChangedReason)
+                return .skipped(reason: ClipboardInsertionTransport.clipboardChangedReason, cause: .clipboardChanged)
             }
             if simulateCommandV(
                 keyCode: pasteKeyCode,
                 commitPermit: commitPermit,
                 postKeyEvents: system.postKeyEvents
             ) {
+                InsertionTrace.note("Command-V sent on try \(attempt + 1)", since: pasteStartedAt)
                 return .attempted
             }
             if commitPermit?.cancellationRequested == true {
@@ -716,6 +761,15 @@ public enum MacPasteHelper {
         return .skipped(reason: "Unable to synthesize Cmd+V for auto-paste.")
     }
 
+    private static func revalidate(
+        _ editorTarget: EditorTargetHandle
+    ) async -> Result<Void, EditorTargetUnavailableReason> {
+        let startedAt = InsertionTrace.now()
+        let result = await editorTarget.revalidate()
+        InsertionTrace.note("revalidate \(InsertionTrace.describe(result))", since: startedAt)
+        return result
+    }
+
     private static func exactTargetSkipReason(_ reason: EditorTargetUnavailableReason) -> String {
         reason == .timedOut
             ? ClipboardInsertionTransport.exactTargetSkipReason(reason)
@@ -730,11 +784,13 @@ public enum MacPasteHelper {
             return .unknownTarget
         }
 
+        let startedAt = InsertionTrace.now()
         for attempt in 0..<3 {
             guard !Task.isCancelled else {
-                return .focusNotAcquired
+                return .cancelled
             }
             guard await system.activateApplication(target.bundleIdentifier) else {
+                InsertionTrace.note("activate: app not running", since: startedAt)
                 return .appNotFound
             }
 
@@ -742,15 +798,23 @@ public enum MacPasteHelper {
             do {
                 try await Task.sleep(nanoseconds: delay)
             } catch {
-                return .focusNotAcquired
+                return .cancelled
             }
 
-            if await system.frontmostApplicationBundleIdentifier() == target.bundleIdentifier {
+            let frontmost = await system.frontmostApplicationBundleIdentifier()
+            if frontmost == target.bundleIdentifier {
+                InsertionTrace.note("activate: frontmost after \(attempt + 1) tries", since: startedAt)
                 return .activated
+            }
+            if attempt == 2 {
+                InsertionTrace.note(
+                    "activate: not frontmost after 3 tries, \(frontmost == nil ? "nothing" : "another app") in front",
+                    since: startedAt
+                )
             }
         }
 
-        return .focusNotAcquired
+        return .anotherAppInFront
     }
 
     @MainActor

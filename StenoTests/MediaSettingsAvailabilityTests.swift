@@ -53,7 +53,7 @@ struct MediaSettingsAvailabilityTests {
 
         // An app is paused only when it is confirmed playing, so media paused
         // by hand, even moments earlier, is never resumed.
-        #expect(section.captionText == "Steno pauses apps that are playing when you start dictating and resumes only those. Media you paused yourself stays paused.")
+        #expect(section.captionText == "Steno pauses an app only when it can confirm the app is playing, and resumes only the apps it paused. Media you paused yourself stays paused.")
         #expect(!section.captionText.contains("may resume"))
     }
 
@@ -64,22 +64,18 @@ struct MediaSettingsAvailabilityTests {
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("StenoUIRendering").path)
             .appendingPathComponent("media-settings", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let previousDirection = StenoDesign.reviewDirectionOverride
-        defer { StenoDesign.reviewDirectionOverride = previousDirection }
-        StenoDesign.reviewDirectionOverride = .manuscript
         let size = CGSize(width: 560, height: 280)
 
         for supported in [true, false] {
             for appearance in [ColorScheme.light, .dark] {
                 let storage = PreferencesBox(AppPreferences.default)
-                let theme = StenoDesign.theme(for: storage.value)
-                let view = MediaSettingsSection(
-                    preferences: storage.binding,
-                    isMediaPausingSupported: supported
-                )
-                .padding(24)
-                .foregroundStyle(theme.text)
-                .background(theme.ink0)
+                let view = GroveSettingsContent(accent: storage.value.appearance.accent) {
+                    MediaSettingsSection(
+                        preferences: storage.binding,
+                        isMediaPausingSupported: supported
+                    )
+                    .padding(24)
+                }
                 .environment(\.colorScheme, appearance)
                 .frame(width: size.width, height: size.height)
                 let hosting = NSHostingView(rootView: view)

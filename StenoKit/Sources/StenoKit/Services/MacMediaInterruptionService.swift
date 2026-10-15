@@ -2929,7 +2929,8 @@ final class MediaRemoteBridge: MediaRemoteBridging {
         self.probeRunner = probeRunner
         self.pauseAcknowledgementRunner = MediaRemoteAsyncProbeRunner(
             timeout: pauseAcknowledgementTimeout,
-            timeoutQueue: probeRunner.timeoutQueue
+            timeoutQueue: probeRunner.timeoutQueue,
+            scheduleExpiry: probeRunner.scheduleExpiry
         )
         self.sendCommandOverride = sendCommandOverride
         self.sessionReadOverride = sessionReadOverride
@@ -3473,15 +3474,24 @@ enum SessionRequestInterface {
 }
 
 struct MediaRemoteAsyncProbeRunner {
+    /// Runs `expire` once `delay` has passed. Tests replace it to decide when a
+    /// wait expires instead of racing the clock.
+    typealias ExpiryScheduler = @Sendable (DispatchTimeInterval, @escaping @Sendable () -> Void) -> Void
+
     let timeout: DispatchTimeInterval
     let timeoutQueue: DispatchQueue
+    let scheduleExpiry: ExpiryScheduler
 
     init(
         timeout: DispatchTimeInterval = .milliseconds(250),
-        timeoutQueue: DispatchQueue = DispatchQueue(label: "Steno.MediaRemote.Timeout", qos: .userInitiated)
+        timeoutQueue: DispatchQueue = DispatchQueue(label: "Steno.MediaRemote.Timeout", qos: .userInitiated),
+        scheduleExpiry: ExpiryScheduler? = nil
     ) {
         self.timeout = timeout
         self.timeoutQueue = timeoutQueue
+        self.scheduleExpiry = scheduleExpiry ?? { delay, expire in
+            timeoutQueue.asyncAfter(deadline: .now() + delay, execute: expire)
+        }
     }
 
     @MainActor
@@ -3490,7 +3500,7 @@ struct MediaRemoteAsyncProbeRunner {
     ) async -> Value? {
         await withCheckedContinuation { continuation in
             let gate = ProbeContinuationGate(continuation: continuation)
-            timeoutQueue.asyncAfter(deadline: .now() + timeout) {
+            scheduleExpiry(timeout) {
                 gate.resumeOnce(nil)
             }
             register { value in

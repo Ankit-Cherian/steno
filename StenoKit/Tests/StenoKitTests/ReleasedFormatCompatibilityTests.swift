@@ -124,6 +124,26 @@ struct ReleasedFormatCompatibilityTests {
         #expect(released.first(where: { $0.id == pasted.id })?.insertionStatus == .copiedOnly)
     }
 
+    @Test("History with the concealed-copy marker reloads through the store and decodes with the 1.0.0 types")
+    func concealedMarkerSurvivesStoreAndReleasedVersion() async throws {
+        let fixture = try HistoryFixture(entryCount: 0)
+        defer { fixture.cleanUp() }
+        var concealed = HistoryFixture.entry("Meant for a password field")
+        concealed.insertionStatus = .copiedOnly
+        concealed.concealedCopy = true
+
+        try await fixture.store().append(entry: concealed)
+
+        let reloaded = await fixture.store().recent(limit: 10)
+        #expect(reloaded.first?.concealedCopy == true)
+        let released = try Released100.decoder().decode(
+            [Released100.TranscriptEntry].self,
+            from: Data(contentsOf: fixture.storageURL)
+        )
+        #expect(released.map(\.id) == [concealed.id])
+        #expect(released.first?.insertionStatus == .copiedOnly)
+    }
+
     @Test("History moved aside and restarted decodes with the 1.0.0 types")
     func historyAfterMoveAsideDecodesInReleasedVersion() async throws {
         let fixture = try HistoryFixture(entryCount: 10)

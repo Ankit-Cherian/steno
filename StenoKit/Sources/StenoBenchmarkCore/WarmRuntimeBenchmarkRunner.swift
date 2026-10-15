@@ -664,8 +664,7 @@ private enum WarmRuntimeCoordinatorProxy {
             )
             let historyStore = WarmTimedHistoryStore(
                 base: HistoryStore(
-                    storageURL: historyURL,
-                    clipboardService: MemoryClipboardService()
+                    storageURL: historyURL
                 ),
                 recorder: recorder
             )
@@ -917,10 +916,6 @@ private struct WarmTimedHistoryStore: HistoryStoreProtocol {
             profile: profile,
             lexicon: lexicon
         )
-    }
-
-    func pasteLast() async throws -> TranscriptEntry? {
-        try await base.pasteLast()
     }
 }
 

@@ -1685,6 +1685,8 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
     #if DEBUG
     /// Tests can hold an AudioAppend just before its write to probe ordering.
     private let debugAppendWriteDelayMicroseconds: useconds_t?
+    /// Created when an AudioAppend reaches that hold, so a test can act during it.
+    private let debugAppendWriteHeldFile: String?
     #endif
     // An idle helper leaves this read blocked until a frame or EOF arrives.
     private let readerQueue = DispatchQueue(label: "steno.runtime.streaming-reader", qos: .userInitiated)
@@ -1718,6 +1720,7 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
         debugAppendWriteDelayMicroseconds = environment["STENO_TEST_APPEND_WRITE_DELAY_MS"]
             .flatMap(useconds_t.init)
             .map { $0 * 1_000 }
+        debugAppendWriteHeldFile = environment["STENO_TEST_APPEND_WRITE_HELD_FILE"]
         #endif
 
         do {
@@ -1850,6 +1853,9 @@ private final class WhisperStreamingHelperProcessState: @unchecked Sendable {
     private func write(_ frame: WhisperStreamingRuntimeProtocol.Frame) throws {
         #if DEBUG
         if frame.operation == .audioAppend, let debugAppendWriteDelayMicroseconds {
+            if let debugAppendWriteHeldFile {
+                FileManager.default.createFile(atPath: debugAppendWriteHeldFile, contents: nil)
+            }
             usleep(debugAppendWriteDelayMicroseconds)
         }
         #endif
