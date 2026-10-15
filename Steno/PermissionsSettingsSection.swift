@@ -16,7 +16,7 @@ struct PermissionsSettingsSection: View {
                 )
                 PermissionRow(
                     title: "Accessibility",
-                    detail: "To insert your words where you’re typing. Steno doesn’t read the rest of your screen.",
+                    detail: "To insert your words where you’re typing. Steno reads nothing else on screen unless you turn on nearby-text continuation.",
                     status: controller.accessibilityPermissionStatus,
                     onRequest: { controller.requestAccessibilityPermission() },
                     onOpenSettings: { controller.openAccessibilitySettings() }

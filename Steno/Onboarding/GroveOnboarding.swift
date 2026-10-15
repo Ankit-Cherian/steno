@@ -296,7 +296,7 @@ extension OnboardingPermission {
     var reason: String {
         switch self {
         case .microphone: "To hear you while you dictate."
-        case .accessibility: "To insert your words where you’re typing. Steno doesn’t read the rest of your screen."
+        case .accessibility: "To insert your words where you’re typing. Steno reads nothing else on screen unless you turn on nearby-text continuation."
         case .inputMonitoring: "To notice the dictation key in any app. It sees that a key was pressed, never which one."
         }
     }

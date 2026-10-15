@@ -23,7 +23,7 @@ struct CleanupStyleSettingsSection: View {
                 }
                 SettingsRow(
                     label: "Filler words",
-                    help: "Light and Balanced keep words such as “like” and “you know”. Thorough removes more and can change meaning, so check the result."
+                    help: "Light and Balanced keep every filler word. Thorough removes um, uh, I mean, basically, sort of and kind of, and can change meaning, so check the result."
                 ) {
                     fillerPicker($preferences.globalStyleProfile.fillerPolicy, style: .segmented)
                 }
