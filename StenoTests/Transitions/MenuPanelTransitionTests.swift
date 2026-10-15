@@ -85,7 +85,12 @@ struct MenuPanelTransitionTests {
         let idleHeight = presenter.panel.frame.height
 
         presenter.refresh(snapshot: snapshot(.recordingHandsFree), targetAppName: "Mail")
-        await settle { read(presenter).status.hasPrefix("Listening, ") }
+        // The voice bars are an AppKit view inside SwiftUI, which can be added on a later layout
+        // pass than the status change.
+        await settle {
+            presenter.panel.contentView?.layoutSubtreeIfNeeded()
+            return read(presenter).status.hasPrefix("Listening, ") && barsShown(presenter)
+        }
         #expect(read(presenter).status.hasPrefix("Listening, "),
                 "status: \(read(presenter).status)")
         #expect(item(presenter, "Stop and insert") != nil)
@@ -93,8 +98,10 @@ struct MenuPanelTransitionTests {
         #expect(barsShown(presenter), "no voice bars while listening")
 
         presenter.refresh(snapshot: snapshot(.transcribing), targetAppName: "Mail")
-        // The voice bars leave with an animation, which can outlast the status change.
-        await settle { read(presenter).status == "Transcribing, on this Mac" && !barsShown(presenter) }
+        await settle {
+            presenter.panel.contentView?.layoutSubtreeIfNeeded()
+            return read(presenter).status == "Transcribing, on this Mac" && !barsShown(presenter)
+        }
         #expect(read(presenter).status == "Transcribing, on this Mac")
         #expect(item(presenter, "Stop and insert") == nil, "Stop stayed while transcribing")
         #expect(!barsShown(presenter), "the voice bars stayed after listening")
