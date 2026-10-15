@@ -96,7 +96,8 @@ struct DictationControllerInputLevelTests {
         meter.start { decibels }
 
         controller.toggleHandsFree()
-        #expect(await waitForShortcutCondition { controller.isRecording })
+        // A discard is held for Undo only once the start, including its media check, has finished.
+        #expect(await waitForShortcutCondition { controller.isRecording && !controller.hasStartInProgress })
         meter.tick(now: 1)
         #expect(forwarded.last.map { $0 > 0 } == true)
 

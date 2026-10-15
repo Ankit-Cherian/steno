@@ -925,6 +925,9 @@ final class DictationController: ObservableObject {
         recordingStateMachine.state
     }
 
+    /// True until the start of the current recording, including its media check, has finished.
+    var hasStartInProgress: Bool { activeStartTask != nil }
+
     var lifecycleDiagnostics: DictationLifecycleDiagnostics {
         DictationLifecycleDiagnostics(
             hasActiveStartTask: activeStartTask != nil,

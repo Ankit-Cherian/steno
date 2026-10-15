@@ -93,7 +93,8 @@ struct MenuPanelTransitionTests {
         #expect(barsShown(presenter), "no voice bars while listening")
 
         presenter.refresh(snapshot: snapshot(.transcribing), targetAppName: "Mail")
-        await settle { read(presenter).status == "Transcribing, on this Mac" }
+        // The voice bars leave with an animation, which can outlast the status change.
+        await settle { read(presenter).status == "Transcribing, on this Mac" && !barsShown(presenter) }
         #expect(read(presenter).status == "Transcribing, on this Mac")
         #expect(item(presenter, "Stop and insert") == nil, "Stop stayed while transcribing")
         #expect(!barsShown(presenter), "the voice bars stayed after listening")
