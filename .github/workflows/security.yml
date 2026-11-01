@@ -68,12 +68,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           languages: actions
           build-mode: none
           queries: security-extended
-      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           category: /language:actions
           output: build/codeql-results
@@ -125,7 +125,7 @@ jobs:
         run: |
           xcodebuild -resolvePackageDependencies -project Steno.xcodeproj -scheme Steno \
             -derivedDataPath build/codeql-swift
-      - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           languages: swift
           build-mode: manual
@@ -138,7 +138,7 @@ jobs:
             -configuration Debug -destination 'generic/platform=macOS' \
             -derivedDataPath build/codeql-swift \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO
-      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           category: /language:swift
           output: build/codeql-results
@@ -173,14 +173,14 @@ jobs:
           ref: 764482c3175d9c3bc6089c1ec84df7d1b9537d83
           path: vendor/whisper.cpp
           persist-credentials: false
-      - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           languages: c-cpp
           build-mode: manual
           queries: security-extended
       - name: Build C++ runtime for analysis
         run: bash scripts/build-whisper-runtime-helper.sh
-      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           category: /language:c-cpp
           output: build/codeql-results
